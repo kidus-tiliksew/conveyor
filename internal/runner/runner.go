@@ -51,7 +51,7 @@ type StartJobSpec struct {
 	// (the task's worktree).
 	Workdir string
 	// ControlDir (host == sandbox path) carries prompt.txt in and
-	// events.jsonl / handoff.json / harness session state out.
+	// events.jsonl / job-scoped handoff files / harness session state out.
 	ControlDir string
 	// CredentialsDir is the trusted host source for the harness login
 	// (e.g. ~/.codex). It is never mounted directly. The runner copies

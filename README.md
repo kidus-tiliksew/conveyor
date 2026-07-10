@@ -16,7 +16,7 @@ Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 - [x] Bare-clone + worktree manager — `internal/gitx`
 - [x] Secrets reference model — `internal/secrets` (runner-side resolution/injection remains in scope)
 - [x] Base image — `images/base` (`make image`)
-- [x] Handoff snapshots: elicited at job end via session resume, injected on re-dispatch — `internal/snapshot`, shim
+- [x] Handoff snapshots: native-resume elicitation with a fresh-run fallback, injected on re-dispatch — `internal/snapshot`, shim
 - [ ] Resume-fidelity experiment (spec §20.2)
 - [x] GitHub issue polling → task, commits → PR — `internal/trigger/github`, `internal/dispatch` (validated live)
 - [x] Job shim: harness supervision, event streaming, session capture — `cmd/conveyor-shim`

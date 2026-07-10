@@ -85,28 +85,47 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err := os.MkdirAll(control, 0o755); err != nil {
 		return err
 	}
-	prompt := buildPrompt(t)
-	// A prior attempt's handoff snapshot briefs the successor
-	// (spec §8.3): the persistent worktree carries the code state, the
-	// snapshot carries the reasoning state. Redirect comments join it
-	// here when the review queue lands in Phase 2.
-	if h, err := snapshot.Load(filepath.Join(control, "handoff.json")); err == nil {
-		prompt += "\n\n" + h.OpeningContext("")
-		log.Printf("[task %s] briefing successor with handoff from job %s", t.ID, h.JobID)
-	}
-	if err := os.WriteFile(filepath.Join(control, "prompt.txt"), []byte(prompt), 0o644); err != nil {
-		return err
-	}
-
 	priorJobs, err := d.Store.ListJobs(t.ID)
 	if err != nil {
 		return err
 	}
 	attempt := 1
-	for _, prior := range priorJobs {
-		if prior.Stage == core.StageImplement {
-			attempt++
+	var predecessor *core.Job
+	for i := range priorJobs {
+		prior := priorJobs[i]
+		if prior.Stage != core.StageImplement {
+			continue
 		}
+		attempt++
+		if predecessor == nil || !prior.StartedAt.Before(predecessor.StartedAt) {
+			candidate := prior
+			predecessor = &candidate
+		}
+	}
+
+	prompt := buildPrompt(t)
+	// A prior attempt's handoff snapshot briefs the successor
+	// (spec §8.3): the persistent worktree carries the code state, the
+	// snapshot carries the reasoning state. Redirect comments join it
+	// here when the review queue lands in Phase 2.
+	if predecessor != nil {
+		handoffPath, pathErr := snapshot.Path(control, predecessor.ID)
+		if pathErr != nil {
+			return pathErr
+		}
+		if h, loadErr := snapshot.Load(handoffPath); loadErr == nil {
+			if h.TaskID == t.ID && h.JobID == predecessor.ID {
+				prompt += "\n\n" + h.OpeningContext("")
+				log.Printf("[task %s] briefing successor with handoff from job %s", t.ID, h.JobID)
+			} else {
+				log.Printf("[task %s] ignoring handoff with mismatched provenance task=%q job=%q", t.ID, h.TaskID, h.JobID)
+			}
+		} else if !os.IsNotExist(loadErr) {
+			log.Printf("[task %s] ignoring unreadable handoff for job %s: %v", t.ID, predecessor.ID, loadErr)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(control, "prompt.txt"), []byte(prompt), 0o644); err != nil {
+		return err
 	}
 	job := core.Job{
 		ID:      fmt.Sprintf("%s-implement-%d", t.ID, attempt),

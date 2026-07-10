@@ -20,7 +20,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
@@ -48,8 +47,8 @@ func main() {
 }
 
 func run(harness, workdir, control, taskID, jobID string) error {
-	if harness == "" || workdir == "" || control == "" {
-		return fmt.Errorf("--harness, --workdir, and --control are required")
+	if harness == "" || workdir == "" || control == "" || taskID == "" || jobID == "" {
+		return fmt.Errorf("--harness, --workdir, --control, --task, and --job are required")
 	}
 	prompt, err := os.ReadFile(filepath.Join(control, "prompt.txt"))
 	if err != nil {
@@ -61,22 +60,12 @@ func run(harness, workdir, control, taskID, jobID string) error {
 		return err
 	}
 
-	events, err := a.Run(context.Background(), adapter.RunSpec{
-		Workdir: workdir,
-		Prompt:  string(prompt),
-	})
-	if err != nil {
-		return fmt.Errorf("start harness: %w", err)
-	}
-
 	out, err := os.Create(filepath.Join(control, "events.jsonl"))
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	failed := false
-	sessionRef := ""
 	forward := func(ev adapter.Event) {
 		// The redaction choke point (spec §10.3): every byte leaving
 		// the sandbox passes through here. Phase 2 inserts the
@@ -89,69 +78,159 @@ func run(harness, workdir, control, taskID, jobID string) error {
 		out.Write(line)
 		os.Stdout.Write(line)
 	}
+	return supervise(a, workdir, control, harness, taskID, jobID, string(prompt), forward)
+}
+
+func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, forward func(adapter.Event)) error {
+	events, err := a.Run(context.Background(), adapter.RunSpec{
+		Workdir: workdir,
+		Prompt:  prompt,
+	})
+	if err != nil {
+		return fmt.Errorf("start harness: %w", err)
+	}
+
+	failed := false
+	sessionRef := ""
+	var terminalError *adapter.Event
 	for ev := range events {
 		switch ev.Kind {
 		case adapter.EventError:
 			failed = true
+			if terminalError == nil {
+				captured := ev
+				terminalError = &captured
+			}
+			// Delay the job-level terminal error until after the handoff
+			// attempt, just as EventDone is delayed on success.
+			continue
 		case adapter.EventSessionStart:
 			sessionRef = ev.SessionRef
+		case adapter.EventDone:
+			// The adapter run is a subrun of this shim-owned job. Emit one
+			// terminal job-level done event only after handoff elicitation.
+			continue
 		}
-		forward(ev)
+		forward(withPhase(ev, adapter.PhaseMain))
 	}
 
-	if !failed {
-		// Handoff snapshot — the guaranteed continuity floor between
-		// jobs (spec §8.3). Elicitation failure degrades to no
-		// snapshot rather than failing a job whose work is already
-		// committed; the successor then cold-starts from the prompt.
-		if err := elicitHandoff(a, sessionRef, control, harness, taskID, jobID, forward); err != nil {
-			log.Printf("conveyor-shim: handoff elicitation skipped: %v", err)
-		}
+	// Handoff snapshot — the guaranteed continuity floor between jobs
+	// (spec §8.3). Attempt it even after a failed main run because partial
+	// work and failure context are especially important to a successor.
+	// Elicitation failure does not change the main run's outcome.
+	if err := elicitHandoff(a, sessionRef, workdir, control, harness, taskID, jobID, prompt, forward); err != nil {
+		log.Printf("conveyor-shim: handoff elicitation skipped: %v", err)
 	}
 
 	if failed {
+		if terminalError == nil {
+			terminalError = &adapter.Event{Kind: adapter.EventError, Err: "harness reported an error", At: time.Now()}
+		}
+		terminalError.At = time.Now()
+		forward(withPhase(*terminalError, adapter.PhaseMain))
 		return fmt.Errorf("harness reported an error event")
+	}
+	forward(adapter.Event{Kind: adapter.EventDone, Phase: adapter.PhaseJob, At: time.Now()})
+	return nil
+}
+
+// elicitHandoff prefers the job's native session because it already
+// holds the relevant context, then falls back to a fresh read-only run
+// briefed from the task and persistent worktree. Native resume is an
+// optimization; the snapshot is the continuity floor (spec §8.3).
+func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, taskID, jobID, taskPrompt string, forward func(adapter.Event)) error {
+	resumeErr := fmt.Errorf("native resume unavailable")
+	if sessionRef != "" && a.Capabilities().Resume {
+		events, err := a.Resume(context.Background(), sessionRef, snapshot.ElicitationPrompt)
+		if err == nil {
+			h, collectErr := collectHandoff(events, adapter.PhaseHandoffResume, forward)
+			if collectErr == nil {
+				if saveErr := saveHandoff(h, control, harness, taskID, jobID); saveErr != nil {
+					forwardWarning(forward, adapter.PhaseHandoffResume, saveErr)
+					return saveErr
+				}
+				return nil
+			}
+			resumeErr = collectErr
+		} else {
+			resumeErr = err
+			forwardWarning(forward, adapter.PhaseHandoffResume, err)
+		}
+	} else if sessionRef == "" {
+		resumeErr = fmt.Errorf("no session ref captured from the run")
+		forwardWarning(forward, adapter.PhaseHandoffResume, resumeErr)
+	} else {
+		resumeErr = fmt.Errorf("harness %s does not support resume", harness)
+		forwardWarning(forward, adapter.PhaseHandoffResume, resumeErr)
+	}
+
+	// Snapshot generation is the continuity floor; native resume is only
+	// an optimization. A fresh read-only run can reconstruct the handoff
+	// from the persistent worktree and original task prompt (spec §8.3).
+	events, err := a.Run(context.Background(), adapter.RunSpec{
+		Workdir: workdir,
+		Prompt:  snapshot.FallbackElicitationPrompt(taskPrompt),
+	})
+	if err != nil {
+		forwardWarning(forward, adapter.PhaseHandoffFallback, err)
+		return fmt.Errorf("native elicitation failed (%v); fallback start: %w", resumeErr, err)
+	}
+	h, err := collectHandoff(events, adapter.PhaseHandoffFallback, forward)
+	if err != nil {
+		return fmt.Errorf("native elicitation failed (%v); fallback: %w", resumeErr, err)
+	}
+	if err := saveHandoff(h, control, harness, taskID, jobID); err != nil {
+		forwardWarning(forward, adapter.PhaseHandoffFallback, err)
+		return err
 	}
 	return nil
 }
 
-// elicitHandoff resumes the job's session with one more prompt asking
-// the agent to write its handoff document, and stores the parsed result
-// as control/handoff.json. Resume (not a fresh Run) is what makes the
-// snapshot cheap and faithful: the session already holds the context
-// the document is about.
-func elicitHandoff(a adapter.Adapter, sessionRef, control, harness, taskID, jobID string, forward func(adapter.Event)) error {
-	if sessionRef == "" {
-		return fmt.Errorf("no session ref captured from the run")
-	}
-	if !a.Capabilities().Resume {
-		return fmt.Errorf("harness %s does not support resume", harness)
-	}
-	events, err := a.Resume(context.Background(), sessionRef, snapshot.ElicitationPrompt)
-	if err != nil {
-		return err
-	}
+func collectHandoff(events <-chan adapter.Event, phase string, forward func(adapter.Event)) (*snapshot.Handoff, error) {
 	reply := ""
 	for ev := range events {
-		forward(ev) // elicitation is part of the job transcript
 		switch ev.Kind {
 		case adapter.EventAssistantText:
 			if ev.Text != "" {
 				reply = ev.Text
 			}
 		case adapter.EventError:
-			return fmt.Errorf("elicitation run: %s", ev.Err)
+			warning := withPhase(ev, phase)
+			warning.Kind = adapter.EventWarning
+			forward(warning)
+			return nil, fmt.Errorf("elicitation run: %s", ev.Err)
+		case adapter.EventDone:
+			continue
 		}
+		forward(withPhase(ev, phase)) // elicitation is part of the job transcript
 	}
 	h, err := snapshot.ParseHandoff(reply)
 	if err != nil {
-		return err
+		forwardWarning(forward, phase, err)
+		return nil, err
 	}
+	return h, nil
+}
+
+func withPhase(ev adapter.Event, phase string) adapter.Event {
+	ev.Phase = phase
+	return ev
+}
+
+func forwardWarning(forward func(adapter.Event), phase string, err error) {
+	forward(adapter.Event{Kind: adapter.EventWarning, Phase: phase, Err: err.Error(), At: time.Now()})
+}
+
+func saveHandoff(h *snapshot.Handoff, control, harness, taskID, jobID string) error {
 	h.TaskID = taskID
 	h.JobID = jobID
 	h.Harness = harness
 	h.WrittenAt = time.Now().UTC()
-	return h.Save(filepath.Join(control, "handoff.json"))
+	path, err := snapshot.Path(control, jobID)
+	if err != nil {
+		return err
+	}
+	return h.Save(path)
 }
 
 func buildAdapter(harness, control string) (adapter.Adapter, error) {

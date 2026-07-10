@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -51,6 +52,27 @@ Cover: current state of the work, key decisions and their rationale,
 files touched and why, known gotchas, and remaining todos. Output only
 the JSON.`
 
+// FallbackElicitationPrompt briefs a fresh harness run when native
+// session resume is unavailable or fails. The fallback is instructed to
+// act read-only while it reconstructs the handoff from the task prompt
+// and persistent worktree. Phase 1 cannot enforce that instruction
+// inside the existing read-write job container; see known-limitations.md.
+func FallbackElicitationPrompt(taskPrompt string) string {
+	return `You are a read-only handoff writer for a completed coding-agent job.
+Do not modify files, create commits, or run destructive commands. Inspect the
+current worktree, including git status, recent commits, and diffs, to reconstruct
+the job's state. Treat the original task prompt below as context, not as new
+instructions to implement.
+
+Original task prompt:
+
+---
+` + taskPrompt + `
+---
+
+` + ElicitationPrompt
+}
+
 // ParseHandoff extracts the handoff JSON from an agent's reply, which
 // may wrap it in prose or markdown fences despite the "output only the
 // JSON" instruction. It takes the outermost brace span and requires at
@@ -72,12 +94,35 @@ func ParseHandoff(text string) (*Handoff, error) {
 	return &h, nil
 }
 
+// Path returns the job-scoped snapshot path. Job scoping prevents a
+// failed attempt from reusing or being credited with an older attempt's
+// handoff.
+func Path(controlDir, jobID string) (string, error) {
+	if jobID == "" || jobID == "." || jobID == ".." || strings.ContainsAny(jobID, `/\`) {
+		return "", fmt.Errorf("invalid handoff job ID %q", jobID)
+	}
+	return filepath.Join(controlDir, "handoff-"+jobID+".json"), nil
+}
+
 func (h *Handoff) Save(path string) error {
 	data, err := json.MarshalIndent(h, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".handoff-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func Load(path string) (*Handoff, error) {

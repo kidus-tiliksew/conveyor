@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
@@ -58,12 +59,15 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 }
 
 func (a *Adapter) Run(ctx context.Context, spec adapter.RunSpec) (<-chan adapter.Event, error) {
+	if err := a.checkVersion(ctx); err != nil {
+		return nil, err
+	}
 	// TODO(phase1): map spec.Policy into codex's sandbox/approval flags
 	// (--sandbox workspace-write, approval mode) — the adapter, not the
 	// user's interactive config, owns unattended permission posture
 	// (spec §8.5 responsibility seam).
-	// TODO(phase1): register a session hook to capture the session ID
-	// authoritatively during the run (spec §8.3 note 1).
+	// Session identity is captured authoritatively from the pinned CLI's
+	// structured thread.started event (spec §8.3 note 1).
 	args := []string{"exec", "--json", "--cd", spec.Workdir}
 	if a.ContainerConfined {
 		args = append(args, "--sandbox", "danger-full-access")
@@ -73,6 +77,9 @@ func (a *Adapter) Run(ctx context.Context, spec adapter.RunSpec) (<-chan adapter
 }
 
 func (a *Adapter) Resume(ctx context.Context, sessionRef string, feedback string) (<-chan adapter.Event, error) {
+	if err := a.checkVersion(ctx); err != nil {
+		return nil, err
+	}
 	// `exec resume` (validated against PinnedVersion) has no --sandbox
 	// flag; the config override is its equivalent. The session carries
 	// its own working directory, so the repo check on the caller's cwd
@@ -83,6 +90,19 @@ func (a *Adapter) Resume(ctx context.Context, sessionRef string, feedback string
 	}
 	args = append(args, feedback)
 	return a.stream(ctx, "", args)
+}
+
+func (a *Adapter) checkVersion(ctx context.Context) error {
+	out, err := exec.CommandContext(ctx, a.Binary, "--version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("check codex version: %w: %s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	want := "codex-cli " + PinnedVersion
+	if got != want {
+		return fmt.Errorf("codex version %q is unsupported; want %q", got, want)
+	}
+	return nil
 }
 
 func (a *Adapter) stream(ctx context.Context, dir string, args []string) (<-chan adapter.Event, error) {
@@ -124,8 +144,6 @@ func (a *Adapter) stream(ctx context.Context, dir string, args []string) (<-chan
 // turn.completed (token usage nested under "usage"). Anything
 // unrecognized passes through with its raw payload so no information is
 // dropped before the transcript store.
-// TODO(phase1): verify field names against the pinned CLI version on
-// first integration and set PinnedVersion.
 func parseLine(line []byte) adapter.Event {
 	var probe struct {
 		Type     string `json:"type"`

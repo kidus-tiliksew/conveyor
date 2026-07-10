@@ -17,8 +17,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Harness CLIs. Versions pinned alongside the adapter's PinnedVersion.
-RUN npm install -g @openai/codex
+# Harness CLIs. Keep CODEX_VERSION aligned with the adapter's
+# PinnedVersion; the runtime adapter check fails closed on drift.
+ARG CODEX_VERSION=0.142.0
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
+    && test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"
 
 # GitHub CLI for PR operations inside sandboxes.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

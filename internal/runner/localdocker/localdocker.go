@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
 type Runner struct {
@@ -224,7 +225,7 @@ func (r *Runner) CollectArtifacts(ctx context.Context, h runner.JobHandle) (runn
 	if p := filepath.Join(info.controlDir, "events.jsonl"); fileExists(p) {
 		art.EventLog = p
 	}
-	if p := filepath.Join(info.controlDir, "handoff.json"); fileExists(p) {
+	if p, err := snapshot.Path(info.controlDir, info.jobID); err == nil && fileExists(p) {
 		art.HandoffSnapshot = p
 	}
 	// The Phase 1 shim is a one-shot PID 1, so its containers are job-TTL.

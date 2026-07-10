@@ -117,15 +117,24 @@ func TestRunTaskUsesUniqueAttemptIDs(t *testing.T) {
 
 func TestRunTaskBriefsSuccessorWithHandoff(t *testing.T) {
 	f := &fakeRunner{}
-	d, _, task := testDispatcher(t, f)
+	d, st, task := testDispatcher(t, f)
 
 	control := filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor")
 	if err := os.MkdirAll(control, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &snapshot.Handoff{JobID: task.ID + "-implement-1", State: "parser half-rewritten",
+	prior := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.JobDone, StartedAt: time.Now().Add(-time.Minute)}
+	if err := st.CreateJob(prior); err != nil {
+		t.Fatal(err)
+	}
+	h := &snapshot.Handoff{TaskID: task.ID, JobID: prior.ID, State: "parser half-rewritten",
 		Todos: []string{"wire the fallback"}}
-	if err := h.Save(filepath.Join(control, "handoff.json")); err != nil {
+	handoffPath, err := snapshot.Path(control, prior.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Save(handoffPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,6 +149,45 @@ func TestRunTaskBriefsSuccessorWithHandoff(t *testing.T) {
 		if !strings.Contains(string(prompt), want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestRunTaskDoesNotReuseOlderHandoffWhenImmediatePredecessorHasNone(t *testing.T) {
+	f := &fakeRunner{}
+	d, st, task := testDispatcher(t, f)
+	control := filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	first := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.JobDone, StartedAt: time.Now().Add(-2 * time.Minute)}
+	second := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.JobFailed, StartedAt: time.Now().Add(-time.Minute)}
+	if err := st.CreateJob(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(second); err != nil {
+		t.Fatal(err)
+	}
+	stale := &snapshot.Handoff{TaskID: task.ID, JobID: first.ID, State: "obsolete state", Todos: []string{"obsolete todo"}}
+	stalePath, err := snapshot.Path(control, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Save(stalePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(control, "prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(prompt), "obsolete state") || strings.Contains(string(prompt), "obsolete todo") {
+		t.Fatalf("prompt reused stale handoff:\n%s", prompt)
 	}
 }
 

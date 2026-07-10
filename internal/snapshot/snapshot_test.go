@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,5 +55,38 @@ func TestHandoffRoundTripAndBriefing(t *testing.T) {
 	brief := got.OpeningContext("please also fix the typo")
 	if !strings.Contains(brief, "half done") || !strings.Contains(brief, "please also fix the typo") {
 		t.Fatalf("briefing missing content: %s", brief)
+	}
+}
+
+func TestPathIsJobScopedAndRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	path, err := Path(dir, "task-1-implement-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := path, filepath.Join(dir, "handoff-task-1-implement-2.json"); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	for _, bad := range []string{"", "../escape", `..\escape`} {
+		if _, err := Path(dir, bad); err == nil {
+			t.Errorf("Path(%q): want error", bad)
+		}
+	}
+}
+
+func TestSaveAtomicallyReplacesSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "handoff.json")
+	if err := (&Handoff{State: "old"}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Handoff{State: "new"}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.State != "new" {
+		t.Fatalf("state = %q, want new", h.State)
 	}
 }

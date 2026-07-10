@@ -52,3 +52,32 @@ resumes in the same worktree and sees the prior commits.
 as an artifact) the authoritative transcript, with the docker log
 stream demoted to a best-effort live view whose failure no longer
 fails the job.
+
+## 3. Fresh handoff fallback is prompt-read-only, not mount-read-only
+
+**Failure mode.** When native session resume is unavailable or fails,
+the shim starts a fresh harness run to reconstruct the handoff from the
+task prompt and persistent worktree. The fallback prompt forbids writes,
+but it runs inside the existing Tier A container whose task worktree is
+mounted read-write. A misbehaving fallback agent could therefore modify
+files or add a commit after the main implementation turn completed; the
+dispatcher would see that state as part of the task.
+
+**Why it's built this way.** A container mount cannot be made read-only
+for one child process after the container has started. Codex's nested
+sandbox cannot create its namespaces inside the unprivileged Tier A
+container, which is why the main adapter uses container confinement.
+Spinning up a second runner-owned container with a read-only worktree is
+the correct enforcement boundary but is larger than the Phase 1 shim
+fallback. The blast radius remains the task's own worktree. Fallback
+events carry `phase: handoff_fallback`, including token usage, so the
+resume-fidelity experiment can measure its extra cost separately.
+
+**Recovery.** Inspect the task branch and worktree after a fallback run.
+If the fallback changed state, revert only those post-implementation
+changes and re-dispatch. The main implementation commit and prior
+job-scoped handoff remain intact.
+
+**Resolved by.** Move fallback elicitation into a runner-owned handoff
+subjob with the worktree mounted read-only. At that point the prompt is
+guidance and the mount is enforcement.

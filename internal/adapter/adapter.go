@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// EventKind enumerates the normalized event stream:
-// assistant_text | tool_call | tool_result | token_usage | done | error.
+// EventKind enumerates the normalized event stream. Warning is
+// explicitly nonterminal; Done and Error are the only terminal kinds.
 type EventKind string
 
 const (
@@ -20,6 +20,7 @@ const (
 	EventToolCall      EventKind = "tool_call"
 	EventToolResult    EventKind = "tool_result"
 	EventTokenUsage    EventKind = "token_usage"
+	EventWarning       EventKind = "warning"
 	// EventSessionStart carries the harness's session identity in
 	// SessionRef, pushed by the adapter as the harness announces it —
 	// never scraped from session directories afterward (spec §8.3
@@ -29,9 +30,17 @@ const (
 	EventError        EventKind = "error"
 )
 
+const (
+	PhaseMain            = "main"
+	PhaseHandoffResume   = "handoff_resume"
+	PhaseHandoffFallback = "handoff_fallback"
+	PhaseJob             = "job"
+)
+
 // Event is one normalized item from a harness run.
 type Event struct {
 	Kind       EventKind       `json:"kind"`
+	Phase      string          `json:"phase,omitempty"`       // main | handoff_resume | handoff_fallback | job
 	Text       string          `json:"text,omitempty"`        // assistant_text
 	Tool       string          `json:"tool,omitempty"`        // tool_call / tool_result
 	SessionRef string          `json:"session_ref,omitempty"` // session_start

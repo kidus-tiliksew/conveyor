@@ -1,6 +1,10 @@
 package codex
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
@@ -81,4 +85,41 @@ func TestParseLine(t *testing.T) {
 	if ev.SessionRef != "abc-123" {
 		t.Fatalf("session ref = %q, want abc-123", ev.SessionRef)
 	}
+}
+
+func TestCheckVersionAcceptsPinnedVersion(t *testing.T) {
+	a := &Adapter{Binary: versionBinary(t, "codex-cli "+PinnedVersion)}
+	if err := a.checkVersion(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckVersionRejectsDrift(t *testing.T) {
+	a := &Adapter{Binary: versionBinary(t, "codex-cli 99.0.0")}
+	err := a.checkVersion(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("error = %v, want unsupported-version error", err)
+	}
+}
+
+func TestCheckVersionCanceledCallDoesNotPoisonAdapter(t *testing.T) {
+	a := &Adapter{Binary: versionBinary(t, "codex-cli "+PinnedVersion)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.checkVersion(ctx); err == nil {
+		t.Fatal("expected canceled version check")
+	}
+	if err := a.checkVersion(context.Background()); err != nil {
+		t.Fatalf("retry after canceled check failed: %v", err)
+	}
+}
+
+func versionBinary(t *testing.T, output string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

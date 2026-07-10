@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
 func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
@@ -67,8 +68,19 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "auth.json" {
 		t.Fatalf("staged entries = %v, want only auth.json", entries)
 	}
-	if _, err := r.CollectArtifacts(context.Background(), h); err != nil {
+	handoffPath, err := snapshot.Path(control, "task-1-implement-1")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := (&snapshot.Handoff{State: "done"}).Save(handoffPath); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := r.CollectArtifacts(context.Background(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts.HandoffSnapshot != handoffPath {
+		t.Fatalf("handoff artifact = %q, want %q", artifacts.HandoffSnapshot, handoffPath)
 	}
 	if _, err := os.Stat(info.credentialDir); !os.IsNotExist(err) {
 		t.Fatalf("credential staging directory still exists: %v", err)
