@@ -1,13 +1,11 @@
 // Package httpapi is the control-plane REST + SSE surface (spec §17.3).
-// Phase 1 exposes task CRUD and job log streaming; review actions,
-// runner registration, and webhook ingestion land in later phases. All
+// Phase 1 exposes task CRUD and job listing; review actions, runner
+// registration, and webhook ingestion land in later phases. All
 // mutating endpoints will be recorded in the events table once Phase 2
 // introduces it.
 package httpapi
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -16,11 +14,19 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type Server struct {
 	Store store.Store
+	// Repos is the set of valid repo names; nil skips validation.
+	Repos []string
+	// OnCreate is invoked with each created task's ID (the dispatcher's
+	// Enqueue). Nil means tasks queue without dispatch (tests).
+	OnCreate func(taskID string)
+	// Workspace stamps created tasks.
+	Workspace string
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -37,15 +43,18 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks", s.listTasks)
 		r.Post("/tasks", s.createTask)
 		r.Get("/tasks/{id}", s.getTask)
-		// TODO(phase1): GET /v1/jobs/{id}/logs — SSE stream from the
-		// runner's StreamLogs (spec §17.3, Phase 1 "logs only").
+		r.Get("/tasks/{id}/jobs", s.listJobs)
+		// TODO(phase1-followup): GET /v1/jobs/{id}/logs — SSE stream
+		// (spec §17.3); Phase 1 logs land in the control dir and
+		// conveyord stdout.
 	})
 	return r
 }
 
 type createTaskReq struct {
-	Workspace  string `json:"workspace"`
 	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Repo       string `json:"repo"`
 	BaseBranch string `json:"base_branch"`
 	Source     string `json:"source"`
 }
@@ -56,27 +65,40 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.Title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+	if s.Repos != nil && !contains(s.Repos, req.Repo) {
+		http.Error(w, "unknown repo "+req.Repo, http.StatusBadRequest)
+		return
+	}
 	if req.BaseBranch == "" {
 		req.BaseBranch = "main"
 	}
 	if req.Source == "" {
 		req.Source = "api"
 	}
-	id := newTaskID()
+	id := core.NewTaskID()
 	t := core.Task{
 		ID:         id,
-		Workspace:  req.Workspace,
+		Workspace:  s.Workspace,
 		Source:     req.Source,
 		Title:      req.Title,
+		Body:       req.Body,
 		Level:      core.L2,
+		Repo:       req.Repo,
 		BaseBranch: req.BaseBranch,
-		Branch:     "conveyor/task-" + id,
+		Branch:     gitx.BranchName(id),
 		State:      core.TaskQueued,
 		CreatedAt:  time.Now(),
 	}
 	if err := s.Store.CreateTask(t); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
+	}
+	if s.OnCreate != nil {
+		s.OnCreate(id)
 	}
 	writeJSON(w, http.StatusCreated, t)
 }
@@ -99,17 +121,26 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	jobs, err := s.Store.ListJobs(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func newTaskID() string {
-	// Short, human-typeable IDs: date prefix for eyeballing, random
-	// suffix so concurrent submissions never collide (CreateTask still
-	// enforces uniqueness as a backstop).
-	b := make([]byte, 3)
-	_, _ = rand.Read(b)
-	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }

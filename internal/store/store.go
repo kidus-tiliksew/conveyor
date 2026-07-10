@@ -19,6 +19,7 @@ type Store interface {
 	UpdateTaskState(id string, s core.TaskState) error
 
 	CreateJob(j core.Job) error
+	UpdateJob(j core.Job) error
 	ListJobs(taskID string) ([]core.Job, error)
 }
 
@@ -80,6 +81,19 @@ func (m *memory) CreateJob(j core.Job) error {
 	defer m.mu.Unlock()
 	m.jobs[j.TaskID] = append(m.jobs[j.TaskID], j)
 	return nil
+}
+
+func (m *memory) UpdateJob(j core.Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	jobs := m.jobs[j.TaskID]
+	for i := range jobs {
+		if jobs[i].ID == j.ID {
+			jobs[i] = j
+			return nil
+		}
+	}
+	return fmt.Errorf("job %s not found", j.ID)
 }
 
 func (m *memory) ListJobs(taskID string) ([]core.Job, error) {

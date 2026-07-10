@@ -4,7 +4,11 @@
 // to Postgres (event-sourced, pgx + sqlc + River).
 package core
 
-import "time"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"time"
+)
 
 // Stage is a pipeline stage (spec §4). Phase 1 exercises only Implement;
 // the rest are declared so task records and routing config are stable
@@ -62,15 +66,25 @@ const (
 type Task struct {
 	ID           string
 	Workspace    string
-	Source       string // provenance: github-issue, cli, cron, monitor (spec §9)
+	Source       string // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
 	Title        string
+	Body         string // free-form description; becomes part of the prompt
 	Class        string // bug | feature | chore
 	Level        EscalationLevel
+	Repo         string // repo name within the workspace (single-repo in Phase 1; task_repos in Phase 3)
 	BaseBranch   string
 	Branch       string // conveyor/task-<id>
 	State        TaskState
 	ParentTaskID string // stacked tasks (spec §8.6)
 	CreatedAt    time.Time
+}
+
+// NewTaskID returns a short, human-typeable ID: date prefix for
+// eyeballing, random suffix so concurrent submissions never collide.
+func NewTaskID() string {
+	b := make([]byte, 3)
+	_, _ = rand.Read(b)
+	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }
 
 // Job is one execution of one stage in one sandbox by one harness.

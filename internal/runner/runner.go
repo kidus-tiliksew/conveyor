@@ -22,29 +22,44 @@ const (
 	SignalKill   Signal = "kill"
 )
 
-// WorktreeMount maps a host worktree path into the sandbox at a
-// deterministic in-sandbox path (spec §8.3 note 3: harnesses key
-// sessions to their working directory, so the path must be identical
-// on every host: /conveyor/jobs/task-<id>/<repo>).
+// WorktreeMount maps a host path into the sandbox.
+//
+// TODO(phase1-followup): the spec wants deterministic in-sandbox paths
+// (/conveyor/jobs/task-<id>/…, §8.3 note 3) and a read-only bare cache
+// (§8.1). Phase 1 mounts host paths at identical in-sandbox paths and
+// the cache read-write, because worktree .git files link to the cache
+// by absolute host path, and commits must write objects and branch refs
+// into the shared store. Fixing both means rewriting worktree gitdir
+// links for the sandbox namespace and carving out rw mounts for
+// objects/ refs/ worktrees/ — deferred until after the loop runs.
 type WorktreeMount struct {
 	HostPath    string
 	SandboxPath string
-	ReadOnly    bool // bare cache mounts ro; worktrees rw (spec §8.1)
+	ReadOnly    bool
 }
 
 // StartJobSpec is the runner protocol's dispatch payload. Secrets travel
 // as references only; the runner resolves them at sandbox boot (spec §10.1).
 type StartJobSpec struct {
-	JobID      string
-	TaskID     string
-	Image      string
-	Worktrees  []WorktreeMount
-	SecretRefs []string
-	Prompt     string
-	BudgetUSD  float64
-	Policy     adapter.ToolPolicy
-	Harness    string // which adapter the shim invokes inside the sandbox
-	SandboxTTL string // job | task | <duration> (spec §6.2)
+	JobID     string
+	TaskID    string
+	Image     string
+	Worktrees []WorktreeMount
+	// Workdir is the in-sandbox working directory for the harness
+	// (the task's worktree).
+	Workdir string
+	// ControlDir (host == sandbox path) carries prompt.txt in and
+	// events.jsonl / handoff.json / harness session state out.
+	ControlDir string
+	// CredentialsDir is the host directory with the harness's login
+	// (e.g. ~/.codex), mounted read-only at /conveyor/creds/<harness>
+	// (spec §5.2); empty means no credential mount.
+	CredentialsDir string
+	SecretRefs     []string
+	BudgetUSD      float64
+	Policy         adapter.ToolPolicy
+	Harness        string // which adapter the shim invokes inside the sandbox
+	SandboxTTL     string // job | task | <duration> (spec §6.2)
 }
 
 // LogEvent is one item of the job's log stream (tool calls, tokens,
@@ -65,10 +80,13 @@ type BootDiagnostics struct {
 
 // Artifacts is what CollectArtifacts returns: commits made, files,
 // screenshots, reports, plus the handoff snapshot (spec §8.3).
+// CollectArtifacts blocks until the job's container exits.
 type Artifacts struct {
+	ExitCode        int
 	Commits         []string
 	Files           []string
-	HandoffSnapshot string // path to the snapshot JSON artifact
+	EventLog        string // path to events.jsonl in the control dir
+	HandoffSnapshot string // path to the snapshot JSON artifact, if written
 	SessionArchive  string // native session dir archive, if the harness supports resume
 }
 

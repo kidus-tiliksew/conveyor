@@ -11,17 +11,31 @@ Full design: [conveyor-spec.md](conveyor-spec.md) (v1.0, accepted).
 
 Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 
-- [ ] Codex adapter with ChatGPT subscription auth — `internal/adapter/codex`
-- [ ] LocalDockerRunner — `internal/runner/localdocker`
+- [x] Codex adapter with ChatGPT subscription auth — `internal/adapter/codex`
+- [x] LocalDockerRunner (Tier A mounts, log streaming, artifact collection) — `internal/runner/localdocker`
 - [x] Bare-clone + worktree manager — `internal/gitx`
 - [x] Secrets injection model (refs in control plane, values at edge) — `internal/secrets`
-- [ ] Base image — `images/base`
-- [x] Handoff snapshot schema — `internal/snapshot`
+- [x] Base image — `images/base` (`make image`)
+- [x] Handoff snapshot schema — `internal/snapshot` (elicitation call in shim still TODO)
 - [ ] Resume-fidelity experiment (spec §20.2)
-- [ ] GitHub issue → PR trigger — `internal/trigger/github`
-- [ ] Job shim log streaming — `cmd/conveyor-shim`
+- [x] GitHub issue polling → task, commits → PR — `internal/trigger/github`, `internal/dispatch`
+- [x] Job shim: harness supervision + event streaming — `cmd/conveyor-shim`
 
-(Checked = scaffolded with working core; unchecked = stubbed, `TODO(phase1)` markers inline.)
+Remaining gaps are marked `TODO(phase1)` (in-scope) and
+`TODO(phase1-followup)` (loop runs without them) in the code.
+
+## Running the loop
+
+```sh
+make build && make image          # binaries + conveyor-base:dev
+cp conveyor.example.yaml conveyor.yaml   # edit: your repo + github slug
+bin/conveyord -config conveyor.yaml -poll-github 60s
+bin/conveyor task new "fix the typo in README" --repo api
+bin/conveyor task list && bin/conveyor task show <id>
+```
+
+Requires: Docker running, `codex` logged in on the host (`~/.codex` is
+mounted read-only into sandboxes), `gh` authenticated for PR opening.
 
 ## Layout
 

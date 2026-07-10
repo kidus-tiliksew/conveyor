@@ -127,6 +127,29 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 	return wt, nil
 }
 
+// CommitsAhead lists commit hashes on the worktree's HEAD that are not
+// on the base branch — the dispatcher's "did the agent produce
+// anything" check.
+func CommitsAhead(ctx context.Context, worktreeDir, base string) ([]string, error) {
+	ref := "refs/remotes/origin/" + base
+	if !refExists(ctx, worktreeDir, ref) {
+		ref = base
+	}
+	cmd := exec.CommandContext(ctx, "git", "log", "--format=%H", ref+"..HEAD")
+	cmd.Dir = worktreeDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log %s..HEAD: %w", ref, err)
+	}
+	var commits []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			commits = append(commits, l)
+		}
+	}
+	return commits, nil
+}
+
 func refExists(ctx context.Context, repoDir, ref string) bool {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
 	cmd.Dir = repoDir

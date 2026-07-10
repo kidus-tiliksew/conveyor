@@ -1,0 +1,12 @@
+# Conveyor deployment config (Phase 1). Copy to conveyor.yaml and edit.
+workspace: demo
+image: conveyor-base:dev           # build with: make image
+# cache_dir: ~/.conveyor/cache     # bare repo mirrors
+# jobs_dir: ~/.conveyor/jobs       # per-task worktrees + control dirs
+# codex_credentials: ~/.codex      # mounted read-only into sandboxes
+
+repos:
+  - name: api
+    url: https://github.com/your-org/your-repo
+    github: your-org/your-repo     # omit to disable issue polling / PR opening
+    base: main

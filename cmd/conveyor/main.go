@@ -4,8 +4,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 )
@@ -39,30 +41,59 @@ func main() {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, level string
+	var repo, base, body string
 	newCmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO(phase1): POST /v1/tasks on the control plane.
-			return fmt.Errorf("not implemented: task new %q --repo %s --base %s --level %s", args[0], repo, base, level)
+			t, err := newClient().createTask(args[0], body, repo, base)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("created task %s (branch %s)\n", t.ID, t.Branch)
+			return nil
 		},
 	}
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
-	newCmd.Flags().StringVar(&level, "level", "L2", "escalation level (L0–L3)")
+	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
 
-	cmd.AddCommand(newCmd,
-		&cobra.Command{
-			Use: "list", Short: "List tasks",
-			RunE: func(*cobra.Command, []string) error { return fmt.Errorf("not implemented") },
+	listCmd := &cobra.Command{
+		Use: "list", Short: "List tasks",
+		RunE: func(*cobra.Command, []string) error {
+			tasks, err := newClient().listTasks()
+			if err != nil {
+				return err
+			}
+			tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "ID\tSTATE\tREPO\tSOURCE\tTITLE")
+			for _, t := range tasks {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.State, t.Repo, t.Source, t.Title)
+			}
+			return tw.Flush()
 		},
-		&cobra.Command{
-			Use: "show <id>", Short: "Show a task", Args: cobra.ExactArgs(1),
-			RunE: func(*cobra.Command, []string) error { return fmt.Errorf("not implemented") },
+	}
+
+	showCmd := &cobra.Command{
+		Use: "show <id>", Short: "Show a task and its jobs", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := newClient()
+			t, err := c.getTask(args[0])
+			if err != nil {
+				return err
+			}
+			jobs, err := c.listJobs(args[0])
+			if err != nil {
+				return err
+			}
+			out, _ := json.MarshalIndent(map[string]any{"task": t, "jobs": jobs}, "", "  ")
+			fmt.Println(string(out))
+			return nil
 		},
-	)
+	}
+
+	cmd.AddCommand(newCmd, listCmd, showCmd)
 	return cmd
 }
 
