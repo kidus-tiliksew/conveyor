@@ -17,14 +17,14 @@ Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 - [x] Secrets reference model — `internal/secrets` (runner-side resolution/injection remains in scope)
 - [x] Base image — `images/base` (`make image`)
 - [x] Handoff snapshots: native-resume elicitation with a fresh-run fallback, injected on re-dispatch — `internal/snapshot`, shim
-- [ ] Resume-fidelity experiment (spec §20.2)
+- [x] Resume-fidelity experiment (spec §20.2) — live Codex 0.142.0 → 0.143.0 matrix using a local host-equivalent restore boundary; calibrated default: snapshot-briefed cold start — `experiments/resume-fidelity`
 - [x] GitHub issue polling → task, commits → PR — `internal/trigger/github`, `internal/dispatch` (validated live)
 - [x] Job shim: harness supervision, event streaming, session capture — `cmd/conveyor-shim`
 
 Remaining gaps are marked `TODO(phase1)` (in-scope) and
 `TODO(phase1-followup)` (loop runs without them) in the code. In-scope
-items include secret delivery/SOPS, tool-policy mapping, the standalone
-local-runner poll loop, and the resume-fidelity experiment.
+items include secret delivery/SOPS, tool-policy mapping, and the standalone
+local-runner poll loop.
 Accepted trade-offs with failure modes and recovery procedures are in
 [docs/known-limitations.md](docs/known-limitations.md).
 
@@ -50,6 +50,7 @@ authenticated for issue claiming and PR opening, and the same
 cmd/conveyor/         CLI (cobra) — task new/list/show, checkout, runner start, secrets set
 cmd/conveyord/        control-plane daemon — HTTP API (chi), in-memory store for Phase 1
 cmd/conveyor-shim/    job shim — in-sandbox supervisor; stdlib-only static binary
+cmd/conveyor-resume-experiment/  live Codex resume/cold calibration (§20.2)
 internal/core/        shared domain types (tasks, jobs, stages, states)
 internal/adapter/     harness adapter interface (§5.1) + codex/
 internal/runner/      runner protocol (§3.2) + localdocker/

@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "run_id": "20260710T142750Z",
+  "started_at": "2026-07-10T14:27:50.930744Z",
+  "finished_at": "2026-07-10T14:30:08.828536Z",
+  "base_image": "conveyor-base:dev",
+  "base_version": "0.142.0",
+  "bump_image": "conveyor-base:codex-0.143.0",
+  "bump_version": "0.143.0",
+  "host_boundary": "The fresh-host condition is a host-equivalent restore boundary on one Docker daemon: the original container is destroyed and session state is copied to a distinct host directory before a fresh container starts. No auth material leaves the local machine.",
+  "scoring": {
+    "core_maximum": 4,
+    "extended_maximum": 5,
+    "resume_cost_ceiling_ratio": 1.25,
+    "effective_token_formula": "max(input_tokens - cached_input_tokens, 0) + output_tokens"
+  },
+  "scenarios": [
+    {
+      "name": "same_sandbox",
+      "description": "SIGKILL Codex and resume its session in the still-running container.",
+      "seed_version": "0.142.0",
+      "probe_version": "0.142.0",
+      "container_reused": true,
+      "session_restored": false,
+      "crash_observed": true,
+      "session_ref": "019f4c6d-83e3-71b3-bdc4-d874d376b019",
+      "seed_events": "same_sandbox/seed.events.jsonl",
+      "crash_events": "same_sandbox/crash.events.jsonl",
+      "resume_plus_snapshot": {
+        "mode": "resume_plus_snapshot",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "Monotonically increasing epochs fence stale workers after ownership changes.",
+            "Explicit epochs make crash recovery deterministic under event replay."
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active",
+          "continuity_marker": "amber-orchid-27"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": true,
+          "core": 4,
+          "extended": 5
+        },
+        "usage": {
+          "input_tokens": 35657,
+          "cached_input_tokens": 16000,
+          "output_tokens": 151,
+          "reasoning_output_tokens": 10,
+          "uncached_input_plus_output_tokens": 19808
+        },
+        "duration_ns": 9440385125,
+        "events": "same_sandbox/resume.events.jsonl"
+      },
+      "snapshot_cold_start": {
+        "mode": "snapshot_cold_start",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "monotonically increasing epochs fence stale workers",
+            "explicit epochs make recovery deterministic under event replay"
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active",
+          "continuity_marker": "unknown"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": false,
+          "core": 4,
+          "extended": 4
+        },
+        "usage": {
+          "input_tokens": 11722,
+          "cached_input_tokens": 2432,
+          "output_tokens": 70,
+          "reasoning_output_tokens": 0,
+          "uncached_input_plus_output_tokens": 9360
+        },
+        "duration_ns": 17190988625,
+        "events": "same_sandbox/cold.events.jsonl"
+      },
+      "comparison": {
+        "core_score_delta": 0,
+        "extended_score_delta": 1,
+        "effective_token_delta": 10448,
+        "resume_to_cold_ratio": 2.1162393162393163,
+        "resume_qualified": false
+      },
+      "recommendation": "prefer snapshot cold start (resume did not meet recall+cost gate; effective-token ratio 2.12)"
+    },
+    {
+      "name": "fresh_sandbox",
+      "description": "Kill the container, copy the persisted CODEX_HOME into a new host root, and resume in a fresh container at identical in-container paths.",
+      "seed_version": "0.142.0",
+      "probe_version": "0.142.0",
+      "container_reused": false,
+      "session_restored": true,
+      "crash_observed": true,
+      "session_ref": "019f4c6e-3725-73d3-934c-c89ab12287d1",
+      "seed_events": "fresh_sandbox/seed.events.jsonl",
+      "crash_events": "fresh_sandbox/crash.events.jsonl",
+      "resume_plus_snapshot": {
+        "mode": "resume_plus_snapshot",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "Monotonically increasing epochs fence stale workers after ownership changes.",
+            "Explicit epochs make crash recovery deterministic under event replay."
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active.",
+          "continuity_marker": "amber-orchid-27"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": true,
+          "core": 4,
+          "extended": 5
+        },
+        "usage": {
+          "input_tokens": 35365,
+          "cached_input_tokens": 16000,
+          "output_tokens": 153,
+          "reasoning_output_tokens": 12,
+          "uncached_input_plus_output_tokens": 19518
+        },
+        "duration_ns": 11935042000,
+        "events": "fresh_sandbox/resume.events.jsonl"
+      },
+      "snapshot_cold_start": {
+        "mode": "snapshot_cold_start",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "monotonically increasing epochs fence stale workers",
+            "explicit epochs make recovery deterministic under event replay"
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active",
+          "continuity_marker": "unknown"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": false,
+          "core": 4,
+          "extended": 4
+        },
+        "usage": {
+          "input_tokens": 11722,
+          "cached_input_tokens": 11648,
+          "output_tokens": 70,
+          "reasoning_output_tokens": 0,
+          "uncached_input_plus_output_tokens": 144
+        },
+        "duration_ns": 14544857792,
+        "events": "fresh_sandbox/cold.events.jsonl"
+      },
+      "comparison": {
+        "core_score_delta": 0,
+        "extended_score_delta": 1,
+        "effective_token_delta": 19374,
+        "resume_to_cold_ratio": 135.54166666666666,
+        "resume_qualified": false
+      },
+      "recommendation": "prefer snapshot cold start (resume did not meet recall+cost gate; effective-token ratio 135.54)"
+    },
+    {
+      "name": "version_bump",
+      "description": "Seed with the pinned CLI, kill the container, restore CODEX_HOME, and resume with the next minor CLI image.",
+      "seed_version": "0.142.0",
+      "probe_version": "0.143.0",
+      "container_reused": false,
+      "session_restored": true,
+      "crash_observed": true,
+      "session_ref": "019f4c6e-d7a1-7aa3-b99c-d250830094a8",
+      "seed_events": "version_bump/seed.events.jsonl",
+      "crash_events": "version_bump/crash.events.jsonl",
+      "resume_plus_snapshot": {
+        "mode": "resume_plus_snapshot",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "Monotonically increasing epochs fence stale workers after ownership changes.",
+            "Explicit epochs make crash recovery deterministic under event replay."
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active",
+          "continuity_marker": "amber-orchid-27"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": true,
+          "core": 4,
+          "extended": 5
+        },
+        "usage": {
+          "input_tokens": 47706,
+          "cached_input_tokens": 27648,
+          "output_tokens": 193,
+          "reasoning_output_tokens": 0,
+          "uncached_input_plus_output_tokens": 20251
+        },
+        "duration_ns": 10591737750,
+        "events": "version_bump/resume.events.jsonl"
+      },
+      "snapshot_cold_start": {
+        "mode": "snapshot_cold_start",
+        "answer": {
+          "decision": "use lease_epoch as the worker-claim mechanism",
+          "rationale": [
+            "monotonically increasing epochs fence stale workers",
+            "explicit epochs make recovery deterministic under event replay"
+          ],
+          "rejected_alternative": "heartbeat_only, because a network partition can leave a stale worker active",
+          "continuity_marker": "unknown"
+        },
+        "score": {
+          "decision": true,
+          "stale_worker_fencing": true,
+          "deterministic_replay": true,
+          "rejected_heartbeat_only": true,
+          "native_marker": false,
+          "core": 4,
+          "extended": 4
+        },
+        "usage": {
+          "input_tokens": 12019,
+          "cached_input_tokens": 2432,
+          "output_tokens": 108,
+          "reasoning_output_tokens": 36,
+          "uncached_input_plus_output_tokens": 9695
+        },
+        "duration_ns": 21467478166,
+        "events": "version_bump/cold.events.jsonl"
+      },
+      "comparison": {
+        "core_score_delta": 0,
+        "extended_score_delta": 1,
+        "effective_token_delta": 10556,
+        "resume_to_cold_ratio": 2.0888086642599277,
+        "resume_qualified": false
+      },
+      "recommendation": "prefer snapshot cold start (resume did not meet recall+cost gate; effective-token ratio 2.09)"
+    }
+  ],
+  "routing_default": {
+    "harness": "codex",
+    "matching_version": "snapshot_cold_start",
+    "cross_version": "snapshot_cold_start",
+    "snapshot_fallback": "always_required",
+    "rationale": "The deterministic gate requires preserved core recall, native-marker recall, and resume effective tokens at or below 125% of cold start. same=false fresh=false version_bump=false."
+  }
+}

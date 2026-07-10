@@ -34,6 +34,11 @@ const (
 // into the shared store. Fixing both means rewriting worktree gitdir
 // links for the sandbox namespace and carving out rw mounts for
 // objects/ refs/ worktrees/ — deferred until after the loop runs.
+// Priority note: the §20.2 calibration made snapshot cold start the
+// continuation default (experiments/resume-fidelity), so the
+// session-survival motivation for deterministic paths is gone; what
+// remains is the ro-cache hardening and cross-host consistency, at
+// lower urgency.
 type WorktreeMount struct {
 	HostPath    string
 	SandboxPath string

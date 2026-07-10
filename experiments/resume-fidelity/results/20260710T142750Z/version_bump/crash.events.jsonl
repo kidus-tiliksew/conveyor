@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"019f4c6e-d7a1-7aa3-b99c-d250830094a8"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'sleep 120'","aggregated_output":"","exit_code":null,"status":"in_progress"}}

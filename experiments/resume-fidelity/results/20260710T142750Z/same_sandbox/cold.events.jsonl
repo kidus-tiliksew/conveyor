@@ -1,0 +1,5 @@
+Reading additional input from stdin...
+{"type":"thread.started","thread_id":"019f4c6d-f243-7093-8b1d-bcb8f34459aa"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"decision\":\"use lease_epoch as the worker-claim mechanism\",\"rationale\":[\"monotonically increasing epochs fence stale workers\",\"explicit epochs make recovery deterministic under event replay\"],\"rejected_alternative\":\"heartbeat_only, because a network partition can leave a stale worker active\",\"continuity_marker\":\"unknown\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":11722,"cached_input_tokens":2432,"output_tokens":70,"reasoning_output_tokens":0}}
