@@ -19,8 +19,10 @@ import (
 )
 
 // PinnedVersion is the Codex CLI version these flags were validated
-// against. Bump deliberately; adapters break on silent CLI drift.
-const PinnedVersion = "TODO-pin-on-first-integration"
+// against (live end-to-end runs on 2026-07-10: exec --json event
+// schema, --sandbox danger-full-access, subscription auth). Bump
+// deliberately; adapters break on silent CLI drift.
+const PinnedVersion = "0.142.0"
 
 type Adapter struct {
 	// Binary is the codex executable; overridable for tests.
@@ -71,7 +73,15 @@ func (a *Adapter) Run(ctx context.Context, spec adapter.RunSpec) (<-chan adapter
 }
 
 func (a *Adapter) Resume(ctx context.Context, sessionRef string, feedback string) (<-chan adapter.Event, error) {
-	args := []string{"exec", "resume", sessionRef, "--json", feedback}
+	// `exec resume` (validated against PinnedVersion) has no --sandbox
+	// flag; the config override is its equivalent. The session carries
+	// its own working directory, so the repo check on the caller's cwd
+	// is skipped.
+	args := []string{"exec", "resume", sessionRef, "--json", "--skip-git-repo-check"}
+	if a.ContainerConfined {
+		args = append(args, "-c", `sandbox_mode="danger-full-access"`)
+	}
+	args = append(args, feedback)
 	return a.stream(ctx, "", args)
 }
 
@@ -118,8 +128,9 @@ func (a *Adapter) stream(ctx context.Context, dir string, args []string) (<-chan
 // first integration and set PinnedVersion.
 func parseLine(line []byte) adapter.Event {
 	var probe struct {
-		Type string `json:"type"`
-		Item struct {
+		Type     string `json:"type"`
+		ThreadID string `json:"thread_id"` // thread.started
+		Item     struct {
 			Type     string `json:"type"`
 			ItemType string `json:"item_type"` // older builds nest the type here
 			Text     string `json:"text"`
@@ -168,8 +179,13 @@ func parseLine(line []byte) adapter.Event {
 	case "turn.failed", "error":
 		ev.Kind = adapter.EventError
 		ev.Err = probe.Error.Message
+	case "thread.started":
+		// The thread ID is the session ref for `codex exec resume`,
+		// captured here as the harness announces it (spec §8.3 note 1).
+		ev.Kind = adapter.EventSessionStart
+		ev.SessionRef = probe.ThreadID
 	default:
-		// thread.started, turn.started, unknown: raw payload only.
+		// turn.started, unknown: raw payload only.
 		ev.Kind = adapter.EventAssistantText
 	}
 	return ev

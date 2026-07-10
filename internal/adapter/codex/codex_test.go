@@ -43,6 +43,11 @@ func TestParseLine(t *testing.T) {
 			kind: adapter.EventError,
 		},
 		{
+			name: "session capture on thread start",
+			line: `{"type":"thread.started","thread_id":"019f4c1c-95e9-7093-b910-d43afd08f268"}`,
+			kind: adapter.EventSessionStart,
+		},
+		{
 			name: "item_type field variant",
 			line: `{"type":"item.completed","item":{"id":"item_3","item_type":"agent_message","text":"alt"}}`,
 			kind: adapter.EventAssistantText,
@@ -70,5 +75,10 @@ func TestParseLine(t *testing.T) {
 	ev := parseLine([]byte(`{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}`))
 	if ev.Usage == nil || ev.Usage.In != 12 || ev.Usage.Out != 3 {
 		t.Fatalf("usage = %+v", ev.Usage)
+	}
+
+	ev = parseLine([]byte(`{"type":"thread.started","thread_id":"abc-123"}`))
+	if ev.SessionRef != "abc-123" {
+		t.Fatalf("session ref = %q, want abc-123", ev.SessionRef)
 	}
 }

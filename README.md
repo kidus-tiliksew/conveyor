@@ -16,16 +16,15 @@ Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 - [x] Bare-clone + worktree manager — `internal/gitx`
 - [x] Secrets reference model — `internal/secrets` (runner-side resolution/injection remains in scope)
 - [x] Base image — `images/base` (`make image`)
-- [x] Handoff snapshot schema — `internal/snapshot` (elicitation call in shim still TODO)
+- [x] Handoff snapshots: elicited at job end via session resume, injected on re-dispatch — `internal/snapshot`, shim
 - [ ] Resume-fidelity experiment (spec §20.2)
-- [x] GitHub issue polling → task, commits → PR — `internal/trigger/github`, `internal/dispatch`
-- [x] Job shim: harness supervision + event streaming — `cmd/conveyor-shim`
+- [x] GitHub issue polling → task, commits → PR — `internal/trigger/github`, `internal/dispatch` (validated live)
+- [x] Job shim: harness supervision, event streaming, session capture — `cmd/conveyor-shim`
 
 Remaining gaps are marked `TODO(phase1)` (in-scope) and
 `TODO(phase1-followup)` (loop runs without them) in the code. In-scope
-items include secret delivery/SOPS, handoff elicitation, tool-policy
-mapping, authoritative Codex session capture and version pinning, the
-standalone local-runner poll loop, and the resume-fidelity experiment.
+items include secret delivery/SOPS, tool-policy mapping, the standalone
+local-runner poll loop, and the resume-fidelity experiment.
 Accepted trade-offs with failure modes and recovery procedures are in
 [docs/known-limitations.md](docs/known-limitations.md).
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -110,6 +112,34 @@ func TestRunTaskUsesUniqueAttemptIDs(t *testing.T) {
 	}
 	if len(jobs) != 2 {
 		t.Fatalf("jobs = %d, want 2", len(jobs))
+	}
+}
+
+func TestRunTaskBriefsSuccessorWithHandoff(t *testing.T) {
+	f := &fakeRunner{}
+	d, _, task := testDispatcher(t, f)
+
+	control := filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &snapshot.Handoff{JobID: task.ID + "-implement-1", State: "parser half-rewritten",
+		Todos: []string{"wire the fallback"}}
+	if err := h.Save(filepath.Join(control, "handoff.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(control, "prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"parser half-rewritten", "wire the fallback", "handoff document"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

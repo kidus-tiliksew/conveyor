@@ -23,6 +23,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -84,7 +85,16 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err := os.MkdirAll(control, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(control, "prompt.txt"), []byte(buildPrompt(t)), 0o644); err != nil {
+	prompt := buildPrompt(t)
+	// A prior attempt's handoff snapshot briefs the successor
+	// (spec §8.3): the persistent worktree carries the code state, the
+	// snapshot carries the reasoning state. Redirect comments join it
+	// here when the review queue lands in Phase 2.
+	if h, err := snapshot.Load(filepath.Join(control, "handoff.json")); err == nil {
+		prompt += "\n\n" + h.OpeningContext("")
+		log.Printf("[task %s] briefing successor with handoff from job %s", t.ID, h.JobID)
+	}
+	if err := os.WriteFile(filepath.Join(control, "prompt.txt"), []byte(prompt), 0o644); err != nil {
 		return err
 	}
 

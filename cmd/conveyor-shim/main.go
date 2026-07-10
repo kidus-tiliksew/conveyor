@@ -21,8 +21,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"time"
+
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/adapter/codex"
+	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
 // credsDir is where the runner mounts harness credentials read-only
@@ -35,14 +38,16 @@ func main() {
 	harness := flag.String("harness", "", "harness adapter to run (codex)")
 	workdir := flag.String("workdir", "", "harness working directory (the task worktree)")
 	control := flag.String("control", "", "control directory: prompt.txt in, events/artifacts out")
+	taskID := flag.String("task", "", "task ID (stamped on the handoff snapshot)")
+	jobID := flag.String("job", "", "job ID (stamped on the handoff snapshot)")
 	flag.Parse()
 
-	if err := run(*harness, *workdir, *control); err != nil {
+	if err := run(*harness, *workdir, *control, *taskID, *jobID); err != nil {
 		log.Fatalf("conveyor-shim: %v", err)
 	}
 }
 
-func run(harness, workdir, control string) error {
+func run(harness, workdir, control, taskID, jobID string) error {
 	if harness == "" || workdir == "" || control == "" {
 		return fmt.Errorf("--harness, --workdir, and --control are required")
 	}
@@ -70,31 +75,83 @@ func run(harness, workdir, control string) error {
 	}
 	defer out.Close()
 
-	// The redaction choke point (spec §10.3): every byte leaving the
-	// sandbox passes through this loop. Phase 2 inserts the scrubber
-	// here; nothing may bypass it.
 	failed := false
-	for ev := range events {
-		if ev.Kind == adapter.EventError {
-			failed = true
-		}
+	sessionRef := ""
+	forward := func(ev adapter.Event) {
+		// The redaction choke point (spec §10.3): every byte leaving
+		// the sandbox passes through here. Phase 2 inserts the
+		// scrubber in this function; nothing may bypass it.
 		line, err := json.Marshal(ev)
 		if err != nil {
-			continue
+			return
 		}
 		line = append(line, '\n')
 		out.Write(line)
 		os.Stdout.Write(line)
 	}
+	for ev := range events {
+		switch ev.Kind {
+		case adapter.EventError:
+			failed = true
+		case adapter.EventSessionStart:
+			sessionRef = ev.SessionRef
+		}
+		forward(ev)
+	}
 
-	// TODO(phase1): handoff snapshot elicitation — one more Run with
-	// snapshot.ElicitationPrompt, parsed into control/handoff.json
-	// (spec §8.3).
+	if !failed {
+		// Handoff snapshot — the guaranteed continuity floor between
+		// jobs (spec §8.3). Elicitation failure degrades to no
+		// snapshot rather than failing a job whose work is already
+		// committed; the successor then cold-starts from the prompt.
+		if err := elicitHandoff(a, sessionRef, control, harness, taskID, jobID, forward); err != nil {
+			log.Printf("conveyor-shim: handoff elicitation skipped: %v", err)
+		}
+	}
 
 	if failed {
 		return fmt.Errorf("harness reported an error event")
 	}
 	return nil
+}
+
+// elicitHandoff resumes the job's session with one more prompt asking
+// the agent to write its handoff document, and stores the parsed result
+// as control/handoff.json. Resume (not a fresh Run) is what makes the
+// snapshot cheap and faithful: the session already holds the context
+// the document is about.
+func elicitHandoff(a adapter.Adapter, sessionRef, control, harness, taskID, jobID string, forward func(adapter.Event)) error {
+	if sessionRef == "" {
+		return fmt.Errorf("no session ref captured from the run")
+	}
+	if !a.Capabilities().Resume {
+		return fmt.Errorf("harness %s does not support resume", harness)
+	}
+	events, err := a.Resume(context.Background(), sessionRef, snapshot.ElicitationPrompt)
+	if err != nil {
+		return err
+	}
+	reply := ""
+	for ev := range events {
+		forward(ev) // elicitation is part of the job transcript
+		switch ev.Kind {
+		case adapter.EventAssistantText:
+			if ev.Text != "" {
+				reply = ev.Text
+			}
+		case adapter.EventError:
+			return fmt.Errorf("elicitation run: %s", ev.Err)
+		}
+	}
+	h, err := snapshot.ParseHandoff(reply)
+	if err != nil {
+		return err
+	}
+	h.TaskID = taskID
+	h.JobID = jobID
+	h.Harness = harness
+	h.WrittenAt = time.Now().UTC()
+	return h.Save(filepath.Join(control, "handoff.json"))
 }
 
 func buildAdapter(harness, control string) (adapter.Adapter, error) {

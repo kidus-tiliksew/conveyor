@@ -8,7 +8,9 @@ package snapshot
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -48,6 +50,27 @@ continue this task, as JSON matching this schema:
 Cover: current state of the work, key decisions and their rationale,
 files touched and why, known gotchas, and remaining todos. Output only
 the JSON.`
+
+// ParseHandoff extracts the handoff JSON from an agent's reply, which
+// may wrap it in prose or markdown fences despite the "output only the
+// JSON" instruction. It takes the outermost brace span and requires at
+// least a state or todos to guard against unmarshalling an unrelated
+// JSON fragment into an all-empty snapshot.
+func ParseHandoff(text string) (*Handoff, error) {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return nil, fmt.Errorf("no JSON object in handoff reply")
+	}
+	var h Handoff
+	if err := json.Unmarshal([]byte(text[start:end+1]), &h); err != nil {
+		return nil, fmt.Errorf("parse handoff: %w", err)
+	}
+	if h.State == "" && len(h.Todos) == 0 {
+		return nil, fmt.Errorf("handoff has neither state nor todos")
+	}
+	return &h, nil
+}
 
 func (h *Handoff) Save(path string) error {
 	data, err := json.MarshalIndent(h, "", "  ")

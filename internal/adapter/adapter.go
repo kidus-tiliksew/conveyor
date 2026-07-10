@@ -20,19 +20,25 @@ const (
 	EventToolCall      EventKind = "tool_call"
 	EventToolResult    EventKind = "tool_result"
 	EventTokenUsage    EventKind = "token_usage"
-	EventDone          EventKind = "done"
-	EventError         EventKind = "error"
+	// EventSessionStart carries the harness's session identity in
+	// SessionRef, pushed by the adapter as the harness announces it —
+	// never scraped from session directories afterward (spec §8.3
+	// note 1). It is what Resume() takes.
+	EventSessionStart EventKind = "session_start"
+	EventDone         EventKind = "done"
+	EventError        EventKind = "error"
 )
 
 // Event is one normalized item from a harness run.
 type Event struct {
-	Kind    EventKind       `json:"kind"`
-	Text    string          `json:"text,omitempty"`    // assistant_text
-	Tool    string          `json:"tool,omitempty"`    // tool_call / tool_result
-	Payload json.RawMessage `json:"payload,omitempty"` // raw harness-specific detail
-	Usage   *TokenUsage     `json:"usage,omitempty"`   // token_usage
-	Err     string          `json:"err,omitempty"`     // error
-	At      time.Time       `json:"at"`
+	Kind       EventKind       `json:"kind"`
+	Text       string          `json:"text,omitempty"`        // assistant_text
+	Tool       string          `json:"tool,omitempty"`        // tool_call / tool_result
+	SessionRef string          `json:"session_ref,omitempty"` // session_start
+	Payload    json.RawMessage `json:"payload,omitempty"`     // raw harness-specific detail
+	Usage      *TokenUsage     `json:"usage,omitempty"`       // token_usage
+	Err        string          `json:"err,omitempty"`         // error
+	At         time.Time       `json:"at"`
 }
 
 type TokenUsage struct {

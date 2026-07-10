@@ -93,6 +93,8 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 		"--harness", spec.Harness,
 		"--workdir", spec.Workdir,
 		"--control", spec.ControlDir,
+		"--task", spec.TaskID,
+		"--job", spec.JobID,
 	)
 
 	out, err := exec.CommandContext(ctx, r.Binary, args...).CombinedOutput()
