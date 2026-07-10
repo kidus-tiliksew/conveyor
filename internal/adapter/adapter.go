@@ -57,12 +57,19 @@ type TokenUsage struct {
 
 // ToolPolicy is the per-stage tool policy mapped by the adapter into the
 // harness's native permission configuration (spec §8.5 "responsibility
-// seam"): sandbox mode, allowlists, denied commands — per job, never
-// whatever the user configured interactively.
+// seam"): sandbox mode plus explicit allow and deny decisions — per job,
+// never whatever the user configured interactively.
 type ToolPolicy struct {
-	AllowedCommands []string `yaml:"allowed_commands"`
-	DeniedCommands  []string `yaml:"denied_commands"`
-	NetworkAllow    []string `yaml:"network_allow"` // per-stage egress (spec §18)
+	// Commands are argv prefixes, matching Codex execpolicy semantics.
+	// YAML example: [["git"], ["go", "test"]]. An allow entry permits
+	// that prefix; it is not a deny-by-default whitelist. A deny entry blocks
+	// its prefix, and deny wins when both match.
+	AllowedCommands [][]string `json:"allowed_commands,omitempty" yaml:"allowed_commands"`
+	DeniedCommands  [][]string `json:"denied_commands,omitempty" yaml:"denied_commands"`
+	// NetworkAllow reserves the cross-runner contract for per-stage egress
+	// (spec §18). Phase 1 config rejects non-empty values because its local
+	// runner cannot enforce them yet; a declared policy must never be a no-op.
+	NetworkAllow []string `json:"network_allow,omitempty" yaml:"network_allow"`
 }
 
 // RunSpec is the input to a single harness run.

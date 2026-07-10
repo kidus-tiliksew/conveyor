@@ -4,17 +4,25 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/spf13/cobra"
 )
 
 var version = "dev" // set via -ldflags at build time
 
 func main() {
+	configPath := "conveyor.yaml"
 	root := &cobra.Command{
 		Use:           "conveyor",
 		Short:         "Conveyor: a software factory platform",
@@ -23,13 +31,14 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.PersistentFlags().StringVar(&configPath, "config", configPath, "path to deployment config")
 
 	root.AddCommand(
 		taskCmd(),
 		checkoutCmd(),
 		doneCmd(),
-		runnerCmd(),
-		secretsCmd(),
+		runnerCmd(&configPath),
+		secretsCmd(&configPath),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -98,14 +107,26 @@ func taskCmd() *cobra.Command {
 }
 
 func checkoutCmd() *cobra.Command {
-	return &cobra.Command{
+	var destination string
+	cmd := &cobra.Command{
 		Use:   "checkout <task-id>",
 		Short: "Add the task branch as a worktree in your local clone (spec §8.4)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("not implemented: checkout %s", args[0])
+			task, err := newClient().getTask(args[0])
+			if err != nil {
+				return err
+			}
+			path, err := checkoutTask(cmd.Context(), task.Branch, task.Repo, task.ID, destination)
+			if err != nil {
+				return err
+			}
+			fmt.Println(path)
+			return nil
 		},
 	}
+	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling <repo>-task-<id>)")
+	return cmd
 }
 
 func doneCmd() *cobra.Command {
@@ -115,31 +136,62 @@ func doneCmd() *cobra.Command {
 		Short: "Remove the task worktree, optionally re-dispatching",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("not implemented: done %s (redispatch=%v)", args[0], redispatch)
+			client := newClient()
+			task, err := client.getTask(args[0])
+			if err != nil {
+				return err
+			}
+			if err := removeTaskWorktree(cmd.Context(), task.Branch, redispatch); err != nil {
+				return err
+			}
+			if redispatch {
+				if _, err := client.redispatchTask(task.ID); err != nil {
+					return err
+				}
+				fmt.Printf("removed checkout and re-dispatched task %s\n", task.ID)
+			} else {
+				fmt.Printf("removed checkout for task %s\n", task.ID)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&redispatch, "redispatch", false, "re-dispatch the task after removing the worktree")
 	return cmd
 }
 
-func runnerCmd() *cobra.Command {
+func runnerCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "runner", Short: "Manage runners"}
 	var local bool
+	var addr string
+	var pollGitHub string
 	start := &cobra.Command{
 		Use:   "start",
-		Short: "Start a runner daemon that polls the control plane for jobs",
+		Short: "Start the Phase 1 combined control plane and local Docker runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO(phase1): LocalDockerRunner poll loop against the
-			// control plane (spec §3.2).
-			return fmt.Errorf("not implemented: runner start (local=%v)", local)
+			if !local {
+				return fmt.Errorf("Phase 1 only supports --local")
+			}
+			binary, err := conveyordBinary()
+			if err != nil {
+				return err
+			}
+			commandArgs := []string{"-config", *configPath, "-addr", addr}
+			if pollGitHub != "" {
+				commandArgs = append(commandArgs, "-poll-github", pollGitHub)
+			}
+			child := exec.CommandContext(cmd.Context(), binary, commandArgs...)
+			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+			return child.Run()
 		},
 	}
 	start.Flags().BoolVar(&local, "local", false, "run the local Docker runner")
+	start.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "combined daemon listen address")
+	start.Flags().StringVar(&pollGitHub, "poll-github", "", "GitHub issue poll interval (for example 60s)")
 	cmd.AddCommand(start)
 	return cmd
 }
 
-func secretsCmd() *cobra.Command {
+func secretsCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "secrets", Short: "Manage workspace secrets"}
 	var fromStdin bool
 	set := &cobra.Command{
@@ -147,10 +199,176 @@ func secretsCmd() *cobra.Command {
 		Short: "Set a secret value (spec §17.1)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("not implemented: secrets set %s (from-stdin=%v)", args[0], fromStdin)
+			if !fromStdin {
+				return fmt.Errorf("--from-stdin is required so secret values never enter argv or shell history")
+			}
+			cfg, err := config.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			ref, err := secrets.ParseRef("secretref://" + strings.TrimPrefix(args[0], "secretref://"))
+			if err != nil {
+				return err
+			}
+			if ref.Workspace != cfg.Workspace {
+				return fmt.Errorf("secret workspace %q does not match configured workspace %q", ref.Workspace, cfg.Workspace)
+			}
+			if _, ok := cfg.Secrets.Sets[ref.Set]; !ok {
+				return fmt.Errorf("secret set %q has no configured delivery policy", ref.Set)
+			}
+			value, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1024*1024+1))
+			if err != nil {
+				return err
+			}
+			if len(value) > 1024*1024 {
+				return fmt.Errorf("secret value exceeds 1 MiB")
+			}
+			value = bytesTrimOneNewline(value)
+			if err := cfg.SecretResolver().Set(cmd.Context(), ref, string(value)); err != nil {
+				return err
+			}
+			fmt.Printf("stored %s\n", ref.String())
+			return nil
 		},
 	}
 	set.Flags().BoolVar(&fromStdin, "from-stdin", false, "read the value from stdin")
 	cmd.AddCommand(set)
 	return cmd
+}
+
+func checkoutTask(ctx context.Context, branch, repo, taskID, destination string) (string, error) {
+	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("checkout must run inside the target repository: %w", err)
+	}
+	root = strings.TrimSpace(root)
+	if destination == "" {
+		destination = filepath.Join(filepath.Dir(root), repo+"-task-"+taskID)
+	} else if !filepath.IsAbs(destination) {
+		destination, err = filepath.Abs(destination)
+		if err != nil {
+			return "", err
+		}
+	}
+	localRef := "refs/heads/" + branch
+	remoteRef := "refs/remotes/origin/" + branch
+	remoteListing, err := gitOutput(ctx, root, "ls-remote", "--heads", "origin", localRef)
+	if err != nil {
+		return "", err
+	}
+	remoteExists := strings.TrimSpace(remoteListing) != ""
+	if remoteExists {
+		if _, err := gitOutput(ctx, root, "fetch", "origin", "+"+localRef+":"+remoteRef); err != nil {
+			return "", err
+		}
+	}
+	localExists := gitRefExists(ctx, root, localRef)
+	if localExists && remoteExists {
+		switch {
+		case gitIsAncestor(ctx, root, localRef, remoteRef):
+			remoteCommit, err := gitOutput(ctx, root, "rev-parse", "--verify", remoteRef)
+			if err != nil {
+				return "", err
+			}
+			if _, err := gitOutput(ctx, root, "update-ref", localRef, strings.TrimSpace(remoteCommit)); err != nil {
+				return "", err
+			}
+		case gitIsAncestor(ctx, root, remoteRef, localRef):
+			// The human branch is ahead of origin; preserve it for checkout.
+		default:
+			return "", fmt.Errorf("task branch %s diverged between the local clone and origin", branch)
+		}
+	}
+	if localExists {
+		if _, err := gitOutput(ctx, root, "worktree", "add", destination, branch); err != nil {
+			return "", err
+		}
+	} else if remoteExists {
+		if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, destination, remoteRef); err != nil {
+			return "", err
+		}
+	} else {
+		return "", fmt.Errorf("task branch %s was not found locally or on origin", branch)
+	}
+	return destination, nil
+}
+
+func removeTaskWorktree(ctx context.Context, branch string, push bool) error {
+	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("done must run inside the repository's primary checkout: %w", err)
+	}
+	root = strings.TrimSpace(root)
+	listing, err := gitOutput(ctx, root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return err
+	}
+	var path, candidate string
+	for _, line := range strings.Split(listing, "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			candidate = strings.TrimPrefix(line, "worktree ")
+		case line == "branch refs/heads/"+branch:
+			path = candidate
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("no local worktree found for branch %s", branch)
+	}
+	if filepath.Clean(path) == filepath.Clean(root) {
+		return fmt.Errorf("refusing to remove the primary checkout")
+	}
+	if push {
+		status, err := gitOutput(ctx, path, "status", "--porcelain")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(status) != "" {
+			return fmt.Errorf("task worktree has uncommitted changes; commit them before --redispatch")
+		}
+		if _, err := gitOutput(ctx, path, "push", "--set-upstream", "origin", branch); err != nil {
+			return err
+		}
+	}
+	_, err = gitOutput(ctx, root, "worktree", "remove", path)
+	return err
+}
+
+func conveyordBinary() (string, error) {
+	if executable, err := os.Executable(); err == nil {
+		sibling := filepath.Join(filepath.Dir(executable), "conveyord")
+		if info, statErr := os.Stat(sibling); statErr == nil && !info.IsDir() {
+			return sibling, nil
+		}
+	}
+	if binary, err := exec.LookPath("conveyord"); err == nil {
+		return binary, nil
+	}
+	return "", fmt.Errorf("conveyord not found beside conveyor or on PATH; run make build")
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, "git", args...)
+	command.Dir = dir
+	out, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func gitRefExists(ctx context.Context, dir, ref string) bool {
+	_, err := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+func gitIsAncestor(ctx context.Context, dir, older, newer string) bool {
+	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
+	command.Dir = dir
+	return command.Run() == nil
+}
+
+func bytesTrimOneNewline(value []byte) []byte {
+	value = []byte(strings.TrimSuffix(string(value), "\n"))
+	return []byte(strings.TrimSuffix(string(value), "\r"))
 }

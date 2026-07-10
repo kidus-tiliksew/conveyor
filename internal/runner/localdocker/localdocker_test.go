@@ -8,9 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
+
+type staticResolver map[string]string
+
+func (s staticResolver) Resolve(_ context.Context, ref secrets.Ref) (string, error) {
+	value, ok := s[ref.String()]
+	if !ok {
+		return "", errors.New("missing test secret")
+	}
+	return value, nil
+}
 
 func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	tmp := t.TempDir()
@@ -90,6 +102,87 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestStartJobResolvesSecretsIntoShortLivedEnvFile(t *testing.T) {
+	tmp := t.TempDir()
+	argsPath := filepath.Join(tmp, "run-args")
+	envCapture := filepath.Join(tmp, "captured.env")
+	t.Setenv("FAKE_DOCKER_ARGS", argsPath)
+	t.Setenv("FAKE_DOCKER_ENV_CAPTURE", envCapture)
+	r := New()
+	r.Binary = writeFakeDocker(t, tmp)
+	r.SecretResolver = staticResolver{
+		"secretref://demo/integration/CANARY": "quiet-canary-value",
+	}
+	r.SecretPolicies = map[string]secrets.SetPolicy{
+		"demo/integration": {LocalEligible: true},
+	}
+	control := filepath.Join(tmp, "control")
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h, err := r.StartJob(context.Background(), runner.StartJobSpec{
+		JobID:          "job-1",
+		TaskID:         "task-1",
+		Image:          "conveyor:test",
+		Workdir:        "/conveyor/jobs/task-task-1/api",
+		ControlDir:     control,
+		ControlPath:    "/conveyor/control",
+		SecretStageDir: filepath.Join(tmp, "secret-stage"),
+		SecretRefs:     []string{"secretref://demo/integration/CANARY"},
+		Policy: adapter.ToolPolicy{
+			DeniedCommands: [][]string{{"printenv"}},
+		},
+		Harness: "codex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := os.ReadFile(envCapture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(captured) != "CANARY=quiet-canary-value\n" {
+		t.Fatalf("captured env = %q", captured)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(args), "quiet-canary-value") {
+		t.Fatal("secret value leaked into docker argv")
+	}
+	if !strings.Contains(string(args), "/conveyor/control") {
+		t.Fatalf("deterministic control path missing: %s", args)
+	}
+	policy, err := os.ReadFile(filepath.Join(control, "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(policy), "printenv") {
+		t.Fatalf("policy was not staged: %s", policy)
+	}
+	if entries, err := os.ReadDir(filepath.Join(tmp, "secret-stage")); err != nil || len(entries) != 0 {
+		t.Fatalf("secret stage was not cleaned: entries=%v err=%v", entries, err)
+	}
+	if _, err := r.CollectArtifacts(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartJobRejectsNonLocalSecretSet(t *testing.T) {
+	r := New()
+	r.SecretResolver = staticResolver{"secretref://demo/prod/TOKEN": "secret"}
+	r.SecretPolicies = map[string]secrets.SetPolicy{"demo/prod": {LocalEligible: false}}
+	_, err := r.StartJob(context.Background(), runner.StartJobSpec{
+		SecretStageDir: t.TempDir(),
+		SecretRefs:     []string{"secretref://demo/prod/TOKEN"},
+	})
+	var bootErr *runner.BootError
+	if !errors.As(err, &bootErr) || !strings.Contains(bootErr.Diagnostics.ValidationError, "not local_eligible") {
+		t.Fatalf("error = %#v, want local_eligible boot diagnostic", err)
+	}
+}
+
 func TestStartJobReportsMissingAuthAsBootDiagnostics(t *testing.T) {
 	tmp := t.TempDir()
 	r := New()
@@ -114,6 +207,13 @@ func writeFakeDocker(t *testing.T, dir string) string {
 case "$1" in
   run)
     printf '%s\n' "$@" > "$FAKE_DOCKER_ARGS"
+    previous=''
+    for arg in "$@"; do
+      if [ "$previous" = "--env-file" ] && [ -n "$FAKE_DOCKER_ENV_CAPTURE" ]; then
+        cp "$arg" "$FAKE_DOCKER_ENV_CAPTURE"
+      fi
+      previous="$arg"
+    done
     printf 'container-id\n'
     ;;
   wait)

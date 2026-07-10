@@ -25,20 +25,9 @@ const (
 )
 
 // WorktreeMount maps a host path into the sandbox.
-//
-// TODO(phase1-followup): the spec wants deterministic in-sandbox paths
-// (/conveyor/jobs/task-<id>/…, §8.3 note 3) and a read-only bare cache
-// (§8.1). Phase 1 mounts host paths at identical in-sandbox paths and
-// the cache read-write, because worktree .git files link to the cache
-// by absolute host path, and commits must write objects and branch refs
-// into the shared store. Fixing both means rewriting worktree gitdir
-// links for the sandbox namespace and carving out rw mounts for
-// objects/ refs/ worktrees/ — deferred until after the loop runs.
-// Priority note: the §20.2 calibration made snapshot cold start the
-// continuation default (experiments/resume-fidelity), so the
-// session-survival motivation for deterministic paths is gone; what
-// remains is the ro-cache hardening and cross-host consistency, at
-// lower urgency.
+// Task repos use deterministic /conveyor/jobs/task-<id>/... paths. The
+// shared bare cache is never a WorktreeMount: isolated task clones keep
+// job writes out of shared refs and objects (spec §8.1, §8.3, §8.5).
 type WorktreeMount struct {
 	HostPath    string
 	SandboxPath string
@@ -55,9 +44,11 @@ type StartJobSpec struct {
 	// Workdir is the in-sandbox working directory for the harness
 	// (the task's worktree).
 	Workdir string
-	// ControlDir (host == sandbox path) carries prompt.txt in and
+	// ControlDir is the trusted host path carrying prompt.txt in and
 	// events.jsonl / job-scoped handoff files / harness session state out.
 	ControlDir string
+	// ControlPath is its deterministic in-sandbox mount point.
+	ControlPath string
 	// CredentialsDir is the trusted host source for the harness login
 	// (e.g. ~/.codex). It is never mounted directly. The runner copies
 	// only the adapter-approved files into CredentialStageDir and mounts
@@ -66,11 +57,14 @@ type StartJobSpec struct {
 	// CredentialStageDir is a runner-private host directory outside the
 	// worktree mount. Empty is invalid when CredentialsDir is set.
 	CredentialStageDir string
-	SecretRefs         []string
-	BudgetUSD          float64
-	Policy             adapter.ToolPolicy
-	Harness            string // which adapter the shim invokes inside the sandbox
-	SandboxTTL         string // job | task | <duration> (spec §6.2)
+	// SecretStageDir is runner-private and holds a short-lived Docker
+	// --env-file. It is removed immediately after container creation.
+	SecretStageDir string
+	SecretRefs     []string
+	BudgetUSD      float64
+	Policy         adapter.ToolPolicy
+	Harness        string // which adapter the shim invokes inside the sandbox
+	SandboxTTL     string // job | task | <duration> (spec §6.2)
 }
 
 // LogEvent is one item of the job's log stream (tool calls, tokens,

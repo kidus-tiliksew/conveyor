@@ -1,6 +1,7 @@
-// Package gitx implements bare-clone + worktree management (spec §8):
-// one shared bare mirror per repo, many task worktrees checked out from
-// it. Creating a task workspace costs a checkout, not a clone.
+// Package gitx implements the Phase 1 bare-cache + isolated task checkout
+// amendment to spec §8: one shared fetch-only bare mirror per repo seeds
+// self-contained task clones. Sandboxes never mount the cache, so agents can
+// write commits without receiving write access to shared refs or objects.
 package gitx
 
 import (
@@ -16,7 +17,7 @@ import (
 // Manager owns the two host directories from spec §8.1:
 //
 //	<CacheDir>/github.com/acme/api.git   bare, shared, fetch-only
-//	<JobsDir>/task-123/api/              worktree on conveyor/task-123
+//	<JobsDir>/task-123/api/              isolated clone on conveyor/task-123
 type Manager struct {
 	CacheDir string
 	JobsDir  string
@@ -29,6 +30,11 @@ func NewManager(cacheDir, jobsDir string) *Manager {
 // BranchName returns the task branch: conveyor/task-<id> (spec §8.2).
 func BranchName(taskID string) string {
 	return "conveyor/task-" + taskID
+}
+
+// SandboxPath is stable across runner hosts (spec §8.3 note 3).
+func SandboxPath(taskID, repoName string) string {
+	return filepath.Join("/conveyor/jobs", "task-"+taskID, repoName)
 }
 
 // mirrorPath maps a repo URL to its bare cache path. file:// URLs
@@ -89,9 +95,10 @@ func (m *Manager) EnsureMirror(ctx context.Context, repoURL string) (string, err
 	return dir, nil
 }
 
-// AddWorktree creates the task branch from base and checks out a
-// worktree for it under JobsDir. repoName is the directory name inside
-// the task's job dir (one per repo in the worktree set, spec §7).
+// AddWorktree creates the task branch from base in an isolated clone under
+// JobsDir. The historical method name remains part of the manager API; the
+// v1.1 amendment changed its storage strategy so the bare cache can stay
+// entirely outside the sandbox.
 func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, base string) (string, error) {
 	mirror, err := m.EnsureMirror(ctx, repoURL)
 	if err != nil {
@@ -100,31 +107,98 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 	wt := filepath.Join(m.JobsDir, "task-"+taskID, repoName)
 	// Re-dispatch resumes the existing worktree untouched (spec §8.3).
 	if _, err := os.Stat(wt); err == nil {
+		if err := syncTaskBranch(ctx, wt, BranchName(taskID)); err != nil {
+			return "", err
+		}
 		return wt, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
 		return "", err
 	}
-	branch := BranchName(taskID)
-	if refExists(ctx, mirror, "refs/heads/"+branch) {
-		// The task branch survives worktree removal (eviction, GC) and
-		// carries committed work — check it out without resetting.
-		if err := run(ctx, mirror, "git", "worktree", "add", wt, branch); err != nil {
-			return "", err
-		}
-		return wt, nil
-	}
-	// New branch: cut from the freshly fetched upstream ref when the
-	// base is a remote branch; a plain ref (e.g. a stacked parent's
-	// task branch, spec §8.6) is used as-is.
-	start := base
-	if refExists(ctx, mirror, "refs/remotes/origin/"+base) {
-		start = "refs/remotes/origin/" + base
-	}
-	if err := run(ctx, mirror, "git", "worktree", "add", "-b", branch, wt, start); err != nil {
+	// --no-hardlinks makes the task repo self-contained: neither .git nor
+	// object alternates point back to the host cache. The cache therefore
+	// needs no sandbox mount at all (spec §8.1, §8.5).
+	if err := run(ctx, "", "git", "clone", "--no-checkout", "--no-hardlinks", mirror, wt); err != nil {
 		return "", err
 	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(wt)
+		}
+	}()
+	if err := run(ctx, wt, "git", "remote", "set-url", "origin", repoURL); err != nil {
+		return "", err
+	}
+	if err := run(ctx, wt, "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return "", err
+	}
+
+	baseRef := base
+	if refExists(ctx, mirror, "refs/remotes/origin/"+base) {
+		baseRef = "refs/remotes/origin/" + base
+	}
+	baseCommit, err := revParse(ctx, mirror, baseRef)
+	if err != nil {
+		return "", err
+	}
+	if err := run(ctx, wt, "git", "update-ref", "refs/remotes/origin/"+base, baseCommit); err != nil {
+		return "", err
+	}
+
+	branch := BranchName(taskID)
+	startCommit := baseCommit
+	if refExists(ctx, mirror, "refs/heads/"+branch) {
+		startCommit, err = revParse(ctx, mirror, "refs/heads/"+branch)
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := run(ctx, wt, "git", "checkout", "-b", branch, startCommit); err != nil {
+		return "", err
+	}
+	cleanup = false
 	return wt, nil
+}
+
+func syncTaskBranch(ctx context.Context, wt, branch string) error {
+	// Human `conveyor checkout` work is handed back by pushing the task
+	// branch before `done --redispatch`. A missing remote branch is normal
+	// for failed pre-PR jobs; an existing branch is fast-forwarded only.
+	remote, err := commandOutput(ctx, wt, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(remote) == "" {
+		return nil
+	}
+	remoteRef := "refs/remotes/origin/" + branch
+	if err := run(ctx, wt, "git", "fetch", "origin", "+refs/heads/"+branch+":"+remoteRef); err != nil {
+		return err
+	}
+	if refExists(ctx, wt, "HEAD") && isAncestor(ctx, wt, "HEAD", remoteRef) {
+		return run(ctx, wt, "git", "merge", "--ff-only", remoteRef)
+	}
+	if isAncestor(ctx, wt, remoteRef, "HEAD") {
+		return nil
+	}
+	return fmt.Errorf("task branch %s diverged between runner and origin", branch)
+}
+
+func commandOutput(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, out)
+	}
+	return string(out), nil
+}
+
+func isAncestor(ctx context.Context, repoDir, older, newer string) bool {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
 }
 
 // CommitsAhead lists commit hashes on the worktree's HEAD that are not
@@ -156,6 +230,16 @@ func refExists(ctx context.Context, repoDir, ref string) bool {
 	return cmd.Run() == nil
 }
 
+func revParse(ctx context.Context, repoDir, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %w: %s", ref, err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // RemoveWorktree removes a task worktree; called on merge, close, or
 // staleness TTL (default 14 days, spec §8.3).
 func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID string) error {
@@ -164,12 +248,30 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID 
 		return err
 	}
 	wt := filepath.Join(m.JobsDir, "task-"+taskID, repoName)
-	return run(ctx, mirror, "git", "worktree", "remove", "--force", wt)
+	if _, err := os.Stat(wt); os.IsNotExist(err) {
+		return nil
+	}
+	branch := BranchName(taskID)
+	// Copy task-only objects and the branch ref back into the trusted cache
+	// before eviction, so a later re-dispatch restores committed work. This
+	// mutates the bare cache just like EnsureMirror's upstream fetch, so it must
+	// take the same cross-process repository lock (spec §8.1).
+	unlock, err := lockRepo(mirror)
+	if err != nil {
+		return err
+	}
+	fetchErr := run(ctx, mirror, "git", "fetch", "--no-tags", wt,
+		"+refs/heads/"+branch+":refs/heads/"+branch)
+	unlock()
+	if fetchErr != nil {
+		return fetchErr
+	}
+	return os.RemoveAll(wt)
 }
 
-// Prune runs `git worktree prune` across all mirrors — the background
-// chore from spec §8.3. Orphaned-worktree disk creep is a monitored
-// metric.
+// Prune keeps compatibility with the background maintenance hook. Isolated
+// clones are removed directly; pruning also cleans metadata left by older
+// linked-worktree deployments.
 func (m *Manager) Prune(ctx context.Context) error {
 	return filepath.WalkDir(m.CacheDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || !d.IsDir() || !strings.HasSuffix(path, ".git") {

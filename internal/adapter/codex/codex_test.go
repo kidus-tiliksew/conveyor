@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +85,85 @@ func TestParseLine(t *testing.T) {
 	ev = parseLine([]byte(`{"type":"thread.started","thread_id":"abc-123"}`))
 	if ev.SessionRef != "abc-123" {
 		t.Fatalf("session ref = %q, want abc-123", ev.SessionRef)
+	}
+}
+
+func TestPreparePolicyWritesCodexExecPolicyRules(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	a := &Adapter{Home: home}
+	policy := adapter.ToolPolicy{
+		AllowedCommands: [][]string{{"git"}, {"go", "test"}},
+		DeniedCommands:  [][]string{{"printenv"}, {"rm", "-rf"}},
+	}
+	if err := a.preparePolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "rules", "conveyor.rules")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, expected := range []string{
+		`pattern = ["go", "test"]`,
+		`decision = "allow"`,
+		`pattern = ["printenv"]`,
+		`decision = "forbidden"`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("rules missing %q:\n%s", expected, text)
+		}
+	}
+
+	if binary, err := exec.LookPath("codex"); err == nil {
+		out, err := exec.Command(binary, "execpolicy", "check", "--rules", path, "--", "printenv").CombinedOutput()
+		if err != nil {
+			t.Fatalf("Codex rejected generated rules: %v: %s", err, out)
+		}
+		if !strings.Contains(string(out), `"decision":"forbidden"`) && !strings.Contains(string(out), `"decision": "forbidden"`) {
+			t.Fatalf("printenv was not forbidden: %s", out)
+		}
+	}
+}
+
+func TestRunOwnsUnattendedApprovalAndSandboxFlags(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli ` + PinnedVersion + `\n'
+  exit 0
+fi
+printf '%s\n' "$@" > "$CODEX_TEST_ARGS"
+printf '{"type":"thread.started","thread_id":"test-session"}\n'
+printf '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_TEST_ARGS", argsPath)
+	a := &Adapter{Binary: binary, Home: filepath.Join(dir, "home"), ContainerConfined: true}
+	events, err := a.Run(context.Background(), adapter.RunSpec{
+		Workdir: dir,
+		Prompt:  "test",
+		Policy:  adapter.ToolPolicy{DeniedCommands: [][]string{{"printenv"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(args)
+	for _, expected := range []string{`approval_policy="never"`, "shell_environment_policy.ignore_default_excludes=true", "--sandbox", "danger-full-access"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("args missing %q: %s", expected, text)
+		}
 	}
 }
 

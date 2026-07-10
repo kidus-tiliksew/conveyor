@@ -1,7 +1,8 @@
-// Package localdocker implements the Phase 1 runner: a daemon on a
-// developer machine that runs jobs in containers (spec §3.2, §8.5
-// Tier A). Job worktrees and the bare cache are the only host mounts —
-// never the home directory, never the Docker socket.
+// Package localdocker implements the Phase 1 runner on a developer machine.
+// It runs co-process with the volatile control plane until Phase 2 (spec
+// §21.1) and provisions Tier A containers (spec §3.2, §8.5). Isolated
+// task clones and the job control directory are the only mutable host mounts
+// — never the home directory, bare cache, or Docker socket.
 //
 // Phase 1 shells out to the docker CLI rather than vendoring the Docker
 // SDK; the runner protocol is the stable surface, not the transport.
@@ -10,23 +11,31 @@ package localdocker
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
+	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
 type Runner struct {
 	// Binary is docker or podman (rootless preferred, spec §8.5).
 	Binary string
+	// SecretResolver runs only on the trusted runner host. Resolved values
+	// enter Docker through a short-lived env file, never job specs or args.
+	SecretResolver secrets.Resolver
+	SecretPolicies map[string]secrets.SetPolicy
 
 	mu   sync.Mutex
 	jobs map[runner.JobHandle]jobInfo
@@ -45,6 +54,17 @@ func New() *Runner {
 func (r *Runner) Name() string { return "local-docker" }
 
 func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner.JobHandle, error) {
+	controlPath := spec.ControlPath
+	if controlPath == "" {
+		controlPath = spec.ControlDir
+	}
+	secretEnv, err := r.stageSecrets(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	if secretEnv != "" {
+		defer os.RemoveAll(filepath.Dir(secretEnv))
+	}
 	credentialDir, err := stageCredentials(spec)
 	if err != nil {
 		return "", err
@@ -78,14 +98,20 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 		}
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", wt.HostPath, wt.SandboxPath, mode))
 	}
-	args = append(args, "--volume", spec.ControlDir+":"+spec.ControlDir+":rw")
+	if secretEnv != "" {
+		args = append(args, "--env-file", secretEnv)
+	}
+	args = append(args, "--volume", spec.ControlDir+":"+controlPath+":rw")
 	if credentialDir != "" {
 		args = append(args, "--volume",
 			credentialDir+":"+filepath.Join("/conveyor/creds", spec.Harness)+":ro")
 	}
-	// TODO(phase1): resolve spec.SecretRefs via the secrets backend and
-	// inject as env/files at boot — values never travel in this spec
-	// (spec §10.1). Per-job credentials, rotated on resume (spec §6.2).
+	if err := writePolicy(spec.ControlDir, spec.Policy); err != nil {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: "stage tool policy: " + err.Error()},
+			Err:         err,
+		}
+	}
 
 	// The image's ENTRYPOINT is already conveyor-shim (images/base), so
 	// only its flags follow the image name — repeating the binary here
@@ -93,7 +119,7 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 	args = append(args, spec.Image,
 		"--harness", spec.Harness,
 		"--workdir", spec.Workdir,
-		"--control", spec.ControlDir,
+		"--control", controlPath,
 		"--task", spec.TaskID,
 		"--job", spec.JobID,
 	)
@@ -111,6 +137,104 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 	r.mu.Unlock()
 	cleanupCredentials = false
 	return h, nil
+}
+
+func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (string, error) {
+	if len(spec.SecretRefs) == 0 {
+		return "", nil
+	}
+	if r.SecretResolver == nil {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: "secret references supplied but no resolver is configured"},
+			Err:         fmt.Errorf("secret resolver is required"),
+		}
+	}
+	if spec.SecretStageDir == "" {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: "secret staging directory is required"},
+			Err:         fmt.Errorf("secret staging directory is required"),
+		}
+	}
+	if err := os.MkdirAll(spec.SecretStageDir, 0o700); err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	stage, err := os.MkdirTemp(spec.SecretStageDir, "job-secrets-")
+	if err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+
+	values := make(map[string]string, len(spec.SecretRefs))
+	for _, raw := range spec.SecretRefs {
+		ref, err := secrets.ParseRef(raw)
+		if err != nil {
+			return "", secretBootError(err)
+		}
+		policy, ok := r.SecretPolicies[secrets.PolicyKey(ref)]
+		if !ok {
+			return "", secretBootError(fmt.Errorf("secret set %s has no delivery policy", secrets.PolicyKey(ref)))
+		}
+		if !policy.LocalEligible {
+			return "", secretBootError(fmt.Errorf("secret set %s is not local_eligible", secrets.PolicyKey(ref)))
+		}
+		if !secrets.ValidEnvName(ref.Name) {
+			return "", secretBootError(fmt.Errorf("secret %s is not a valid environment variable", ref.Name))
+		}
+		if _, duplicate := values[ref.Name]; duplicate {
+			return "", secretBootError(fmt.Errorf("duplicate injected environment name %s", ref.Name))
+		}
+		value, err := r.SecretResolver.Resolve(ctx, ref)
+		if err != nil {
+			return "", secretBootError(err)
+		}
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return "", secretBootError(fmt.Errorf("secret %s is not a single-line environment value", ref.Name))
+		}
+		values[ref.Name] = value
+	}
+
+	path := filepath.Join(stage, "secrets.env")
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, err := fmt.Fprintf(out, "%s=%s\n", name, values[name]); err != nil {
+			_ = out.Close()
+			return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+		}
+	}
+	if err := out.Close(); err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	cleanup = false
+	return path, nil
+}
+
+func secretBootError(err error) error {
+	return &runner.BootError{
+		Diagnostics: runner.BootDiagnostics{ValidationError: err.Error()},
+		Err:         err,
+	}
+}
+
+func writePolicy(controlDir string, policy adapter.ToolPolicy) error {
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(filepath.Join(controlDir, "policy.json"), data, 0o600)
 }
 
 // StreamLogs follows the container's combined output. The channel

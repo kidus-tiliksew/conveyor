@@ -59,6 +59,10 @@ func run(harness, workdir, control, taskID, jobID string) error {
 	if err != nil {
 		return err
 	}
+	policy, err := loadPolicy(control)
+	if err != nil {
+		return fmt.Errorf("load tool policy: %w", err)
+	}
 
 	out, err := os.Create(filepath.Join(control, "events.jsonl"))
 	if err != nil {
@@ -78,13 +82,14 @@ func run(harness, workdir, control, taskID, jobID string) error {
 		out.Write(line)
 		os.Stdout.Write(line)
 	}
-	return supervise(a, workdir, control, harness, taskID, jobID, string(prompt), forward)
+	return supervise(a, workdir, control, harness, taskID, jobID, string(prompt), policy, forward)
 }
 
-func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, forward func(adapter.Event)) error {
+func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
 	events, err := a.Run(context.Background(), adapter.RunSpec{
 		Workdir: workdir,
 		Prompt:  prompt,
+		Policy:  policy,
 	})
 	if err != nil {
 		return fmt.Errorf("start harness: %w", err)
@@ -118,7 +123,7 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 	// (spec §8.3). Attempt it even after a failed main run because partial
 	// work and failure context are especially important to a successor.
 	// Elicitation failure does not change the main run's outcome.
-	if err := elicitHandoff(a, sessionRef, workdir, control, harness, taskID, jobID, prompt, forward); err != nil {
+	if err := elicitHandoff(a, sessionRef, workdir, control, harness, taskID, jobID, prompt, policy, forward); err != nil {
 		log.Printf("conveyor-shim: handoff elicitation skipped: %v", err)
 	}
 
@@ -138,7 +143,7 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 // holds the relevant context, then falls back to a fresh read-only run
 // briefed from the task and persistent worktree. Native resume is an
 // optimization; the snapshot is the continuity floor (spec §8.3).
-func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, taskID, jobID, taskPrompt string, forward func(adapter.Event)) error {
+func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, taskID, jobID, taskPrompt string, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
 	resumeErr := fmt.Errorf("native resume unavailable")
 	if sessionRef != "" && a.Capabilities().Resume {
 		events, err := a.Resume(context.Background(), sessionRef, snapshot.ElicitationPrompt)
@@ -170,6 +175,7 @@ func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, tas
 	events, err := a.Run(context.Background(), adapter.RunSpec{
 		Workdir: workdir,
 		Prompt:  snapshot.FallbackElicitationPrompt(taskPrompt),
+		Policy:  policy,
 	})
 	if err != nil {
 		forwardWarning(forward, adapter.PhaseHandoffFallback, err)
@@ -184,6 +190,21 @@ func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, tas
 		return err
 	}
 	return nil
+}
+
+func loadPolicy(control string) (adapter.ToolPolicy, error) {
+	data, err := os.ReadFile(filepath.Join(control, "policy.json"))
+	if os.IsNotExist(err) {
+		return adapter.ToolPolicy{}, nil
+	}
+	if err != nil {
+		return adapter.ToolPolicy{}, err
+	}
+	var policy adapter.ToolPolicy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return adapter.ToolPolicy{}, err
+	}
+	return policy, nil
 }
 
 func collectHandoff(events <-chan adapter.Event, phase string, forward func(adapter.Event)) (*snapshot.Handoff, error) {

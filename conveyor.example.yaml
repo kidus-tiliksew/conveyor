@@ -2,11 +2,33 @@
 workspace: demo
 image: conveyor-base:dev           # build with: make image
 # cache_dir: ~/.conveyor/cache     # bare repo mirrors
-# jobs_dir: ~/.conveyor/jobs       # per-task worktrees + control dirs
-# codex_credentials: ~/.codex      # mounted read-only into sandboxes
+# jobs_dir: ~/.conveyor/jobs       # isolated task checkouts + control dirs
+# codex_credentials: ~/.codex      # auth.json alone is staged read-only
+
+# SOPS is the secure local default. Configure a SOPS creation rule/key before
+# running `conveyor secrets set`. Use backend: plain only for local fixtures.
+secrets:
+  # root: ~/.conveyor/secrets
+  backend: sops
+  # sops_binary: sops
+  # sops_config: ~/.conveyor/secrets/.sops.yaml
+  sets:
+    default:
+      local_eligible: true
 
 repos:
   - name: api
     url: https://github.com/your-org/your-repo
     github: your-org/your-repo     # omit to disable issue polling / PR opening
     base: main
+    # Values resolve only on the runner host and enter the sandbox as env vars.
+    # secret_refs:
+    #   - secretref://demo/default/DATABASE_URL
+    tool_policy:
+      allowed_commands:
+        - [git]
+        - [go]
+        - [make]
+      denied_commands:
+        - [printenv]
+        - [env]

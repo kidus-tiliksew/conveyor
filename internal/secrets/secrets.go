@@ -12,6 +12,11 @@ import (
 
 const refScheme = "secretref://"
 
+const (
+	BackendSOPS  = "sops"
+	BackendPlain = "plain"
+)
+
 // Ref is a parsed secret reference: secretref://<workspace>/<set>/<name>.
 type Ref struct {
 	Workspace string
@@ -65,9 +70,37 @@ type Resolver interface {
 	Resolve(ctx context.Context, ref Ref) (string, error)
 }
 
+// Setter is implemented by mutable local backends used by the CLI.
+type Setter interface {
+	Set(ctx context.Context, ref Ref, value string) error
+}
+
 // SetPolicy carries per-set delivery policy; sets with LocalEligible ==
 // false are delivered only to cloud runners regardless of which runner
 // claims the job (spec §10.1, §8.5).
 type SetPolicy struct {
 	LocalEligible bool
+}
+
+func PolicyKey(ref Ref) string { return ref.Workspace + "/" + ref.Set }
+
+// ValidEnvName reports whether a Phase 1 secret name can be injected as an
+// environment variable. Later env templates can map arbitrary backend names
+// onto environment names without weakening this boundary.
+func ValidEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
 }

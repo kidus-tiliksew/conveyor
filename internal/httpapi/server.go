@@ -49,11 +49,34 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks/{id}", s.getTask)
 		r.Get("/tasks/{id}/jobs", s.listJobs)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
+		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 		// TODO(phase1-followup): GET /v1/jobs/{id}/logs — SSE stream
 		// (spec §17.3); Phase 1 logs land in the control dir and
 		// conveyord stdout.
 	})
 	return r
+}
+
+func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	t, err := s.Store.GetTask(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if t.State == core.TaskQueued || t.State == core.TaskRunning {
+		http.Error(w, "task is already active", http.StatusConflict)
+		return
+	}
+	if err := s.Store.UpdateTaskState(id, core.TaskQueued); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	t.State = core.TaskQueued
+	if s.OnCreate != nil {
+		s.OnCreate(id)
+	}
+	writeJSON(w, http.StatusAccepted, t)
 }
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {

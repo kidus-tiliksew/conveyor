@@ -1,12 +1,13 @@
 // Package dispatch is the Phase 1 orchestration glue: it takes a queued
-// task through worktree → sandbox → log stream → artifacts → PR. It is
+// task through isolated checkout → sandbox → log stream → artifacts → PR. It is
 // the seed of the spec §3.1 orchestrator; the event-sourced state
 // machine, retries, stage timeouts, and escalation policy grow here in
 // Phase 2.
 //
 // Phase 1 runs the runner in-process inside conveyord. The spec's
-// runner daemon ("conveyor runner start --local" polling the control
-// plane) splits out once the runner protocol crosses a network boundary.
+// runner daemon splits out once Postgres + River provide durable network
+// claims in Phase 2; `conveyor runner start --local` starts this combined
+// Phase 1 process (spec §21.1).
 package dispatch
 
 import (
@@ -78,7 +79,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 
 	wt, err := d.Git.AddWorktree(ctx, repo.URL, repo.Name, t.ID, t.BaseBranch)
 	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
+		return fmt.Errorf("task checkout: %w", err)
 	}
 
 	control := filepath.Join(d.Cfg.JobsDir, "task-"+t.ID, ".conveyor")
@@ -153,26 +154,24 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		}
 	}()
 
-	bare, err := d.Git.EnsureMirror(ctx, repo.URL)
-	if err != nil {
-		return err
-	}
+	sandboxWorkdir := gitx.SandboxPath(t.ID, repo.Name)
 	handle, err := d.Runner.StartJob(ctx, runner.StartJobSpec{
 		JobID:  job.ID,
 		TaskID: t.ID,
 		Image:  d.Cfg.Image,
 		Worktrees: []runner.WorktreeMount{
-			// Identical host/sandbox paths; see the TODO on
-			// WorktreeMount for the deterministic-path follow-up.
-			{HostPath: filepath.Join(d.Cfg.JobsDir, "task-"+t.ID), SandboxPath: filepath.Join(d.Cfg.JobsDir, "task-"+t.ID)},
-			{HostPath: bare, SandboxPath: bare},
+			{HostPath: wt, SandboxPath: sandboxWorkdir},
 		},
-		Workdir:            wt,
+		Workdir:            sandboxWorkdir,
 		ControlDir:         control,
+		ControlPath:        "/conveyor/control",
 		CredentialsDir:     d.Cfg.CodexCredentials,
 		CredentialStageDir: filepath.Join(d.Cfg.CacheDir, "credentials"),
+		SecretStageDir:     filepath.Join(d.Cfg.CacheDir, "secrets"),
+		SecretRefs:         append([]string(nil), repo.SecretRefs...),
+		Policy:             repo.ToolPolicy,
 		Harness:            "codex",
-		// The current shim is one-shot; persistent worktrees provide
+		// The current shim is one-shot; persistent task checkouts provide
 		// continuity while task-TTL container reuse is implemented.
 		SandboxTTL: "job",
 	})

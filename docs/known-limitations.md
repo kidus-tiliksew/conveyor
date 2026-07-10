@@ -81,3 +81,25 @@ job-scoped handoff remain intact.
 **Resolved by.** Move fallback elicitation into a runner-owned handoff
 subjob with the worktree mounted read-only. At that point the prompt is
 guidance and the mount is enforcement.
+
+## 4. Injected secrets have no transcript redaction yet
+
+**Failure mode.** LocalDockerRunner now resolves SOPS references and injects
+single-line environment values at container creation. If an agent explicitly
+prints one of those values, Phase 1 records it in `events.jsonl` and daemon
+logs because the redaction engine is a Phase 2 deliverable.
+
+**Why it's built this way.** Secrets injection is a Phase 1 core-loop
+deliverable while redaction is explicitly Phase 2 in §19. The injection path
+keeps values out of task state, API payloads, Docker argv, worktrees, and
+persistent staging files; all output already passes through the shim choke
+point where redaction attaches. Phase 1 can narrow exposure with non-production
+sets, `local_eligible`, least-privilege values, command rules that forbid broad
+environment dumps, and task prompts that never request values.
+
+**Recovery.** Treat any printed value as compromised: remove the transcript
+artifact from circulation, rotate the underlying secret, and re-encrypt the
+set. Do not inject production credentials into Phase 1 jobs.
+
+**Resolved by.** Phase 2 exact-value/common-encoding scrubbing at the shim
+boundary plus pattern and entropy detection (spec §10.3).

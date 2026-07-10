@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
@@ -22,6 +23,39 @@ type fakeRunner struct {
 	startErr  error
 	streamErr error
 	specs     []runner.StartJobSpec
+}
+
+func TestRunTaskPropagatesSecretsPolicyAndDeterministicMount(t *testing.T) {
+	f := &fakeRunner{}
+	d, _, task := testDispatcher(t, f)
+	d.Cfg.Repos[0].SecretRefs = []string{"secretref://test/integration/CANARY"}
+	d.Cfg.Repos[0].ToolPolicy = adapter.ToolPolicy{
+		AllowedCommands: [][]string{{"git"}},
+		DeniedCommands:  [][]string{{"printenv"}},
+	}
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.specs) != 1 {
+		t.Fatalf("specs = %d", len(f.specs))
+	}
+	spec := f.specs[0]
+	if len(spec.SecretRefs) != 1 || spec.SecretRefs[0] != "secretref://test/integration/CANARY" {
+		t.Fatalf("secret refs = %v", spec.SecretRefs)
+	}
+	if len(spec.Policy.DeniedCommands) != 1 || spec.Policy.DeniedCommands[0][0] != "printenv" {
+		t.Fatalf("policy = %+v", spec.Policy)
+	}
+	wantPath := gitx.SandboxPath(task.ID, "api")
+	if spec.Workdir != wantPath || len(spec.Worktrees) != 1 || spec.Worktrees[0].SandboxPath != wantPath {
+		t.Fatalf("workdir/mount = %q %+v, want %q", spec.Workdir, spec.Worktrees, wantPath)
+	}
+	if strings.Contains(spec.Worktrees[0].HostPath, d.Cfg.CacheDir) {
+		t.Fatalf("bare cache was mounted: %+v", spec.Worktrees)
+	}
+	if spec.ControlPath != "/conveyor/control" {
+		t.Fatalf("control path = %q", spec.ControlPath)
+	}
 }
 
 func (f *fakeRunner) Name() string { return "fake" }

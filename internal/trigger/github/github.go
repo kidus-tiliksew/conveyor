@@ -83,10 +83,30 @@ func markIssueDispatched(ctx context.Context, repo string, number int, taskID st
 // OpenPR pushes the task branch and opens a PR against base. The PR
 // body records provenance (task ID, source issue) for the audit chain.
 func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body string) (string, error) {
-	if err := run(ctx, worktreeDir, "git", "push", "--set-upstream", "origin", branch); err != nil {
+	return openPR(ctx, worktreeDir, repo, branch, base, title, body, run, gh)
+}
+
+type gitRunner func(context.Context, string, string, ...string) error
+
+func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body string, runGit gitRunner, runGH ghRunner) (string, error) {
+	if err := runGit(ctx, worktreeDir, "git", "push", "--set-upstream", "origin", branch); err != nil {
 		return "", err
 	}
-	out, err := gh(ctx, "pr", "create",
+	// Redirect/re-dispatch pushes new commits to the existing task branch.
+	// Reuse its open PR rather than failing `gh pr create` on the second job.
+	existing, err := runGH(ctx, "pr", "list",
+		"--repo", repo,
+		"--head", branch,
+		"--state", "open",
+		"--json", "url",
+		"--jq", ".[0].url")
+	if err != nil {
+		return "", fmt.Errorf("find existing PR: %w", err)
+	}
+	if url := strings.TrimSpace(string(existing)); url != "" {
+		return url, nil
+	}
+	out, err := runGH(ctx, "pr", "create",
 		"--repo", repo,
 		"--head", branch,
 		"--base", base,

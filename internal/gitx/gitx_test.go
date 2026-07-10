@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestWorktreeLifecycle exercises the bare-mirror + worktree flow
@@ -38,6 +39,12 @@ func TestWorktreeLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wt, "README.md")); err != nil {
 		t.Fatalf("worktree not checked out: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(wt, ".git")); err != nil || !info.IsDir() {
+		t.Fatalf("task checkout is not self-contained: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
+		t.Fatalf("task checkout still points at shared cache: %v", err)
 	}
 
 	// The worktree must be on the task branch.
@@ -85,6 +92,63 @@ func TestWorktreeLifecycle(t *testing.T) {
 	}
 }
 
+func TestSandboxPathIsHostIndependent(t *testing.T) {
+	t.Parallel()
+	if got, want := SandboxPath("123", "api"), "/conveyor/jobs/task-123/api"; got != want {
+		t.Fatalf("SandboxPath = %q, want %q", got, want)
+	}
+}
+
+func TestExistingTaskCheckoutFastForwardsHumanPush(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	mustRun(t, "", "git", "init", "--bare", "--initial-branch=main", origin)
+	seed := filepath.Join(tmp, "seed")
+	mustRun(t, "", "git", "clone", origin, seed)
+	mustRun(t, seed, "git", "config", "user.email", "test@example.com")
+	mustRun(t, seed, "git", "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, seed, "git", "add", ".")
+	mustRun(t, seed, "git", "commit", "-m", "initial")
+	mustRun(t, seed, "git", "push", "origin", "main")
+
+	m := NewManager(filepath.Join(tmp, "cache"), filepath.Join(tmp, "jobs"))
+	repoURL := "file://" + origin
+	wt, err := m.AddWorktree(ctx, repoURL, "api", "human", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, wt, "git", "push", "--set-upstream", "origin", BranchName("human"))
+
+	human := filepath.Join(tmp, "human")
+	mustRun(t, "", "git", "clone", "--branch", BranchName("human"), origin, human)
+	mustRun(t, human, "git", "config", "user.email", "human@example.com")
+	mustRun(t, human, "git", "config", "user.name", "human")
+	if err := os.WriteFile(filepath.Join(human, "human.txt"), []byte("handoff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, human, "git", "add", ".")
+	mustRun(t, human, "git", "commit", "-m", "human handoff")
+	mustRun(t, human, "git", "push", "origin", BranchName("human"))
+
+	resumed, err := m.AddWorktree(ctx, repoURL, "api", "human", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed != wt {
+		t.Fatalf("resumed path = %q", resumed)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "human.txt")); err != nil {
+		t.Fatalf("runner checkout did not fast-forward human work: %v", err)
+	}
+}
+
 // TestFetchPreservesTaskBranches guards the clone-mode regression: with
 // a mirror clone, fetch --prune deletes local conveyor/task-* refs.
 func TestFetchPreservesTaskBranches(t *testing.T) {
@@ -110,14 +174,69 @@ func TestFetchPreservesTaskBranches(t *testing.T) {
 	if _, err := m.AddWorktree(ctx, repoURL, "api", "77", "main"); err != nil {
 		t.Fatal(err)
 	}
-	// A later dispatch for another task re-fetches the mirror; the
-	// unpushed task branch must survive the prune.
+	// Eviction copies the task ref and its private objects into the trusted
+	// cache. A later upstream fetch must not prune that preserved branch.
+	if err := m.RemoveWorktree(ctx, repoURL, "api", "77"); err != nil {
+		t.Fatal(err)
+	}
 	mirror, err := m.EnsureMirror(ctx, repoURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !refExists(ctx, mirror, "refs/heads/"+BranchName("77")) {
 		t.Fatal("fetch --prune deleted the unpushed task branch")
+	}
+}
+
+func TestRemoveWorktreeSerializesCopyBackWithMirrorFetches(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	mustRun(t, "", "git", "init", "-b", "main", origin)
+	mustRun(t, origin, "git", "config", "user.email", "test@example.com")
+	mustRun(t, origin, "git", "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "initial")
+
+	m := NewManager(filepath.Join(tmp, "cache"), filepath.Join(tmp, "jobs"))
+	repoURL := "file://" + origin
+	if _, err := m.AddWorktree(ctx, repoURL, "api", "locked", "main"); err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := m.mirrorPath(repoURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockRepo(mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RemoveWorktree(ctx, repoURL, "api", "locked")
+	}()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("RemoveWorktree bypassed mirror lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: copy-back is waiting for the lock held above.
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveWorktree did not continue after mirror lock release")
 	}
 }
 

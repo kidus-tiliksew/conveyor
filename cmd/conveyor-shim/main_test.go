@@ -77,7 +77,7 @@ func TestSuperviseFallsBackWithoutResumeAndEmitsOneTerminalDone(t *testing.T) {
 	}
 	var forwarded []adapter.Event
 	control := t.TempDir()
-	if err := supervise(a, "/work", control, "scripted", "task-1", "task-1-implement-1", "original task", func(ev adapter.Event) {
+	if err := supervise(a, "/work", control, "scripted", "task-1", "task-1-implement-1", "original task", adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	}); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestElicitHandoffFallsBackAfterResumeError(t *testing.T) {
 	}
 	control := t.TempDir()
 	var forwarded []adapter.Event
-	if err := elicitHandoff(a, "session-1", "/work", control, "scripted", "task-1", "job-1", "task prompt", func(ev adapter.Event) {
+	if err := elicitHandoff(a, "session-1", "/work", control, "scripted", "task-1", "job-1", "task prompt", adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	}); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestSuperviseSnapshotsFailedRunAndEmitsTerminalErrorLast(t *testing.T) {
 	}
 	var forwarded []adapter.Event
 	control := t.TempDir()
-	err := supervise(a, "/work", control, "scripted", "task-1", "job-1", "original task", func(ev adapter.Event) {
+	err := supervise(a, "/work", control, "scripted", "task-1", "job-1", "original task", adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	})
 	if err == nil {

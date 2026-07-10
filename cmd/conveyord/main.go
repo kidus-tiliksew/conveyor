@@ -1,8 +1,8 @@
 // conveyord is the control-plane daemon: orchestrator, task queue, and
 // HTTP API (spec §3.1). Phase 1 runs the dispatcher and the local
-// Docker runner in-process with an in-memory store; Phase 2 swaps in
-// Postgres (event-sourced) + River, and the runner daemon splits out
-// behind the runner protocol. The Phase 2+ dashboard SPA embeds here
+// Docker runner in-process with an in-memory store (spec §21.1); Phase 2
+// swaps in Postgres (event-sourced) + River, and the runner daemon splits
+// out behind the durable claim/lease protocol. The Phase 2+ dashboard SPA embeds here
 // via go:embed so the whole control plane ships as one binary
 // (spec §17.0).
 package main
@@ -41,7 +41,10 @@ func main() {
 	}
 
 	st := store.NewMemory()
-	d := dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), localdocker.New(), cfg)
+	localRunner := localdocker.New()
+	localRunner.SecretResolver = cfg.SecretResolver()
+	localRunner.SecretPolicies = cfg.SecretPolicies()
+	d := dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), localRunner, cfg)
 
 	srv := httpapi.NewServer(st)
 	srv.Repos = cfg.RepoNames()

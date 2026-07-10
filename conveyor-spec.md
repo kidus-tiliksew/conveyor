@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.0**
+**Specification — v1.1**
 **Date:** July 10, 2026
-**Status:** Accepted — baseline for Phase 1 implementation
+**Status:** Accepted — Phase 1 closure amendment applied
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -164,6 +164,10 @@ CollectArtifacts(jobHandle) → commits, files, screenshots, reports
 ```
 
 v1 ships two runners: `LocalDockerRunner` (a daemon on a developer machine that polls the control plane for jobs) and `K8sRunner` (Kubernetes Jobs). Kubernetes is chosen for vendor neutrality: the same runner works against any managed cluster (EKS, GKE, AKS, and others) or self-hosted k3s, so hosting is the user's choice, not the platform's. Isolation hardening is a per-cluster option via RuntimeClasses (gVisor or Kata Containers, the latter providing Firecracker-class microVM isolation through the standard K8s API). Sandboxes needing to run containers themselves (image builds, testcontainers) default to rootless BuildKit/Podman; privileged Docker-in-Docker is permitted only on explicitly labeled node pools. Other backends (e.g. Fly Machines) remain possible as thin adapters against the runner protocol but are not v1 targets. Because all runners consume the same devcontainer-built image, "cloud or local" is a per-job scheduling decision, not an architectural one. Local mode is a first-class product surface: users can point their own subscription credentials and their own hardware at the queue and pay nothing for cloud compute.
+
+> **Phase 1 amendment:** the volatile Phase 1 control plane and
+> LocalDockerRunner run co-process; the durable standalone poll/claim boundary
+> begins in Phase 2 (§21.1).
 
 ---
 
@@ -384,6 +388,10 @@ Each runner host maintains a shared cache of bare mirror clones, one per repo:
 ```
 
 Worktrees share the object database with the bare clone, so creating a task workspace costs a checkout, not a clone — seconds instead of minutes on heavy repos, multiplied across every job. In containers, the bare cache mounts read-only and the job's worktrees mount read-write.
+
+> **Phase 1 amendment:** isolated task clones are seeded from this cache and
+> the cache is not mounted at all. This enforces the same read-only boundary
+> without linked-worktree write dependencies (§21.1).
 
 Fetches into a bare cache are serialized with a per-repo lock; concurrent fetches into one bare repo are forbidden (ref corruption risk).
 
@@ -622,6 +630,9 @@ conveyor secrets set acme/default/DATABASE_URL --from-stdin
 conveyor costs [--by harness|class|workspace]
 ```
 
+> In Phase 1, `runner start --local` starts the combined control-plane/local
+> runner process described by the §21.1 amendment.
+
 ### 17.2 First-run sequence
 
 The user never builds or configures an agent; platform defaults are live on deployment.
@@ -640,7 +651,7 @@ REST + SSE mirroring the CLI: task CRUD, job log streaming, review actions, runn
 
 ## 18. Security summary
 
-- Plaintext secrets exist only inside sandboxes; redaction at the sandbox edge (§10.3).
+- Plaintext secrets are resolved only by the trusted runner at sandbox boot and exist only in runner-process memory and the sandbox; redaction attaches at the sandbox edge (§10.1, §10.3).
 - Per-user credentials, never pooled subscriptions (§5.2).
 - IAM-scoped, short-lived cloud credentials per job; command-policy shim as a second layer (§11.2).
 - Path-jailed agents under tiered confinement (container / harness-native or OS primitive / labeled opt-in unconfined), applied tier recorded per job; read-only bare caches; serialized fetches (§8.5).
@@ -672,6 +683,9 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **5** | Memory store, transcript mining, self-improvement proposals, escalation graduation, evals | The flywheel |
 | **6** *(demand-triggered)* | SSO/OIDC adapter, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Enterprise-ready |
 
+The Phase 1 runner and checkout storage mechanics in this table are amended by
+§21.1; the deliverable and proof remain the same.
+
 Phase 5 is intentionally last: the self-improvement engine is useless until a few hundred transcripts and intervention records exist to mine.
 
 ---
@@ -688,4 +702,43 @@ Phase 5 is intentionally last: the self-improvement engine is useless until a fe
 
 ---
 
-*End of specification. v1.0 accepted July 10, 2026; all seven originally open questions resolved (§20). Subsequent changes proceed by amendment with version bumps.*
+## 21. Amendments
+
+### 21.1 v1.1 — Phase 1 closure boundaries (July 10, 2026)
+
+Three implementation boundaries are amended; all other v1.0 decisions remain
+unchanged:
+
+1. **The Phase 1 local runner is co-process with the volatile control
+   plane.** `conveyor runner start --local` starts the combined `conveyord`
+   control plane and LocalDockerRunner. A separately registered runner that
+   claims jobs over the network begins in Phase 2, where Postgres + River can
+   provide durable claims, leases, and recovery. Building a temporary HTTP
+   claim protocol over Phase 1's in-memory store would add a second volatile
+   queue and be discarded immediately. This amends the Phase 1 interpretation
+   of §3.2 and §17.1; the long-term runner protocol and standalone static
+   binary requirement remain unchanged.
+
+2. **Phase 1 task checkouts are isolated clones seeded from the shared bare
+   cache, not linked `git worktree` entries.** Each task clone has its own
+   writable objects and refs and is mounted at
+   `/conveyor/jobs/task-<id>/<repo>`. The shared cache is never mounted into a
+   sandbox. On eviction, the task branch and task-only objects are copied back
+   into the trusted bare cache so committed work survives re-dispatch. This
+   amends the Phase 1 storage mechanism in §8.1 while preserving the branch,
+   persistence, deterministic-path, and human-worktree contracts in §8.2–§8.4.
+   Later phases may replace the full copy with a safe writable object overlay;
+   the isolation contract does not change.
+
+3. **Phase 1 includes the minimal human checkout escape hatch.**
+   `conveyor checkout <id>` creates a human `git worktree` from the pushed task
+   branch, and `conveyor done <id> [--redispatch]` safely returns committed
+   human work by pushing and re-queueing the task. This moves the single-repo
+   CLI lifecycle from the Phase 3 row of §19 into Phase 1 because it is needed
+   to exercise the handoff/redirect boundary. Phase 3 retains the product
+   expansion: review-UI deep links, multi-repo checkout sets, and scaled remote
+   runners.
+
+---
+
+*End of specification. v1.1 accepted July 10, 2026; all seven originally open questions resolved (§20), with Phase 1 closure boundaries amended in §21. Subsequent changes proceed by amendment with version bumps.*
