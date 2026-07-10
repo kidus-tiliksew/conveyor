@@ -1,0 +1,5 @@
+/bin/
+images/base/conveyor-shim
+*.env
+!*.example.env
+.DS_Store
