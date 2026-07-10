@@ -44,9 +44,10 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 	// TODO(phase1): resolve spec.SecretRefs via the secrets backend and
 	// inject as env/files at boot — values never travel in this spec
 	// (spec §10.1). Per-job credentials, rotated on resume (spec §6.2).
-	// TODO(phase1): entrypoint is the job shim, which supervises the
-	// harness, meters usage, and streams redacted logs (spec §6.3).
-	args = append(args, spec.Image, "conveyor-shim", "--harness", spec.Harness)
+	// The image's ENTRYPOINT is already conveyor-shim (images/base), so
+	// only its flags follow the image name — repeating the binary here
+	// would become a positional arg that stops the shim's flag parsing.
+	args = append(args, spec.Image, "--harness", spec.Harness)
 
 	out, err := exec.CommandContext(ctx, r.Binary, args...).CombinedOutput()
 	if err != nil {

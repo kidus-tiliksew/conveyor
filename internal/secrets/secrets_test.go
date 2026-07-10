@@ -24,6 +24,10 @@ func TestParseRef(t *testing.T) {
 		"secretref://acme/DATABASE_URL", // missing set
 		"secretref:///default/X",        // empty workspace
 		"secretref://acme/default/",     // empty name
+		"secretref://../default/X",      // traversal workspace
+		"secretref://acme/../X",         // traversal set
+		"secretref://acme/default/a b",  // separator-adjacent chars
+		"secretref://acme/de\\fault/X",  // backslash
 	} {
 		if _, err := ParseRef(bad); err == nil {
 			t.Errorf("ParseRef(%q): want error", bad)

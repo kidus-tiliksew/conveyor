@@ -21,6 +21,11 @@ type LocalFileResolver struct {
 
 func (l *LocalFileResolver) Resolve(_ context.Context, ref Ref) (string, error) {
 	path := filepath.Join(l.Root, ref.Workspace, ref.Set+".env")
+	// ParseRef already rejects traversal segments; keep containment as
+	// defense in depth for Refs constructed directly.
+	if !strings.HasPrefix(path, filepath.Clean(l.Root)+string(filepath.Separator)) {
+		return "", fmt.Errorf("secret ref %s/%s escapes secret root", ref.Workspace, ref.Set)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("secret set %s/%s: %w", ref.Workspace, ref.Set, err)

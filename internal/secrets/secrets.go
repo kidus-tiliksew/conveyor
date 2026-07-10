@@ -29,10 +29,33 @@ func ParseRef(s string) (Ref, error) {
 		return Ref{}, fmt.Errorf("secret ref %q: missing %s prefix", s, refScheme)
 	}
 	parts := strings.Split(raw, "/")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+	if len(parts) != 3 {
 		return Ref{}, fmt.Errorf("secret ref %q: want secretref://<workspace>/<set>/<name>", s)
 	}
+	for _, p := range parts {
+		if !validSegment(p) {
+			return Ref{}, fmt.Errorf("secret ref %q: invalid segment %q", s, p)
+		}
+	}
 	return Ref{Workspace: parts[0], Set: parts[1], Name: parts[2]}, nil
+}
+
+// validSegment rejects anything that could act as a path component
+// ("..", ".", separators) — refs are resolved against filesystem and
+// backend paths, so segments must never traverse (spec §10.1).
+func validSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Resolver is the pluggable secret backend (Vault, GCP SM, AWS SM, SOPS

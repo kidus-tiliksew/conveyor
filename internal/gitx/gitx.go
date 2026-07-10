@@ -49,10 +49,17 @@ func (m *Manager) mirrorPath(repoURL string) (string, error) {
 	return filepath.Join(m.CacheDir, host, p+".git"), nil
 }
 
-// EnsureMirror clones or fetches the bare mirror for repoURL. Fetches
+// EnsureMirror clones or fetches the bare cache for repoURL. Fetches
 // into a bare cache are serialized with a per-repo lock; concurrent
 // fetches into one bare repo are forbidden — ref corruption risk
 // (spec §8.1).
+//
+// Deliberately NOT `clone --mirror`: a mirror's +refs/*:refs/* refspec
+// makes `fetch --prune` delete local conveyor/task-* branches the
+// remote has never seen, and remote.origin.mirror=true turns any push
+// from a worktree into a full mirror push. Instead, upstream refs live
+// in their own namespace (refs/remotes/origin/*) so pruning only ever
+// touches them, and task branches in refs/heads/* are never at risk.
 func (m *Manager) EnsureMirror(ctx context.Context, repoURL string) (string, error) {
 	dir, err := m.mirrorPath(repoURL)
 	if err != nil {
@@ -68,10 +75,13 @@ func (m *Manager) EnsureMirror(ctx context.Context, repoURL string) (string, err
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
-		if err := run(ctx, "", "git", "clone", "--mirror", repoURL, dir); err != nil {
+		if err := run(ctx, "", "git", "clone", "--bare", repoURL, dir); err != nil {
 			return "", err
 		}
-		return dir, nil
+		if err := run(ctx, dir, "git", "config", "remote.origin.fetch",
+			"+refs/heads/*:refs/remotes/origin/*"); err != nil {
+			return "", err
+		}
 	}
 	if err := run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
@@ -88,15 +98,39 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 		return "", err
 	}
 	wt := filepath.Join(m.JobsDir, "task-"+taskID, repoName)
+	// Re-dispatch resumes the existing worktree untouched (spec §8.3).
+	if _, err := os.Stat(wt); err == nil {
+		return wt, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
 		return "", err
 	}
 	branch := BranchName(taskID)
-	// -B: re-dispatch into an existing task branch reuses it (spec §8.3).
-	if err := run(ctx, mirror, "git", "worktree", "add", "-B", branch, wt, base); err != nil {
+	if refExists(ctx, mirror, "refs/heads/"+branch) {
+		// The task branch survives worktree removal (eviction, GC) and
+		// carries committed work — check it out without resetting.
+		if err := run(ctx, mirror, "git", "worktree", "add", wt, branch); err != nil {
+			return "", err
+		}
+		return wt, nil
+	}
+	// New branch: cut from the freshly fetched upstream ref when the
+	// base is a remote branch; a plain ref (e.g. a stacked parent's
+	// task branch, spec §8.6) is used as-is.
+	start := base
+	if refExists(ctx, mirror, "refs/remotes/origin/"+base) {
+		start = "refs/remotes/origin/" + base
+	}
+	if err := run(ctx, mirror, "git", "worktree", "add", "-b", branch, wt, start); err != nil {
 		return "", err
 	}
 	return wt, nil
+}
+
+func refExists(ctx context.Context, repoDir, ref string) bool {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
 }
 
 // RemoveWorktree removes a task worktree; called on merge, close, or

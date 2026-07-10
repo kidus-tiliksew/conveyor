@@ -6,6 +6,8 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -104,6 +106,10 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func newTaskID() string {
-	// Short, human-typeable IDs; collision-checked by CreateTask.
-	return time.Now().UTC().Format("060102-150405")
+	// Short, human-typeable IDs: date prefix for eyeballing, random
+	// suffix so concurrent submissions never collide (CreateTask still
+	// enforces uniqueness as a backstop).
+	b := make([]byte, 3)
+	_, _ = rand.Read(b)
+	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }

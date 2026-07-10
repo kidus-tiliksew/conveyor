@@ -98,13 +98,29 @@ func (a *Adapter) stream(ctx context.Context, dir string, args []string) (<-chan
 	return events, nil
 }
 
-// parseLine maps one Codex JSONL event onto the normalized event set.
-// TODO(phase1): flesh out against the pinned CLI version's actual
-// schema; anything unrecognized passes through as raw payload so no
-// information is dropped before the transcript store.
+// parseLine maps one Codex JSONL thread event onto the normalized event
+// set. Current `codex exec --json` emits thread.started, turn.started,
+// item.started/updated/completed (item detail nested under "item"), and
+// turn.completed (token usage nested under "usage"). Anything
+// unrecognized passes through with its raw payload so no information is
+// dropped before the transcript store.
+// TODO(phase1): verify field names against the pinned CLI version on
+// first integration and set PinnedVersion.
 func parseLine(line []byte) adapter.Event {
 	var probe struct {
 		Type string `json:"type"`
+		Item struct {
+			Type     string `json:"type"`
+			ItemType string `json:"item_type"` // older builds nest the type here
+			Text     string `json:"text"`
+		} `json:"item"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	ev := adapter.Event{At: time.Now(), Payload: json.RawMessage(append([]byte(nil), line...))}
 	if err := json.Unmarshal(line, &probe); err != nil {
@@ -112,16 +128,38 @@ func parseLine(line []byte) adapter.Event {
 		ev.Text = string(line)
 		return ev
 	}
+
+	itemType := probe.Item.Type
+	if itemType == "" {
+		itemType = probe.Item.ItemType
+	}
+
 	switch probe.Type {
-	case "agent_message":
-		ev.Kind = adapter.EventAssistantText
-	case "exec_command_begin", "tool_call":
-		ev.Kind = adapter.EventToolCall
-	case "exec_command_end", "tool_result":
-		ev.Kind = adapter.EventToolResult
-	case "token_count":
+	case "item.started", "item.updated", "item.completed":
+		switch itemType {
+		case "agent_message", "reasoning":
+			ev.Kind = adapter.EventAssistantText
+			ev.Text = probe.Item.Text
+		case "error":
+			ev.Kind = adapter.EventError
+			ev.Err = probe.Item.Text
+		default:
+			// command_execution, file_change, mcp_tool_call, web_search, …
+			ev.Tool = itemType
+			if probe.Type == "item.started" {
+				ev.Kind = adapter.EventToolCall
+			} else {
+				ev.Kind = adapter.EventToolResult
+			}
+		}
+	case "turn.completed":
 		ev.Kind = adapter.EventTokenUsage
+		ev.Usage = &adapter.TokenUsage{In: probe.Usage.InputTokens, Out: probe.Usage.OutputTokens}
+	case "turn.failed", "error":
+		ev.Kind = adapter.EventError
+		ev.Err = probe.Error.Message
 	default:
+		// thread.started, turn.started, unknown: raw payload only.
 		ev.Kind = adapter.EventAssistantText
 	}
 	return ev
