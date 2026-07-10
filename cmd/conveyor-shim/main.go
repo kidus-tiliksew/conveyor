@@ -101,10 +101,20 @@ func buildAdapter(harness, control string) (adapter.Adapter, error) {
 	switch harness {
 	case "codex":
 		c := codex.New()
+		// The shim only ever runs inside the sandbox container, which
+		// is the Tier A confinement boundary (spec §8.5) — the
+		// harness's own sandbox is redundant there and bwrap/Landlock
+		// cannot create namespaces in an unprivileged container.
+		c.ContainerConfined = true
 		src := filepath.Join(credsDir, "codex")
 		if fi, err := os.Stat(src); err == nil && fi.IsDir() {
 			home := filepath.Join(control, "codex-home")
-			if err := copyDir(src, home); err != nil {
+			// Stage only the auth material, never the whole credential
+			// dir: the user's ~/.codex carries gigabytes of session
+			// history, and their interactive config must not leak into
+			// unattended runs — the adapter owns that posture
+			// (spec §8.5 responsibility seam).
+			if err := copyFiles(src, home, "auth.json"); err != nil {
 				return nil, fmt.Errorf("stage codex credentials: %w", err)
 			}
 			c.Home = home
@@ -115,33 +125,31 @@ func buildAdapter(harness, control string) (adapter.Adapter, error) {
 	}
 }
 
-func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o700)
-		}
-		if !d.Type().IsRegular() {
-			return nil // skip sockets, symlinks out of the creds dir
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-		_, err = io.Copy(out, in)
+// copyFiles copies the named top-level files from src into dst,
+// skipping names that don't exist.
+func copyFiles(src, dst string, names ...string) error {
+	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
-	})
+	}
+	for _, name := range names {
+		in, err := os.Open(filepath.Join(src, name))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(filepath.Join(dst, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			in.Close()
+			return err
+		}
+		_, err = io.Copy(out, in)
+		in.Close()
+		out.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

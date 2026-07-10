@@ -29,6 +29,12 @@ type Adapter struct {
 	// lands in the job directory and becomes an artifact by construction
 	// (spec §8.3 note 2).
 	Home string
+	// ContainerConfined disables codex's native sandbox
+	// (--sandbox danger-full-access): under Tier A the container is the
+	// confinement boundary, and bwrap/Landlock cannot create namespaces
+	// inside an unprivileged container anyway. Never set outside a
+	// container — Tier B relies on the native sandbox (spec §8.5).
+	ContainerConfined bool
 }
 
 func New() *Adapter {
@@ -56,7 +62,11 @@ func (a *Adapter) Run(ctx context.Context, spec adapter.RunSpec) (<-chan adapter
 	// (spec §8.5 responsibility seam).
 	// TODO(phase1): register a session hook to capture the session ID
 	// authoritatively during the run (spec §8.3 note 1).
-	args := []string{"exec", "--json", "--cd", spec.Workdir, spec.Prompt}
+	args := []string{"exec", "--json", "--cd", spec.Workdir}
+	if a.ContainerConfined {
+		args = append(args, "--sandbox", "danger-full-access")
+	}
+	args = append(args, spec.Prompt)
 	return a.stream(ctx, spec.Workdir, args)
 }
 
