@@ -190,6 +190,10 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		_ = logFile.Close()
 		return fmt.Errorf("stream logs: %w", err)
 	}
+	// A stream failure fails the job even if the container succeeded:
+	// in a logs-only phase an incomplete transcript is a corrupt audit
+	// record, so we fail closed. Commits survive in the worktree for
+	// re-dispatch. See docs/known-limitations.md #2.
 	var streamErr error
 	var writeErr error
 	for ev := range logs {
@@ -306,6 +310,12 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 					continue
 				}
 			}
+			// Claim before enqueue: replaying an unclaimed issue after a
+			// restart would dispatch a duplicate agent run, which is the
+			// costlier failure. The price is that a crash between this
+			// claim and the PR orphans the issue (task state is
+			// in-memory until Phase 2); recovery is re-adding the
+			// conveyor:ready label. See docs/known-limitations.md #1.
 			if err := github.MarkIssueDispatched(ctx, repo.GitHub, is.Number, id); err != nil {
 				// Leave the task queued. The ready label remains, so the next
 				// poll retries the durable GitHub claim before dispatching.

@@ -26,6 +26,8 @@ Remaining gaps are marked `TODO(phase1)` (in-scope) and
 items include secret delivery/SOPS, handoff elicitation, tool-policy
 mapping, authoritative Codex session capture and version pinning, the
 standalone local-runner poll loop, and the resume-fidelity experiment.
+Accepted trade-offs with failure modes and recovery procedures are in
+[docs/known-limitations.md](docs/known-limitations.md).
 
 ## Running the loop
 
