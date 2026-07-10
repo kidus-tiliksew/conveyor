@@ -13,7 +13,8 @@ import (
 
 // client is a thin wrapper over the control-plane API (spec §17.3).
 type client struct {
-	base string
+	base  string
+	token string
 }
 
 func newClient() *client {
@@ -21,10 +22,13 @@ func newClient() *client {
 	if base == "" {
 		base = "http://localhost:8080"
 	}
-	return &client{base: base}
+	return &client{base: base, token: os.Getenv("CONVEYOR_API_TOKEN")}
 }
 
 func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
+	}
 	payload, _ := json.Marshal(map[string]string{
 		"title":       title,
 		"body":        body,
@@ -62,6 +66,9 @@ func (c *client) do(method, path string, body []byte, out any) error {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

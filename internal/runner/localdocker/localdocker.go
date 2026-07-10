@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,8 +32,9 @@ type Runner struct {
 }
 
 type jobInfo struct {
-	jobID      string
-	controlDir string
+	jobID         string
+	controlDir    string
+	credentialDir string
 }
 
 func New() *Runner {
@@ -42,6 +44,17 @@ func New() *Runner {
 func (r *Runner) Name() string { return "local-docker" }
 
 func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner.JobHandle, error) {
+	credentialDir, err := stageCredentials(spec)
+	if err != nil {
+		return "", err
+	}
+	cleanupCredentials := true
+	defer func() {
+		if cleanupCredentials && credentialDir != "" {
+			_ = os.RemoveAll(credentialDir)
+		}
+	}()
+
 	args := []string{
 		"run", "--detach",
 		"--name", "conveyor-job-" + spec.JobID,
@@ -65,9 +78,9 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", wt.HostPath, wt.SandboxPath, mode))
 	}
 	args = append(args, "--volume", spec.ControlDir+":"+spec.ControlDir+":rw")
-	if spec.CredentialsDir != "" {
+	if credentialDir != "" {
 		args = append(args, "--volume",
-			spec.CredentialsDir+":"+filepath.Join("/conveyor/creds", spec.Harness)+":ro")
+			credentialDir+":"+filepath.Join("/conveyor/creds", spec.Harness)+":ro")
 	}
 	// TODO(phase1): resolve spec.SecretRefs via the secrets backend and
 	// inject as env/files at boot — values never travel in this spec
@@ -84,14 +97,16 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 
 	out, err := exec.CommandContext(ctx, r.Binary, args...).CombinedOutput()
 	if err != nil {
-		// Boot failure is a first-class state with structured
-		// diagnostics (spec §6.2), surfaced by the orchestrator.
-		return "", fmt.Errorf("sandbox boot failed: %w: %s", err, out)
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{RuntimeError: strings.TrimSpace(string(out))},
+			Err:         err,
+		}
 	}
 	h := runner.JobHandle(strings.TrimSpace(string(out)))
 	r.mu.Lock()
-	r.jobs[h] = jobInfo{jobID: spec.JobID, controlDir: spec.ControlDir}
+	r.jobs[h] = jobInfo{jobID: spec.JobID, controlDir: spec.ControlDir, credentialDir: credentialDir}
 	r.mu.Unlock()
+	cleanupCredentials = false
 	return h, nil
 }
 
@@ -99,8 +114,11 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 // closes when the container exits.
 func (r *Runner) StreamLogs(ctx context.Context, h runner.JobHandle) (<-chan runner.LogEvent, error) {
 	r.mu.Lock()
-	info := r.jobs[h]
+	info, ok := r.jobs[h]
 	r.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown job handle %q", h)
+	}
 
 	cmd := exec.CommandContext(ctx, r.Binary, "logs", "--follow", string(h))
 	stdout, err := cmd.StdoutPipe()
@@ -116,6 +134,7 @@ func (r *Runner) StreamLogs(ctx context.Context, h runner.JobHandle) (<-chan run
 	}
 
 	ch := make(chan runner.LogEvent, 256)
+	errCh := make(chan error, 3)
 	var wg sync.WaitGroup
 	for _, pipe := range []interface{ Read([]byte) (int, error) }{stdout, stderr} {
 		wg.Add(1)
@@ -130,11 +149,20 @@ func (r *Runner) StreamLogs(ctx context.Context, h runner.JobHandle) (<-chan run
 					At:    time.Now().UnixMilli(),
 				}
 			}
+			if err := sc.Err(); err != nil {
+				errCh <- err
+			}
 		}(pipe)
 	}
 	go func() {
 		wg.Wait()
-		_ = cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			errCh <- err
+		}
+		close(errCh)
+		for err := range errCh {
+			ch <- runner.LogEvent{JobID: info.jobID, Err: err.Error(), At: time.Now().UnixMilli()}
+		}
 		close(ch)
 	}()
 	return ch, nil
@@ -165,15 +193,28 @@ func (r *Runner) Signal(ctx context.Context, h runner.JobHandle, s runner.Signal
 // repo layout.
 func (r *Runner) CollectArtifacts(ctx context.Context, h runner.JobHandle) (runner.Artifacts, error) {
 	r.mu.Lock()
-	info := r.jobs[h]
+	info, ok := r.jobs[h]
 	r.mu.Unlock()
+	if !ok {
+		return runner.Artifacts{}, fmt.Errorf("unknown job handle %q", h)
+	}
+	defer func() {
+		r.mu.Lock()
+		delete(r.jobs, h)
+		r.mu.Unlock()
+		if info.credentialDir != "" {
+			_ = os.RemoveAll(info.credentialDir)
+		}
+	}()
 
 	out, err := exec.CommandContext(ctx, r.Binary, "wait", string(h)).Output()
 	if err != nil {
+		_ = r.removeContainer(h, true)
 		return runner.Artifacts{}, fmt.Errorf("docker wait: %w", err)
 	}
 	code, err := strconv.Atoi(strings.TrimSpace(string(out)))
 	if err != nil {
+		_ = r.removeContainer(h, true)
 		return runner.Artifacts{}, fmt.Errorf("docker wait output %q: %w", out, err)
 	}
 
@@ -184,9 +225,84 @@ func (r *Runner) CollectArtifacts(ctx context.Context, h runner.JobHandle) (runn
 	if p := filepath.Join(info.controlDir, "handoff.json"); fileExists(p) {
 		art.HandoffSnapshot = p
 	}
-	// TODO(phase1-followup): remove the exited container (or pause and
-	// keep it for sandbox_ttl: task, spec §6.2).
+	// The Phase 1 shim is a one-shot PID 1, so its containers are job-TTL.
+	// Worktrees remain persistent across attempts; task-TTL warm container
+	// reuse arrives with the resume-fidelity work (spec §8.3, §20.2).
+	if err := r.removeContainer(h, false); err != nil {
+		return art, err
+	}
 	return art, nil
+}
+
+func (r *Runner) removeContainer(h runner.JobHandle, force bool) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := []string{"rm"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, string(h))
+	out, err := exec.CommandContext(cleanupCtx, r.Binary, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker rm: %w: %s", err, out)
+	}
+	return nil
+}
+
+func stageCredentials(spec runner.StartJobSpec) (string, error) {
+	if spec.CredentialsDir == "" {
+		return "", nil
+	}
+	if spec.CredentialStageDir == "" {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: "credential staging directory is required"},
+			Err:         fmt.Errorf("credential staging directory is required"),
+		}
+	}
+	if spec.Harness != "codex" {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: fmt.Sprintf("credential staging is not defined for harness %q", spec.Harness)},
+			Err:         fmt.Errorf("unsupported harness credentials %q", spec.Harness),
+		}
+	}
+
+	src := filepath.Join(spec.CredentialsDir, "auth.json")
+	in, err := os.Open(src)
+	if err != nil {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: fmt.Sprintf("read codex auth.json: %v", err)},
+			Err:         err,
+		}
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(spec.CredentialStageDir, 0o700); err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	stage, err := os.MkdirTemp(spec.CredentialStageDir, "job-creds-")
+	if err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+
+	out, err := os.OpenFile(filepath.Join(stage, "auth.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	if err := out.Close(); err != nil {
+		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+	}
+	cleanup = false
+	return stage, nil
 }
 
 func fileExists(p string) bool {

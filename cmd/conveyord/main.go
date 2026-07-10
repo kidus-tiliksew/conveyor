@@ -12,6 +12,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -25,7 +26,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	configPath := flag.String("config", "conveyor.yaml", "path to deployment config")
 	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")
 	flag.Parse()
@@ -34,6 +35,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	apiToken := os.Getenv("CONVEYOR_API_TOKEN")
+	if apiToken == "" {
+		log.Fatal("CONVEYOR_API_TOKEN is required for authenticated task creation")
+	}
 
 	st := store.NewMemory()
 	d := dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), localdocker.New(), cfg)
@@ -41,6 +46,7 @@ func main() {
 	srv := httpapi.NewServer(st)
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
+	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -14,7 +14,7 @@ Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 - [x] Codex adapter with ChatGPT subscription auth — `internal/adapter/codex`
 - [x] LocalDockerRunner (Tier A mounts, log streaming, artifact collection) — `internal/runner/localdocker`
 - [x] Bare-clone + worktree manager — `internal/gitx`
-- [x] Secrets injection model (refs in control plane, values at edge) — `internal/secrets`
+- [x] Secrets reference model — `internal/secrets` (runner-side resolution/injection remains in scope)
 - [x] Base image — `images/base` (`make image`)
 - [x] Handoff snapshot schema — `internal/snapshot` (elicitation call in shim still TODO)
 - [ ] Resume-fidelity experiment (spec §20.2)
@@ -22,20 +22,26 @@ Phase 1 proves the core loop — GitHub issue → agent run → PR, logs only:
 - [x] Job shim: harness supervision + event streaming — `cmd/conveyor-shim`
 
 Remaining gaps are marked `TODO(phase1)` (in-scope) and
-`TODO(phase1-followup)` (loop runs without them) in the code.
+`TODO(phase1-followup)` (loop runs without them) in the code. In-scope
+items include secret delivery/SOPS, handoff elicitation, tool-policy
+mapping, authoritative Codex session capture and version pinning, the
+standalone local-runner poll loop, and the resume-fidelity experiment.
 
 ## Running the loop
 
 ```sh
 make build && make image          # binaries + conveyor-base:dev
 cp conveyor.example.yaml conveyor.yaml   # edit: your repo + github slug
+export CONVEYOR_API_TOKEN="$(openssl rand -hex 32)"
 bin/conveyord -config conveyor.yaml -poll-github 60s
 bin/conveyor task new "fix the typo in README" --repo api
 bin/conveyor task list && bin/conveyor task show <id>
 ```
 
-Requires: Docker running, `codex` logged in on the host (`~/.codex` is
-mounted read-only into sandboxes), `gh` authenticated for PR opening.
+Requires: Docker running, `codex` logged in on the host (only a staged
+copy of `~/.codex/auth.json` is mounted into each sandbox), `gh`
+authenticated for issue claiming and PR opening, and the same
+`CONVEYOR_API_TOKEN` in the daemon and CLI environment.
 
 ## Layout
 
@@ -70,5 +76,5 @@ make shim    # linux static shim binaries for the base image
 make image   # build conveyor-base:dev with the shim baked in
 ```
 
-Run the control plane: `bin/conveyord -addr :8080`, then
+Run the control plane: `bin/conveyord -addr 127.0.0.1:8080`, then
 `curl -s localhost:8080/v1/tasks`.

@@ -62,6 +62,16 @@ const (
 	JobSandboxBootFail JobState = "sandbox_boot_failed"
 )
 
+// BootDiagnostics is the structured explanation for a sandbox boot
+// failure (spec §6.2). It is stored on the job so the CLI/API can show
+// the cause without relying on conveyord's process log.
+type BootDiagnostics struct {
+	ImageBuildLog   string
+	ValidationError string
+	RuntimeError    string
+	MissingEnvVars  []string
+}
+
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
 	ID           string
@@ -103,6 +113,9 @@ type Job struct {
 	TokensIn    int64
 	TokensOut   int64
 	State       JobState
-	StartedAt   time.Time
-	EndedAt     time.Time
+	// BootDiagnostics is populated only when State is
+	// JobSandboxBootFail.
+	BootDiagnostics *BootDiagnostics
+	StartedAt       time.Time
+	EndedAt         time.Time
 }

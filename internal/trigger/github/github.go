@@ -12,11 +12,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
 // ReadyLabel dispatches an issue into the factory (spec §9).
 const ReadyLabel = "conveyor:ready"
+
+// DispatchedLabel is the durable claim marker for a GitHub issue. Moving
+// an issue from ReadyLabel to DispatchedLabel prevents a conveyord restart
+// from replaying it after the Phase 1 in-memory store is lost.
+const DispatchedLabel = "conveyor:dispatched"
 
 type Issue struct {
 	Number int    `json:"number"`
@@ -40,6 +46,38 @@ func ListReadyIssues(ctx context.Context, repo string) ([]Issue, error) {
 		return nil, fmt.Errorf("parse gh issue list: %w", err)
 	}
 	return issues, nil
+}
+
+// MarkIssueDispatched durably claims an issue before it is enqueued. The
+// label is maintained by Conveyor so scratch repositories need no manual
+// label setup beyond conveyor:ready.
+func MarkIssueDispatched(ctx context.Context, repo string, number int, taskID string) error {
+	return markIssueDispatched(ctx, repo, number, taskID, gh)
+}
+
+type ghRunner func(context.Context, ...string) ([]byte, error)
+
+func markIssueDispatched(ctx context.Context, repo string, number int, taskID string, run ghRunner) error {
+	if _, err := run(ctx, "label", "create", DispatchedLabel,
+		"--repo", repo,
+		"--color", "1D76DB",
+		"--description", "Claimed by Conveyor for dispatch",
+		"--force"); err != nil {
+		return fmt.Errorf("ensure %s label: %w", DispatchedLabel, err)
+	}
+	if _, err := run(ctx, "issue", "edit", strconv.Itoa(number),
+		"--repo", repo,
+		"--remove-label", ReadyLabel,
+		"--add-label", DispatchedLabel); err != nil {
+		return fmt.Errorf("move issue labels: %w", err)
+	}
+	_, _ = run(ctx, "issue", "comment", strconv.Itoa(number),
+		"--repo", repo,
+		"--body", fmt.Sprintf("<!-- conveyor:dispatched -->\nConveyor accepted this issue as task `%s`.", taskID))
+	// The label transition is the deduplication boundary. The comment is
+	// audit-friendly, but its failure must not suppress dispatch after the
+	// ready label has already been removed.
+	return nil
 }
 
 // OpenPR pushes the task branch and opens a PR against base. The PR

@@ -6,8 +6,10 @@ package runner
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 // JobHandle identifies a running job on a runner.
@@ -51,15 +53,19 @@ type StartJobSpec struct {
 	// ControlDir (host == sandbox path) carries prompt.txt in and
 	// events.jsonl / handoff.json / harness session state out.
 	ControlDir string
-	// CredentialsDir is the host directory with the harness's login
-	// (e.g. ~/.codex), mounted read-only at /conveyor/creds/<harness>
-	// (spec §5.2); empty means no credential mount.
+	// CredentialsDir is the trusted host source for the harness login
+	// (e.g. ~/.codex). It is never mounted directly. The runner copies
+	// only the adapter-approved files into CredentialStageDir and mounts
+	// that job-specific staging directory read-only (spec §5.2, §8.5).
 	CredentialsDir string
-	SecretRefs     []string
-	BudgetUSD      float64
-	Policy         adapter.ToolPolicy
-	Harness        string // which adapter the shim invokes inside the sandbox
-	SandboxTTL     string // job | task | <duration> (spec §6.2)
+	// CredentialStageDir is a runner-private host directory outside the
+	// worktree mount. Empty is invalid when CredentialsDir is set.
+	CredentialStageDir string
+	SecretRefs         []string
+	BudgetUSD          float64
+	Policy             adapter.ToolPolicy
+	Harness            string // which adapter the shim invokes inside the sandbox
+	SandboxTTL         string // job | task | <duration> (spec §6.2)
 }
 
 // LogEvent is one item of the job's log stream (tool calls, tokens,
@@ -67,16 +73,30 @@ type StartJobSpec struct {
 type LogEvent struct {
 	JobID string
 	Line  string
-	At    int64 // unix millis
+	Err   string // runner-side stream failure; never harness output
+	At    int64  // unix millis
 }
 
 // BootDiagnostics makes "sandbox failed to boot" a first-class state
 // with structured detail (spec §6.2), not a stderr dump.
-type BootDiagnostics struct {
-	ImageBuildLog   string
-	ValidationError string // devcontainer validation
-	MissingEnvVars  []string
+type BootDiagnostics = core.BootDiagnostics
+
+// BootError carries structured diagnostics across the runner boundary.
+// Dispatchers persist Diagnostics on the job record before parking the
+// task.
+type BootError struct {
+	Diagnostics BootDiagnostics
+	Err         error
 }
+
+func (e *BootError) Error() string {
+	if e.Err == nil {
+		return "sandbox boot failed"
+	}
+	return fmt.Sprintf("sandbox boot failed: %v", e.Err)
+}
+
+func (e *BootError) Unwrap() error { return e.Err }
 
 // Artifacts is what CollectArtifacts returns: commits made, files,
 // screenshots, reports, plus the handoff snapshot (spec §8.3).

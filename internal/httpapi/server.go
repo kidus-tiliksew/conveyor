@@ -6,8 +6,10 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +29,9 @@ type Server struct {
 	OnCreate func(taskID string)
 	// Workspace stamps created tasks.
 	Workspace string
+	// BearerToken authenticates mutating requests (spec §17.3). An empty
+	// token denies all mutations rather than silently disabling auth.
+	BearerToken string
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -41,14 +46,26 @@ func (s *Server) Handler() http.Handler {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/tasks", s.listTasks)
-		r.Post("/tasks", s.createTask)
 		r.Get("/tasks/{id}", s.getTask)
 		r.Get("/tasks/{id}/jobs", s.listJobs)
+		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		// TODO(phase1-followup): GET /v1/jobs/{id}/logs — SSE stream
 		// (spec §17.3); Phase 1 logs land in the control dir and
 		// conveyord stdout.
 	})
 	return r
+}
+
+func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || s.BearerToken == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type createTaskReq struct {

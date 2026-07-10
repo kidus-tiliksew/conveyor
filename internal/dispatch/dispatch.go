@@ -11,6 +11,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -87,8 +88,18 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return err
 	}
 
+	priorJobs, err := d.Store.ListJobs(t.ID)
+	if err != nil {
+		return err
+	}
+	attempt := 1
+	for _, prior := range priorJobs {
+		if prior.Stage == core.StageImplement {
+			attempt++
+		}
+	}
 	job := core.Job{
-		ID:      t.ID + "-implement-1",
+		ID:      fmt.Sprintf("%s-implement-%d", t.ID, attempt),
 		TaskID:  t.ID,
 		Stage:   core.StageImplement,
 		Harness: "codex",
@@ -101,6 +112,17 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err := d.Store.CreateJob(job); err != nil {
 		return err
 	}
+	jobTerminal := false
+	defer func() {
+		if jobTerminal {
+			return
+		}
+		job.State = core.JobFailed
+		job.EndedAt = time.Now()
+		if err := d.Store.UpdateJob(job); err != nil {
+			log.Printf("[task %s] record failed job %s: %v", t.ID, job.ID, err)
+		}
+	}()
 
 	bare, err := d.Git.EnsureMirror(ctx, repo.URL)
 	if err != nil {
@@ -116,39 +138,82 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 			{HostPath: filepath.Join(d.Cfg.JobsDir, "task-"+t.ID), SandboxPath: filepath.Join(d.Cfg.JobsDir, "task-"+t.ID)},
 			{HostPath: bare, SandboxPath: bare},
 		},
-		Workdir:        wt,
-		ControlDir:     control,
-		CredentialsDir: d.Cfg.CodexCredentials,
-		Harness:        "codex",
-		SandboxTTL:     "task",
+		Workdir:            wt,
+		ControlDir:         control,
+		CredentialsDir:     d.Cfg.CodexCredentials,
+		CredentialStageDir: filepath.Join(d.Cfg.CacheDir, "credentials"),
+		Harness:            "codex",
+		// The current shim is one-shot; persistent worktrees provide
+		// continuity while task-TTL container reuse is implemented.
+		SandboxTTL: "job",
 	})
 	if err != nil {
 		job.State = core.JobSandboxBootFail
 		job.EndedAt = time.Now()
-		_ = d.Store.UpdateJob(job)
+		var bootErr *runner.BootError
+		if errors.As(err, &bootErr) {
+			diagnostics := bootErr.Diagnostics
+			job.BootDiagnostics = &diagnostics
+		} else {
+			job.BootDiagnostics = &core.BootDiagnostics{RuntimeError: err.Error()}
+		}
+		if updateErr := d.Store.UpdateJob(job); updateErr != nil {
+			return fmt.Errorf("%w; record boot failure: %v", err, updateErr)
+		}
+		jobTerminal = true
 		return err
 	}
+	runnerFinalized := false
+	defer func() {
+		if runnerFinalized {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = d.Runner.Signal(cleanupCtx, handle, runner.SignalKill)
+		_, _ = d.Runner.CollectArtifacts(cleanupCtx, handle)
+	}()
 	job.State = core.JobRunning
 	job.SandboxRef = string(handle)
-	_ = d.Store.UpdateJob(job)
+	if err := d.Store.UpdateJob(job); err != nil {
+		return err
+	}
 
 	// Phase 1 is "logs only": stream to conveyord's stdout and a job
 	// log file in the control dir.
-	logs, err := d.Runner.StreamLogs(ctx, handle)
-	if err != nil {
-		return fmt.Errorf("stream logs: %w", err)
-	}
 	logFile, err := os.Create(filepath.Join(control, "job.log"))
 	if err != nil {
 		return err
 	}
+	logs, err := d.Runner.StreamLogs(ctx, handle)
+	if err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("stream logs: %w", err)
+	}
+	var streamErr error
+	var writeErr error
 	for ev := range logs {
-		fmt.Fprintln(logFile, ev.Line)
+		if ev.Err != "" {
+			streamErr = fmt.Errorf("runner log stream: %s", ev.Err)
+			continue
+		}
+		if _, err := fmt.Fprintln(logFile, ev.Line); err != nil && writeErr == nil {
+			writeErr = fmt.Errorf("write job log: %w", err)
+		}
 		log.Printf("[task %s] %s", t.ID, ev.Line)
 	}
-	logFile.Close()
+	if err := logFile.Close(); err != nil && writeErr == nil {
+		writeErr = fmt.Errorf("close job log: %w", err)
+	}
+	if streamErr != nil {
+		return streamErr
+	}
+	if writeErr != nil {
+		return writeErr
+	}
 
 	art, err := d.Runner.CollectArtifacts(ctx, handle)
+	runnerFinalized = true
 	if err != nil {
 		return fmt.Errorf("collect artifacts: %w", err)
 	}
@@ -158,7 +223,10 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	} else {
 		job.State = core.JobFailed
 	}
-	_ = d.Store.UpdateJob(job)
+	if err := d.Store.UpdateJob(job); err != nil {
+		return err
+	}
+	jobTerminal = true
 	if art.ExitCode != 0 {
 		return fmt.Errorf("job exited %d (log: %s)", art.ExitCode, filepath.Join(control, "job.log"))
 	}
@@ -212,25 +280,36 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 		}
 		for _, is := range issues {
 			source := fmt.Sprintf("github:%s#%d", repo.GitHub, is.Number)
-			if d.taskExists(source) {
+			existing, exists := d.taskBySource(source)
+			if exists && existing.State != core.TaskQueued {
 				continue
 			}
-			id := core.NewTaskID()
-			t := core.Task{
-				ID:         id,
-				Workspace:  d.Cfg.Workspace,
-				Source:     source,
-				Title:      is.Title,
-				Body:       is.Body,
-				Level:      core.L2,
-				Repo:       repo.Name,
-				BaseBranch: repo.Base,
-				Branch:     gitx.BranchName(id),
-				State:      core.TaskQueued,
-				CreatedAt:  time.Now(),
+
+			id := existing.ID
+			if !exists {
+				id = core.NewTaskID()
+				existing = core.Task{
+					ID:         id,
+					Workspace:  d.Cfg.Workspace,
+					Source:     source,
+					Title:      is.Title,
+					Body:       is.Body,
+					Level:      core.L2,
+					Repo:       repo.Name,
+					BaseBranch: repo.Base,
+					Branch:     gitx.BranchName(id),
+					State:      core.TaskQueued,
+					CreatedAt:  time.Now(),
+				}
+				if err := d.Store.CreateTask(existing); err != nil {
+					log.Printf("poll %s: create task: %v", repo.GitHub, err)
+					continue
+				}
 			}
-			if err := d.Store.CreateTask(t); err != nil {
-				log.Printf("poll %s: create task: %v", repo.GitHub, err)
+			if err := github.MarkIssueDispatched(ctx, repo.GitHub, is.Number, id); err != nil {
+				// Leave the task queued. The ready label remains, so the next
+				// poll retries the durable GitHub claim before dispatching.
+				log.Printf("poll %s: claim issue #%d: %v", repo.GitHub, is.Number, err)
 				continue
 			}
 			log.Printf("[task %s] created from %s (%q)", id, source, is.Title)
@@ -239,17 +318,17 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) taskExists(source string) bool {
+func (d *Dispatcher) taskBySource(source string) (core.Task, bool) {
 	tasks, err := d.Store.ListTasks()
 	if err != nil {
-		return false
+		return core.Task{}, false
 	}
 	for _, t := range tasks {
 		if t.Source == source {
-			return true
+			return t, true
 		}
 	}
-	return false
+	return core.Task{}, false
 }
 
 // buildPrompt is the Phase 1 stand-in for the implement role prompt;
