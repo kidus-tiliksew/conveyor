@@ -65,6 +65,14 @@ LocalDockerRunner fails closed when a referenced set is absent, is not
 `local_eligible`, cannot be decrypted, contains an invalid environment name,
 or contains a multiline value.
 
+Note: harness credential directories such as `~/.claude` and `~/.codex` are
+copied into per-job staging before being mounted read-only into the sandbox
+(spec §5.2). The original live home directory is never mounted into the
+sandbox; under Tier A confinement, only the job worktree set and bare-repo
+cache are mounted (spec §8.5).
+The per-job staged credential copy is deleted once artifact collection
+completes.
+
 ## Configure command policy
 
 Commands are argv prefixes, not shell snippets:
