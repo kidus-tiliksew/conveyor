@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -52,7 +54,7 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 		t.Fatal("authorized task was not dispatched")
 	}
 
-	tasks, err := st.ListTasks()
+	tasks, err := st.ListTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +67,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
 	task := core.Task{ID: "task-1", State: core.TaskAwaiting}
-	if err := st.CreateTask(task); err != nil {
+	if err := st.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
@@ -87,7 +89,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("status = %d: %s", res.Code, res.Body.String())
 	}
-	updated, err := st.GetTask("task-1")
+	updated, err := st.GetTask(context.Background(), "task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +106,33 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	}
 }
 
+func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
+	t.Parallel()
+	st := store.NewMemory()
+	if err := st.CreateTask(context.Background(), core.Task{ID: "queued-task", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	dispatched := make(chan string, 1)
+	s := NewServer(st)
+	s.BearerToken = "token"
+	s.OnCreate = func(id string) { dispatched <- id }
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/queued-task/redispatch", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case id := <-dispatched:
+		if id != "queued-task" {
+			t.Fatalf("dispatched %q", id)
+		}
+	default:
+		t.Fatal("queued task was not re-enqueued")
+	}
+}
+
 func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "secret-token"
@@ -111,5 +140,252 @@ func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/tasks", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
+	}
+}
+
+func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
+	st := store.NewMemory()
+	for _, task := range []core.Task{
+		{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()},
+		{ID: "awaiting", State: core.TaskAwaiting, CreatedAt: time.Now()},
+	} {
+		if err := st.CreateTask(context.Background(), task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := NewServer(st).Handler()
+	activity := httptest.NewRecorder()
+	handler.ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity", nil))
+	if activity.Code != http.StatusOK || !bytes.Contains(activity.Body.Bytes(), []byte(`"id":"running"`)) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+	reviews := httptest.NewRecorder()
+	handler.ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews", nil))
+	if reviews.Code != http.StatusOK || bytes.Contains(reviews.Body.Bytes(), []byte(`"id":"running"`)) {
+		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+}
+
+func TestDashboardIsEmbedded(t *testing.T) {
+	response := httptest.NewRecorder()
+	NewServer(store.NewMemory()).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tasks/example", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("Conveyor")) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
+	st := store.NewMemory()
+	task := core.Task{ID: "task-review", Workspace: "test", Repo: "api", State: core.TaskAwaiting, CreatedAt: time.Now()}
+	if err := st.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	requeued := make(chan string, 1)
+	s := NewServer(st)
+	s.BearerToken = "secret-token"
+	s.OnCreate = func(id string) { requeued <- id }
+	h := s.Handler()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-review/review", bytes.NewReader([]byte(`{
+  "action": "redirect",
+  "reason_code": "spec-wrong",
+  "comment": "Clarify the boundary"
+}`)))
+	request.Header.Set("Authorization", "Bearer secret-token")
+	request.Header.Set("X-Conveyor-Actor", "kidus")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	select {
+	case id := <-requeued:
+		if id != task.ID {
+			t.Fatalf("requeued = %q", id)
+		}
+	default:
+		t.Fatal("redirect did not requeue task")
+	}
+	updated, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != core.TaskQueued {
+		t.Fatalf("state = %s", updated.State)
+	}
+	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interventions) != 1 || interventions[0].ReasonCode != "spec-wrong" || interventions[0].ActorID != "kidus" {
+		t.Fatalf("interventions = %+v", interventions)
+	}
+	events, err := st.ListEvents(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[1].Kind != "intervention.redirect" || events[2].Kind != "task.state_changed" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
+	st := store.NewMemory()
+	if err := st.CreateTask(context.Background(), core.Task{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.BearerToken = "token"
+	h := s.Handler()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("running task status = %d", response.Code)
+	}
+
+	if err := st.UpdateTaskState(context.Background(), "running", core.TaskAwaiting); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status = %d", response.Code)
+	}
+}
+
+type observedStore struct {
+	store.Store
+	listJobsCalls            int
+	listEventsCalls          int
+	listInterventionsCalls   int
+	listActivityMarkersCalls int
+	getLatestJobCalls        int
+	listEventsAfterCalls     int
+	afterHook                func()
+}
+
+func (s *observedStore) ListJobs(ctx context.Context, taskID string) ([]core.Job, error) {
+	s.listJobsCalls++
+	return s.Store.ListJobs(ctx, taskID)
+}
+
+func (s *observedStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.listEventsCalls++
+	return s.Store.ListEvents(ctx, taskID)
+}
+
+func (s *observedStore) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
+	s.listInterventionsCalls++
+	return s.Store.ListInterventions(ctx, taskID)
+}
+
+func (s *observedStore) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
+	s.listActivityMarkersCalls++
+	return s.Store.ListActivityMarkers(ctx)
+}
+
+func (s *observedStore) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
+	s.getLatestJobCalls++
+	return s.Store.GetLatestJob(ctx, taskID)
+}
+
+func (s *observedStore) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
+	s.listEventsAfterCalls++
+	events, err := s.Store.ListEventsAfter(ctx, taskID, afterID)
+	if s.afterHook != nil {
+		s.afterHook()
+	}
+	return events, err
+}
+
+func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
+	base := store.NewMemory()
+	for _, id := range []string{"one", "two", "three"} {
+		if err := base.CreateTask(context.Background(), core.Task{ID: id, State: core.TaskQueued}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := &observedStore{Store: base}
+	response := httptest.NewRecorder()
+	NewServer(observed).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/activity", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if observed.listActivityMarkersCalls != 1 || observed.listJobsCalls != 0 || observed.listEventsCalls != 0 || observed.listInterventionsCalls != 0 {
+		t.Fatalf("activity query calls = markers:%d jobs:%d events:%d interventions:%d",
+			observed.listActivityMarkersCalls, observed.listJobsCalls, observed.listEventsCalls, observed.listInterventionsCalls)
+	}
+}
+
+func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
+	base := store.NewMemory()
+	task := core.Task{ID: "running-detail", State: core.TaskRunning}
+	if err := base.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.CreateJob(context.Background(), core.Job{
+		ID: "job-running", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	observed := &observedStore{Store: base}
+	response := httptest.NewRecorder()
+	NewServer(observed).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/running-detail/activity", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(`"ended_at"`)) {
+		t.Fatalf("running detail contains ended_at: %s", response.Body.String())
+	}
+	if observed.listJobsCalls != 1 || observed.listEventsCalls != 1 || observed.listInterventionsCalls != 1 {
+		t.Fatalf("detail query calls = jobs:%d events:%d interventions:%d",
+			observed.listJobsCalls, observed.listEventsCalls, observed.listInterventionsCalls)
+	}
+}
+
+func TestReviewUsesLatestJobWithoutLoadingHistory(t *testing.T) {
+	base := store.NewMemory()
+	task := core.Task{ID: "review-latest", State: core.TaskAwaiting}
+	if err := base.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.CreateJob(context.Background(), core.Job{ID: "job-latest", TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	observed := &observedStore{Store: base}
+	server := NewServer(observed)
+	server.BearerToken = "token"
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/review-latest/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if observed.getLatestJobCalls != 1 || observed.listJobsCalls != 0 {
+		t.Fatalf("review query calls = latest:%d list:%d", observed.getLatestJobCalls, observed.listJobsCalls)
+	}
+}
+
+func TestEventStreamUsesIncrementalReads(t *testing.T) {
+	base := store.NewMemory()
+	if err := base.CreateTask(context.Background(), core.Task{ID: "stream-task", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	observed := &observedStore{Store: base, afterHook: cancel}
+	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/stream-task/events/stream", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	NewServer(observed).Handler().ServeHTTP(response, request)
+	if observed.listEventsAfterCalls != 1 || observed.listEventsCalls != 0 {
+		t.Fatalf("stream query calls = incremental:%d full:%d", observed.listEventsAfterCalls, observed.listEventsCalls)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("event: activity")) {
+		t.Fatalf("stream body = %s", response.Body.String())
 	}
 }

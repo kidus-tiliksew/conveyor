@@ -19,9 +19,9 @@ with a version bump (§20), never silent edits.
 
 ## Phase discipline
 
-Phase 1 is complete (spec §19, amendment §21.1): Codex adapter,
-LocalDockerRunner, isolated task checkout manager, secrets injection, base
-image, handoff snapshots, GitHub issue → PR, logs only. Preserve that boundary
-until Phase 2 starts explicitly (no Postgres, review UI, or redaction engine) —
-but don't foreclose later phases either: keep state behind
-`internal/store.Store` and all sandbox logs flowing through the shim.
+Phase 2 is complete (spec §19): Claude Code + Codex adapters, credential
+routing, Postgres/River state, the standalone local runner, append-only events,
+review UI, and shim-boundary redaction are implemented and validated. Preserve
+the accepted Phase 1 core loop and Phase 2 contracts. Phase 3 has not started;
+do not build K8sRunner, multi-repo worktree sets, aggregate cost dashboard, or
+budget breakers until it is explicitly activated.

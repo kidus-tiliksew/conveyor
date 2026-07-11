@@ -1,6 +1,6 @@
-// conveyor is the CLI — the primary human surface alongside the review
-// UI (spec §17.1). Phase 1 commands: task new/list/show, runner start,
-// checkout/done (worktree escape hatch), secrets set.
+// conveyor is the CLI — the primary human surface alongside the review UI
+// (spec §17.1). It manages tasks, the standalone local runner, human
+// checkout/done, and secret input.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/spf13/cobra"
 )
@@ -102,8 +103,42 @@ func taskCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newCmd, listCmd, showCmd)
+	cmd.AddCommand(newCmd, listCmd, showCmd,
+		reviewTaskCmd(core.InterventionApprove),
+		reviewTaskCmd(core.InterventionReject),
+		reviewTaskCmd(core.InterventionRedirect),
+	)
 	return cmd
+}
+
+func reviewTaskCmd(action core.InterventionAction) *cobra.Command {
+	var reason, comment string
+	command := &cobra.Command{
+		Use:   string(action) + " <id>",
+		Short: strings.ToUpper(string(action[:1])) + string(action[1:]) + " a task at the human gate",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if reason == "" {
+				if action == core.InterventionApprove {
+					reason = "approved"
+				} else {
+					return fmt.Errorf("--reason is required")
+				}
+			}
+			if action == core.InterventionRedirect && strings.TrimSpace(comment) == "" {
+				return fmt.Errorf("--message is required for redirect")
+			}
+			task, err := newClient().reviewTask(args[0], action, reason, comment)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%s task %s (state %s)\n", action, task.ID, task.State)
+			return nil
+		},
+	}
+	command.Flags().StringVar(&reason, "reason", "", "structured reason code")
+	command.Flags().StringVarP(&comment, "message", "m", "", "review comment")
+	return command
 }
 
 func checkoutCmd() *cobra.Command {
@@ -162,31 +197,24 @@ func doneCmd() *cobra.Command {
 func runnerCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "runner", Short: "Manage runners"}
 	var local bool
-	var addr string
-	var pollGitHub string
 	start := &cobra.Command{
 		Use:   "start",
-		Short: "Start the Phase 1 combined control plane and local Docker runner",
+		Short: "Start the standalone local Docker runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !local {
-				return fmt.Errorf("Phase 1 only supports --local")
+				return fmt.Errorf("only --local is implemented before K8sRunner in Phase 3")
 			}
-			binary, err := conveyordBinary()
+			binary, err := siblingBinary("conveyor-runner")
 			if err != nil {
 				return err
 			}
-			commandArgs := []string{"-config", *configPath, "-addr", addr}
-			if pollGitHub != "" {
-				commandArgs = append(commandArgs, "-poll-github", pollGitHub)
-			}
+			commandArgs := []string{"-config", *configPath}
 			child := exec.CommandContext(cmd.Context(), binary, commandArgs...)
 			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 			return child.Run()
 		},
 	}
 	start.Flags().BoolVar(&local, "local", false, "run the local Docker runner")
-	start.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "combined daemon listen address")
-	start.Flags().StringVar(&pollGitHub, "poll-github", "", "GitHub issue poll interval (for example 60s)")
 	cmd.AddCommand(start)
 	return cmd
 }
@@ -334,17 +362,17 @@ func removeTaskWorktree(ctx context.Context, branch string, push bool) error {
 	return err
 }
 
-func conveyordBinary() (string, error) {
+func siblingBinary(name string) (string, error) {
 	if executable, err := os.Executable(); err == nil {
-		sibling := filepath.Join(filepath.Dir(executable), "conveyord")
+		sibling := filepath.Join(filepath.Dir(executable), name)
 		if info, statErr := os.Stat(sibling); statErr == nil && !info.IsDir() {
 			return sibling, nil
 		}
 	}
-	if binary, err := exec.LookPath("conveyord"); err == nil {
+	if binary, err := exec.LookPath(name); err == nil {
 		return binary, nil
 	}
-	return "", fmt.Errorf("conveyord not found beside conveyor or on PATH; run make build")
+	return "", fmt.Errorf("%s not found beside conveyor or on PATH; run make build", name)
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {

@@ -119,3 +119,51 @@ func TestLoadRejectsUnknownOrUnenforceablePolicyFields(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCredentialRouting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	data := `
+workspace: demo
+database:
+  backend: postgres
+  url: postgres://fixture
+secrets:
+  backend: plain
+  sets:
+    harness-auth: {local_eligible: true}
+credentials:
+  - id: claude-alice
+    owner_id: alice
+    kind: personal_sub
+    vendor: anthropic
+    harness: claude-code
+    ref: secretref://demo/harness-auth/CLAUDE_CODE_OAUTH_TOKEN
+vendor_policies:
+  - vendor: anthropic
+    harness: claude-code
+    auth_mode: personal_sub
+    subscription_headless: allowed
+    reviewed_at: 2026-07-10
+    source_url: https://example.com/terms
+routing:
+  owner_id: alice
+  stages:
+    implement:
+      harnesses: [claude-code, codex]
+      model_tier: mid
+      budget_usd: 2.50
+repos:
+  - name: api
+    url: file:///tmp/api
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Credentials[0].OwnerKind != "user" || cfg.Routing.Stages["implement"].Harnesses[0] != "claude-code" {
+		t.Fatalf("config = %+v", cfg)
+	}
+}

@@ -2,7 +2,7 @@
 # devcontainer extends. Provides git, the harness CLIs, the job shim,
 # browsers for verification (Phase 4), and the cloud toolbelt (§11.1).
 #
-# Phase 1 keeps this minimal: git + node (for the Codex CLI) + gh + the
+# Phase 2 keeps this minimal: git + node, both harness CLIs, gh, and the
 # shim. The toolbelt (gcloud, aws, kubectl, terraform) and browsers land
 # with the phases that need them.
 
@@ -17,11 +17,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Harness CLIs. Keep CODEX_VERSION aligned with the adapter's
-# PinnedVersion; the runtime adapter check fails closed on drift.
+# Harness CLIs. Keep versions aligned with each adapter's PinnedVersion;
+# runtime checks fail closed on drift.
 ARG CODEX_VERSION=0.142.0
-RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
-    && test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"
+ARG CLAUDE_CODE_VERSION=2.1.206
+RUN npm install -g \
+        "@openai/codex@${CODEX_VERSION}" \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && test "$(codex --version)" = "codex-cli ${CODEX_VERSION}" \
+    && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_CODE_VERSION}"
 
 # GitHub CLI for PR operations inside sandboxes.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

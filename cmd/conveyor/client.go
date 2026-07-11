@@ -68,6 +68,20 @@ func (c *client) redispatchTask(id string) (core.Task, error) {
 	return t, err
 }
 
+func (c *client) reviewTask(id string, action core.InterventionAction, reasonCode, comment string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for review actions")
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"action": string(action), "reason_code": reasonCode, "comment": comment,
+	})
+	var response struct {
+		Task core.Task `json:"task"`
+	}
+	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/review", payload, &response)
+	return response.Task, err
+}
+
 func (c *client) do(method, path string, body []byte, out any) error {
 	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
 	if err != nil {

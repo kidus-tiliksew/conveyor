@@ -45,7 +45,7 @@ type StartJobSpec struct {
 	// (the task's worktree).
 	Workdir string
 	// ControlDir is the trusted host path carrying prompt.txt in and
-	// events.jsonl / job-scoped handoff files / harness session state out.
+	// attempt-scoped events-<job-id>.jsonl / job-scoped handoff files / harness session state out.
 	ControlDir string
 	// ControlPath is its deterministic in-sandbox mount point.
 	ControlPath string
@@ -104,7 +104,7 @@ type Artifacts struct {
 	ExitCode        int
 	Commits         []string
 	Files           []string
-	EventLog        string // path to events.jsonl in the control dir
+	EventLog        string // path to the attempt-scoped events JSONL in the control dir
 	HandoffSnapshot string // path to the snapshot JSON artifact, if written
 	SessionArchive  string // native session dir archive, if the harness supports resume
 }

@@ -2,6 +2,7 @@ package localdocker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
+	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
@@ -56,6 +59,7 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 		Image:              "conveyor:test",
 		Workdir:            "/work",
 		ControlDir:         control,
+		BudgetUSD:          2.5,
 		CredentialsDir:     source,
 		CredentialStageDir: filepath.Join(tmp, "staging"),
 		Harness:            "codex",
@@ -71,6 +75,9 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	if strings.Contains(string(args), source) {
 		t.Fatalf("docker args expose source credential directory: %s", args)
 	}
+	if !strings.Contains(string(args), "--budget-usd\n2.5\n") {
+		t.Fatalf("docker args lost budget: %s", args)
+	}
 
 	info := r.jobs[h]
 	entries, err := os.ReadDir(info.credentialDir)
@@ -80,11 +87,29 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "auth.json" {
 		t.Fatalf("staged entries = %v, want only auth.json", entries)
 	}
+	manifestData, err := os.ReadFile(filepath.Join(control, redact.ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest redact.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CredentialFile != "/conveyor/creds/codex/auth.json" || strings.Contains(string(manifestData), "secret") {
+		t.Fatalf("credential redaction manifest = %s", manifestData)
+	}
 	handoffPath, err := snapshot.Path(control, "task-1-implement-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := (&snapshot.Handoff{State: "done"}).Save(handoffPath); err != nil {
+		t.Fatal(err)
+	}
+	eventPath, err := jobartifact.EventLogPath(control, "task-1-implement-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventPath, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	artifacts, err := r.CollectArtifacts(context.Background(), h)
@@ -93,6 +118,9 @@ func TestStartJobStagesOnlyCodexAuthAndCleansUp(t *testing.T) {
 	}
 	if artifacts.HandoffSnapshot != handoffPath {
 		t.Fatalf("handoff artifact = %q, want %q", artifacts.HandoffSnapshot, handoffPath)
+	}
+	if artifacts.EventLog != eventPath {
+		t.Fatalf("event artifact = %q, want %q", artifacts.EventLog, eventPath)
 	}
 	if _, err := os.Stat(info.credentialDir); !os.IsNotExist(err) {
 		t.Fatalf("credential staging directory still exists: %v", err)
@@ -161,6 +189,13 @@ func TestStartJobResolvesSecretsIntoShortLivedEnvFile(t *testing.T) {
 	if !strings.Contains(string(policy), "printenv") {
 		t.Fatalf("policy was not staged: %s", policy)
 	}
+	manifest, err := os.ReadFile(filepath.Join(control, redact.ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"env_names":["CANARY"]`) || strings.Contains(string(manifest), "quiet-canary-value") {
+		t.Fatalf("unsafe redaction manifest: %s", manifest)
+	}
 	if entries, err := os.ReadDir(filepath.Join(tmp, "secret-stage")); err != nil || len(entries) != 0 {
 		t.Fatalf("secret stage was not cleaned: entries=%v err=%v", entries, err)
 	}
@@ -180,6 +215,34 @@ func TestStartJobRejectsNonLocalSecretSet(t *testing.T) {
 	var bootErr *runner.BootError
 	if !errors.As(err, &bootErr) || !strings.Contains(bootErr.Diagnostics.ValidationError, "not local_eligible") {
 		t.Fatalf("error = %#v, want local_eligible boot diagnostic", err)
+	}
+}
+
+func TestStageClaudeCredentialsCopiesOnlyCredentialFile(t *testing.T) {
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "claude")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".credentials.json"), []byte(`{"oauthToken":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"permissions":{"allow":["*"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := stageCredentials(runner.StartJobSpec{
+		Harness: "claude-code", CredentialsDir: source, CredentialStageDir: filepath.Join(tmp, "stage"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(stage)
+	entries, err := os.ReadDir(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".credentials.json" {
+		t.Fatalf("staged entries = %v", entries)
 	}
 }
 

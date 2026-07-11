@@ -1,7 +1,6 @@
-// Package config loads the deployment configuration for Phase 1: one
-// workspace, its repos, and host paths. The full layered scope model
-// (platform → workspace → task, spec §2.1) arrives with the pack
-// machinery; this file is deliberately just enough to run the loop.
+// Package config loads one Phase 2 workspace, runner paths, routing policy,
+// credential metadata, vendor policy, and repositories. Prompt/policy pack
+// layering remains a later phase (spec §2.1).
 package config
 
 import (
@@ -10,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
@@ -37,6 +37,45 @@ type Secrets struct {
 	Sets       map[string]SecretSet `yaml:"sets"`
 }
 
+type Database struct {
+	Backend string `yaml:"backend"` // postgres (Phase 2) | memory (explicit development mode)
+	URL     string `yaml:"url"`     // prefer CONVEYOR_DATABASE_URL so credentials stay out of YAML
+}
+
+type Credential struct {
+	ID        string `yaml:"id"`
+	OwnerID   string `yaml:"owner_id"`
+	OwnerKind string `yaml:"owner_kind"` // user | org
+	Kind      string `yaml:"kind"`       // personal_sub | team_sub | api
+	Vendor    string `yaml:"vendor"`
+	Harness   string `yaml:"harness"` // codex | claude-code
+	// Ref is a runner-local credential directory or a secretref:// URL. It is
+	// metadata, never the credential value itself (spec §5.2).
+	Ref string `yaml:"ref"`
+}
+
+type VendorPolicy struct {
+	Vendor               string `yaml:"vendor"`
+	Harness              string `yaml:"harness"`
+	AuthMode             string `yaml:"auth_mode"`
+	SubscriptionHeadless string `yaml:"subscription_headless"`
+	ReviewedAt           string `yaml:"reviewed_at"`
+	SourceURL            string `yaml:"source_url"`
+}
+
+type StageRoute struct {
+	Harnesses []string `yaml:"harnesses"`
+	ModelTier string   `yaml:"model_tier"`
+	BudgetUSD float64  `yaml:"budget_usd"`
+}
+
+type Routing struct {
+	OwnerID         string                `yaml:"owner_id"`
+	LeaseSeconds    int                   `yaml:"lease_seconds"`
+	AllowRestricted bool                  `yaml:"allow_restricted"`
+	Stages          map[string]StageRoute `yaml:"stages"`
+}
+
 type Config struct {
 	Workspace string `yaml:"workspace"`
 	Image     string `yaml:"image"`
@@ -44,9 +83,13 @@ type Config struct {
 	JobsDir   string `yaml:"jobs_dir"`
 	// CodexCredentials is the host directory with the user's Codex
 	// login, mounted read-only into sandboxes (spec §5.2).
-	CodexCredentials string  `yaml:"codex_credentials"`
-	Secrets          Secrets `yaml:"secrets"`
-	Repos            []Repo  `yaml:"repos"`
+	CodexCredentials string         `yaml:"codex_credentials"`
+	Database         Database       `yaml:"database"`
+	Secrets          Secrets        `yaml:"secrets"`
+	Credentials      []Credential   `yaml:"credentials"`
+	VendorPolicies   []VendorPolicy `yaml:"vendor_policies"`
+	Routing          Routing        `yaml:"routing"`
+	Repos            []Repo         `yaml:"repos"`
 }
 
 func Load(path string) (*Config, error) {
@@ -73,6 +116,31 @@ func Load(path string) (*Config, error) {
 	c.CacheDir = expandDefault(c.CacheDir, home, filepath.Join(home, ".conveyor", "cache"))
 	c.JobsDir = expandDefault(c.JobsDir, home, filepath.Join(home, ".conveyor", "jobs"))
 	c.CodexCredentials = expandDefault(c.CodexCredentials, home, filepath.Join(home, ".codex"))
+	if c.Routing.OwnerID == "" {
+		c.Routing.OwnerID = "local-operator"
+	}
+	if c.Routing.LeaseSeconds == 0 {
+		c.Routing.LeaseSeconds = 4 * 60 * 60
+	}
+	if c.Routing.LeaseSeconds < 60 {
+		return nil, fmt.Errorf("routing.lease_seconds must be at least 60")
+	}
+	if c.Database.URL == "" {
+		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
+	}
+	if c.Database.Backend == "" {
+		if c.Database.URL == "" {
+			c.Database.Backend = "memory"
+		} else {
+			c.Database.Backend = "postgres"
+		}
+	}
+	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" {
+		return nil, fmt.Errorf("database.backend must be %q or %q", "postgres", "memory")
+	}
+	if c.Database.Backend == "postgres" && c.Database.URL == "" {
+		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for postgres backend")
+	}
 	c.Secrets.Root = expandDefault(c.Secrets.Root, home, filepath.Join(home, ".conveyor", "secrets"))
 	if c.Secrets.SOPSConfig != "" {
 		c.Secrets.SOPSConfig = expandDefault(c.Secrets.SOPSConfig, home, "")
@@ -85,6 +153,81 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Secrets.SOPSBinary == "" {
 		c.Secrets.SOPSBinary = "sops"
+	}
+	credentialIDs := make(map[string]struct{}, len(c.Credentials))
+	for i := range c.Credentials {
+		credential := &c.Credentials[i]
+		if credential.OwnerID == "" {
+			credential.OwnerID = c.Routing.OwnerID
+		}
+		if credential.OwnerKind == "" {
+			credential.OwnerKind = "user"
+		}
+		if credential.ID == "" || credential.Vendor == "" || credential.Harness == "" || credential.Ref == "" {
+			return nil, fmt.Errorf("credential %d: id, vendor, harness, and ref are required", i)
+		}
+		if _, duplicate := credentialIDs[credential.ID]; duplicate {
+			return nil, fmt.Errorf("duplicate credential id %q", credential.ID)
+		}
+		credentialIDs[credential.ID] = struct{}{}
+		if credential.OwnerKind != "user" && credential.OwnerKind != "org" {
+			return nil, fmt.Errorf("credential %s: owner_kind must be user or org", credential.ID)
+		}
+		if credential.Kind != "personal_sub" && credential.Kind != "team_sub" && credential.Kind != "api" {
+			return nil, fmt.Errorf("credential %s: unsupported kind %q", credential.ID, credential.Kind)
+		}
+		if credential.Kind != "api" && credential.OwnerKind != "user" {
+			return nil, fmt.Errorf("credential %s: subscription credentials must be owned by one user", credential.ID)
+		}
+		if credential.Harness != "codex" && credential.Harness != "claude-code" {
+			return nil, fmt.Errorf("credential %s: unsupported harness %q", credential.ID, credential.Harness)
+		}
+		if strings.HasPrefix(credential.Ref, "secretref://") {
+			ref, err := secrets.ParseRef(credential.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("credential %s: %w", credential.ID, err)
+			}
+			if ref.Workspace != c.Workspace {
+				return nil, fmt.Errorf("credential %s: secret workspace %q does not match %q", credential.ID, ref.Workspace, c.Workspace)
+			}
+			if _, ok := c.Secrets.Sets[ref.Set]; !ok {
+				return nil, fmt.Errorf("credential %s: secret set %q has no delivery policy", credential.ID, ref.Set)
+			}
+			if !validHarnessCredentialEnv(credential.Harness, credential.Kind, ref.Name) {
+				return nil, fmt.Errorf("credential %s: %s is not a supported %s %s environment credential", credential.ID, ref.Name, credential.Harness, credential.Kind)
+			}
+		} else {
+			credential.Ref = expandDefault(credential.Ref, home, "")
+		}
+	}
+	for i, policy := range c.VendorPolicies {
+		if policy.Vendor == "" || policy.Harness == "" || policy.AuthMode == "" || policy.SourceURL == "" {
+			return nil, fmt.Errorf("vendor policy %d: vendor, harness, auth_mode, and source_url are required", i)
+		}
+		switch policy.SubscriptionHeadless {
+		case "allowed", "restricted", "disallowed", "unknown":
+		default:
+			return nil, fmt.Errorf("vendor policy %d: invalid subscription_headless %q", i, policy.SubscriptionHeadless)
+		}
+		if _, err := time.Parse("2006-01-02", policy.ReviewedAt); err != nil {
+			return nil, fmt.Errorf("vendor policy %d: reviewed_at must be YYYY-MM-DD", i)
+		}
+	}
+	for stage, route := range c.Routing.Stages {
+		if len(route.Harnesses) == 0 {
+			return nil, fmt.Errorf("routing stage %s: at least one harness is required", stage)
+		}
+		for _, harness := range route.Harnesses {
+			if harness != "codex" && harness != "claude-code" {
+				return nil, fmt.Errorf("routing stage %s: unsupported harness %q", stage, harness)
+			}
+		}
+		if route.BudgetUSD < 0 {
+			return nil, fmt.Errorf("routing stage %s: budget_usd cannot be negative", stage)
+		}
+	}
+	if len(c.Credentials) > 0 && c.Database.Backend != "postgres" {
+		return nil, fmt.Errorf("credential routing requires the postgres database backend")
 	}
 	for i := range c.Repos {
 		if c.Repos[i].Name == "" || c.Repos[i].URL == "" {
@@ -115,9 +258,23 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+func validHarnessCredentialEnv(harness, kind, name string) bool {
+	switch harness {
+	case "codex":
+		return kind == "api" && name == "OPENAI_API_KEY"
+	case "claude-code":
+		if kind == "api" {
+			return name == "ANTHROPIC_API_KEY" || name == "ANTHROPIC_AUTH_TOKEN"
+		}
+		return name == "CLAUDE_CODE_OAUTH_TOKEN"
+	default:
+		return false
+	}
+}
+
 func validatePolicy(policy adapter.ToolPolicy) error {
 	if len(policy.NetworkAllow) != 0 {
-		return fmt.Errorf("network_allow is not enforceable by the Phase 1 LocalDockerRunner; leave it empty until runner-level egress filtering lands")
+		return fmt.Errorf("network_allow is not enforceable by LocalDockerRunner; leave it empty until runner-level egress filtering lands in Phase 4")
 	}
 	for kind, patterns := range map[string][][]string{
 		"allowed_commands": policy.AllowedCommands,

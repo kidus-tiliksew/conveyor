@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
@@ -77,13 +81,16 @@ func TestSuperviseFallsBackWithoutResumeAndEmitsOneTerminalDone(t *testing.T) {
 	}
 	var forwarded []adapter.Event
 	control := t.TempDir()
-	if err := supervise(a, "/work", control, "scripted", "task-1", "task-1-implement-1", "original task", adapter.ToolPolicy{}, func(ev adapter.Event) {
+	if err := supervise(a, "/work", control, "scripted", "task-1", "task-1-implement-1", "original task", 2.5, adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(a.runSpecs) != 2 {
 		t.Fatalf("Run calls = %d, want 2", len(a.runSpecs))
+	}
+	if a.runSpecs[0].BudgetUSD != 2.5 || a.runSpecs[1].BudgetUSD != 2.5 {
+		t.Fatalf("run budgets = %v, %v, want 2.5", a.runSpecs[0].BudgetUSD, a.runSpecs[1].BudgetUSD)
 	}
 	if len(a.resumeRefs) != 0 {
 		t.Fatalf("Resume calls = %d, want 0", len(a.resumeRefs))
@@ -141,7 +148,7 @@ func TestElicitHandoffFallsBackAfterResumeError(t *testing.T) {
 	}
 	control := t.TempDir()
 	var forwarded []adapter.Event
-	if err := elicitHandoff(a, "session-1", "/work", control, "scripted", "task-1", "job-1", "task prompt", adapter.ToolPolicy{}, func(ev adapter.Event) {
+	if err := elicitHandoff(a, "session-1", "/work", control, "scripted", "task-1", "job-1", "task prompt", 0, adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	}); err != nil {
 		t.Fatal(err)
@@ -192,7 +199,7 @@ func TestSuperviseSnapshotsFailedRunAndEmitsTerminalErrorLast(t *testing.T) {
 	}
 	var forwarded []adapter.Event
 	control := t.TempDir()
-	err := supervise(a, "/work", control, "scripted", "task-1", "job-1", "original task", adapter.ToolPolicy{}, func(ev adapter.Event) {
+	err := supervise(a, "/work", control, "scripted", "task-1", "job-1", "original task", 0, adapter.ToolPolicy{}, func(ev adapter.Event) {
 		forwarded = append(forwarded, ev)
 	})
 	if err == nil {
@@ -216,5 +223,36 @@ func TestSuperviseSnapshotsFailedRunAndEmitsTerminalErrorLast(t *testing.T) {
 	}
 	if h.State != "failed after partial work" {
 		t.Fatalf("state = %q", h.State)
+	}
+}
+
+func TestCopyCredentialFileRejectsMissingLayoutFile(t *testing.T) {
+	err := copyCredentialFile(t.TempDir(), t.TempDir(), "auth.json")
+	if err == nil || !os.IsNotExist(err) {
+		t.Fatalf("error = %v, want missing credential file", err)
+	}
+}
+
+func TestLoadRedactorIncludesEnvironmentAndCredentialFileValues(t *testing.T) {
+	control := t.TempDir()
+	credentialPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(credentialPath, []byte(`{"tokens":{"access_token":"oauth-secret"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("API_SECRET", "environment-secret")
+	manifest, err := json.Marshal(redact.Manifest{EnvNames: []string{"API_SECRET"}, CredentialFile: credentialPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, redact.ManifestFile), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scrubber, err := loadRedactor(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean, stats := scrubber.Redact("environment-secret oauth-secret")
+	if strings.Contains(clean, "environment-secret") || strings.Contains(clean, "oauth-secret") || stats.Exact != 2 {
+		t.Fatalf("clean=%q stats=%+v", clean, stats)
 	}
 }

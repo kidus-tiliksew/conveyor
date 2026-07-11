@@ -1,5 +1,9 @@
 /bin/
+/conveyor.yaml
 images/base/conveyor-shim
 *.env
 !*.example.env
 .DS_Store
+web/node_modules/
+.playwright-cli/
+output/

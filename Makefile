@@ -5,14 +5,18 @@ CODEX_BASE_VERSION ?= 0.142.0
 CODEX_BUMP_VERSION ?= 0.143.0
 CODEX_BUMP_IMAGE ?= conveyor-base:codex-$(CODEX_BUMP_VERSION)
 
-.PHONY: all build shim test vet fmt tidy image resume-experiment-image resume-experiment clean
+.PHONY: all build ui shim test vet fmt tidy image resume-experiment-image resume-experiment clean
 
 all: build
 
-build:
+build: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
+	go build $(LDFLAGS) -o $(BIN)/conveyor-runner ./cmd/conveyor-runner
 	go build -o $(BIN)/conveyor-resume-experiment ./cmd/conveyor-resume-experiment
+
+ui:
+	cd web && npm ci && npm run build
 
 # The shim ships inside the (linux) base image regardless of host OS,
 # and must stay a dependency-free static binary (spec §17.0).

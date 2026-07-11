@@ -1,8 +1,6 @@
-// Package httpapi is the control-plane REST + SSE surface (spec §17.3).
-// Phase 1 exposes task CRUD and job listing; review actions, runner
-// registration, and webhook ingestion land in later phases. All
-// mutating endpoints will be recorded in the events table once Phase 2
-// introduces it.
+// Package httpapi is the Phase 2 control-plane REST + SSE surface and embedded
+// activity/review SPA (spec §13.3, §17.3). Mutations are authenticated and
+// recorded with actor identity in the append-only event stream.
 package httpapi
 
 import (
@@ -45,34 +43,58 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		r.Get("/activity", s.listActivity)
 		r.Get("/tasks", s.listTasks)
 		r.Get("/tasks/{id}", s.getTask)
 		r.Get("/tasks/{id}/jobs", s.listJobs)
+		r.Get("/tasks/{id}/events", s.listEvents)
+		r.Get("/tasks/{id}/events/stream", s.streamEvents)
+		r.Get("/tasks/{id}/activity", s.getTaskActivity)
+		r.Get("/tasks/{id}/interventions", s.listInterventions)
+		r.Get("/reviews", s.listReviews)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
+		r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
 		// TODO(phase1-followup): GET /v1/jobs/{id}/logs — SSE stream
 		// (spec §17.3); Phase 1 logs land in the control dir and
 		// conveyord stdout.
+	})
+	r.Get("/", serveDashboard)
+	// The SPA router owns all non-API paths; adding a client route no longer
+	// requires duplicating it in the Go server.
+	r.Get("/*", func(w http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/v1/") {
+			http.NotFound(w, request)
+			return
+		}
+		serveDashboard(w, request)
 	})
 	return r
 }
 
 func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	t, err := s.Store.GetTask(id)
+	t, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if t.State == core.TaskQueued || t.State == core.TaskRunning {
+	if t.State == core.TaskRunning {
 		http.Error(w, "task is already active", http.StatusConflict)
 		return
 	}
-	if err := s.Store.UpdateTaskState(id, core.TaskQueued); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if t.State == core.TaskQueued {
+		if err := s.Store.EnsureTaskEnqueued(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := s.Store.UpdateTaskState(r.Context(), id, core.TaskQueued); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		t.State = core.TaskQueued
 	}
-	t.State = core.TaskQueued
 	if s.OnCreate != nil {
 		s.OnCreate(id)
 	}
@@ -87,8 +109,78 @@ func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		actorID := strings.TrimSpace(r.Header.Get("X-Conveyor-Actor"))
+		if actorID == "" {
+			actorID = "local-operator"
+		}
+		ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: core.ActorHuman})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type reviewRequest struct {
+	Action     core.InterventionAction `json:"action"`
+	ReasonCode string                  `json:"reason_code"`
+	Comment    string                  `json:"comment"`
+}
+
+func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	task, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !reviewable(task.State) {
+		http.Error(w, "task is not at a human gate", http.StatusConflict)
+		return
+	}
+	var request reviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !request.Action.Valid() {
+		http.Error(w, "invalid review action", http.StatusBadRequest)
+		return
+	}
+	request.ReasonCode = strings.TrimSpace(request.ReasonCode)
+	if request.ReasonCode == "" || len(request.ReasonCode) > 64 {
+		http.Error(w, "reason_code is required and must be at most 64 characters", http.StatusBadRequest)
+		return
+	}
+	latestJob, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jobID := ""
+	if hasJob {
+		jobID = latestJob.ID
+	}
+	if err := s.Store.CreateIntervention(r.Context(), core.Intervention{
+		TaskID: id, JobID: jobID, Action: request.Action,
+		ReasonCode: request.ReasonCode, Comment: request.Comment,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if request.Action == core.InterventionRedirect && s.OnCreate != nil {
+		s.OnCreate(id)
+	}
+	updated, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"task":             updated,
+		"checkout_command": "conveyor checkout " + id,
+	})
+}
+
+func reviewable(state core.TaskState) bool {
+	return state == core.TaskAwaiting || state == core.TaskParked || state == core.TaskApproved
 }
 
 type createTaskReq struct {
@@ -133,7 +225,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		State:      core.TaskQueued,
 		CreatedAt:  time.Now(),
 	}
-	if err := s.Store.CreateTask(t); err != nil {
+	if err := s.Store.CreateTask(r.Context(), t); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -143,8 +235,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, t)
 }
 
-func (s *Server) listTasks(w http.ResponseWriter, _ *http.Request) {
-	tasks, err := s.Store.ListTasks()
+func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.Store.ListTasks(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -153,7 +245,7 @@ func (s *Server) listTasks(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
-	t, err := s.Store.GetTask(chi.URLParam(r, "id"))
+	t, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -162,12 +254,157 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.Store.ListJobs(chi.URLParam(r, "id"))
+	jobs, err := s.Store.ListJobs(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := s.Store.ListEvents(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	lastID := int64(0)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		events, err := s.Store.ListEventsAfter(r.Context(), chi.URLParam(r, "id"), lastID)
+		if err != nil {
+			_, _ = w.Write([]byte("event: error\ndata: {}\n\n"))
+			flusher.Flush()
+			return
+		}
+		for _, event := range events {
+			if event.ID <= lastID {
+				continue
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			_, _ = w.Write([]byte("event: activity\ndata: "))
+			_, _ = w.Write(data)
+			_, _ = w.Write([]byte("\n\n"))
+			lastID = event.ID
+		}
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) listInterventions(w http.ResponseWriter, r *http.Request) {
+	interventions, err := s.Store.ListInterventions(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, interventions)
+}
+
+type reviewItem struct {
+	Task            core.Task           `json:"task"`
+	Jobs            []core.Job          `json:"jobs"`
+	Events          []core.Event        `json:"events"`
+	Interventions   []core.Intervention `json:"interventions"`
+	CheckoutCommand string              `json:"checkout_command"`
+	NeedsAttention  bool                `json:"needs_attention"`
+}
+
+type activityItem struct {
+	Task           core.Task  `json:"task"`
+	LatestStage    core.Stage `json:"latest_stage,omitempty"`
+	LastEventAt    time.Time  `json:"last_event_at"`
+	NeedsAttention bool       `json:"needs_attention"`
+}
+
+func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
+	s.listActivityFiltered(w, r, true)
+}
+
+func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
+	s.listActivityFiltered(w, r, false)
+}
+
+func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, reviewsOnly bool) {
+	tasks, err := s.Store.ListTasks(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	markers, err := s.Store.ListActivityMarkers(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	markerByTask := make(map[string]store.ActivityMarker, len(markers))
+	for _, marker := range markers {
+		markerByTask[marker.TaskID] = marker
+	}
+	items := make([]activityItem, 0, len(tasks))
+	for _, task := range tasks {
+		if reviewsOnly && !reviewable(task.State) {
+			continue
+		}
+		marker := markerByTask[task.ID]
+		items = append(items, activityItem{
+			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
+			NeedsAttention: task.State == core.TaskAwaiting || task.State == core.TaskParked,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	task, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	jobs, err := s.Store.ListJobs(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	events, err := s.Store.ListEvents(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	interventions, err := s.Store.ListInterventions(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, reviewItem{
+		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
+		CheckoutCommand: "conveyor checkout " + task.ID,
+		NeedsAttention:  task.State == core.TaskAwaiting || task.State == core.TaskParked,
+	})
 }
 
 func contains(xs []string, x string) bool {

@@ -8,12 +8,10 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -179,49 +177,20 @@ func (a *Adapter) preparePolicy(policy adapter.ToolPolicy) error {
 }
 
 func (a *Adapter) checkVersion(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, a.Binary, "--version").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("check codex version: %w: %s", err, out)
-	}
-	got := strings.TrimSpace(string(out))
-	want := "codex-cli " + PinnedVersion
-	if got != want {
-		return fmt.Errorf("codex version %q is unsupported; want %q", got, want)
-	}
-	return nil
+	return adapter.CheckVersion(ctx, adapter.VersionSpec{
+		Binary: a.Binary, Name: "codex", Want: "codex-cli " + PinnedVersion,
+	})
 }
 
 func (a *Adapter) stream(ctx context.Context, dir string, args []string) (<-chan adapter.Event, error) {
-	cmd := exec.CommandContext(ctx, a.Binary, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
+	var env []string
 	if a.Home != "" {
-		cmd.Env = append(cmd.Environ(), "CODEX_HOME="+a.Home)
+		env = append(env, "CODEX_HOME="+a.Home)
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start codex: %w", err)
-	}
-
-	events := make(chan adapter.Event, 64)
-	go func() {
-		defer close(events)
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
-		for sc.Scan() {
-			events <- parseLine(sc.Bytes())
-		}
-		if err := cmd.Wait(); err != nil {
-			events <- adapter.Event{Kind: adapter.EventError, Err: err.Error(), At: time.Now()}
-			return
-		}
-		events <- adapter.Event{Kind: adapter.EventDone, At: time.Now()}
-	}()
-	return events, nil
+	return adapter.StreamCommand(ctx, adapter.StreamSpec{
+		Binary: a.Binary, Args: args, Dir: dir, Env: env, Name: "codex",
+		MaxLineBytes: 16 * 1024 * 1024, Parse: parseLine,
+	})
 }
 
 // parseLine maps one Codex JSONL thread event onto the normalized event

@@ -1,10 +1,9 @@
-// Package localdocker implements the Phase 1 runner on a developer machine.
-// It runs co-process with the volatile control plane until Phase 2 (spec
-// §21.1) and provisions Tier A containers (spec §3.2, §8.5). Isolated
+// Package localdocker implements the standalone local runner on a developer
+// machine and provisions Tier A containers (spec §3.2, §8.5). Isolated
 // task clones and the job control directory are the only mutable host mounts
 // — never the home directory, bare cache, or Docker socket.
 //
-// Phase 1 shells out to the docker CLI rather than vendoring the Docker
+// The local runner shells out to the docker CLI rather than vendoring the Docker
 // SDK; the runner protocol is the stable surface, not the transport.
 package localdocker
 
@@ -24,6 +23,8 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
+	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
@@ -58,7 +59,7 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 	if controlPath == "" {
 		controlPath = spec.ControlDir
 	}
-	secretEnv, err := r.stageSecrets(ctx, spec)
+	secretEnv, secretNames, err := r.stageSecrets(ctx, spec)
 	if err != nil {
 		return "", err
 	}
@@ -75,6 +76,19 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 			_ = os.RemoveAll(credentialDir)
 		}
 	}()
+	credentialFile := ""
+	if credentialDir != "" {
+		layout, _ := adapter.CredentialLayoutFor(spec.Harness)
+		credentialFile = filepath.Join("/conveyor/creds", spec.Harness, layout.FileName)
+	}
+	if err := writeRedactionManifest(spec.ControlDir, redact.Manifest{
+		EnvNames: secretNames, CredentialFile: credentialFile,
+	}); err != nil {
+		return "", &runner.BootError{
+			Diagnostics: runner.BootDiagnostics{ValidationError: "stage redaction manifest: " + err.Error()},
+			Err:         err,
+		}
+	}
 
 	args := []string{
 		"run", "--detach",
@@ -122,6 +136,7 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 		"--control", controlPath,
 		"--task", spec.TaskID,
 		"--job", spec.JobID,
+		"--budget-usd", strconv.FormatFloat(spec.BudgetUSD, 'f', -1, 64),
 	)
 
 	out, err := exec.CommandContext(ctx, r.Binary, args...).CombinedOutput()
@@ -139,28 +154,28 @@ func (r *Runner) StartJob(ctx context.Context, spec runner.StartJobSpec) (runner
 	return h, nil
 }
 
-func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (string, error) {
+func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (string, []string, error) {
 	if len(spec.SecretRefs) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	if r.SecretResolver == nil {
-		return "", &runner.BootError{
+		return "", nil, &runner.BootError{
 			Diagnostics: runner.BootDiagnostics{ValidationError: "secret references supplied but no resolver is configured"},
 			Err:         fmt.Errorf("secret resolver is required"),
 		}
 	}
 	if spec.SecretStageDir == "" {
-		return "", &runner.BootError{
+		return "", nil, &runner.BootError{
 			Diagnostics: runner.BootDiagnostics{ValidationError: "secret staging directory is required"},
 			Err:         fmt.Errorf("secret staging directory is required"),
 		}
 	}
 	if err := os.MkdirAll(spec.SecretStageDir, 0o700); err != nil {
-		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+		return "", nil, &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 	}
 	stage, err := os.MkdirTemp(spec.SecretStageDir, "job-secrets-")
 	if err != nil {
-		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+		return "", nil, &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 	}
 	cleanup := true
 	defer func() {
@@ -173,27 +188,27 @@ func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (st
 	for _, raw := range spec.SecretRefs {
 		ref, err := secrets.ParseRef(raw)
 		if err != nil {
-			return "", secretBootError(err)
+			return "", nil, secretBootError(err)
 		}
 		policy, ok := r.SecretPolicies[secrets.PolicyKey(ref)]
 		if !ok {
-			return "", secretBootError(fmt.Errorf("secret set %s has no delivery policy", secrets.PolicyKey(ref)))
+			return "", nil, secretBootError(fmt.Errorf("secret set %s has no delivery policy", secrets.PolicyKey(ref)))
 		}
 		if !policy.LocalEligible {
-			return "", secretBootError(fmt.Errorf("secret set %s is not local_eligible", secrets.PolicyKey(ref)))
+			return "", nil, secretBootError(fmt.Errorf("secret set %s is not local_eligible", secrets.PolicyKey(ref)))
 		}
 		if !secrets.ValidEnvName(ref.Name) {
-			return "", secretBootError(fmt.Errorf("secret %s is not a valid environment variable", ref.Name))
+			return "", nil, secretBootError(fmt.Errorf("secret %s is not a valid environment variable", ref.Name))
 		}
 		if _, duplicate := values[ref.Name]; duplicate {
-			return "", secretBootError(fmt.Errorf("duplicate injected environment name %s", ref.Name))
+			return "", nil, secretBootError(fmt.Errorf("duplicate injected environment name %s", ref.Name))
 		}
 		value, err := r.SecretResolver.Resolve(ctx, ref)
 		if err != nil {
-			return "", secretBootError(err)
+			return "", nil, secretBootError(err)
 		}
 		if strings.ContainsAny(value, "\r\n\x00") {
-			return "", secretBootError(fmt.Errorf("secret %s is not a single-line environment value", ref.Name))
+			return "", nil, secretBootError(fmt.Errorf("secret %s is not a single-line environment value", ref.Name))
 		}
 		values[ref.Name] = value
 	}
@@ -201,7 +216,7 @@ func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (st
 	path := filepath.Join(stage, "secrets.env")
 	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+		return "", nil, &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
@@ -211,14 +226,25 @@ func (r *Runner) stageSecrets(ctx context.Context, spec runner.StartJobSpec) (st
 	for _, name := range names {
 		if _, err := fmt.Fprintf(out, "%s=%s\n", name, values[name]); err != nil {
 			_ = out.Close()
-			return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+			return "", nil, &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 		}
 	}
 	if err := out.Close(); err != nil {
-		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
+		return "", nil, &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 	}
 	cleanup = false
-	return path, nil
+	return path, names, nil
+}
+
+func writeRedactionManifest(controlDir string, manifest redact.Manifest) error {
+	if controlDir == "" {
+		return fmt.Errorf("control directory is required")
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(controlDir, redact.ManifestFile), data, 0o600)
 }
 
 func secretBootError(err error) error {
@@ -346,7 +372,7 @@ func (r *Runner) CollectArtifacts(ctx context.Context, h runner.JobHandle) (runn
 	}
 
 	art := runner.Artifacts{ExitCode: code}
-	if p := filepath.Join(info.controlDir, "events.jsonl"); fileExists(p) {
+	if p, err := jobartifact.EventLogPath(info.controlDir, info.jobID); err == nil && fileExists(p) {
 		art.EventLog = p
 	}
 	if p, err := snapshot.Path(info.controlDir, info.jobID); err == nil && fileExists(p) {
@@ -386,18 +412,19 @@ func stageCredentials(spec runner.StartJobSpec) (string, error) {
 			Err:         fmt.Errorf("credential staging directory is required"),
 		}
 	}
-	if spec.Harness != "codex" {
+	layout, ok := adapter.CredentialLayoutFor(spec.Harness)
+	if !ok {
 		return "", &runner.BootError{
 			Diagnostics: runner.BootDiagnostics{ValidationError: fmt.Sprintf("credential staging is not defined for harness %q", spec.Harness)},
 			Err:         fmt.Errorf("unsupported harness credentials %q", spec.Harness),
 		}
 	}
 
-	src := filepath.Join(spec.CredentialsDir, "auth.json")
+	src := filepath.Join(spec.CredentialsDir, layout.FileName)
 	in, err := os.Open(src)
 	if err != nil {
 		return "", &runner.BootError{
-			Diagnostics: runner.BootDiagnostics{ValidationError: fmt.Sprintf("read codex auth.json: %v", err)},
+			Diagnostics: runner.BootDiagnostics{ValidationError: fmt.Sprintf("read %s %s: %v", spec.Harness, layout.FileName, err)},
 			Err:         err,
 		}
 	}
@@ -417,7 +444,7 @@ func stageCredentials(spec runner.StartJobSpec) (string, error) {
 		}
 	}()
 
-	out, err := os.OpenFile(filepath.Join(stage, "auth.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	out, err := os.OpenFile(filepath.Join(stage, layout.FileName), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", &runner.BootError{Diagnostics: runner.BootDiagnostics{RuntimeError: err.Error()}, Err: err}
 	}

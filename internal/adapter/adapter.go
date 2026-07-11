@@ -21,6 +21,9 @@ const (
 	EventToolResult    EventKind = "tool_result"
 	EventTokenUsage    EventKind = "token_usage"
 	EventWarning       EventKind = "warning"
+	// EventRedaction records only counts by detector class. The matched
+	// credential value is never included (spec §10.3).
+	EventRedaction EventKind = "redaction"
 	// EventSessionStart carries the harness's session identity in
 	// SessionRef, pushed by the adapter as the harness announces it —
 	// never scraped from session directories afterward (spec §8.3
@@ -46,6 +49,7 @@ type Event struct {
 	SessionRef string          `json:"session_ref,omitempty"` // session_start
 	Payload    json.RawMessage `json:"payload,omitempty"`     // raw harness-specific detail
 	Usage      *TokenUsage     `json:"usage,omitempty"`       // token_usage
+	CostUSD    float64         `json:"cost_usd,omitempty"`    // metered harness-reported cost
 	Err        string          `json:"err,omitempty"`         // error
 	At         time.Time       `json:"at"`
 }

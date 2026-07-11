@@ -2,8 +2,8 @@
 // every sandbox. It resolves nothing itself (secrets arrive resolved),
 // runs the harness via its adapter, and streams normalized events to
 // stdout and the control directory. All harness output flows through
-// one choke point here — that is where redaction (spec §10.3) attaches
-// in Phase 2.
+// one choke point here — redaction is applied before either transcript sink
+// receives an event (spec §10.3).
 //
 // It is injected into every sandbox image regardless of the repo's
 // language, so it must remain a dependency-free static binary
@@ -23,7 +23,10 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/adapter"
+	"github.com/kidus-tiliksew/conveyor/internal/adapter/claude"
 	"github.com/kidus-tiliksew/conveyor/internal/adapter/codex"
+	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 )
 
@@ -39,14 +42,15 @@ func main() {
 	control := flag.String("control", "", "control directory: prompt.txt in, events/artifacts out")
 	taskID := flag.String("task", "", "task ID (stamped on the handoff snapshot)")
 	jobID := flag.String("job", "", "job ID (stamped on the handoff snapshot)")
+	budgetUSD := flag.Float64("budget-usd", 0, "maximum harness spend for this job")
 	flag.Parse()
 
-	if err := run(*harness, *workdir, *control, *taskID, *jobID); err != nil {
+	if err := run(*harness, *workdir, *control, *taskID, *jobID, *budgetUSD); err != nil {
 		log.Fatalf("conveyor-shim: %v", err)
 	}
 }
 
-func run(harness, workdir, control, taskID, jobID string) error {
+func run(harness, workdir, control, taskID, jobID string, budgetUSD float64) error {
 	if harness == "" || workdir == "" || control == "" || taskID == "" || jobID == "" {
 		return fmt.Errorf("--harness, --workdir, --control, --task, and --job are required")
 	}
@@ -54,6 +58,14 @@ func run(harness, workdir, control, taskID, jobID string) error {
 	if err != nil {
 		return fmt.Errorf("read prompt: %w", err)
 	}
+	scrubber, err := loadRedactor(control)
+	if err != nil {
+		return fmt.Errorf("load redaction manifest: %w", err)
+	}
+	// Shim diagnostics share the boundary. In particular, an adapter error can
+	// contain a command or response fragment even when no normalized event was
+	// produced.
+	log.SetOutput(redact.Writer{Destination: os.Stderr, Redactor: scrubber})
 
 	a, err := buildAdapter(harness, control)
 	if err != nil {
@@ -64,32 +76,107 @@ func run(harness, workdir, control, taskID, jobID string) error {
 		return fmt.Errorf("load tool policy: %w", err)
 	}
 
-	out, err := os.Create(filepath.Join(control, "events.jsonl"))
+	eventLogPath, err := jobartifact.EventLogPath(control, jobID)
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(eventLogPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	forward := func(ev adapter.Event) {
-		// The redaction choke point (spec §10.3): every byte leaving
-		// the sandbox passes through here. Phase 2 inserts the
-		// scrubber in this function; nothing may bypass it.
-		line, err := json.Marshal(ev)
-		if err != nil {
+	var forwardErr error
+	emit := func(line []byte) {
+		if forwardErr != nil {
 			return
 		}
 		line = append(line, '\n')
-		out.Write(line)
-		os.Stdout.Write(line)
+		if _, err := out.Write(line); err != nil {
+			forwardErr = fmt.Errorf("write event artifact: %w", err)
+			return
+		}
+		if _, err := os.Stdout.Write(line); err != nil {
+			forwardErr = fmt.Errorf("write event stream: %w", err)
+		}
 	}
-	return supervise(a, workdir, control, harness, taskID, jobID, string(prompt), policy, forward)
+	forward := func(ev adapter.Event) {
+		// The redaction choke point (spec §10.3): every normalized event
+		// is scrubbed before either the artifact or stdout receives it.
+		line, err := json.Marshal(ev)
+		if err != nil {
+			forwardErr = fmt.Errorf("marshal event: %w", err)
+			return
+		}
+		line, stats, err := scrubber.RedactJSON(line)
+		if err != nil {
+			forwardErr = fmt.Errorf("redact event: %w", err)
+			return
+		}
+		emit(line)
+		if stats.Total() == 0 {
+			return
+		}
+		payload, _ := json.Marshal(stats)
+		redactionLine, err := json.Marshal(adapter.Event{
+			Kind: adapter.EventRedaction, Phase: ev.Phase, Payload: payload, At: time.Now().UTC(),
+		})
+		if err != nil {
+			forwardErr = fmt.Errorf("marshal redaction event: %w", err)
+			return
+		}
+		emit(redactionLine)
+	}
+	runErr := supervise(a, workdir, control, harness, taskID, jobID, string(prompt), budgetUSD, policy, forward)
+	if forwardErr != nil {
+		if runErr != nil {
+			return fmt.Errorf("%v; transcript: %w", runErr, forwardErr)
+		}
+		return forwardErr
+	}
+	return runErr
 }
 
-func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
+func loadRedactor(control string) (*redact.Redactor, error) {
+	data, err := os.ReadFile(filepath.Join(control, redact.ManifestFile))
+	if os.IsNotExist(err) {
+		return redact.New(nil), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var manifest redact.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, err
+	}
+	values := make([]string, 0, len(manifest.EnvNames))
+	for _, name := range manifest.EnvNames {
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			return nil, fmt.Errorf("injected secret %s is absent from the environment", name)
+		}
+		values = append(values, value)
+	}
+	if manifest.CredentialFile != "" {
+		credentialData, err := os.ReadFile(manifest.CredentialFile)
+		if err != nil {
+			return nil, fmt.Errorf("read credential redaction source: %w", err)
+		}
+		credentialValues, err := redact.JSONStringValues(credentialData)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, credentialValues...)
+	}
+	return redact.New(values), nil
+}
+
+func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, budgetUSD float64, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
 	events, err := a.Run(context.Background(), adapter.RunSpec{
-		Workdir: workdir,
-		Prompt:  prompt,
-		Policy:  policy,
+		Workdir:   workdir,
+		Prompt:    prompt,
+		Policy:    policy,
+		BudgetUSD: budgetUSD,
 	})
 	if err != nil {
 		return fmt.Errorf("start harness: %w", err)
@@ -123,7 +210,7 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 	// (spec §8.3). Attempt it even after a failed main run because partial
 	// work and failure context are especially important to a successor.
 	// Elicitation failure does not change the main run's outcome.
-	if err := elicitHandoff(a, sessionRef, workdir, control, harness, taskID, jobID, prompt, policy, forward); err != nil {
+	if err := elicitHandoff(a, sessionRef, workdir, control, harness, taskID, jobID, prompt, budgetUSD, policy, forward); err != nil {
 		log.Printf("conveyor-shim: handoff elicitation skipped: %v", err)
 	}
 
@@ -143,7 +230,7 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 // holds the relevant context, then falls back to a fresh read-only run
 // briefed from the task and persistent worktree. Native resume is an
 // optimization; the snapshot is the continuity floor (spec §8.3).
-func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, taskID, jobID, taskPrompt string, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
+func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, taskID, jobID, taskPrompt string, budgetUSD float64, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
 	resumeErr := fmt.Errorf("native resume unavailable")
 	if sessionRef != "" && a.Capabilities().Resume {
 		events, err := a.Resume(context.Background(), sessionRef, snapshot.ElicitationPrompt)
@@ -173,9 +260,10 @@ func elicitHandoff(a adapter.Adapter, sessionRef, workdir, control, harness, tas
 	// an optimization. A fresh read-only run can reconstruct the handoff
 	// from the persistent worktree and original task prompt (spec §8.3).
 	events, err := a.Run(context.Background(), adapter.RunSpec{
-		Workdir: workdir,
-		Prompt:  snapshot.FallbackElicitationPrompt(taskPrompt),
-		Policy:  policy,
+		Workdir:   workdir,
+		Prompt:    snapshot.FallbackElicitationPrompt(taskPrompt),
+		Policy:    policy,
+		BudgetUSD: budgetUSD,
 	})
 	if err != nil {
 		forwardWarning(forward, adapter.PhaseHandoffFallback, err)
@@ -257,6 +345,7 @@ func saveHandoff(h *snapshot.Handoff, control, harness, taskID, jobID string) er
 func buildAdapter(harness, control string) (adapter.Adapter, error) {
 	switch harness {
 	case "codex":
+		layout, _ := adapter.CredentialLayoutFor(harness)
 		c := codex.New()
 		// The shim only ever runs inside the sandbox container, which
 		// is the Tier A confinement boundary (spec §8.5) — the
@@ -271,42 +360,57 @@ func buildAdapter(harness, control string) (adapter.Adapter, error) {
 			// history, and their interactive config must not leak into
 			// unattended runs — the adapter owns that posture
 			// (spec §8.5 responsibility seam).
-			if err := copyFiles(src, home, "auth.json"); err != nil {
+			if err := copyCredentialFile(src, home, layout.FileName); err != nil {
 				return nil, fmt.Errorf("stage codex credentials: %w", err)
 			}
 			c.Home = home
 		}
+		return c, nil
+	case "claude-code":
+		layout, _ := adapter.CredentialLayoutFor(harness)
+		c := claude.New()
+		c.ContainerConfined = true
+		home := filepath.Join(control, "claude-home")
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return nil, fmt.Errorf("create Claude config dir: %w", err)
+		}
+		src := filepath.Join(credsDir, "claude-code")
+		if fi, err := os.Stat(src); err == nil && fi.IsDir() {
+			if err := copyCredentialFile(src, home, layout.FileName); err != nil {
+				return nil, fmt.Errorf("stage Claude credentials: %w", err)
+			}
+		}
+		c.Home = home
 		return c, nil
 	default:
 		return nil, fmt.Errorf("unknown harness %q", harness)
 	}
 }
 
-// copyFiles copies the named top-level files from src into dst,
-// skipping names that don't exist.
-func copyFiles(src, dst string, names ...string) error {
+// copyCredentialFile copies the single adapter-approved credential file. A
+// mounted directory is an explicit promise from the runner, so a missing file
+// is a boot error rather than a silent unauthenticated fallback.
+func copyCredentialFile(src, dst, name string) error {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
 	}
-	for _, name := range names {
-		in, err := os.Open(filepath.Join(src, name))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(filepath.Join(dst, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			in.Close()
-			return err
-		}
-		_, err = io.Copy(out, in)
-		in.Close()
-		out.Close()
-		if err != nil {
-			return err
-		}
+	in, err := os.Open(filepath.Join(src, name))
+	if err != nil {
+		return err
 	}
-	return nil
+	out, err := os.OpenFile(filepath.Join(dst, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		_ = in.Close()
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeInErr := in.Close()
+	closeOutErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeInErr != nil {
+		return closeInErr
+	}
+	return closeOutErr
 }

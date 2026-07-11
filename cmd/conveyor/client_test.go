@@ -54,3 +54,31 @@ func TestClientRedispatchUsesAuthenticatedEndpoint(t *testing.T) {
 		t.Fatalf("state = %s", task.State)
 	}
 }
+
+func TestClientReviewUsesAuthenticatedEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/task-1/review" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["action"] != "redirect" || body["reason_code"] != "spec-wrong" {
+			t.Fatalf("body = %v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "task-1", State: core.TaskQueued}})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, token: "secret-token"}
+	task, err := c.reviewTask("task-1", core.InterventionRedirect, "spec-wrong", "retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != core.TaskQueued {
+		t.Fatalf("state = %s", task.State)
+	}
+}
