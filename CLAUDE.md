@@ -1,8 +1,8 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.1, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.2, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
-with a version bump (§20), never silent edits.
+with a version bump (§21), never silent edits.
 
 ## Conventions
 
@@ -19,9 +19,21 @@ with a version bump (§20), never silent edits.
 
 ## Phase discipline
 
-Phase 2 is complete (spec §19): Claude Code + Codex adapters, credential
-routing, Postgres/River state, the standalone local runner, append-only events,
-review UI, and shim-boundary redaction are implemented and validated. Preserve
-the accepted Phase 1 core loop and Phase 2 contracts. Phase 3 has not started;
-do not build K8sRunner, multi-repo worktree sets, aggregate cost dashboard, or
-budget breakers until it is explicitly activated.
+Phases 1–2 are complete and validated; preserve their contracts. The roadmap
+was re-phased for the Beta milestone (spec §19 v1.2, rationale in §21.2;
+working breakdown in [docs/beta-plan.md](docs/beta-plan.md)). Pre-Beta is
+exactly two phases:
+
+- **Phase 3** — full pipeline: multi-stage orchestration, triage/spec/
+  code-review agents, §4.1 spec format, proto-pack role prompts, per-repo
+  images, PR-comment redirects, budget breaker + timeouts.
+- **Phase 4** — UI rewrite (shadcn/ui, full §13.3) → **Beta: Conveyor
+  develops Conveyor**.
+
+No phase beyond 2 has been activated; wait for explicit activation before
+building. Do NOT build post-Beta or deferred surfaces regardless of phase:
+command-policy shim approval cards, environment inference/repair, monitor
+agent (Phase 5); memory store / pgvector (Phase 6); transcript mining /
+self-improvement / eval rig (Phase 7); verification agent, K8sRunner,
+multi-repo worktree sets, aggregate cost dashboard (Phase 8,
+demand-triggered); enterprise SSO/SCIM/RBAC/HA (Phase 9, demand-triggered).

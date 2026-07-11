@@ -1,7 +1,8 @@
 # Phase 2 operations and validation
 
 **Status: complete as of July 11, 2026.** The spec §19 deliverables and the
-multi-harness + human-gate proof are implemented and validated. Phase 3 has not
+multi-harness + human-gate proof are implemented and validated. Phase 3 (full
+pipeline, per the v1.2 Beta re-phasing — see docs/beta-plan.md) has not
 started.
 
 Phase 2 separates the control and execution planes around one Postgres

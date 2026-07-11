@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.1**
-**Date:** July 10, 2026
-**Status:** Accepted — Phase 1 closure amendment applied
+**Specification — v1.2**
+**Date:** July 11, 2026
+**Status:** Accepted — Beta re-phasing amendment applied (§21.2)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -676,17 +676,25 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 
 | Phase | Deliverable | Proves |
 |---|---|---|
-| **1** | Codex adapter (ChatGPT subscription auth), LocalDockerRunner, bare-clone + worktree manager, secrets injection, base image, handoff snapshots + resume-fidelity experiment, GitHub issue → PR, logs only | The core loop |
-| **2** | Claude Code adapter, credential pool + router, Postgres state + events, activity view + review queue with reason codes (§13.3), redaction | Multi-harness + human gate |
-| **3** | K8sRunner (cloud), multi-repo worktree sets, cost dashboard, budgets/breakers, `conveyor checkout` | Scale + cost story |
-| **4** | Verification agent (Playwright + computer use), spec agent, command-policy shim, environment inference & repair agents | Trustworthy automation, self-onboarding |
-| **5** | Memory store, transcript mining, self-improvement proposals, escalation graduation, evals | The flywheel |
-| **6** *(demand-triggered)* | SSO/OIDC adapter, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Enterprise-ready |
+| **1** *(complete)* | Codex adapter (ChatGPT subscription auth), LocalDockerRunner, bare-clone + worktree manager, secrets injection, base image, handoff snapshots + resume-fidelity experiment, GitHub issue → PR, logs only | The core loop |
+| **2** *(complete)* | Claude Code adapter, credential pool + router, Postgres state + events, activity view + review queue with reason codes (§13.3), redaction | Multi-harness + human gate |
+| **3** | Full pipeline: multi-stage orchestration with per-stage gates and bounded bounces; triage, spec, and code-review agents; spec format machinery (§4.1) with versioned, approved specs as the implementation contract; role prompts and tool policies as versioned files (proto-pack, §2.2); per-repo sandbox images (including a Go-toolchain image so Conveyor can build itself); PR review comments → redirect feedback (§9); per-job budget circuit breaker and job timeouts (§14.1) | The full pipeline runs |
+| **4** | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place | **Beta: Conveyor develops Conveyor** |
+| **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) | The factory guards and onboards itself |
+| **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
+| **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
+| **8** *(demand-triggered)* | Verification agent (Playwright + computer use, §12), K8sRunner, multi-repo worktree sets + linked-PR gating (§7.1), aggregate cost dashboard and budget policy (§14) | Trust + scale |
+| **9** *(demand-triggered)* | SSO/OIDC adapter, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Enterprise-ready |
 
 The Phase 1 runner and checkout storage mechanics in this table are amended by
-§21.1; the deliverable and proof remain the same.
+§21.1; phases 3–9 are restructured by §21.2, which records the Beta milestone,
+its exit criterion, and the deferral rationale.
 
-Phase 5 is intentionally last: the self-improvement engine is useless until a few hundred transcripts and intervention records exist to mine.
+**Beta exit criterion (§21.2):** five consecutive real tasks on the Conveyor
+repository shipped through the full pipeline — issue → triage → approved spec
+→ implementation → PR → merge — with at least one task completing a redirect
+round, zero manual git operations, and all human actions taken through the
+Phase 4 UI or CLI.
 
 ---
 
@@ -739,6 +747,59 @@ unchanged:
    expansion: review-UI deep links, multi-repo checkout sets, and scaled remote
    runners.
 
+### 21.2 v1.2 — Beta re-phasing (July 11, 2026)
+
+Phases 3–9 of §19 are restructured around an explicit operating milestone:
+**Beta, defined as Conveyor developing Conveyor** — the platform running its
+own repository's development loop, with the operator's involvement limited to
+gate decisions and merges. The pre-Beta scope is deliberately minimal — the
+full pipeline plus the UI to operate it — so the feedback loop starts turning
+as early as possible; everything else is sequenced *behind* Beta, where it is
+built with (and increasingly by) the factory itself. Five changes; all other
+v1.1 decisions remain unchanged:
+
+1. **The pipeline completes before anything scales.** The former Phase 4
+   agents (triage, spec, code review) plus multi-stage orchestration move
+   ahead of every infrastructure expansion, as the new Phase 3. Dogfooding
+   requires the factory workflow (§4), not more runners.
+
+2. **A dedicated UI phase gates Beta entry** (new Phase 4): a ground-up
+   rewrite of the dashboard to the §13.3 design on the §17.0 stack
+   (Tailwind + shadcn/ui), designed against the full pipeline's data model
+   — triage classes, spec versions, bounce histories, per-stage costs.
+   Post-Beta phases extend it (approval cards with Phase 5, memory surfaces
+   with Phase 6) rather than reshape it.
+
+3. **Platform agents & policy (new Phase 5) and the memory store (new
+   Phase 6) move post-Beta.** For a single-operator Beta on one repository,
+   IAM scoping and per-repo tool policy already bound what jobs can do
+   (§11.2 layer 1 and the Phase 1 execpolicy work), the operator is the
+   monitor agent, and workspace knowledge lives in the repo the agents
+   already read. These phases land first *after* Beta, prioritized by
+   observed operational load, and are themselves built through the factory.
+
+4. **The flywheel (new Phase 7) consumes what Beta produces.** Transcript
+   mining, self-improvement proposals, escalation graduation, and the eval
+   rig follow the memory store post-Beta. This strengthens the v1.0
+   rationale ("useless until a few hundred transcripts exist") rather than
+   contradicting it: Beta generates exactly the corpus Phase 7 mines. The
+   monitor agent, which v1.0 described (§4 step 8, §4.2) but never placed
+   in the roadmap, is explicitly phased at 5.
+
+5. **Verification, K8sRunner, multi-repo sets, and the aggregate cost
+   dashboard become demand-triggered** (new Phase 8), joining enterprise
+   readiness in deferral. Rationale mirrors §18.1's: GitHub review
+   substitutes for the verification agent, one local runner is sufficient
+   capacity, and per-task cost is visible in the activity timeline. These
+   activate on evidence of need, not on schedule. The §12 verification
+   design and §3.2/§7.1 architecture are unchanged — only their scheduling
+   moves.
+
+The Beta exit criterion is recorded in §19. Operational note: because merged
+PRs change the running factory, deployment of Conveyor itself remains a
+manual operator action (build + restart) during Beta — consistent with the
+§1.2 non-goal of Conveyor never deploying to production.
+
 ---
 
-*End of specification. v1.1 accepted July 10, 2026; all seven originally open questions resolved (§20), with Phase 1 closure boundaries amended in §21. Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.2 accepted July 11, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2). Subsequent changes proceed by amendment with version bumps.*

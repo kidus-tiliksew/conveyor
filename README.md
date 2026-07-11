@@ -67,9 +67,14 @@ internal/trigger/     github/ — issue label → task, branch → PR (§9)
 images/base/          base Conveyor image every repo devcontainer extends (§6.1)
 ```
 
-Deliberately deferred, matching the roadmap: K8sRunner, multi-repo worktree
-sets, aggregate cost dashboard, and budget breakers (Phase 3); verification,
-computer use, and runner-level domain egress enforcement (Phase 4).
+The roadmap was re-phased for the Beta milestone — Conveyor developing
+Conveyor — in spec v1.2 (§19, §21.2); the working breakdown is
+[docs/beta-plan.md](docs/beta-plan.md). Pre-Beta is exactly two phases:
+the full pipeline (triage / spec / code-review agents) and a ground-up UI
+rewrite. Post-Beta, built through the factory: platform agents & command
+policy, the memory store, then the flywheel. Demand-triggered: the
+verification agent, K8sRunner, multi-repo worktree sets, aggregate cost
+dashboard, and enterprise hardening.
 
 ## Development
 
