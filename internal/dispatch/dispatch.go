@@ -32,6 +32,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+const artifactCollectionMargin = 15 * time.Second
+
 type Dispatcher struct {
 	Store  store.Store
 	Git    *gitx.Manager
@@ -325,7 +327,8 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return err
 	}
 	timeout := stageTimeout(d.Cfg.Routing, stage)
-	jobCtx, cancelJob := context.WithTimeout(ctx, timeout)
+	stageDeadline := time.Now().Add(timeout)
+	jobCtx, cancelJob := context.WithDeadline(ctx, stageDeadline)
 	defer cancelJob()
 	logs, err := d.Runner.StreamLogs(jobCtx, handle)
 	if err != nil {
@@ -354,11 +357,13 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err := logFile.Close(); err != nil && writeErr == nil {
 		writeErr = fmt.Errorf("close job log: %w", err)
 	}
-	art, err := d.Runner.CollectArtifacts(ctx, handle)
-	runnerFinalized = true
+	collectCtx, cancelCollect := context.WithDeadline(ctx, stageDeadline.Add(artifactCollectionMargin))
+	art, err := d.Runner.CollectArtifacts(collectCtx, handle)
+	cancelCollect()
 	if err != nil {
 		return fmt.Errorf("collect artifacts: %w", err)
 	}
+	runnerFinalized = true
 	timedOut := errors.Is(jobCtx.Err(), context.DeadlineExceeded)
 	var summary transcriptSummary
 	if art.EventLog == "" {

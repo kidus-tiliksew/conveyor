@@ -34,6 +34,22 @@ type fakeRunner struct {
 	exitCode      int
 }
 
+type deadlineInspectingRunner struct {
+	fakeRunner
+	collectCalls    int
+	collectDeadline time.Time
+	collectBounded  bool
+}
+
+func (r *deadlineInspectingRunner) CollectArtifacts(ctx context.Context, handle runner.JobHandle) (runner.Artifacts, error) {
+	r.collectCalls++
+	if r.collectCalls == 1 {
+		r.collectDeadline, r.collectBounded = ctx.Deadline()
+		return runner.Artifacts{}, errors.New("docker wait remained hung")
+	}
+	return r.fakeRunner.CollectArtifacts(ctx, handle)
+}
+
 type phase3Runner struct {
 	outputs map[core.Stage][]string
 	events  map[runner.JobHandle]string
@@ -599,6 +615,30 @@ func TestTimedOutJobPersistsPartialTranscriptUsage(t *testing.T) {
 	}
 	if persisted.State != core.TaskAwaiting || persisted.RecoveryStage != core.StageImplement {
 		t.Fatalf("timeout recovery = %+v", persisted)
+	}
+}
+
+func TestEarlyLogFailureStillBoundsArtifactCollection(t *testing.T) {
+	r := &deadlineInspectingRunner{fakeRunner: fakeRunner{streamErr: errors.New("docker log stream disconnected")}}
+	d, _, task := testDispatcher(t, r)
+	d.Cfg.Routing.Stages = map[string]config.StageRoute{
+		string(core.StageImplement): {Timeout: 50 * time.Millisecond},
+	}
+	started := time.Now()
+	err := d.runTask(context.Background(), task.ID)
+	if err == nil || !strings.Contains(err.Error(), "collect artifacts") {
+		t.Fatalf("runTask error = %v", err)
+	}
+	if !r.collectBounded {
+		t.Fatal("artifact collection received an unbounded context")
+	}
+	remaining := r.collectDeadline.Sub(started)
+	want := 50*time.Millisecond + artifactCollectionMargin
+	if remaining < want-time.Second || remaining > want+time.Second {
+		t.Fatalf("artifact deadline remaining = %s, want about %s", remaining, want)
+	}
+	if r.collectCalls != 2 {
+		t.Fatalf("collect calls = %d, want failed collection plus bounded deferred cleanup", r.collectCalls)
 	}
 }
 
