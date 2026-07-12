@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
@@ -100,18 +102,45 @@ func TestOpenPRCreatesWhenTaskBranchHasNoOpenPR(t *testing.T) {
 
 func TestListReviewFeedbackIncludesReviewBodiesAndInlineComments(t *testing.T) {
 	calls := 0
-	run := func(_ context.Context, _ ...string) ([]byte, error) {
+	var apiArgs []string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
 		calls++
-		if calls == 1 {
-			return []byte(`{"number":8,"reviews":[{"id":"R1","body":"Please add a test.","author":{"login":"alice"}},{"id":"R2","body":"ignored","author":{"login":"ci[bot]"}}]}`), nil
+		switch calls {
+		case 1:
+			return []byte(`{"number":8,"state":"OPEN","mergedAt":null}`), nil
+		case 2:
+			if !reflect.DeepEqual(args[len(args)-2:], []string{"-f", "after=review-cursor-1"}) {
+				t.Fatalf("GraphQL args lack review cursor: %v", args)
+			}
+			return []byte(`{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[{"id":"R1","body":"Please add a test.","state":"COMMENTED","submittedAt":"2026-07-12T07:00:01Z","author":{"login":"alice"}},{"id":"R2","body":"ignored","state":"COMMENTED","submittedAt":"2026-07-12T07:00:01Z","author":{"login":"ci[bot]"}}],"pageInfo":{"hasNextPage":false,"endCursor":"review-cursor-2"}}}}}}`), nil
 		}
-		return []byte(`[{"id":91,"body":"Handle nil here.","user":{"login":"bob"}}]`), nil
+		apiArgs = append([]string(nil), args...)
+		return []byte(`[[{"id":91,"body":"Handle nil here.","created_at":"2026-07-12T07:00:02Z","user":{"login":"bob"}},{"id":90,"body":"old inline","created_at":"2026-07-12T06:59:00Z","user":{"login":"eve"}}]]`), nil
 	}
-	feedback, err := listReviewFeedback(context.Background(), "acme/api", "conveyor/task-2", run)
+	since := time.Date(2026, 7, 12, 7, 0, 0, 0, time.UTC)
+	page, err := listReviewFeedback(context.Background(), "acme/api", "conveyor/task-2", ReviewCursor{Since: since, ReviewAfter: "review-cursor-1"}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feedback) != 2 || feedback[0].ID != "review:R1" || feedback[1].ID != "comment:91" || feedback[1].PR != 8 {
-		t.Fatalf("feedback=%+v", feedback)
+	if page.State != "open" || page.Cursor.ReviewAfter != "review-cursor-2" || len(page.Feedback) != 2 || page.Feedback[0].ID != "review:R1" || page.Feedback[1].ID != "comment:91" || page.Feedback[1].PR != 8 {
+		t.Fatalf("page=%+v", page)
+	}
+	if len(apiArgs) < 2 || !strings.Contains(apiArgs[1], "since=2026-07-12T07%3A00%3A00Z") {
+		t.Fatalf("inline API args lack cursor: %v", apiArgs)
+	}
+}
+
+func TestListReviewFeedbackStopsBeforeFetchingMergedPRComments(t *testing.T) {
+	calls := 0
+	run := func(_ context.Context, _ ...string) ([]byte, error) {
+		calls++
+		return []byte(`{"number":8,"state":"CLOSED","mergedAt":"2026-07-12T07:00:00Z","reviews":[]}`), nil
+	}
+	page, err := listReviewFeedback(context.Background(), "acme/api", "conveyor/task-2", ReviewCursor{}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || page.State != "merged" || len(page.Feedback) != 0 {
+		t.Fatalf("calls=%d page=%+v", calls, page)
 	}
 }

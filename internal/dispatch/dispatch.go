@@ -40,12 +40,18 @@ type Dispatcher struct {
 	Cfg    *config.Config
 	Pack   *pack.Bundle
 
+	reviewFeedback func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error)
+
 	queue        chan string
 	durableQueue bool
 }
 
 func New(st store.Store, git *gitx.Manager, r runner.Runner, cfg *config.Config) *Dispatcher {
-	return &Dispatcher{Store: st, Git: git, Runner: r, Cfg: cfg, queue: make(chan string, 64)}
+	return &Dispatcher{
+		Store: st, Git: git, Runner: r, Cfg: cfg,
+		reviewFeedback: github.ListReviewFeedback,
+		queue:          make(chan string, 64),
+	}
 }
 
 // Enqueue schedules a task for dispatch. Safe from HTTP handlers.
@@ -186,11 +192,14 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		}
 		toolPolicy = d.Pack.Policy(stage, repo.ToolPolicy)
 	}
-	interventions, err := d.Store.ListInterventions(ctx, t.ID)
-	if err != nil {
-		return err
+	redirectFeedback := ""
+	if stage == core.StageImplement {
+		interventions, err := d.Store.ListInterventions(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		redirectFeedback = redirectComments(interventions)
 	}
-	redirectFeedback := redirectComments(interventions)
 	feedbackDelivered := false
 	// A prior attempt's handoff snapshot briefs the successor
 	// (spec §8.3): the persistent worktree carries the code state, the
@@ -397,11 +406,16 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	job.EndedAt = time.Now()
 	if timedOut {
 		job.State = core.JobPaused
+	} else if art.ExitCode == 0 {
+		job.State = core.JobDone
+		if budgetUSD > 0 && summary.costUSD >= budgetUSD {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.budget_reached", Payload: core.JSONPayload(map[string]any{
+				"budget_usd": budgetUSD, "cost_usd": summary.costUSD, "completed": true,
+			})})
+		}
 	} else if budgetUSD > 0 && summary.costUSD >= budgetUSD {
 		job.State = core.JobPaused
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]float64{"budget_usd": budgetUSD, "cost_usd": summary.costUSD})})
-	} else if art.ExitCode == 0 {
-		job.State = core.JobDone
 	} else {
 		job.State = core.JobFailed
 	}
@@ -493,18 +507,18 @@ func inspectTranscript(path string) (transcriptSummary, error) {
 	if err := scanner.Err(); err != nil {
 		return transcriptSummary{}, err
 	}
-	if lines == 0 {
-		return transcriptSummary{}, fmt.Errorf("empty event artifact")
-	}
-	if !terminal {
-		return transcriptSummary{}, fmt.Errorf("event artifact has no terminal event")
-	}
 	mainCost := phaseCost[adapter.PhaseMain]
 	resumeCost := phaseCost[adapter.PhaseHandoffResume] - mainCost
 	if resumeCost < 0 {
 		resumeCost = 0
 	}
 	summary.costUSD = mainCost + resumeCost + phaseCost[adapter.PhaseHandoffFallback]
+	if lines == 0 {
+		return summary, fmt.Errorf("empty event artifact")
+	}
+	if !terminal {
+		return summary, fmt.Errorf("event artifact has no terminal event")
+	}
 	return summary, nil
 }
 
@@ -672,20 +686,10 @@ func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo con
 			return err
 		}
 		if result.Verdict == "changes_requested" {
-			priorBounces, err := d.Store.CountEvents(ctx, task.ID, "pipeline.bounced")
-			if err != nil {
-				return err
-			}
-			bounces := priorBounces + 1
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": result.ReasonCode, "feedback": result.Feedback, "count": bounces})})
 			if err := d.Store.CreateIntervention(store.WithActor(ctx, store.Actor{ID: "review-agent", Role: core.ActorAgent}), core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
 				return err
 			}
-			if bounces >= d.Cfg.MaxBounces {
-				_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"stage": job.Stage, "count": bounces, "recovery_stage": core.StageImplement})})
-				return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
-			}
-			return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
+			return d.bounceToImplement(ctx, task.ID, job.ID, result.ReasonCode, result.Feedback, "review-agent")
 		}
 		if repo.GitHub != "" {
 			prURL, err := github.OpenPR(ctx, worktree, repo.GitHub, task.Branch, task.BaseBranch, task.Title, prBody(task))
@@ -700,6 +704,29 @@ func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo con
 		return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
 	}
 	return fmt.Errorf("unsupported stage %s", job.Stage)
+}
+
+func (d *Dispatcher) bounceToImplement(ctx context.Context, taskID, jobID, reasonCode, feedback, source string) error {
+	priorBounces, err := d.Store.CountEvents(ctx, taskID, "pipeline.bounced")
+	if err != nil {
+		return err
+	}
+	bounces := priorBounces + 1
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{
+		"from": "review", "to": "implement", "reason_code": reasonCode,
+		"feedback": feedback, "count": bounces, "source": source,
+	})}); err != nil {
+		return err
+	}
+	if bounces >= d.Cfg.MaxBounces {
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{
+			"stage": core.StageReview, "count": bounces, "recovery_stage": core.StageImplement,
+		})}); err != nil {
+			return err
+		}
+		return d.transition(ctx, taskID, core.TaskAwaiting, "", core.StageImplement)
+	}
+	return d.transition(ctx, taskID, core.TaskQueued, core.StageImplement, "")
 }
 
 func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
@@ -855,43 +882,104 @@ func (d *Dispatcher) pollReviewFeedback(ctx context.Context) {
 		if !ok || repo.GitHub == "" {
 			continue
 		}
-		feedback, err := github.ListReviewFeedback(ctx, repo.GitHub, task.Branch)
-		if err != nil {
-			continue // the branch may not have a PR yet
-		}
 		events, err := d.Store.ListEvents(ctx, task.ID)
 		if err != nil {
 			continue
 		}
-		seen := map[string]bool{}
-		for _, event := range events {
-			if event.Kind != "github.review_redirected" {
-				continue
+		eligible, cursor, seen := reviewPollState(events)
+		if !eligible {
+			continue
+		}
+		pollStartedAt := time.Now().UTC()
+		page, err := d.reviewFeedback(ctx, repo.GitHub, task.Branch, cursor)
+		if err != nil {
+			log.Printf("[task %s] poll PR feedback: %v", task.ID, err)
+			continue
+		}
+		if page.State != "open" {
+			if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "github.review_poll_stopped", Payload: core.JSONPayload(map[string]any{
+				"pr_number": page.PR, "state": page.State,
+			})}); err != nil {
+				log.Printf("[task %s] stop PR feedback poll: %v", task.ID, err)
 			}
-			var payload struct {
-				ExternalID string `json:"external_id"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				seen[payload.ExternalID] = true
+			continue
+		}
+		unseen := make([]github.ReviewFeedback, 0, len(page.Feedback))
+		for _, item := range page.Feedback {
+			if !seen[item.ID] {
+				unseen = append(unseen, item)
 			}
 		}
-		for _, item := range feedback {
-			if seen[item.ID] {
+		if len(unseen) > 0 {
+			latest, ok, err := d.Store.GetLatestJob(ctx, task.ID)
+			if err != nil {
+				log.Printf("[task %s] load job for PR feedback: %v", task.ID, err)
 				continue
 			}
-			latest, _, _ := d.Store.GetLatestJob(ctx, task.ID)
-			actorCtx := store.WithActor(ctx, store.Actor{ID: "github:" + item.Author, Role: core.ActorHuman})
-			intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: "github-review", Comment: item.Body}
+			if !ok {
+				log.Printf("[task %s] ignore PR feedback: task has no job", task.ID)
+				continue
+			}
+			comments := make([]string, 0, len(unseen))
+			for _, item := range unseen {
+				comments = append(comments, fmt.Sprintf("%s: %s", item.Author, strings.TrimSpace(item.Body)))
+			}
+			feedback := strings.Join(comments, "\n\n")
+			actorCtx := store.WithActor(ctx, store.Actor{ID: "github", Role: core.ActorHuman})
+			intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: "github-review", Comment: feedback}
 			if err := d.Store.CreateIntervention(actorCtx, intervention); err != nil {
 				log.Printf("[task %s] ingest PR feedback: %v", task.ID, err)
 				continue
 			}
-			_ = d.Store.AppendEvent(actorCtx, core.Event{TaskID: task.ID, JobID: latest.ID, Kind: "github.review_redirected", Payload: core.JSONPayload(map[string]any{"external_id": item.ID, "pr_number": item.PR, "author": item.Author})})
-			if err := d.HandleIntervention(actorCtx, task, latest, intervention); err != nil {
+			if err := d.bounceToImplement(actorCtx, task.ID, latest.ID, intervention.ReasonCode, feedback, "github"); err != nil {
 				log.Printf("[task %s] route PR feedback: %v", task.ID, err)
+				continue
+			}
+			for _, item := range unseen {
+				if err := d.Store.AppendEvent(actorCtx, core.Event{TaskID: task.ID, JobID: latest.ID, Kind: "github.review_redirected", Payload: core.JSONPayload(map[string]any{
+					"external_id": item.ID, "pr_number": item.PR, "author": item.Author,
+				})}); err != nil {
+					log.Printf("[task %s] mark PR feedback %s: %v", task.ID, item.ID, err)
+					continue
+				}
+			}
+		}
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "github.review_polled", Payload: core.JSONPayload(map[string]any{
+			"pr_number": page.PR, "cursor": pollStartedAt, "review_after": page.Cursor.ReviewAfter,
+		})}); err != nil {
+			log.Printf("[task %s] persist PR feedback cursor: %v", task.ID, err)
+		}
+	}
+}
+
+func reviewPollState(events []core.Event) (bool, github.ReviewCursor, map[string]bool) {
+	eligible := false
+	var cursor github.ReviewCursor
+	seen := map[string]bool{}
+	for _, event := range events {
+		switch event.Kind {
+		case "pull_request.opened":
+			eligible = true
+		case "github.review_poll_stopped":
+			eligible = false
+		case "github.review_polled":
+			var payload struct {
+				Cursor      time.Time `json:"cursor"`
+				ReviewAfter string    `json:"review_after"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Cursor.After(cursor.Since) {
+				cursor = github.ReviewCursor{Since: payload.Cursor, ReviewAfter: payload.ReviewAfter}
+			}
+		case "github.review_redirected":
+			var payload struct {
+				ExternalID string `json:"external_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.ExternalID != "" {
+				seen[payload.ExternalID] = true
 			}
 		}
 	}
+	return eligible, cursor, seen
 }
 
 func (d *Dispatcher) recoverGitHubClaims(ctx context.Context) {

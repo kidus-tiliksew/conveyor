@@ -21,13 +21,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type fakeRunner struct {
-	startErr  error
-	streamErr error
-	specs     []runner.StartJobSpec
-	eventLog  string
+	startErr      error
+	streamErr     error
+	waitForCancel bool
+	specs         []runner.StartJobSpec
+	eventLog      string
+	eventData     string
+	exitCode      int
 }
 
 type phase3Runner struct {
@@ -318,17 +322,28 @@ func (f *fakeRunner) StartJob(_ context.Context, spec runner.StartJobSpec) (runn
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(f.eventLog, []byte("{\"kind\":\"done\",\"phase\":\"job\",\"at\":\"2026-01-01T00:00:00Z\"}\n"), 0o600); err != nil {
+	eventData := f.eventData
+	if eventData == "" {
+		eventData = "{\"kind\":\"done\",\"phase\":\"job\",\"at\":\"2026-01-01T00:00:00Z\"}\n"
+	}
+	if err := os.WriteFile(f.eventLog, []byte(eventData), 0o600); err != nil {
 		return "", err
 	}
 	return runner.JobHandle(spec.JobID), nil
 }
 
-func (f *fakeRunner) StreamLogs(_ context.Context, _ runner.JobHandle) (<-chan runner.LogEvent, error) {
+func (f *fakeRunner) StreamLogs(ctx context.Context, _ runner.JobHandle) (<-chan runner.LogEvent, error) {
 	if f.streamErr != nil {
 		return nil, f.streamErr
 	}
 	ch := make(chan runner.LogEvent)
+	if f.waitForCancel {
+		go func() {
+			<-ctx.Done()
+			close(ch)
+		}()
+		return ch, nil
+	}
 	close(ch)
 	return ch, nil
 }
@@ -336,7 +351,7 @@ func (f *fakeRunner) StreamLogs(_ context.Context, _ runner.JobHandle) (<-chan r
 func (f *fakeRunner) Signal(context.Context, runner.JobHandle, runner.Signal) error { return nil }
 
 func (f *fakeRunner) CollectArtifacts(context.Context, runner.JobHandle) (runner.Artifacts, error) {
-	return runner.Artifacts{ExitCode: 0, EventLog: f.eventLog}, nil
+	return runner.Artifacts{ExitCode: f.exitCode, EventLog: f.eventLog}, nil
 }
 
 func TestRunTaskPersistsBootDiagnostics(t *testing.T) {
@@ -538,6 +553,218 @@ func TestInspectTranscriptUsesPhaseAwareCostAndStructuredTerminalRateLimit(t *te
 	}
 	if !failed.rateLimited {
 		t.Fatal("terminal structured rate-limit error was not classified")
+	}
+}
+
+func TestInspectTranscriptReturnsPartialUsageWithoutTerminalEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := strings.Join([]string{
+		`{"kind":"token_usage","phase":"main","usage":{"in":120,"out":30},"cost_usd":0.60,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"partial result","usage":{"in":20,"out":5},"cost_usd":0.75,"at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := inspectTranscript(path)
+	if err == nil || !strings.Contains(err.Error(), "no terminal event") {
+		t.Fatalf("error = %v", err)
+	}
+	if summary.tokensIn != 140 || summary.tokensOut != 35 || summary.costUSD != 0.75 || summary.agentOutput != "partial result" {
+		t.Fatalf("partial summary = %+v", summary)
+	}
+}
+
+func TestTimedOutJobPersistsPartialTranscriptUsage(t *testing.T) {
+	f := &fakeRunner{waitForCancel: true, eventData: strings.Join([]string{
+		`{"kind":"token_usage","phase":"main","usage":{"in":120,"out":30},"cost_usd":0.60,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"partial result","usage":{"in":20,"out":5},"cost_usd":0.75,"at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	d.Cfg.Routing.Stages = map[string]config.StageRoute{
+		string(core.StageImplement): {Timeout: 5 * time.Millisecond},
+	}
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].State != core.JobPaused || jobs[0].TokensIn != 140 || jobs[0].TokensOut != 35 || jobs[0].CostUSD != 0.75 {
+		t.Fatalf("timed-out job lost partial usage: %+v", jobs)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.RecoveryStage != core.StageImplement {
+		t.Fatalf("timeout recovery = %+v", persisted)
+	}
+}
+
+func TestSuccessfulJobAtCumulativeBudgetKeepsCompletedOutput(t *testing.T) {
+	f := &fakeRunner{eventData: strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"implementation complete","cost_usd":2.50,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"token_usage","phase":"handoff_resume","usage":{"in":10,"out":5},"cost_usd":3.00,"at":"2026-01-01T00:00:01Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:02Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].State != core.JobDone || jobs[0].CostUSD != 3.0 {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskParked {
+		t.Fatalf("task state = %s, want completed output processed into parked/no-commit result", persisted.State)
+	}
+}
+
+func TestReviewStageDoesNotReceivePriorRedirectFeedback(t *testing.T) {
+	f := &fakeRunner{eventData: strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"\u0060\u0060\u0060conveyor:review\\n{\\\"verdict\\\":\\\"approve\\\",\\\"reason_code\\\":\\\"approved\\\",\\\"summary\\\":\\\"clean\\\",\\\"feedback\\\":\\\"\\\"}\\n\u0060\u0060\u0060","at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	task.Level = core.L2
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(context.Background(), core.Intervention{
+		TaskID: task.ID, Action: core.InterventionRedirect, ReasonCode: "scope-creep", Comment: "Remove the unrelated refactor.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load(filepath.Join("..", "..", "pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Pack = bundle
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor", "prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(prompt), "Remove the unrelated refactor.") || strings.Contains(string(prompt), "Human reviewer feedback") {
+		t.Fatalf("review prompt was primed by prior redirect:\n%s", prompt)
+	}
+}
+
+func TestPollReviewFeedbackRequiresConveyorOpenedPR(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageImplement); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	d.reviewFeedback = func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		calls++
+		return github.ReviewFeedbackPage{PR: 8, State: "open"}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	if calls != 0 {
+		t.Fatalf("feedback API calls = %d, want none before pull_request.opened", calls)
+	}
+}
+
+func TestPollReviewFeedbackUsesCursorAndSharesBounceBudget(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	d.Cfg.MaxBounces = 1
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageImplement); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened"}); err != nil {
+		t.Fatal(err)
+	}
+	wantSince := time.Date(2026, 7, 12, 7, 0, 0, 0, time.UTC)
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, Kind: "github.review_polled", Payload: core.JSONPayload(map[string]any{"cursor": wantSince})}); err != nil {
+		t.Fatal(err)
+	}
+	var gotCursor github.ReviewCursor
+	d.reviewFeedback = func(_ context.Context, _, _ string, cursor github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		gotCursor = cursor
+		return github.ReviewFeedbackPage{PR: 8, State: "open", Cursor: github.ReviewCursor{ReviewAfter: "cursor-2"}, Feedback: []github.ReviewFeedback{
+			{ID: "review:R1", Author: "alice", Body: "Fix the retry.", PR: 8},
+			{ID: "comment:91", Author: "bob", Body: "Cover the timeout.", PR: 8},
+		}}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	if !gotCursor.Since.Equal(wantSince) {
+		t.Fatalf("since = %s, want %s", gotCursor.Since, wantSince)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.NextStage != "" || persisted.RecoveryStage != core.StageImplement {
+		t.Fatalf("task bypassed bounce cap: %+v", persisted)
+	}
+	bounces, err := st.CountEvents(context.Background(), task.ID, "pipeline.bounced")
+	if err != nil || bounces != 1 {
+		t.Fatalf("bounces = %d, err=%v", bounces, err)
+	}
+	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interventions) != 1 || !strings.Contains(interventions[0].Comment, "alice: Fix the retry.") || !strings.Contains(interventions[0].Comment, "bob: Cover the timeout.") {
+		t.Fatalf("batched intervention = %+v", interventions)
+	}
+	events, err := st.ListEvents(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, persistedCursor, _ := reviewPollState(events)
+	if persistedCursor.ReviewAfter != "cursor-2" || !persistedCursor.Since.After(wantSince) {
+		t.Fatalf("persisted review cursor = %+v", persistedCursor)
+	}
+}
+
+func TestPollReviewFeedbackNeverRequeuesMergedPR(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskApproved, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	d.reviewFeedback = func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		calls++
+		return github.ReviewFeedbackPage{PR: 8, State: "merged", Feedback: []github.ReviewFeedback{{ID: "comment:91", Author: "alice", Body: "late comment", PR: 8}}}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	d.pollReviewFeedback(context.Background())
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || persisted.State != core.TaskApproved {
+		t.Fatalf("calls=%d task=%+v", calls, persisted)
+	}
+	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	if err != nil || len(interventions) != 0 {
+		t.Fatalf("merged PR interventions = %+v, err=%v", interventions, err)
 	}
 }
 

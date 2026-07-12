@@ -215,6 +215,9 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 		forward(withPhase(ev, adapter.PhaseMain))
 	}
 	if budgetExceeded {
+		// Do not spend another model turn on handoff after the circuit breaker.
+		// This deliberate §8.3 exception and its recovery path are recorded in
+		// docs/known-limitations.md §6.
 		forward(withPhase(*terminalError, adapter.PhaseMain))
 		return fmt.Errorf("job budget exhausted")
 	}
