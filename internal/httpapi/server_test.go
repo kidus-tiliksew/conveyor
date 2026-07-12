@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,7 +67,7 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	task := core.Task{ID: "task-1", State: core.TaskAwaiting}
+	task := core.Task{ID: "task-1", State: core.TaskAwaiting, NextStage: core.StageImplement}
 	if err := st.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +134,27 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	}
 }
 
+func TestRedispatchRefusesHaltedTaskWithoutDecidedStage(t *testing.T) {
+	t.Parallel()
+	st := store.NewMemory()
+	if err := st.CreateTask(context.Background(), core.Task{ID: "halted", State: core.TaskParked, RecoveryStage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.BearerToken = "token"
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/halted/redispatch", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	persisted, _ := st.GetTask(context.Background(), "halted")
+	if persisted.State != core.TaskParked || persisted.NextStage != "" {
+		t.Fatalf("halted task changed: %+v", persisted)
+	}
+}
+
 func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "secret-token"
@@ -174,16 +196,58 @@ func TestDashboardIsEmbedded(t *testing.T) {
 	}
 }
 
+func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "spec-gate", State: core.TaskAwaiting, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: task.ID, Content: "# Proposed change\n\nReview this exact text.", AcceptanceCount: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/spec-gate/activity", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, expected := range [][]byte{
+		[]byte(`"needs_attention":true`),
+		[]byte(`"spec":{"task_id":"spec-gate"`),
+		[]byte(`"version":` + fmt.Sprint(created.Version)),
+		[]byte(`"content":"# Proposed change\n\nReview this exact text."`),
+		[]byte(`"approved":false`),
+	} {
+		if !bytes.Contains(response.Body.Bytes(), expected) {
+			t.Fatalf("activity body does not contain %s: %s", expected, response.Body.String())
+		}
+	}
+}
+
 func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	st := store.NewMemory()
-	task := core.Task{ID: "task-review", Workspace: "test", Repo: "api", State: core.TaskAwaiting, CreatedAt: time.Now()}
+	task := core.Task{ID: "task-review", Workspace: "test", Repo: "api", State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	requeued := make(chan string, 1)
 	s := NewServer(st)
 	s.BearerToken = "secret-token"
-	s.OnCreate = func(id string) { requeued <- id }
+	s.OnIntervention = func(ctx context.Context, task core.Task, _ core.Job, intervention core.Intervention) error {
+		if intervention.Action != core.InterventionRedirect {
+			return nil
+		}
+		if err := st.SetTaskTransition(ctx, task.ID, core.TaskQueued, task.RecoveryStage, ""); err != nil {
+			return err
+		}
+		requeued <- task.ID
+		return nil
+	}
 	h := s.Handler()
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-review/review", bytes.NewReader([]byte(`{
@@ -224,7 +288,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[1].Kind != "intervention.redirect" || events[2].Kind != "task.state_changed" {
+	if len(events) != 4 || events[1].Kind != "intervention.redirect" || events[2].Kind != "task.state_changed" || events[3].Kind != "pipeline.transition_decided" {
 		t.Fatalf("events = %+v", events)
 	}
 }

@@ -17,10 +17,10 @@ SET url = EXCLUDED.url,
 -- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, parent_task_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13
+    $8, $9, $10, $11, $12, $13, $14, $15
 )
 RETURNING *;
 
@@ -33,6 +33,23 @@ SELECT * FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id;
 -- name: UpdateTaskState :one
 UPDATE tasks
 SET state = sqlc.arg(state), updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
+-- name: UpdateTaskTransition :one
+UPDATE tasks
+SET state = sqlc.arg(state),
+    next_stage = sqlc.arg(next_stage),
+    recovery_stage = sqlc.arg(recovery_stage),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
+-- name: UpdateTaskClassification :one
+UPDATE tasks
+SET class = sqlc.arg(class), updated_at = now()
 WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
@@ -111,6 +128,11 @@ JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id > $3
 ORDER BY e.id;
 
+-- name: CountEvents :one
+SELECT count(*)::bigint FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3;
+
 -- name: ListActivityMarkers :many
 SELECT
     t.id AS task_id,
@@ -155,6 +177,43 @@ SELECT tr.* FROM transcripts tr
 JOIN jobs j ON j.id = tr.job_id
 JOIN tasks t ON t.id = j.task_id
 WHERE tr.job_id = $1 AND t.workspace_id = $2;
+
+-- name: InsertSpecVersion :one
+INSERT INTO task_specs (
+    task_id, version, content, acceptance_count, acceptance, decomposition,
+    approved, approved_at, created_at
+)
+SELECT
+    sqlc.arg(task_id),
+    COALESCE(MAX(version), 0) + 1,
+    sqlc.arg(content),
+    sqlc.arg(acceptance_count),
+    sqlc.arg(acceptance),
+    sqlc.arg(decomposition),
+    false,
+    NULL,
+    sqlc.arg(created_at)
+FROM task_specs
+WHERE task_id = sqlc.arg(task_id)
+RETURNING *;
+
+-- name: GetLatestSpecVersion :one
+SELECT s.* FROM task_specs s
+JOIN tasks t ON t.id = s.task_id
+WHERE s.task_id = $1 AND t.workspace_id = $2
+ORDER BY s.version DESC
+LIMIT 1;
+
+-- name: ApproveLatestSpecVersion :one
+UPDATE task_specs s
+SET approved = true, approved_at = now()
+FROM tasks t
+WHERE s.task_id = t.id
+  AND s.task_id = sqlc.arg(task_id)
+  AND s.version = sqlc.arg(version)
+  AND t.workspace_id = sqlc.arg(workspace_id)
+  AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = sqlc.arg(task_id))
+RETURNING s.*;
 
 -- name: UpsertVendorPolicy :exec
 INSERT INTO vendor_policies (
@@ -239,6 +298,7 @@ WITH candidate AS (
     LEFT JOIN vendor_policies p
       ON p.vendor = c.vendor AND p.harness = c.harness AND p.auth_mode = c.kind
     WHERE c.harness = ANY(sqlc.arg(harnesses)::text[])
+      AND (sqlc.arg(exclude_harness)::text = '' OR c.harness <> sqlc.arg(exclude_harness)::text)
       AND (c.owner_kind = 'org' OR c.owner_id = sqlc.arg(owner_id))
       AND (c.kind = 'api' OR c.owner_kind = 'user')
       AND (c.leased_by = sqlc.arg(job_id) OR c.lease_until IS NULL OR c.lease_until <= now())

@@ -14,6 +14,44 @@ import (
 	basestore "github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+func TestPostgresCreateSpecVersionAlwaysStartsUnapproved(t *testing.T) {
+	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	st, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	suffix := time.Now().UTC().Format("150405.000000000")
+	cfg := &config.Config{
+		Workspace: "spec-parity-" + suffix,
+		Repos:     []config.Repo{{Name: "api", URL: "file:///tmp/api", Base: "main"}},
+	}
+	if err := st.BootstrapConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{
+		ID: "spec-parity-" + suffix, Workspace: cfg.Workspace, Repo: "api",
+		Branch: "conveyor/spec-parity-" + suffix, State: core.TaskAwaiting,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: task.ID, Content: "# Spec", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{}),
+		Approved: true, ApprovedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Approved || !created.ApprovedAt.IsZero() {
+		t.Fatalf("created spec bypassed approval gate: %+v", created)
+	}
+}
+
 func TestPostgresStorePersistsEventsAndRejectsMutation(t *testing.T) {
 	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -206,14 +244,18 @@ func TestPostgresStorePersistsEventsAndRejectsMutation(t *testing.T) {
 		st.Close()
 		t.Fatal(err)
 	}
+	if err := st.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
 	events, err := st.ListEvents(ctx, task.ID)
 	if err != nil {
 		st.Close()
 		t.Fatal(err)
 	}
-	if len(events) != 8 {
+	if len(events) != 9 {
 		st.Close()
-		t.Fatalf("events = %d, want 8", len(events))
+		t.Fatalf("events = %d, want 9", len(events))
 	}
 	latest, ok, err := st.GetLatestJob(ctx, task.ID)
 	if err != nil || !ok || latest.ID != job.ID {

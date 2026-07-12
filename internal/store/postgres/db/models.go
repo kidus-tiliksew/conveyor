@@ -98,6 +98,20 @@ type Task struct {
 	ParentTaskID    string             `json:"parent_task_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	NextStage       string             `json:"next_stage"`
+	RecoveryStage   string             `json:"recovery_stage"`
+}
+
+type TaskSpec struct {
+	TaskID          string             `json:"task_id"`
+	Version         int32              `json:"version"`
+	Content         string             `json:"content"`
+	AcceptanceCount int32              `json:"acceptance_count"`
+	Acceptance      []byte             `json:"acceptance"`
+	Decomposition   []byte             `json:"decomposition"`
+	Approved        bool               `json:"approved"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
 }
 
 type Transcript struct {

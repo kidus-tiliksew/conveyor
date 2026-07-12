@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/runner/localdocker"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -28,6 +29,10 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	packBundle, err := pack.Load(cfg.PackDir)
+	if err != nil {
+		log.Fatalf("load Phase 3 pack: %v", err)
 	}
 	if cfg.Database.Backend != "postgres" {
 		log.Fatal("standalone runner requires the postgres backend")
@@ -45,6 +50,7 @@ func main() {
 	local.SecretResolver = cfg.SecretResolver()
 	local.SecretPolicies = cfg.SecretPolicies()
 	dispatcher := dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), local, cfg)
+	dispatcher.Pack = packBundle
 	dispatcher.UseDurableQueue()
 	dispatcher.Router = routing.New(st, cfg.Routing)
 	client, err := dispatch.NewRiverClient(st.Pool(), dispatcher)

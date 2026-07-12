@@ -29,13 +29,31 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("events = %d, want 4", len(events))
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
 	}
 	for _, event := range events {
 		if event.ActorID != "operator-1" || event.ActorRole != core.ActorHuman {
 			t.Fatalf("event actor = %s/%s", event.ActorID, event.ActorRole)
 		}
+	}
+}
+
+func TestMemoryCreateSpecVersionAlwaysStartsUnapproved(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "spec-task", State: core.TaskAwaiting}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: "spec-task", Content: "# Spec", Approved: true, ApprovedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Approved || !created.ApprovedAt.IsZero() {
+		t.Fatalf("created spec bypassed approval gate: %+v", created)
 	}
 }
 

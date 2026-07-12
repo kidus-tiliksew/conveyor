@@ -97,3 +97,21 @@ func TestOpenPRCreatesWhenTaskBranchHasNoOpenPR(t *testing.T) {
 		t.Fatalf("url=%q calls=%d", url, calls)
 	}
 }
+
+func TestListReviewFeedbackIncludesReviewBodiesAndInlineComments(t *testing.T) {
+	calls := 0
+	run := func(_ context.Context, _ ...string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return []byte(`{"number":8,"reviews":[{"id":"R1","body":"Please add a test.","author":{"login":"alice"}},{"id":"R2","body":"ignored","author":{"login":"ci[bot]"}}]}`), nil
+		}
+		return []byte(`[{"id":91,"body":"Handle nil here.","user":{"login":"bob"}}]`), nil
+	}
+	feedback, err := listReviewFeedback(context.Background(), "acme/api", "conveyor/task-2", run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feedback) != 2 || feedback[0].ID != "review:R1" || feedback[1].ID != "comment:91" || feedback[1].PR != 8 {
+		t.Fatalf("feedback=%+v", feedback)
+	}
+}

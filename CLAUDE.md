@@ -30,8 +30,8 @@ exactly two phases:
 - **Phase 4** — UI rewrite (shadcn/ui, full §13.3) → **Beta: Conveyor
   develops Conveyor**.
 
-No phase beyond 2 has been activated; wait for explicit activation before
-building. Do NOT build post-Beta or deferred surfaces regardless of phase:
+Phase 3 and its live dogfood exit run are complete. Phase 4 has not been
+activated. Do NOT build post-Beta or deferred surfaces:
 command-policy shim approval cards, environment inference/repair, monitor
 agent (Phase 5); memory store / pgvector (Phase 6); transcript mining /
 self-improvement / eval rig (Phase 7); verification agent, K8sRunner,

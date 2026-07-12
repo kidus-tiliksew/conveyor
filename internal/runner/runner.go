@@ -1,6 +1,6 @@
 // Package runner defines the runner protocol (spec §3.2). A runner is a
-// backend that provisions sandboxes: local Docker in Phase 1, Kubernetes
-// in Phase 3. All runners implement this one protocol, so "cloud or
+// backend that provisions sandboxes: local Docker now, with Kubernetes
+// demand-triggered in Phase 8. All runners implement this one protocol, so "cloud or
 // local" is a per-job scheduling decision, not an architectural one.
 package runner
 

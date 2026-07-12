@@ -224,6 +224,15 @@ func CommitsAhead(ctx context.Context, worktreeDir, base string) ([]string, erro
 	return commits, nil
 }
 
+// DiffAgainstBase returns the review input for the independent review stage.
+func DiffAgainstBase(ctx context.Context, worktreeDir, base string) (string, error) {
+	ref := "refs/remotes/origin/" + base
+	if !refExists(ctx, worktreeDir, ref) {
+		ref = base
+	}
+	return commandOutput(ctx, worktreeDir, "git", "diff", "--no-ext-diff", ref+"...HEAD")
+}
+
 func refExists(ctx context.Context, repoDir, ref string) bool {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
 	cmd.Dir = repoDir

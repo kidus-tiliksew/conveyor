@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
@@ -26,6 +28,64 @@ type fakeRunner struct {
 	streamErr error
 	specs     []runner.StartJobSpec
 	eventLog  string
+}
+
+type phase3Runner struct {
+	outputs map[core.Stage][]string
+	events  map[runner.JobHandle]string
+}
+
+func (r *phase3Runner) Name() string { return "phase3-fake" }
+func (r *phase3Runner) StartJob(_ context.Context, spec runner.StartJobSpec) (runner.JobHandle, error) {
+	parts := strings.Split(spec.JobID, "-")
+	stage := core.Stage(parts[len(parts)-2])
+	outputs := r.outputs[stage]
+	if len(outputs) == 0 {
+		return "", errors.New("missing scripted output for " + string(stage))
+	}
+	output := outputs[0]
+	r.outputs[stage] = outputs[1:]
+	if stage == core.StageImplement {
+		worktree := spec.Worktrees[0].HostPath
+		path := filepath.Join(worktree, "phase3.txt")
+		file, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		_, _ = file.WriteString(spec.JobID + "\n")
+		_ = file.Close()
+		mustRunNoTest(worktree, "git", "add", "phase3.txt")
+		mustRunNoTest(worktree, "git", "commit", "-m", "test: phase 3 implementation")
+	}
+	path, err := jobartifact.EventLogPath(spec.ControlDir, spec.JobID)
+	if err != nil {
+		return "", err
+	}
+	data := `{"kind":"assistant_text","phase":"main","text":` + strconv.Quote(output) + `,"at":"2026-01-01T00:00:00Z"}` + "\n" +
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:01Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		return "", err
+	}
+	handle := runner.JobHandle(spec.JobID)
+	if r.events == nil {
+		r.events = map[runner.JobHandle]string{}
+	}
+	r.events[handle] = path
+	return handle, nil
+}
+func (r *phase3Runner) StreamLogs(context.Context, runner.JobHandle) (<-chan runner.LogEvent, error) {
+	ch := make(chan runner.LogEvent)
+	close(ch)
+	return ch, nil
+}
+func (r *phase3Runner) Signal(context.Context, runner.JobHandle, runner.Signal) error { return nil }
+func (r *phase3Runner) CollectArtifacts(_ context.Context, handle runner.JobHandle) (runner.Artifacts, error) {
+	return runner.Artifacts{ExitCode: 0, EventLog: r.events[handle]}, nil
+}
+
+func mustRunNoTest(dir, name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic(string(out))
+	}
 }
 
 type noCapacityPool struct{}
@@ -58,6 +118,158 @@ func TestRunTaskLeavesTaskQueuedUntilCapacityIsClaimed(t *testing.T) {
 	}
 	if len(f.specs) != 0 {
 		t.Fatalf("runner started without capacity: %+v", f.specs)
+	}
+}
+
+func TestPhase3PipelineSpecGateAndBoundedReviewBounce(t *testing.T) {
+	specOutput := "# Change\n\n## Intent\nImplement it.\n\n## Non-goals\nUnrelated refactors.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Phase 3 file exists\n  verify: test\n  ref: phase3.txt\n```"
+	r := &phase3Runner{outputs: map[core.Stage][]string{
+		core.StageTriage:    {"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.9,\"route\":\"spec\",\"summary\":\"Contract needed.\"}\n```"},
+		core.StageSpec:      {specOutput},
+		core.StageImplement: {"Implemented v1.", "Implemented review feedback."},
+		core.StageReview: {
+			"```conveyor:review\n{\"verdict\":\"changes_requested\",\"reason_code\":\"scope-creep\",\"summary\":\"Needs correction.\",\"feedback\":\"Tighten the implementation.\"}\n```",
+			"```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"Matches the spec.\",\"feedback\":\"\"}\n```",
+		},
+	}}
+	d, st, task := testDispatcher(t, r)
+	task.Level = core.L2
+	// Replace the fixture with an L2 task while preserving its repository.
+	memory := store.NewMemory()
+	if err := memory.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	d.Store = memory
+	st = memory
+	d.Cfg.PackDir = filepath.Join("..", "..", "pack")
+	d.Cfg.MaxBounces = 2
+	bundle, loadErr := pack.Load(d.Cfg.PackDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	d.Pack = bundle
+
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(context.Background(), task.ID)
+	if current.State != core.TaskAwaiting {
+		t.Fatalf("after spec state=%s", current.State)
+	}
+	storedSpec, ok, err := st.GetLatestSpecVersion(context.Background(), task.ID)
+	if err != nil || !ok || !strings.Contains(string(storedSpec.Acceptance), "AC-1") || string(storedSpec.Decomposition) != "[]" {
+		t.Fatalf("stored spec=%+v ok=%v err=%v", storedSpec, ok, err)
+	}
+	latest, _, _ := st.GetLatestJob(context.Background(), task.ID)
+	intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionApprove, ReasonCode: "approved"}
+	if err := st.CreateIntervention(context.Background(), intervention); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.HandleIntervention(context.Background(), task, latest, intervention); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := d.runTask(context.Background(), task.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ = st.GetTask(context.Background(), task.ID)
+	if current.State != core.TaskAwaiting {
+		t.Fatalf("final state=%s", current.State)
+	}
+	jobs, _ := st.ListJobs(context.Background(), task.ID)
+	want := []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageReview, core.StageImplement, core.StageReview}
+	if len(jobs) != len(want) {
+		t.Fatalf("jobs=%d want=%d", len(jobs), len(want))
+	}
+	for i := range want {
+		if jobs[i].Stage != want[i] {
+			t.Fatalf("job %d stage=%s want=%s", i, jobs[i].Stage, want[i])
+		}
+	}
+}
+
+func TestNextStageUsesPersistedRecoveryDecision(t *testing.T) {
+	_, _, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	task.State = core.TaskQueued
+	task.NextStage = core.StageReview
+	stage, proceed := nextStage(task)
+	if !proceed || stage != core.StageReview {
+		t.Fatalf("stage=%s proceed=%v", stage, proceed)
+	}
+}
+
+func TestInvalidOutputAtBounceLimitPersistsHaltedRecoveryStage(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	d.Cfg.MaxBounces = 1
+	job := core.Job{ID: task.ID + "-triage-1", TaskID: task.ID, Stage: core.StageTriage, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.completeStage(context.Background(), task, d.Cfg.Repos[0], "", job, "malformed"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.NextStage != "" || persisted.RecoveryStage != core.StageTriage {
+		t.Fatalf("halted transition = state:%s next:%s recovery:%s", persisted.State, persisted.NextStage, persisted.RecoveryStage)
+	}
+}
+
+func TestReviewBounceCapDoesNotBecomeRunnableUntilExplicitRedirect(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	d.Cfg.MaxBounces = 1
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	output := "```conveyor:review\n{\"verdict\":\"changes_requested\",\"reason_code\":\"other\",\"summary\":\"fix\",\"feedback\":\"correct it\"}\n```"
+	if err := d.completeStage(context.Background(), task, d.Cfg.Repos[0], "", job, output); err != nil {
+		t.Fatal(err)
+	}
+	halted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if halted.State != core.TaskAwaiting || halted.NextStage != "" || halted.RecoveryStage != core.StageImplement {
+		t.Fatalf("halted transition = %+v", halted)
+	}
+	intervention := core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: "other", Comment: "retry"}
+	if err := d.HandleIntervention(context.Background(), halted, job, intervention); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := st.GetTask(context.Background(), task.ID)
+	if resumed.State != core.TaskQueued || resumed.NextStage != core.StageImplement || resumed.RecoveryStage != "" {
+		t.Fatalf("resumed transition = %+v", resumed)
+	}
+}
+
+func TestApprovePausedJobResumesSamePersistedStage(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	task.State = core.TaskAwaiting
+	task.RecoveryStage = core.StageSpec
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageSpec); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPaused, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.HandleIntervention(context.Background(), task, job, core.Intervention{Action: core.InterventionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := st.GetTask(context.Background(), task.ID)
+	if resumed.State != core.TaskQueued || resumed.NextStage != core.StageSpec {
+		t.Fatalf("resumed transition = %+v", resumed)
 	}
 }
 
@@ -193,6 +405,25 @@ func TestInspectTranscriptAggregatesSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestInspectTranscriptUsesLastAssistantOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"draft","at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"final","at":"2026-01-01T00:00:01Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:02Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := inspectTranscript(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.agentOutput != "final" {
+		t.Fatalf("agent output=%q", summary.agentOutput)
+	}
+}
+
 func TestGitHubSource(t *testing.T) {
 	slug, number, ok := githubSource("github:acme/api#42")
 	if !ok || slug != "acme/api" || number != 42 {
@@ -209,6 +440,9 @@ func TestRunTaskUsesUniqueAttemptIDs(t *testing.T) {
 	f := &fakeRunner{}
 	d, st, task := testDispatcher(t, f)
 	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.runTask(context.Background(), task.ID); err != nil {
@@ -311,6 +545,9 @@ func TestRunTaskPersistsAttemptScopedTranscriptURIs(t *testing.T) {
 	f := &fakeRunner{}
 	d, st, task := testDispatcher(t, f)
 	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.runTask(context.Background(), task.ID); err != nil {

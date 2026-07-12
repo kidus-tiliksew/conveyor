@@ -31,6 +31,66 @@ type Issue struct {
 	URL    string `json:"url"`
 }
 
+type ReviewFeedback struct {
+	ID     string
+	Author string
+	Body   string
+	PR     int
+}
+
+// ListReviewFeedback returns human-authored PR review bodies and inline
+// comments for the task branch. The dispatcher deduplicates IDs in its event
+// log before converting them to redirect interventions (spec §9).
+func ListReviewFeedback(ctx context.Context, repo, branch string) ([]ReviewFeedback, error) {
+	return listReviewFeedback(ctx, repo, branch, gh)
+}
+
+func listReviewFeedback(ctx context.Context, repo, branch string, run ghRunner) ([]ReviewFeedback, error) {
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,reviews")
+	if err != nil {
+		return nil, err
+	}
+	var view struct {
+		Number  int `json:"number"`
+		Reviews []struct {
+			ID     string `json:"id"`
+			Body   string `json:"body"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"reviews"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil {
+		return nil, fmt.Errorf("parse gh pr view: %w", err)
+	}
+	feedback := make([]ReviewFeedback, 0, len(view.Reviews))
+	for _, review := range view.Reviews {
+		if strings.TrimSpace(review.Body) != "" && !strings.HasSuffix(review.Author.Login, "[bot]") {
+			feedback = append(feedback, ReviewFeedback{ID: "review:" + review.ID, Author: review.Author.Login, Body: review.Body, PR: view.Number})
+		}
+	}
+	inline, err := run(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d/comments", repo, view.Number), "--paginate")
+	if err != nil {
+		return nil, err
+	}
+	var comments []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(inline, &comments); err != nil {
+		return nil, fmt.Errorf("parse gh review comments: %w", err)
+	}
+	for _, comment := range comments {
+		if strings.TrimSpace(comment.Body) != "" && !strings.HasSuffix(comment.User.Login, "[bot]") {
+			feedback = append(feedback, ReviewFeedback{ID: fmt.Sprintf("comment:%d", comment.ID), Author: comment.User.Login, Body: comment.Body, PR: view.Number})
+		}
+	}
+	return feedback, nil
+}
+
 // ListReadyIssues polls a repo for issues carrying the ready label.
 func ListReadyIssues(ctx context.Context, repo string) ([]Issue, error) {
 	out, err := gh(ctx, "issue", "list",

@@ -133,6 +133,26 @@ func TestSuperviseFallsBackWithoutResumeAndEmitsOneTerminalDone(t *testing.T) {
 	}
 }
 
+func TestSuperviseStopsAtBudgetBeforeHandoff(t *testing.T) {
+	a := &scriptedAdapter{runScripts: []adapterScript{{events: []adapter.Event{
+		{Kind: adapter.EventTokenUsage, CostUSD: 1.0},
+		{Kind: adapter.EventDone},
+	}}}}
+	var forwarded []adapter.Event
+	err := supervise(a, "/work", t.TempDir(), "scripted", "task-1", "job-1", "task", 1.0, adapter.ToolPolicy{}, func(event adapter.Event) {
+		forwarded = append(forwarded, event)
+	})
+	if err == nil || !strings.Contains(err.Error(), "budget exhausted") {
+		t.Fatalf("error=%v", err)
+	}
+	if len(a.runSpecs) != 1 {
+		t.Fatalf("run calls=%d, budget breaker must skip handoff", len(a.runSpecs))
+	}
+	if len(forwarded) == 0 || forwarded[len(forwarded)-1].Kind != adapter.EventError {
+		t.Fatalf("forwarded=%+v", forwarded)
+	}
+}
+
 func TestElicitHandoffFallsBackAfterResumeError(t *testing.T) {
 	a := &scriptedAdapter{
 		capabilities: adapter.Capabilities{Resume: true},

@@ -112,10 +112,21 @@ function TaskDetail() {
       <div><div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-stone-500"><span className="font-mono">{item.task.id}</span><span className="rounded border border-stone-700 px-2 py-0.5">{item.task.repo}</span><span>{item.task.source}</span></div><h1 className="max-w-3xl text-2xl font-semibold tracking-tight md:text-3xl">{item.task.title}</h1>{item.task.body && <p className="mt-3 max-w-3xl text-sm leading-6 text-stone-400">{item.task.body}</p>}</div>
       <div className="min-w-48 rounded-lg border border-stone-800 bg-stone-900/50 p-4"><p className="text-[11px] uppercase tracking-wider text-stone-500">Budget consumed</p><p className="mt-1 text-xl font-semibold">${totalCost.toFixed(2)} <span className="text-sm font-normal text-stone-600">/ ${totalBudget.toFixed(2)}</span></p><div className="mt-3 h-1.5 overflow-hidden rounded bg-stone-800"><div className="h-full bg-lime-300" style={{ width: `${Math.min(100, totalBudget ? totalCost / totalBudget * 100 : 0)}%` }} /></div></div>
     </div>
+    {item.spec && <SpecGate spec={item.spec} />}
     {item.needs_attention && <ReviewPanel item={item} token={token} />}
     <section className="mt-8"><div className="mb-5 flex items-center justify-between"><h2 className="text-sm font-semibold uppercase tracking-[.14em] text-stone-400">Costed timeline</h2><span className="text-xs text-stone-600">{item.events.length} audit events</span></div><div className="relative space-y-5 before:absolute before:bottom-5 before:left-[7px] before:top-5 before:w-px before:bg-stone-800">{item.jobs.map((job) => <TimelineJob key={job.id} job={job} item={item} />)}{item.jobs.length === 0 && <p className="pl-7 text-sm text-stone-500">Waiting for the first job to start.</p>}</div></section>
     {item.interventions.length > 0 && <section className="mt-10"><h2 className="mb-4 text-sm font-semibold uppercase tracking-[.14em] text-stone-400">Bounce history</h2><div className="space-y-2">{item.interventions.map((entry) => <div key={entry.id} className="rounded-md border border-stone-800 p-3 text-sm"><strong>{entry.action}</strong><span className="mx-2 text-stone-700">·</span><span className="text-stone-400">{entry.reason_code}</span>{entry.comment && <p className="mt-2 text-stone-300">{entry.comment}</p>}</div>)}</div></section>}
   </div>
+}
+
+function SpecGate({ spec }: { spec: NonNullable<ActivityItem['spec']> }) {
+  return <section className="mb-6 rounded-lg border border-stone-800 bg-stone-900/40 p-4 md:p-5">
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <div><p className="text-xs font-semibold uppercase tracking-[.14em] text-stone-400">Specification v{spec.version}</p><p className="mt-1 text-xs text-stone-500">{spec.acceptance_count} acceptance criteria</p></div>
+      <span className={cn('rounded border px-2 py-1 text-xs', spec.approved ? 'border-lime-700 text-lime-300' : 'border-amber-700 text-amber-300')}>{spec.approved ? 'Approved' : 'Awaiting approval'}</span>
+    </div>
+    <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-stone-800 bg-[#10120f] p-4 font-mono text-xs leading-6 text-stone-300">{spec.content}</pre>
+  </section>
 }
 
 function TimelineJob({ job, item }: { job: Job; item: ActivityItem }) {

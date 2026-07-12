@@ -26,6 +26,10 @@ func newClient() *client {
 }
 
 func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
+	return c.createTaskWithLevel(title, body, repo, base, core.L2)
+}
+
+func (c *client) createTaskWithLevel(title, body, repo, base string, level core.EscalationLevel) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
@@ -35,6 +39,7 @@ func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
 		"repo":        repo,
 		"base_branch": base,
 		"source":      "cli",
+		"level":       string(level),
 	})
 	var t core.Task
 	err := c.do(http.MethodPost, "/v1/tasks", payload, &t)
@@ -57,6 +62,12 @@ func (c *client) listJobs(taskID string) ([]core.Job, error) {
 	var js []core.Job
 	err := c.do(http.MethodGet, "/v1/tasks/"+taskID+"/jobs", nil, &js)
 	return js, err
+}
+
+func (c *client) getLatestSpec(taskID string) (core.SpecVersion, error) {
+	var spec core.SpecVersion
+	err := c.do(http.MethodGet, "/v1/tasks/"+taskID+"/spec", nil, &spec)
+	return spec, err
 }
 
 func (c *client) redispatchTask(id string) (core.Task, error) {

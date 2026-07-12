@@ -24,6 +24,9 @@ post-Beta, built with and increasingly by the factory itself.
 
 *Proves: the full pipeline runs.*
 
+**Complete, including the live dogfood exit run.** Operational steps and the
+recorded task/PR evidence are in [phase3.md](phase3.md).
+
 The structural core is multi-stage orchestration; the agents are
 configurations on top of it. Suggested order:
 

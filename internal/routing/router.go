@@ -24,6 +24,7 @@ type ClaimRequest struct {
 	Harnesses       []string
 	LeaseSeconds    int64
 	AllowRestricted bool
+	ExcludeHarness  string
 }
 
 type Credential struct {
@@ -56,7 +57,7 @@ type Outcome struct {
 }
 
 type Selector interface {
-	Select(context.Context, string, string, core.Stage) (Selection, error)
+	Select(context.Context, string, string, core.Stage, string) (Selection, error)
 	Complete(context.Context, Selection, Outcome) error
 }
 
@@ -79,7 +80,7 @@ func NewStatic(credential Credential, cfg config.Routing) *StaticRouter {
 	return &StaticRouter{credential: credential, cfg: cfg}
 }
 
-func (r *StaticRouter) Select(_ context.Context, _, jobID string, stage core.Stage) (Selection, error) {
+func (r *StaticRouter) Select(_ context.Context, _, jobID string, stage core.Stage, _ string) (Selection, error) {
 	policy := stageRoute(r.cfg, stage)
 	for _, harness := range policy.Harnesses {
 		if harness == r.credential.Harness {
@@ -94,7 +95,7 @@ func (r *StaticRouter) Select(_ context.Context, _, jobID string, stage core.Sta
 
 func (*StaticRouter) Complete(context.Context, Selection, Outcome) error { return nil }
 
-func (r *Router) Select(ctx context.Context, taskID, jobID string, stage core.Stage) (Selection, error) {
+func (r *Router) Select(ctx context.Context, taskID, jobID string, stage core.Stage, excludeHarness string) (Selection, error) {
 	if err := r.pool.RescueTaskCredentialLeases(ctx, taskID, jobID); err != nil {
 		return Selection{}, fmt.Errorf("rescue task credential lease: %w", err)
 	}
@@ -102,6 +103,7 @@ func (r *Router) Select(ctx context.Context, taskID, jobID string, stage core.St
 	credential, err := r.pool.ClaimCredential(ctx, ClaimRequest{
 		TaskID: taskID, JobID: jobID, OwnerID: r.cfg.OwnerID, Harnesses: policy.Harnesses,
 		LeaseSeconds: int64(r.cfg.LeaseSeconds), AllowRestricted: r.cfg.AllowRestricted,
+		ExcludeHarness: excludeHarness,
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoCapacity) {
@@ -116,8 +118,16 @@ func stageRoute(cfg config.Routing, stage core.Stage) config.StageRoute {
 	policy, ok := cfg.Stages[string(stage)]
 	if !ok {
 		policy = config.StageRoute{Harnesses: []string{"codex", "claude-code"}}
-		if stage == core.StageImplement {
+		switch stage {
+		case core.StageTriage:
+			policy.ModelTier, policy.BudgetUSD = "strong", 0.75
+		case core.StageSpec:
+			policy.ModelTier, policy.BudgetUSD = "mid", 0.50
+		case core.StageImplement:
+			policy.ModelTier = "subscription"
 			policy.BudgetUSD = 3
+		case core.StageReview:
+			policy.ModelTier, policy.BudgetUSD = "mid", 0.75
 		}
 	}
 	return policy

@@ -23,6 +23,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
@@ -36,6 +38,7 @@ type Dispatcher struct {
 	Runner runner.Runner
 	Router routing.Selector
 	Cfg    *config.Config
+	Pack   *pack.Bundle
 
 	queue        chan string
 	durableQueue bool
@@ -69,7 +72,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case id := <-d.queue:
 			if err := d.runTask(ctx, id); err != nil {
 				log.Printf("[task %s] failed: %v", id, err)
-				_ = d.Store.UpdateTaskState(context.Background(), id, core.TaskParked)
+				recovery := core.Stage("")
+				if task, getErr := d.Store.GetTask(context.Background(), id); getErr == nil {
+					recovery = task.NextStage
+				}
+				_ = d.Store.SetTaskTransition(context.Background(), id, core.TaskParked, "", recovery)
 			}
 		}
 	}
@@ -94,11 +101,19 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
+	stage, proceed := nextStage(t)
+	if !proceed {
+		return nil
+	}
+	image := repo.Image
+	if image == "" {
+		image = d.Cfg.Image
+	}
 	attempt := 1
 	var predecessor *core.Job
 	for i := range priorJobs {
 		prior := priorJobs[i]
-		if prior.Stage != core.StageImplement {
+		if prior.Stage != stage {
 			continue
 		}
 		attempt++
@@ -107,7 +122,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 			predecessor = &candidate
 		}
 	}
-	jobID := fmt.Sprintf("%s-implement-%d", t.ID, attempt)
+	jobID := fmt.Sprintf("%s-%s-%d", t.ID, stage, attempt)
 	harness := ""
 	modelTier := ""
 	budgetUSD := 0.0
@@ -117,7 +132,11 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	secretRefs := append([]string(nil), repo.SecretRefs...)
 	var selection routing.Selection
 	var routeOutcome = routing.Outcome{Error: "job did not complete"}
-	selection, err = d.Router.Select(ctx, t.ID, jobID, core.StageImplement)
+	excludeHarness := ""
+	if stage == core.StageReview {
+		excludeHarness = latestHarness(priorJobs, core.StageImplement)
+	}
+	selection, err = d.Router.Select(ctx, t.ID, jobID, stage, excludeHarness)
 	if err != nil {
 		return err
 	}
@@ -156,7 +175,17 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return err
 	}
 
-	prompt := buildPrompt(t)
+	prompt, err := d.buildStagePrompt(ctx, stage, t, wt)
+	if err != nil {
+		return err
+	}
+	toolPolicy := repo.ToolPolicy
+	if t.Level != "" {
+		if d.Pack == nil {
+			return fmt.Errorf("Phase 3 pack is not loaded")
+		}
+		toolPolicy = d.Pack.Policy(stage, repo.ToolPolicy)
+	}
 	interventions, err := d.Store.ListInterventions(ctx, t.ID)
 	if err != nil {
 		return err
@@ -167,7 +196,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	// (spec §8.3): the persistent worktree carries the code state, the
 	// snapshot carries the reasoning state. Redirect comments join it
 	// alongside structured review redirects.
-	if predecessor != nil {
+	if predecessor != nil && stage == core.StageImplement {
 		handoffPath, pathErr := snapshot.Path(control, predecessor.ID)
 		if pathErr != nil {
 			return pathErr
@@ -193,7 +222,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	job := core.Job{
 		ID:           jobID,
 		TaskID:       t.ID,
-		Stage:        core.StageImplement,
+		Stage:        stage,
 		Harness:      harness,
 		ModelTier:    modelTier,
 		CredentialID: credentialID,
@@ -224,7 +253,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	handle, err := d.Runner.StartJob(ctx, runner.StartJobSpec{
 		JobID:  job.ID,
 		TaskID: t.ID,
-		Image:  d.Cfg.Image,
+		Image:  image,
 		Worktrees: []runner.WorktreeMount{
 			{HostPath: wt, SandboxPath: sandboxWorkdir},
 		},
@@ -236,7 +265,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		SecretStageDir:     filepath.Join(d.Cfg.CacheDir, "secrets"),
 		SecretRefs:         secretRefs,
 		BudgetUSD:          budgetUSD,
-		Policy:             repo.ToolPolicy,
+		Policy:             toolPolicy,
 		Harness:            harness,
 		// The current shim is one-shot; persistent task checkouts provide
 		// continuity while task-TTL container reuse is implemented.
@@ -286,7 +315,10 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	logs, err := d.Runner.StreamLogs(ctx, handle)
+	timeout := stageTimeout(d.Cfg.Routing, stage)
+	jobCtx, cancelJob := context.WithTimeout(ctx, timeout)
+	defer cancelJob()
+	logs, err := d.Runner.StreamLogs(jobCtx, handle)
 	if err != nil {
 		logs = nil
 	}
@@ -304,6 +336,12 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 			log.Printf("[task %s] %s", t.ID, ev.Line)
 		}
 	}
+	if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+		killCtx, killCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_ = d.Runner.Signal(killCtx, handle, runner.SignalKill)
+		killCancel()
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.timeout", Payload: core.JSONPayload(map[string]string{"timeout": timeout.String()})})
+	}
 	if err := logFile.Close(); err != nil && writeErr == nil {
 		writeErr = fmt.Errorf("close job log: %w", err)
 	}
@@ -312,12 +350,17 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return fmt.Errorf("collect artifacts: %w", err)
 	}
+	timedOut := errors.Is(jobCtx.Err(), context.DeadlineExceeded)
+	var summary transcriptSummary
 	if art.EventLog == "" {
-		return fmt.Errorf("job produced no authoritative attempt event artifact")
-	}
-	summary, err := inspectTranscript(art.EventLog)
-	if err != nil {
-		return fmt.Errorf("validate transcript: %w", err)
+		if !timedOut {
+			return fmt.Errorf("job produced no authoritative attempt event artifact")
+		}
+	} else {
+		summary, err = inspectTranscript(art.EventLog)
+		if err != nil && !timedOut {
+			return fmt.Errorf("validate transcript: %w", err)
+		}
 	}
 	if summary.rateLimited && art.ExitCode != 0 {
 		routeOutcome.RateLimited = true
@@ -326,11 +369,13 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	job.TokensIn = summary.tokensIn
 	job.TokensOut = summary.tokensOut
 	job.CostUSD = summary.costUSD
-	transcriptURI := (&url.URL{Scheme: "file", Path: art.EventLog}).String()
-	if err := d.Store.UpsertTranscript(ctx, core.Transcript{
-		JobID: job.ID, URI: transcriptURI, RedactionStats: summary.redactions, CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		return fmt.Errorf("persist transcript metadata: %w", err)
+	if art.EventLog != "" {
+		transcriptURI := (&url.URL{Scheme: "file", Path: art.EventLog}).String()
+		if err := d.Store.UpsertTranscript(ctx, core.Transcript{
+			JobID: job.ID, URI: transcriptURI, RedactionStats: summary.redactions, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return fmt.Errorf("persist transcript metadata: %w", err)
+		}
 	}
 	if summary.agentSummary != "" {
 		_ = d.Store.AppendEvent(ctx, core.Event{
@@ -350,7 +395,12 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		})
 	}
 	job.EndedAt = time.Now()
-	if art.ExitCode == 0 {
+	if timedOut {
+		job.State = core.JobPaused
+	} else if budgetUSD > 0 && summary.costUSD >= budgetUSD {
+		job.State = core.JobPaused
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]float64{"budget_usd": budgetUSD, "cost_usd": summary.costUSD})})
+	} else if art.ExitCode == 0 {
 		job.State = core.JobDone
 	} else {
 		job.State = core.JobFailed
@@ -359,31 +409,20 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return err
 	}
 	jobTerminal = true
+	if job.State == core.JobPaused {
+		if timedOut {
+			routeOutcome.Error = "job timed out"
+		} else {
+			routeOutcome.Error = "job budget exhausted"
+		}
+		return d.transition(ctx, t.ID, core.TaskAwaiting, "", stage)
+	}
 	if art.ExitCode != 0 {
 		return fmt.Errorf("job exited %d (log: %s)", art.ExitCode, jobLogPath)
 	}
 	routeOutcome = routing.Outcome{}
 
-	commits, err := gitx.CommitsAhead(ctx, wt, t.BaseBranch)
-	if err != nil {
-		return err
-	}
-	if len(commits) == 0 {
-		log.Printf("[task %s] job succeeded but produced no commits — parking for a human", t.ID)
-		return d.Store.UpdateTaskState(ctx, t.ID, core.TaskParked)
-	}
-	log.Printf("[task %s] %d commit(s) on %s", t.ID, len(commits), t.Branch)
-
-	if repo.GitHub == "" {
-		log.Printf("[task %s] no github slug configured for repo %s — leaving branch unpushed", t.ID, repo.Name)
-		return d.Store.UpdateTaskState(ctx, t.ID, core.TaskAwaiting)
-	}
-	prURL, err := github.OpenPR(ctx, wt, repo.GitHub, t.Branch, t.BaseBranch, t.Title, prBody(t))
-	if err != nil {
-		return fmt.Errorf("open PR: %w", err)
-	}
-	log.Printf("[task %s] opened %s", t.ID, prURL)
-	return d.Store.UpdateTaskState(ctx, t.ID, core.TaskAwaiting)
+	return d.completeStage(ctx, t, repo, wt, job, summary.agentOutput)
 }
 
 type transcriptSummary struct {
@@ -393,6 +432,7 @@ type transcriptSummary struct {
 	costUSD      float64
 	rateLimited  bool
 	agentSummary string
+	agentOutput  string
 }
 
 func inspectTranscript(path string) (transcriptSummary, error) {
@@ -423,6 +463,11 @@ func inspectTranscript(path string) (transcriptSummary, error) {
 		}
 		if event.Kind == adapter.EventAssistantText && event.Phase == adapter.PhaseMain && strings.TrimSpace(event.Text) != "" {
 			summary.agentSummary = truncateRunes(strings.TrimSpace(event.Text), 2000)
+			// Harnesses may emit the same final answer once as an assistant
+			// message and again in their terminal result. The last normalized
+			// assistant text is authoritative; concatenating duplicates specs
+			// and machine-owned fenced blocks.
+			summary.agentOutput = event.Text
 		}
 		switch event.Kind {
 		case adapter.EventDone:
@@ -489,6 +534,236 @@ func truncateRunes(value string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
+func stageTimeout(routingConfig config.Routing, stage core.Stage) time.Duration {
+	if route, ok := routingConfig.Stages[string(stage)]; ok && route.Timeout > 0 {
+		return route.Timeout
+	}
+	return config.DefaultStageTimeout
+}
+
+func latestHarness(jobs []core.Job, stage core.Stage) string {
+	for i := len(jobs) - 1; i >= 0; i-- {
+		if jobs[i].Stage == stage {
+			return jobs[i].Harness
+		}
+	}
+	return ""
+}
+
+func nextStage(task core.Task) (core.Stage, bool) {
+	return task.NextStage, task.NextStage != ""
+}
+
+func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, task core.Task, worktree string) (string, error) {
+	if task.Level == "" && stage == core.StageImplement {
+		return buildPrompt(task), nil
+	}
+	if d.Pack == nil {
+		return "", fmt.Errorf("Phase 3 pack is not loaded")
+	}
+	role, err := d.Pack.Role(stage)
+	if err != nil {
+		return "", err
+	}
+	var prompt strings.Builder
+	prompt.WriteString(role)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Body, task.Branch, task.BaseBranch)
+	if stage == core.StageImplement || stage == core.StageReview {
+		spec, exists, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
+		if err != nil {
+			return "", err
+		}
+		if exists && spec.Approved {
+			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
+		}
+	}
+	if stage == core.StageReview {
+		diff, err := gitx.DiffAgainstBase(ctx, worktree, task.BaseBranch)
+		if err != nil {
+			return "", err
+		}
+		prompt.WriteString("\n# Branch diff\n\n```diff\n" + diff + "\n```\n")
+	}
+	return prompt.String(), nil
+}
+
+func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo config.Repo, worktree string, job core.Job, output string) error {
+	invalid := func(err error) error {
+		kind := string(job.Stage) + ".output_invalid"
+		if appendErr := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: kind, Payload: core.JSONPayload(map[string]string{"error": err.Error()})}); appendErr != nil {
+			return appendErr
+		}
+		count, countErr := d.Store.CountEvents(ctx, task.ID, kind)
+		if countErr != nil {
+			return countErr
+		}
+		if count >= d.Cfg.MaxBounces {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"stage": job.Stage, "count": count})})
+			return d.transition(ctx, task.ID, core.TaskAwaiting, "", job.Stage)
+		}
+		return d.transition(ctx, task.ID, core.TaskQueued, job.Stage, "")
+	}
+
+	switch job.Stage {
+	case core.StageTriage:
+		result, err := pipeline.ParseTriage(output)
+		if err != nil {
+			return invalid(err)
+		}
+		if err := d.Store.UpdateTaskClassification(ctx, task.ID, result.Class); err != nil {
+			return err
+		}
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)}); err != nil {
+			return err
+		}
+		if task.Level == core.L3 || result.Route == "human" {
+			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageTriage)
+		}
+		if result.Route == "parked" {
+			return d.transition(ctx, task.ID, core.TaskParked, "", core.StageTriage)
+		}
+		next := core.StageImplement
+		if task.Level == core.L2 || result.Route == "spec" {
+			next = core.StageSpec
+		}
+		return d.transition(ctx, task.ID, core.TaskQueued, next, "")
+	case core.StageSpec:
+		parsed, err := pipeline.ParseSpec(output)
+		if err != nil {
+			return invalid(err)
+		}
+		version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{
+			TaskID: task.ID, Content: parsed.Markdown, AcceptanceCount: len(parsed.Acceptance),
+			Acceptance: core.JSONPayload(parsed.Acceptance), Decomposition: core.JSONPayload(parsed.Decomposition),
+		})
+		if err != nil {
+			return err
+		}
+		if task.Level == core.L2 {
+			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+		}
+		if err := d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
+			return err
+		}
+		return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
+	case core.StageImplement:
+		commits, err := gitx.CommitsAhead(ctx, worktree, task.BaseBranch)
+		if err != nil {
+			return err
+		}
+		if len(commits) == 0 {
+			return d.transition(ctx, task.ID, core.TaskParked, "", core.StageImplement)
+		}
+		if task.Level == "" {
+			if repo.GitHub != "" {
+				if _, err := github.OpenPR(ctx, worktree, repo.GitHub, task.Branch, task.BaseBranch, task.Title, prBody(task)); err != nil {
+					return fmt.Errorf("open PR: %w", err)
+				}
+			}
+			return d.transition(ctx, task.ID, core.TaskAwaiting, core.StageImplement, core.StageImplement)
+		}
+		return d.transition(ctx, task.ID, core.TaskQueued, core.StageReview, "")
+	case core.StageReview:
+		result, err := pipeline.ParseReview(output)
+		if err != nil {
+			return invalid(err)
+		}
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(result)}); err != nil {
+			return err
+		}
+		if result.Verdict == "changes_requested" {
+			priorBounces, err := d.Store.CountEvents(ctx, task.ID, "pipeline.bounced")
+			if err != nil {
+				return err
+			}
+			bounces := priorBounces + 1
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": result.ReasonCode, "feedback": result.Feedback, "count": bounces})})
+			if err := d.Store.CreateIntervention(store.WithActor(ctx, store.Actor{ID: "review-agent", Role: core.ActorAgent}), core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
+				return err
+			}
+			if bounces >= d.Cfg.MaxBounces {
+				_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"stage": job.Stage, "count": bounces, "recovery_stage": core.StageImplement})})
+				return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+			}
+			return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
+		}
+		if repo.GitHub != "" {
+			prURL, err := github.OpenPR(ctx, worktree, repo.GitHub, task.Branch, task.BaseBranch, task.Title, prBody(task))
+			if err != nil {
+				return fmt.Errorf("open PR: %w", err)
+			}
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"url": prURL})})
+		}
+		if task.Level == core.L0 {
+			return d.transition(ctx, task.ID, core.TaskApproved, "", "")
+		}
+		return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+	}
+	return fmt.Errorf("unsupported stage %s", job.Stage)
+}
+
+func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
+	if err := d.Store.SetTaskTransition(ctx, taskID, state, nextStage, recoveryStage); err != nil {
+		return err
+	}
+	if state == core.TaskQueued {
+		d.Enqueue(taskID)
+	}
+	return nil
+}
+
+// HandleIntervention advances a spec gate or redispatches a redirect after the
+// decision itself has been durably recorded by the store.
+func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
+	switch intervention.Action {
+	case core.InterventionReject:
+		return d.transition(ctx, task.ID, core.TaskClosed, "", "")
+	case core.InterventionApprove:
+		if latest.State == core.JobPaused {
+			return d.transition(ctx, task.ID, core.TaskQueued, latest.Stage, "")
+		}
+		if latest.Stage == core.StageSpec {
+			spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("task %s has no spec to approve", task.ID)
+			}
+			if err := d.Store.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+				return err
+			}
+			return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
+		}
+		return d.transition(ctx, task.ID, core.TaskApproved, "", "")
+	case core.InterventionRedirect:
+		target := task.RecoveryStage
+		if target == "" {
+			if latest.Stage == core.StageReview {
+				target = core.StageImplement
+			} else {
+				target = latest.Stage
+			}
+		}
+		if target == "" {
+			return fmt.Errorf("task %s has no recovery stage", task.ID)
+		}
+		return d.transition(ctx, task.ID, core.TaskQueued, target, "")
+	case core.InterventionPull:
+		target := task.RecoveryStage
+		if target == "" && latest.Stage == core.StageReview {
+			target = core.StageImplement
+		} else if target == "" {
+			target = latest.Stage
+		}
+		if target == "" {
+			return fmt.Errorf("task %s has no recovery stage for local handoff", task.ID)
+		}
+		return d.transition(ctx, task.ID, task.State, target, target)
+	}
+	return nil
+}
+
 // PollGitHub converts conveyor:ready issues into tasks (spec §9),
 // deduplicating on task provenance.
 func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
@@ -506,6 +781,7 @@ func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
 
 func (d *Dispatcher) pollOnce(ctx context.Context) {
 	d.recoverGitHubClaims(ctx)
+	d.pollReviewFeedback(ctx)
 	for _, repo := range d.Cfg.Repos {
 		if repo.GitHub == "" {
 			continue
@@ -536,6 +812,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 					BaseBranch: repo.Base,
 					Branch:     gitx.BranchName(id),
 					State:      core.TaskClaiming,
+					NextStage:  core.InitialStage(core.L2),
 					CreatedAt:  time.Now(),
 				}
 				if err := d.Store.CreateTask(ctx, existing); err != nil {
@@ -560,6 +837,59 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			}
 			log.Printf("[task %s] created from %s (%q)", id, source, is.Title)
 			d.Enqueue(id)
+		}
+	}
+}
+
+func (d *Dispatcher) pollReviewFeedback(ctx context.Context) {
+	tasks, err := d.Store.ListTasks(ctx)
+	if err != nil {
+		log.Printf("poll PR feedback: %v", err)
+		return
+	}
+	for _, task := range tasks {
+		if task.State != core.TaskAwaiting && task.State != core.TaskApproved {
+			continue
+		}
+		repo, ok := d.Cfg.Repo(task.Repo)
+		if !ok || repo.GitHub == "" {
+			continue
+		}
+		feedback, err := github.ListReviewFeedback(ctx, repo.GitHub, task.Branch)
+		if err != nil {
+			continue // the branch may not have a PR yet
+		}
+		events, err := d.Store.ListEvents(ctx, task.ID)
+		if err != nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, event := range events {
+			if event.Kind != "github.review_redirected" {
+				continue
+			}
+			var payload struct {
+				ExternalID string `json:"external_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				seen[payload.ExternalID] = true
+			}
+		}
+		for _, item := range feedback {
+			if seen[item.ID] {
+				continue
+			}
+			latest, _, _ := d.Store.GetLatestJob(ctx, task.ID)
+			actorCtx := store.WithActor(ctx, store.Actor{ID: "github:" + item.Author, Role: core.ActorHuman})
+			intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: "github-review", Comment: item.Body}
+			if err := d.Store.CreateIntervention(actorCtx, intervention); err != nil {
+				log.Printf("[task %s] ingest PR feedback: %v", task.ID, err)
+				continue
+			}
+			_ = d.Store.AppendEvent(actorCtx, core.Event{TaskID: task.ID, JobID: latest.ID, Kind: "github.review_redirected", Payload: core.JSONPayload(map[string]any{"external_id": item.ID, "pr_number": item.PR, "author": item.Author})})
+			if err := d.HandleIntervention(actorCtx, task, latest, intervention); err != nil {
+				log.Printf("[task %s] route PR feedback: %v", task.ID, err)
+			}
 		}
 	}
 }
@@ -620,8 +950,8 @@ func (d *Dispatcher) taskBySource(ctx context.Context, source string) (core.Task
 	return core.Task{}, false
 }
 
-// buildPrompt is the Phase 1 stand-in for the implement role prompt;
-// it moves into the prompt/policy pack (spec §2.2) when packs exist.
+// buildPrompt preserves the accepted Phase 1 compatibility fixture. Phase 3
+// tasks load pack/roles/implement.md instead (spec §2.2).
 func buildPrompt(t core.Task) string {
 	var b strings.Builder
 	b.WriteString("You are the implementation agent of an automated software factory.\n\n")

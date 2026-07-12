@@ -11,6 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const approveLatestSpecVersion = `-- name: ApproveLatestSpecVersion :one
+UPDATE task_specs s
+SET approved = true, approved_at = now()
+FROM tasks t
+WHERE s.task_id = t.id
+  AND s.task_id = $1
+  AND s.version = $2
+  AND t.workspace_id = $3
+  AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = $1)
+RETURNING s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at
+`
+
+type ApproveLatestSpecVersionParams struct {
+	TaskID      string `json:"task_id"`
+	Version     int32  `json:"version"`
+	WorkspaceID string `json:"workspace_id"`
+}
+
+func (q *Queries) ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error) {
+	row := q.db.QueryRow(ctx, approveLatestSpecVersion, arg.TaskID, arg.Version, arg.WorkspaceID)
+	var i TaskSpec
+	err := row.Scan(
+		&i.TaskID,
+		&i.Version,
+		&i.Content,
+		&i.AcceptanceCount,
+		&i.Acceptance,
+		&i.Decomposition,
+		&i.Approved,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const claimCredential = `-- name: ClaimCredential :one
 WITH candidate AS (
     SELECT c.id
@@ -18,7 +53,8 @@ WITH candidate AS (
     LEFT JOIN vendor_policies p
       ON p.vendor = c.vendor AND p.harness = c.harness AND p.auth_mode = c.kind
     WHERE c.harness = ANY($4::text[])
-      AND (c.owner_kind = 'org' OR c.owner_id = $5)
+      AND ($5::text = '' OR c.harness <> $5::text)
+      AND (c.owner_kind = 'org' OR c.owner_id = $6)
       AND (c.kind = 'api' OR c.owner_kind = 'user')
       AND (c.leased_by = $1 OR c.lease_until IS NULL OR c.lease_until <= now())
       AND (c.cooldown_until IS NULL OR c.cooldown_until <= now())
@@ -26,7 +62,7 @@ WITH candidate AS (
       AND (
           c.kind = 'api'
           OR p.subscription_headless = 'allowed'
-          OR ($6::boolean AND p.subscription_headless = 'restricted')
+          OR ($7::boolean AND p.subscription_headless = 'restricted')
       )
     ORDER BY array_position($4::text[], c.harness),
              CASE c.kind WHEN 'personal_sub' THEN 0 WHEN 'team_sub' THEN 1 ELSE 2 END,
@@ -53,6 +89,7 @@ type ClaimCredentialParams struct {
 	TaskID          string   `json:"task_id"`
 	LeaseSeconds    int64    `json:"lease_seconds"`
 	Harnesses       []string `json:"harnesses"`
+	ExcludeHarness  string   `json:"exclude_harness"`
 	OwnerID         string   `json:"owner_id"`
 	AllowRestricted bool     `json:"allow_restricted"`
 }
@@ -63,6 +100,7 @@ func (q *Queries) ClaimCredential(ctx context.Context, arg ClaimCredentialParams
 		arg.TaskID,
 		arg.LeaseSeconds,
 		arg.Harnesses,
+		arg.ExcludeHarness,
 		arg.OwnerID,
 		arg.AllowRestricted,
 	)
@@ -86,6 +124,25 @@ func (q *Queries) ClaimCredential(ctx context.Context, arg ClaimCredentialParams
 		&i.LeaseTaskID,
 	)
 	return i, err
+}
+
+const countEvents = `-- name: CountEvents :one
+SELECT count(*)::bigint FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3
+`
+
+type CountEventsParams struct {
+	TaskID      string `json:"task_id"`
+	Kind        string `json:"kind"`
+	WorkspaceID string `json:"workspace_id"`
+}
+
+func (q *Queries) CountEvents(ctx context.Context, arg CountEventsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countEvents, arg.TaskID, arg.Kind, arg.WorkspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const deleteWorkspaceCredentialRefs = `-- name: DeleteWorkspaceCredentialRefs :exec
@@ -212,8 +269,38 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 	return i, err
 }
 
+const getLatestSpecVersion = `-- name: GetLatestSpecVersion :one
+SELECT s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at FROM task_specs s
+JOIN tasks t ON t.id = s.task_id
+WHERE s.task_id = $1 AND t.workspace_id = $2
+ORDER BY s.version DESC
+LIMIT 1
+`
+
+type GetLatestSpecVersionParams struct {
+	TaskID      string `json:"task_id"`
+	WorkspaceID string `json:"workspace_id"`
+}
+
+func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error) {
+	row := q.db.QueryRow(ctx, getLatestSpecVersion, arg.TaskID, arg.WorkspaceID)
+	var i TaskSpec
+	err := row.Scan(
+		&i.TaskID,
+		&i.Version,
+		&i.Content,
+		&i.AcceptanceCount,
+		&i.Acceptance,
+		&i.Decomposition,
+		&i.Approved,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -239,6 +326,8 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.ParentTaskID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
 	)
 	return i, err
 }
@@ -434,15 +523,68 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 	return i, err
 }
 
+const insertSpecVersion = `-- name: InsertSpecVersion :one
+INSERT INTO task_specs (
+    task_id, version, content, acceptance_count, acceptance, decomposition,
+    approved, approved_at, created_at
+)
+SELECT
+    $1,
+    COALESCE(MAX(version), 0) + 1,
+    $2,
+    $3,
+    $4,
+    $5,
+    false,
+    NULL,
+    $6
+FROM task_specs
+WHERE task_id = $1
+RETURNING task_id, version, content, acceptance_count, acceptance, decomposition, approved, created_at, approved_at
+`
+
+type InsertSpecVersionParams struct {
+	TaskID          string             `json:"task_id"`
+	Content         string             `json:"content"`
+	AcceptanceCount int32              `json:"acceptance_count"`
+	Acceptance      []byte             `json:"acceptance"`
+	Decomposition   []byte             `json:"decomposition"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error) {
+	row := q.db.QueryRow(ctx, insertSpecVersion,
+		arg.TaskID,
+		arg.Content,
+		arg.AcceptanceCount,
+		arg.Acceptance,
+		arg.Decomposition,
+		arg.CreatedAt,
+	)
+	var i TaskSpec
+	err := row.Scan(
+		&i.TaskID,
+		&i.Version,
+		&i.Content,
+		&i.AcceptanceCount,
+		&i.Acceptance,
+		&i.Decomposition,
+		&i.Approved,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const insertTask = `-- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, parent_task_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13
+    $8, $9, $10, $11, $12, $13, $14, $15
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
 `
 
 type InsertTaskParams struct {
@@ -457,6 +599,8 @@ type InsertTaskParams struct {
 	BaseBranch      string             `json:"base_branch"`
 	Branch          string             `json:"branch"`
 	State           string             `json:"state"`
+	NextStage       string             `json:"next_stage"`
+	RecoveryStage   string             `json:"recovery_stage"`
 	ParentTaskID    string             `json:"parent_task_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
@@ -474,6 +618,8 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.BaseBranch,
 		arg.Branch,
 		arg.State,
+		arg.NextStage,
+		arg.RecoveryStage,
 		arg.ParentTaskID,
 		arg.CreatedAt,
 	)
@@ -493,6 +639,8 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.ParentTaskID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
 	)
 	return i, err
 }
@@ -800,7 +948,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, error) {
@@ -827,6 +975,8 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, er
 			&i.ParentTaskID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.NextStage,
+			&i.RecoveryStage,
 		); err != nil {
 			return nil, err
 		}
@@ -1127,12 +1277,50 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 	return i, err
 }
 
+const updateTaskClassification = `-- name: UpdateTaskClassification :one
+UPDATE tasks
+SET class = $1, updated_at = now()
+WHERE id = $2
+  AND workspace_id = $3
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+`
+
+type UpdateTaskClassificationParams struct {
+	Class       string `json:"class"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskClassification, arg.Class, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Source,
+		&i.Title,
+		&i.Body,
+		&i.Class,
+		&i.EscalationLevel,
+		&i.RepoName,
+		&i.BaseBranch,
+		&i.Branch,
+		&i.State,
+		&i.ParentTaskID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
+	)
+	return i, err
+}
+
 const updateTaskState = `-- name: UpdateTaskState :one
 UPDATE tasks
 SET state = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
 `
 
 type UpdateTaskStateParams struct {
@@ -1159,6 +1347,57 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.ParentTaskID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
+	)
+	return i, err
+}
+
+const updateTaskTransition = `-- name: UpdateTaskTransition :one
+UPDATE tasks
+SET state = $1,
+    next_stage = $2,
+    recovery_stage = $3,
+    updated_at = now()
+WHERE id = $4
+  AND workspace_id = $5
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+`
+
+type UpdateTaskTransitionParams struct {
+	State         string `json:"state"`
+	NextStage     string `json:"next_stage"`
+	RecoveryStage string `json:"recovery_stage"`
+	ID            string `json:"id"`
+	WorkspaceID   string `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskTransition,
+		arg.State,
+		arg.NextStage,
+		arg.RecoveryStage,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Source,
+		&i.Title,
+		&i.Body,
+		&i.Class,
+		&i.EscalationLevel,
+		&i.RepoName,
+		&i.BaseBranch,
+		&i.Branch,
+		&i.State,
+		&i.ParentTaskID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
 	)
 	return i, err
 }

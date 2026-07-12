@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 )
@@ -152,9 +153,11 @@ routing:
       harnesses: [claude-code, codex]
       model_tier: mid
       budget_usd: 2.50
+      timeout: 45m
 repos:
   - name: api
     url: file:///tmp/api
+    image: conveyor-dev:dev
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -165,5 +168,8 @@ repos:
 	}
 	if cfg.Credentials[0].OwnerKind != "user" || cfg.Routing.Stages["implement"].Harnesses[0] != "claude-code" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Routing.Stages["implement"].Timeout != 45*time.Minute || cfg.Repos[0].Image != "conveyor-dev:dev" || cfg.MaxBounces != 2 {
+		t.Fatalf("phase 3 config = %+v", cfg)
 	}
 }
