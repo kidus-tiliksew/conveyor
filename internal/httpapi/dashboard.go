@@ -14,7 +14,9 @@ var dashboardAssets embed.FS
 
 func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	assetPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
-	if assetPath == "." || assetPath == "" || strings.HasPrefix(assetPath, "tasks/") {
+	// Extensionless paths are SPA routes (/activity, /tasks/<id>, …): the
+	// client router owns them, so they all serve the app shell.
+	if assetPath == "." || assetPath == "" || !strings.Contains(path.Base(assetPath), ".") {
 		assetPath = "index.html"
 	}
 	data, err := fs.ReadFile(dashboardAssets, "dashboard/"+assetPath)

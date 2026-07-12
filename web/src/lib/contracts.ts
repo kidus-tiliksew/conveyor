@@ -1,28 +1,57 @@
-export const pipelineGroups = [
-  ['triage', 'Triage'],
-  ['spec', 'Spec'],
-  ['implement', 'Implementing'],
-  ['review', 'Reviewing'],
-  ['verify', 'Verifying'],
-  ['human', 'Awaiting human'],
-] as const
+import type { InterventionAction } from './types'
 
-export const interventionActions = [
-  ['approve', 'Approve'],
-  ['reject', 'Reject'],
-  ['redirect', 'Redirect'],
-  ['pull_to_local', 'Pull to local'],
-] as const
+// The six fixed feed groups (spec §13.3) plus a collapsed archive so merged
+// and closed work stays reachable without cluttering the factory's WIP view.
+export type GroupKey = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'human' | 'done'
 
-export type InterventionAction = typeof interventionActions[number][0]
+export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
+  { key: 'triage', label: 'Triage' },
+  { key: 'spec', label: 'Spec' },
+  { key: 'implement', label: 'Implementing' },
+  { key: 'review', label: 'Reviewing' },
+  { key: 'verify', label: 'Verifying' },
+  { key: 'human', label: 'Awaiting human' },
+  { key: 'done', label: 'Completed' },
+]
 
-export const reasonCodes = [
-  'approved',
-  'spec-wrong',
-  'hallucinated-api',
-  'style',
-  'flaky-env',
-  'scope-creep',
-  'broken-pair',
-  'needs-human',
-] as const
+export const interventionActions: ReadonlyArray<{
+  action: InterventionAction
+  label: string
+  hint: string
+}> = [
+  { action: 'approve', label: 'Approve', hint: 'Merge or advance the task' },
+  { action: 'reject', label: 'Reject', hint: 'Close with a reason code' },
+  { action: 'redirect', label: 'Redirect', hint: 'Comment; re-dispatch into the existing worktree' },
+  { action: 'pull_to_local', label: 'Pull to local', hint: 'Take the task over in a local checkout' },
+]
+
+// Baseline reason-code taxonomy (spec §13.2). The API accepts free-form
+// codes; these are the curated defaults per action.
+export const reasonCodesByAction: Record<InterventionAction, readonly string[]> = {
+  approve: ['approved'],
+  reject: ['spec-wrong', 'scope-creep', 'hallucinated-api', 'broken-pair', 'style', 'needs-human'],
+  redirect: ['style', 'spec-wrong', 'hallucinated-api', 'scope-creep', 'flaky-env', 'broken-pair'],
+  pull_to_local: ['needs-human', 'broken-pair', 'flaky-env'],
+}
+
+export const stageLabels: Record<string, string> = {
+  triage: 'Triage',
+  spec: 'Spec',
+  implement: 'Implement',
+  review: 'Code review',
+  verify: 'Verify',
+  gate: 'Human gate',
+  merge: 'Merge',
+  monitor: 'Monitor',
+}
+
+export const taskStateLabels: Record<string, string> = {
+  claiming: 'Claiming',
+  queued: 'Queued',
+  running: 'Running',
+  awaiting_human: 'Awaiting human',
+  approved: 'Approved',
+  merged: 'Merged',
+  closed: 'Closed',
+  parked: 'Parked',
+}

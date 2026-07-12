@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.2**
-**Date:** July 11, 2026
-**Status:** Accepted — Beta re-phasing amendment applied (§21.2)
+**Specification — v1.3**
+**Date:** July 12, 2026
+**Status:** Accepted — dynamic workspace configuration amendment applied (§21.3)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -70,7 +70,7 @@ Configuration is layered across three scopes, with inheritance flowing downward.
 - **Platform agents** — agents that operate on the factory itself: environment inference and repair (§6.4), transcript mining, the self-improvement engine. These are pre-configured, not user-built, and they run through the same pipeline, sandboxes, audit log, and review queue as every other agent. There is no privileged side channel for "system" agents.
 - Platform resources: the credential pool (each user's harness logins, §5.2), registered runners, the secret-backend connection, and the base Conveyor image.
 
-**Workspace scope.** Inherits everything from platform scope and overrides what is specific: repos, memory entries, routing tweaks, escalation-level assignments, secret sets, and custom pipeline stages.
+**Workspace scope.** Inherits everything from platform scope and overrides what is specific: repos, memory entries, routing tweaks, escalation-level assignments, secret sets, and custom pipeline stages. *(Storage and mutation of this scope are amended by §21.3: workspace configuration is Postgres-backed, edited through the authenticated API/UI with validation and audit events; the deployment file becomes the bootstrap seed. Boot-time deployment settings and the credential pool remain file-based.)*
 
 **Task scope.** Per-task parameters only: base branch, budget override, escalation override.
 
@@ -585,7 +585,7 @@ The design intent is a measurable flywheel: every human intervention makes the n
 ## 16. Data model (core tables, abridged)
 
 ```
-workspaces(id, name, config_yaml, created_at)
+workspaces(id, name, config_yaml, config_version, created_at)   -- config governance §21.3
 repos(id, workspace_id, url, default_base, devcontainer_path)
 secret_sets(id, workspace_id, name, backend_ref)
 users(id, identity_provider_ref, role)      -- roles defined in v1, enforced later (§18.1)
@@ -645,7 +645,7 @@ The user never builds or configures an agent; platform defaults are live on depl
 
 ### 17.3 HTTP API
 
-REST + SSE mirroring the CLI: task CRUD, job log streaming, review actions, runner registration, webhook ingestion (GitHub, Slack, error trackers). All mutating endpoints require auth and are recorded in `events`.
+REST + SSE mirroring the CLI: task CRUD, job log streaming, review actions, runner registration, webhook ingestion (GitHub, Slack, error trackers), and workspace configuration read/write (§21.3). All mutating endpoints require auth and are recorded in `events`.
 
 ---
 
@@ -679,7 +679,8 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **1** *(complete)* | Codex adapter (ChatGPT subscription auth), LocalDockerRunner, bare-clone + worktree manager, secrets injection, base image, handoff snapshots + resume-fidelity experiment, GitHub issue → PR, logs only | The core loop |
 | **2** *(complete)* | Claude Code adapter, credential pool + router, Postgres state + events, activity view + review queue with reason codes (§13.3), redaction | Multi-harness + human gate |
 | **3** | Full pipeline: multi-stage orchestration with per-stage gates and bounded bounces; triage, spec, and code-review agents; spec format machinery (§4.1) with versioned, approved specs as the implementation contract; role prompts and tool policies as versioned files (proto-pack, §2.2); per-repo sandbox images (including a Go-toolchain image so Conveyor can build itself); PR review comments → redirect feedback (§9); per-job budget circuit breaker and job timeouts (§14.1) | The full pipeline runs |
-| **4** | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place | **Beta: Conveyor develops Conveyor** |
+| **4** *(complete)* | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place; app shell with home/workspace/settings surfaces, task intake, and a read-only workspace snapshot | The factory is operable from one screen |
+| **4.5** | Dynamic workspace configuration (§21.3): workspace config moves to Postgres as source of truth with the deployment file as bootstrap seed; authenticated, validated config read/write API with optimistic concurrency and `config.updated` audit events; hot reload of routing, repos, budgets, and bounce limits without a control-plane restart; Workspace UI becomes editable for stage routing, workspace basics, and repos & environments (tool policy, images, secret *references*) | **Beta: Conveyor develops Conveyor** |
 | **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
 | **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
@@ -688,7 +689,9 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 
 The Phase 1 runner and checkout storage mechanics in this table are amended by
 §21.1; phases 3–9 are restructured by §21.2, which records the Beta milestone,
-its exit criterion, and the deferral rationale.
+its exit criterion, and the deferral rationale. Phase 4.5 is inserted by §21.3,
+which moves workspace configuration into the control plane and re-gates Beta
+entry on it.
 
 **Beta exit criterion (§21.2):** five consecutive real tasks on the Conveyor
 repository shipped through the full pipeline — issue → triage → approved spec
@@ -800,6 +803,73 @@ PRs change the running factory, deployment of Conveyor itself remains a
 manual operator action (build + restart) during Beta — consistent with the
 §1.2 non-goal of Conveyor never deploying to production.
 
+### 21.3 v1.3 — Dynamic workspace configuration (July 12, 2026)
+
+Phase 4's review surfaced an operating-friction gap: every routing, budget,
+or repo change requires editing `conveyor.yaml` on the control-plane host and
+restarting `conveyord`. That is tolerable for deployment plumbing and wrong
+for the knobs an operator turns while running the factory — the §13.3 design
+goal ("operators absorb per-stage cost passively") implies they can also *act*
+on what they see. A new **Phase 4.5** is inserted pre-Beta and gates Beta
+entry. Six changes; all other v1.2 decisions remain unchanged:
+
+1. **Workspace configuration is Postgres-backed.** The `workspaces` table
+   (§16) — whose `config_yaml` column has been the anticipated home since
+   v1.0 — becomes the source of truth for workspace-scope configuration
+   (§2.1): stage routing, repos and their environments, budgets, bounce
+   limits, and the workspace base image. A `config_version` column supports
+   optimistic concurrency and rollback-by-reference.
+
+2. **`conveyor.yaml` becomes the bootstrap seed, not the running truth.**
+   On first boot against an empty workspace row, the file's workspace-scope
+   sections import into Postgres (this generalizes the existing
+   `BootstrapConfig` path). Thereafter the database wins; the file's
+   workspace sections are ignored with a startup notice. `conveyor config
+   export` / `import` round-trip the database copy for git-versioned
+   backups and disaster recovery. **Boot-time deployment settings stay
+   file-only**: database backend/URL, listen address, pack directory,
+   secrets backend, cache/jobs directories — the control plane cannot
+   reconfigure its own substrate from a table it hasn't connected to yet.
+
+3. **Configuration mutates through the authenticated API.** New §17.3
+   endpoints: `GET /v1/workspace/config` (full workspace-scope document +
+   version) and `PUT /v1/workspace/config` (full-document write,
+   `If-Match` on version). Writes pass the same validation as file load —
+   one validator, two entry points — and rejected writes return structured
+   field errors the UI renders inline. Every accepted write appends a
+   `config.updated` event carrying actor identity, the version pair, and a
+   section-level diff summary: configuration changes enter the same
+   append-only audit stream as every other state transition (§3.1, §16).
+
+4. **Hot reload, bounded.** The dispatcher, router, and trigger poller read
+   from a config snapshot that refreshes on change notification (or
+   per-dispatch fetch — implementation's choice); a routing or repo change
+   takes effect from the next dispatched job. In-flight jobs keep the
+   snapshot they started with — budgets, timeouts, and tool policy are
+   immutable per job once dispatched, preserving §14.1's audit semantics.
+
+5. **Editable scope, first cut.** UI-editable: workspace basics
+   (`max_bounces`, base image), per-stage routing (harness order, model
+   tier, budget, timeout), and repos & environments (URL, GitHub slug,
+   base branch, per-repo image, tool-policy allow/deny lists, secret-set
+   *references*). **Excluded and still file-based:** the credential pool
+   and vendor policies — credential refs name host paths and secret
+   entries, and §5.2's consent model makes them the wrong first surface
+   for HTTP mutation; they migrate no earlier than Phase 5 alongside the
+   approval-card machinery. Secret *values* never appear in config in any
+   form (§10.1, unchanged).
+
+6. **Beta entry re-gates on Phase 4.5.** The §21.2 rationale ("minimal
+   pre-Beta") bends here deliberately: during Beta the operator tunes
+   routing and budgets continuously, and doing that through SSH-and-restart
+   would put the factory's primary control surface outside its own audit
+   log. **Phase 4.5 exit criterion:** a stage-routing change and a repo
+   addition made through the UI take effect on the next dispatched job
+   without a control-plane restart, each recorded as a `config.updated`
+   event with actor identity; a rejected invalid write surfaces its
+   validation error in the UI and leaves state untouched. The Beta exit
+   criterion itself (§19) is unchanged.
+
 ---
 
-*End of specification. v1.2 accepted July 11, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2). Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.3 accepted July 12, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane with Phase 4.5 gating Beta (§21.3). Subsequent changes proceed by amendment with version bumps.*

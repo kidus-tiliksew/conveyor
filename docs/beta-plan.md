@@ -1,9 +1,9 @@
-# Beta plan: phases 3–4
+# Beta plan: phases 3–4.5
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.2),
-restructured by §21.2. This document is the working breakdown: what each
-pre-Beta phase contains, its dependencies, and its exit criterion. Phases 1–2
-are complete and validated; nothing here reopens them.
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.3),
+restructured by §21.2 and extended by §21.3. This document is the working
+breakdown: what each pre-Beta phase contains, its dependencies, and its exit
+criterion. Phases 1–2 are complete and validated; nothing here reopens them.
 
 **The milestone:** Beta = Conveyor develops Conveyor. A GitHub issue on the
 Conveyor repository flows issue → triage → approved spec → implementation →
@@ -14,9 +14,10 @@ decisions and merges, all taken through the UI or CLI.
 through the full pipeline, at least one completing a redirect round, zero
 manual git operations.
 
-Pre-Beta is deliberately two phases — the pipeline and the UI to operate it.
-Everything else (platform agents, memory store, flywheel) is sequenced
-post-Beta, built with and increasingly by the factory itself.
+Pre-Beta is deliberately three phases — the pipeline, the UI to operate it,
+and the configuration surface to steer it (§21.3). Everything else (platform
+agents, memory store, flywheel) is sequenced post-Beta, built with and
+increasingly by the factory itself.
 
 ---
 
@@ -93,9 +94,49 @@ Phase 6) rather than reshape it. Surfaces, per §13.3:
   acceptance criteria checklist); diff summary with a deep link to the PR.
 - Live updates over the existing SSE endpoints into the Query cache.
 
-**Exit criterion:** the Beta exit criterion itself — five consecutive real
-tasks, one redirect round, zero manual git ops, all human actions through
-this UI or the CLI.
+**Exit criterion:** the §13.3 surfaces render the full pipeline's data model
+and all review actions work in place. *(Met; Beta entry moved to the Phase 4.5
+exit by §21.3.)*
+
+## Phase 4.5 — Dynamic workspace configuration → Beta
+
+*Proves: the factory is steerable from its own control surface (spec §21.3).*
+
+Workspace-scope config moves from boot-loaded `conveyor.yaml` into Postgres,
+mutable through the authenticated API and the Workspace UI. Suggested order:
+
+1. **Storage + bootstrap.** `workspaces.config_yaml` + `config_version`
+   become the running truth; generalize `BootstrapConfig` to import the
+   file's workspace sections on first boot against an empty row, ignore
+   them (with a startup notice) thereafter. Boot-time deployment settings
+   (database, listen addr, pack dir, secrets backend, cache/jobs dirs) stay
+   file-only.
+2. **Config API.** `GET /v1/workspace/config` (document + version) and
+   `PUT /v1/workspace/config` (full document, `If-Match` on version).
+   Reuse the `config.Load` validators — one validator, two entry points;
+   structured field errors on 422. Every accepted write appends
+   `config.updated` (actor, version pair, section-level diff summary).
+   The read-only `GET /v1/workspace` snapshot from Phase 4 remains for
+   unauthenticated display.
+3. **Hot reload.** Dispatcher/router/trigger read a config snapshot
+   refreshed on change; routing and repo changes apply from the next
+   dispatched job. In-flight jobs keep their dispatch-time snapshot
+   (budgets/timeouts/tool policy immutable per job, §14.1).
+4. **CLI round-trip.** `conveyor config export` / `import` against the API,
+   for git-versioned backups and recovery.
+5. **UI.** The Workspace page's routing table, workspace basics, and repo
+   cards become editable forms (operator token required); inline
+   validation errors from the API; every save confirms with the recorded
+   event. Credential pool and vendor policies stay read-only file-based
+   surfaces (migrate no earlier than Phase 5, §21.3 change 5).
+
+**Exit criterion (spec §21.3):** a stage-routing change and a repo addition
+made through the UI take effect on the next dispatched job without a
+control-plane restart, each recorded as a `config.updated` event with actor
+identity; a rejected invalid write surfaces its validation error in the UI
+and leaves state untouched. Beta entry follows: five consecutive real tasks,
+one redirect round, zero manual git ops, all human actions through the UI or
+CLI.
 
 ---
 

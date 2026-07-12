@@ -99,6 +99,7 @@ func main() {
 	srv := httpapi.NewServer(st)
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
+	srv.WorkspaceInfo = httpapi.NewWorkspaceInfo(cfg)
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 	srv.OnIntervention = d.HandleIntervention

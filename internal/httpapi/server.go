@@ -34,6 +34,9 @@ type Server struct {
 	// BearerToken authenticates mutating requests (spec §17.3). An empty
 	// token denies all mutations rather than silently disabling auth.
 	BearerToken string
+	// WorkspaceInfo is the read-only config snapshot served at
+	// GET /v1/workspace; nil (tests, minimal wiring) responds 404.
+	WorkspaceInfo *WorkspaceInfo
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -57,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks/{id}/interventions", s.listInterventions)
 		r.Get("/tasks/{id}/spec", s.getLatestSpec)
 		r.Get("/reviews", s.listReviews)
+		r.Get("/workspace", s.getWorkspace)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
