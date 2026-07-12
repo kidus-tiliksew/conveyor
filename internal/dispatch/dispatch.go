@@ -187,6 +187,19 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
+	// A retry after a malformed-output bounce repeats the mistake unless the
+	// agent sees the validator's rejection (spec §4.1 rule 1 bounces are
+	// invisible to humans, so this is the only corrective signal).
+	if predecessor != nil {
+		notice, noticeErr := d.invalidOutputNotice(ctx, t.ID, stage, predecessor.ID)
+		if noticeErr != nil {
+			return noticeErr
+		}
+		if notice != "" {
+			prompt += "\n\n# Previous attempt failed validation\n\nYour previous output was rejected by the pipeline validator:\n\n" +
+				notice + "\n\nProduce a corrected answer that satisfies the required output format."
+		}
+	}
 	toolPolicy := repo.ToolPolicy
 	if t.Level != "" {
 		if d.Pack == nil {
@@ -586,7 +599,8 @@ func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, tas
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Body, task.Branch, task.BaseBranch)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nEscalation level: %s · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n",
+		task.ID, task.Title, task.Level, task.Repo, task.Body, task.Branch, task.BaseBranch)
 	if stage == core.StageImplement || stage == core.StageReview {
 		spec, exists, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
 		if err != nil {
@@ -709,6 +723,31 @@ func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo con
 		return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
 	}
 	return fmt.Errorf("unsupported stage %s", job.Stage)
+}
+
+// invalidOutputNotice returns the validator error recorded against the
+// predecessor job of the same stage, if its output was rejected. Empty when
+// the predecessor completed cleanly (e.g. an implement retry after a review
+// bounce).
+func (d *Dispatcher) invalidOutputNotice(ctx context.Context, taskID string, stage core.Stage, predecessorID string) (string, error) {
+	events, err := d.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	kind := string(stage) + ".output_invalid"
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != kind || events[i].JobID != predecessorID {
+			continue
+		}
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(events[i].Payload, &payload) == nil {
+			return strings.TrimSpace(payload.Error), nil
+		}
+		return "", nil
+	}
+	return "", nil
 }
 
 func (d *Dispatcher) bounceToImplement(ctx context.Context, taskID, jobID, reasonCode, feedback, source string) error {

@@ -946,3 +946,48 @@ func mustRun(t *testing.T, dir, name string, args ...string) {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
 	}
 }
+
+func TestRetryPromptIncludesValidatorRejection(t *testing.T) {
+	r := &phase3Runner{outputs: map[core.Stage][]string{
+		core.StageTriage: {
+			"I looked around but here is prose with no machine block.",
+			"```conveyor:triage\n{\"class\":\"chore\",\"automatability\":0.9,\"route\":\"implement\",\"summary\":\"clear mechanical change\"}\n```",
+		},
+	}}
+	d, _, task := testDispatcher(t, r)
+	task.Level = core.L2
+	memory := store.NewMemory()
+	if err := memory.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	d.Store = memory
+	d.Cfg.PackDir = filepath.Join("..", "..", "pack")
+	d.Cfg.MaxBounces = 3
+	bundle, err := pack.Load(d.Cfg.PackDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Pack = bundle
+
+	// First run: triage output has no conveyor:triage block and bounces.
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Retry: the rebuilt prompt must carry the validator rejection so the
+	// agent can correct its output format instead of repeating the mistake.
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	promptPath := filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor", "prompt.txt")
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(data)
+	if !strings.Contains(prompt, "Previous attempt failed validation") {
+		t.Fatalf("retry prompt missing validator notice:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "triage") || !strings.Contains(prompt, "Escalation level: L2") {
+		t.Fatalf("retry prompt missing error detail or task header:\n%s", prompt)
+	}
+}
