@@ -189,6 +189,7 @@ func (s *Store) ClaimCredential(ctx context.Context, request routing.ClaimReques
 	row, err := s.queries.ClaimCredential(ctx, db.ClaimCredentialParams{
 		TaskID: request.TaskID, JobID: request.JobID, LeaseSeconds: request.LeaseSeconds, Harnesses: request.Harnesses,
 		OwnerID: request.OwnerID, AllowRestricted: request.AllowRestricted,
+		ExcludeHarness: request.ExcludeHarness,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return routing.Credential{}, routing.ErrNoCapacity
@@ -239,6 +240,9 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 	}
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
+	}
+	if task.NextStage == "" && (task.State == core.TaskQueued || task.State == core.TaskClaiming) {
+		task.NextStage = core.InitialStage(task.Level)
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
@@ -301,6 +305,42 @@ func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskS
 			return err
 		}
 		return nil
+	})
+}
+
+func (s *Store) SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: s.workspace})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
+			ID: id, WorkspaceID: s.workspace, State: string(state), NextStage: string(nextStage), RecoveryStage: string(recoveryStage),
+		}); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state})}); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
+			"from_stage": before.NextStage, "next_stage": nextStage, "recovery_stage": recoveryStage, "state": state,
+		})}); err != nil {
+			return err
+		}
+		if state == core.TaskQueued {
+			_, err := s.enqueueTaskTx(ctx, tx, id, before.WorkspaceID)
+			return err
+		}
+		return nil
+	})
+}
+
+func (s *Store) UpdateTaskClassification(ctx context.Context, id, class string) error {
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		if _, err := q.UpdateTaskClassification(ctx, db.UpdateTaskClassificationParams{ID: id, WorkspaceID: s.workspace, Class: class}); err != nil {
+			return notFound(err, "task %s", id)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.classified", Payload: core.JSONPayload(map[string]any{"class": class})})
 	})
 }
 
@@ -436,6 +476,54 @@ func (s *Store) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool
 	return jobFromDB(row), true, nil
 }
 
+func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
+	if spec.CreatedAt.IsZero() {
+		spec.CreatedAt = time.Now().UTC()
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: spec.TaskID, WorkspaceID: s.workspace}); err != nil {
+			return notFound(err, "task %s", spec.TaskID)
+		}
+		row, err := q.InsertSpecVersion(ctx, db.InsertSpecVersionParams{
+			TaskID: spec.TaskID, Content: spec.Content, AcceptanceCount: int32(spec.AcceptanceCount),
+			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt),
+		})
+		if err != nil {
+			return err
+		}
+		spec = specFromDB(row)
+		return insertEvent(ctx, q, core.Event{TaskID: spec.TaskID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": spec.Version, "acceptance_count": spec.AcceptanceCount})})
+	})
+	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	return spec, nil
+}
+
+func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	row, err := s.queries.GetLatestSpecVersion(ctx, db.GetLatestSpecVersionParams{TaskID: taskID, WorkspaceID: s.workspace})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.SpecVersion{}, false, nil
+	}
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
+	return specFromDB(row), true, nil
+}
+
+func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		_, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{TaskID: taskID, Version: int32(version), WorkspaceID: s.workspace})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
+			}
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	})
+}
+
 func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
 	task, err := s.queries.GetTask(ctx, db.GetTaskParams{ID: event.TaskID, WorkspaceID: s.workspace})
 	if err != nil {
@@ -476,6 +564,11 @@ func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int6
 	return result, nil
 }
 
+func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, error) {
+	count, err := s.queries.CountEvents(ctx, db.CountEventsParams{TaskID: taskID, Kind: kind, WorkspaceID: s.workspace})
+	return int(count), err
+}
+
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
 	rows, err := s.queries.ListActivityMarkers(ctx, s.workspace)
 	if err != nil {
@@ -504,8 +597,8 @@ func (s *Store) CreateIntervention(ctx context.Context, intervention core.Interv
 	if intervention.At.IsZero() {
 		intervention.At = time.Now().UTC()
 	}
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		before, err := q.GetTask(ctx, db.GetTaskParams{ID: intervention.TaskID, WorkspaceID: s.workspace})
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		_, err := q.GetTask(ctx, db.GetTaskParams{ID: intervention.TaskID, WorkspaceID: s.workspace})
 		if err != nil {
 			return notFound(err, "task %s", intervention.TaskID)
 		}
@@ -530,24 +623,6 @@ func (s *Store) CreateIntervention(ctx context.Context, intervention core.Interv
 			}),
 			At: intervention.At,
 		}); err != nil {
-			return err
-		}
-		next, changes := core.InterventionNextState(intervention.Action)
-		if !changes {
-			return nil
-		}
-		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: intervention.TaskID, WorkspaceID: s.workspace, State: string(next)}); err != nil {
-			return err
-		}
-		if err := insertEvent(ctx, q, core.Event{
-			TaskID: intervention.TaskID, Kind: "task.state_changed",
-			ActorID: intervention.ActorID, ActorRole: intervention.ActorRole,
-			Payload: core.JSONPayload(map[string]any{"from": before.State, "to": next}), At: intervention.At,
-		}); err != nil {
-			return err
-		}
-		if next == core.TaskQueued {
-			_, err := s.enqueueTaskTx(ctx, tx, intervention.TaskID, before.WorkspaceID)
 			return err
 		}
 		return nil
@@ -665,7 +740,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
-		ParentTaskID: task.ParentTaskID, CreatedAt: timestamp(task.CreatedAt),
+		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, CreatedAt: timestamp(task.CreatedAt),
 	}
 }
 
@@ -675,8 +750,17 @@ func taskFromDB(task db.Task) core.Task {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
-		State: core.TaskState(task.State), ParentTaskID: task.ParentTaskID,
+		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID,
 		CreatedAt: task.CreatedAt.Time,
+	}
+}
+
+func specFromDB(spec db.TaskSpec) core.SpecVersion {
+	return core.SpecVersion{
+		TaskID: spec.TaskID, Version: int(spec.Version), Content: spec.Content,
+		AcceptanceCount: int(spec.AcceptanceCount), Acceptance: append([]byte(nil), spec.Acceptance...),
+		Decomposition: append([]byte(nil), spec.Decomposition...), Approved: spec.Approved,
+		CreatedAt: spec.CreatedAt.Time, ApprovedAt: nullableTime(spec.ApprovedAt),
 	}
 }
 

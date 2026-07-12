@@ -51,13 +51,13 @@ func main() {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, body string
+	var repo, base, body, level string
 	newCmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			t, err := newClient().createTask(args[0], body, repo, base)
+			t, err := newClient().createTaskWithLevel(args[0], body, repo, base, core.EscalationLevel(level))
 			if err != nil {
 				return err
 			}
@@ -68,6 +68,7 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
+	newCmd.Flags().StringVar(&level, "level", string(core.L2), "escalation level: L0, L1, L2, or L3")
 
 	listCmd := &cobra.Command{
 		Use: "list", Short: "List tasks",
@@ -97,7 +98,11 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out, _ := json.MarshalIndent(map[string]any{"task": t, "jobs": jobs}, "", "  ")
+			result := map[string]any{"task": t, "jobs": jobs}
+			if spec, specErr := c.getLatestSpec(args[0]); specErr == nil {
+				result["spec"] = spec
+			}
+			out, _ := json.MarshalIndent(result, "", "  ")
 			fmt.Println(string(out))
 			return nil
 		},
@@ -202,7 +207,7 @@ func runnerCmd(configPath *string) *cobra.Command {
 		Short: "Start the standalone local Docker runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !local {
-				return fmt.Errorf("only --local is implemented before K8sRunner in Phase 3")
+				return fmt.Errorf("only --local is implemented; K8sRunner is demand-triggered Phase 8")
 			}
 			binary, err := siblingBinary("conveyor-runner")
 			if err != nil {

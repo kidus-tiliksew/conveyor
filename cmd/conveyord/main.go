@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/runner/localdocker"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -33,6 +34,10 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	packBundle, err := pack.Load(cfg.PackDir)
+	if err != nil {
+		log.Fatalf("load Phase 3 pack: %v", err)
 	}
 	apiToken := os.Getenv("CONVEYOR_API_TOKEN")
 	if apiToken == "" {
@@ -89,12 +94,14 @@ func main() {
 		d.Router = routing.NewStatic(credential, cfg.Routing)
 		go d.Run(ctx)
 	}
+	d.Pack = packBundle
 
 	srv := httpapi.NewServer(st)
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
+	srv.OnIntervention = d.HandleIntervention
 	if pgStore != nil {
 		reconcile := func() {
 			repaired, err := pgStore.ReconcileQueuedTasks(ctx)

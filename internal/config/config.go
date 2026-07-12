@@ -1,6 +1,5 @@
-// Package config loads one Phase 2 workspace, runner paths, routing policy,
-// credential metadata, vendor policy, and repositories. Prompt/policy pack
-// layering remains a later phase (spec §2.1).
+// Package config loads one workspace, runner paths, routing policy,
+// credential metadata, the Phase 3 proto-pack, and repositories.
 package config
 
 import (
@@ -21,6 +20,7 @@ type Repo struct {
 	URL        string             `yaml:"url"`
 	GitHub     string             `yaml:"github"` // owner/repo slug for gh; empty disables PR/issue flow
 	Base       string             `yaml:"base"`   // default base branch
+	Image      string             `yaml:"image"`  // per-repo sandbox image override (spec §19)
 	SecretRefs []string           `yaml:"secret_refs"`
 	ToolPolicy adapter.ToolPolicy `yaml:"tool_policy"`
 }
@@ -64,10 +64,14 @@ type VendorPolicy struct {
 }
 
 type StageRoute struct {
-	Harnesses []string `yaml:"harnesses"`
-	ModelTier string   `yaml:"model_tier"`
-	BudgetUSD float64  `yaml:"budget_usd"`
+	Harnesses   []string      `yaml:"harnesses"`
+	ModelTier   string        `yaml:"model_tier"`
+	BudgetUSD   float64       `yaml:"budget_usd"`
+	Timeout     time.Duration `yaml:"-"`
+	TimeoutText string        `yaml:"timeout"`
 }
+
+const DefaultStageTimeout = 2 * time.Hour
 
 type Routing struct {
 	OwnerID         string                `yaml:"owner_id"`
@@ -77,10 +81,12 @@ type Routing struct {
 }
 
 type Config struct {
-	Workspace string `yaml:"workspace"`
-	Image     string `yaml:"image"`
-	CacheDir  string `yaml:"cache_dir"`
-	JobsDir   string `yaml:"jobs_dir"`
+	Workspace  string `yaml:"workspace"`
+	Image      string `yaml:"image"`
+	PackDir    string `yaml:"pack_dir"`
+	MaxBounces int    `yaml:"max_bounces"`
+	CacheDir   string `yaml:"cache_dir"`
+	JobsDir    string `yaml:"jobs_dir"`
 	// CodexCredentials is the host directory with the user's Codex
 	// login, mounted read-only into sandboxes (spec §5.2).
 	CodexCredentials string         `yaml:"codex_credentials"`
@@ -108,6 +114,22 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Image == "" {
 		c.Image = "conveyor-base:dev"
+	}
+	if c.PackDir == "" {
+		c.PackDir = "pack"
+	}
+	if !filepath.IsAbs(c.PackDir) {
+		configDir, absErr := filepath.Abs(filepath.Dir(path))
+		if absErr != nil {
+			return nil, absErr
+		}
+		c.PackDir = filepath.Join(configDir, c.PackDir)
+	}
+	if c.MaxBounces == 0 {
+		c.MaxBounces = 2
+	}
+	if c.MaxBounces < 1 {
+		return nil, fmt.Errorf("max_bounces must be at least 1")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -225,6 +247,16 @@ func Load(path string) (*Config, error) {
 		if route.BudgetUSD < 0 {
 			return nil, fmt.Errorf("routing stage %s: budget_usd cannot be negative", stage)
 		}
+		if route.TimeoutText == "" {
+			route.Timeout = DefaultStageTimeout
+		} else {
+			parsed, err := time.ParseDuration(route.TimeoutText)
+			if err != nil || parsed <= 0 {
+				return nil, fmt.Errorf("routing stage %s: timeout must be a positive duration", stage)
+			}
+			route.Timeout = parsed
+		}
+		c.Routing.Stages[stage] = route
 	}
 	if len(c.Credentials) > 0 && c.Database.Backend != "postgres" {
 		return nil, fmt.Errorf("credential routing requires the postgres database backend")
@@ -238,6 +270,9 @@ func Load(path string) (*Config, error) {
 		}
 		if c.Repos[i].Base == "" {
 			c.Repos[i].Base = "main"
+		}
+		if c.Repos[i].Image == "" {
+			c.Repos[i].Image = c.Image
 		}
 		for _, rawRef := range c.Repos[i].SecretRefs {
 			ref, err := secrets.ParseRef(rawRef)
@@ -274,7 +309,7 @@ func validHarnessCredentialEnv(harness, kind, name string) bool {
 
 func validatePolicy(policy adapter.ToolPolicy) error {
 	if len(policy.NetworkAllow) != 0 {
-		return fmt.Errorf("network_allow is not enforceable by LocalDockerRunner; leave it empty until runner-level egress filtering lands in Phase 4")
+		return fmt.Errorf("network_allow is not enforceable by LocalDockerRunner; leave it empty until runner-level egress filtering lands")
 	}
 	for kind, patterns := range map[string][][]string{
 		"allowed_commands": policy.AllowedCommands,

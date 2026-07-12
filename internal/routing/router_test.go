@@ -42,7 +42,7 @@ func TestRouterUsesStagePreferenceAndThrottles(t *testing.T) {
 		OwnerID: "alice", LeaseSeconds: 600,
 		Stages: map[string]config.StageRoute{"implement": {Harnesses: []string{"claude-code", "codex"}, ModelTier: "mid", BudgetUSD: 2}},
 	})
-	selection, err := router.Select(context.Background(), "task-1", "job-1", core.StageImplement)
+	selection, err := router.Select(context.Background(), "task-1", "job-1", core.StageImplement, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,9 +59,22 @@ func TestRouterUsesStagePreferenceAndThrottles(t *testing.T) {
 
 func TestRouterPreservesNoCapacity(t *testing.T) {
 	router := New(&fakePool{err: ErrNoCapacity}, config.Routing{OwnerID: "alice", LeaseSeconds: 60})
-	_, err := router.Select(context.Background(), "task", "job", core.StageImplement)
+	_, err := router.Select(context.Background(), "task", "job", core.StageImplement, "")
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRouterExcludesImplementerHarnessForReview(t *testing.T) {
+	pool := &fakePool{result: Credential{ID: "reviewer", Harness: "claude-code"}}
+	router := New(pool, config.Routing{OwnerID: "alice", LeaseSeconds: 60, Stages: map[string]config.StageRoute{
+		"review": {Harnesses: []string{"claude-code", "codex"}},
+	}})
+	if _, err := router.Select(context.Background(), "task", "review-job", core.StageReview, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if pool.request.ExcludeHarness != "codex" {
+		t.Fatalf("excluded harness=%q", pool.request.ExcludeHarness)
 	}
 }
 
@@ -70,7 +83,7 @@ func TestStaticRouterRecordsConfiguredDispatchMetadata(t *testing.T) {
 	router := NewStatic(credential, config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Harnesses: []string{"claude-code"}, ModelTier: "mid", BudgetUSD: 2.5},
 	}})
-	selection, err := router.Select(context.Background(), "task-1", "job-1", core.StageImplement)
+	selection, err := router.Select(context.Background(), "task-1", "job-1", core.StageImplement, "")
 	if err != nil {
 		t.Fatal(err)
 	}

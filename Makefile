@@ -5,7 +5,7 @@ CODEX_BASE_VERSION ?= 0.142.0
 CODEX_BUMP_VERSION ?= 0.143.0
 CODEX_BUMP_IMAGE ?= conveyor-base:codex-$(CODEX_BUMP_VERSION)
 
-.PHONY: all build ui shim test vet fmt tidy image resume-experiment-image resume-experiment clean
+.PHONY: all build ui shim test vet fmt tidy image conveyor-dev-image resume-experiment-image resume-experiment clean
 
 all: build
 
@@ -40,6 +40,9 @@ image: shim
 	cp $(BIN)/linux-$(shell docker info --format '{{.Architecture}}' | sed 's/aarch64/arm64/;s/x86_64/amd64/')/conveyor-shim images/base/conveyor-shim
 	docker build -t conveyor-base:dev images/base
 	rm -f images/base/conveyor-shim
+
+conveyor-dev-image: image
+	docker build -t conveyor-dev:dev images/conveyor-dev
 
 # Build the adjacent minor used only by the spec §20.2 compatibility probe.
 # Production stays pinned to the adapter-validated version above.

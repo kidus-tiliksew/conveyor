@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -25,6 +26,9 @@ type Server struct {
 	// OnCreate is invoked with each created task's ID (the dispatcher's
 	// Enqueue). Nil means tasks queue without dispatch (tests).
 	OnCreate func(taskID string)
+	// OnIntervention advances stage gates after the append-only decision is
+	// committed (spec §4, §13.2).
+	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// Workspace stamps created tasks.
 	Workspace string
 	// BearerToken authenticates mutating requests (spec §17.3). An empty
@@ -51,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks/{id}/events/stream", s.streamEvents)
 		r.Get("/tasks/{id}/activity", s.getTaskActivity)
 		r.Get("/tasks/{id}/interventions", s.listInterventions)
+		r.Get("/tasks/{id}/spec", s.getLatestSpec)
 		r.Get("/reviews", s.listReviews)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
@@ -89,6 +94,10 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		if t.NextStage == "" {
+			http.Error(w, "task has no decided next stage; record an explicit review redirect instead", http.StatusConflict)
+			return
+		}
 		if err := s.Store.UpdateTaskState(r.Context(), id, core.TaskQueued); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -158,14 +167,20 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	if hasJob {
 		jobID = latestJob.ID
 	}
-	if err := s.Store.CreateIntervention(r.Context(), core.Intervention{
+	intervention := core.Intervention{
 		TaskID: id, JobID: jobID, Action: request.Action,
 		ReasonCode: request.ReasonCode, Comment: request.Comment,
-	}); err != nil {
+	}
+	if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if request.Action == core.InterventionRedirect && s.OnCreate != nil {
+	if s.OnIntervention != nil {
+		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if request.Action == core.InterventionRedirect && s.OnCreate != nil {
 		s.OnCreate(id)
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
@@ -184,11 +199,12 @@ func reviewable(state core.TaskState) bool {
 }
 
 type createTaskReq struct {
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	Repo       string `json:"repo"`
-	BaseBranch string `json:"base_branch"`
-	Source     string `json:"source"`
+	Title      string               `json:"title"`
+	Body       string               `json:"body"`
+	Repo       string               `json:"repo"`
+	BaseBranch string               `json:"base_branch"`
+	Source     string               `json:"source"`
+	Level      core.EscalationLevel `json:"level"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +227,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if req.Source == "" {
 		req.Source = "api"
 	}
+	if req.Level == "" {
+		req.Level = core.L2
+	}
+	if req.Level != core.L0 && req.Level != core.L1 && req.Level != core.L2 && req.Level != core.L3 {
+		http.Error(w, "level must be L0, L1, L2, or L3", http.StatusBadRequest)
+		return
+	}
 	id := core.NewTaskID()
 	t := core.Task{
 		ID:         id,
@@ -218,11 +241,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Source:     req.Source,
 		Title:      req.Title,
 		Body:       req.Body,
-		Level:      core.L2,
+		Level:      req.Level,
 		Repo:       req.Repo,
 		BaseBranch: req.BaseBranch,
 		Branch:     gitx.BranchName(id),
 		State:      core.TaskQueued,
+		NextStage:  core.InitialStage(req.Level),
 		CreatedAt:  time.Now(),
 	}
 	if err := s.Store.CreateTask(r.Context(), t); err != nil {
@@ -325,6 +349,19 @@ func (s *Server) listInterventions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, interventions)
 }
 
+func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
+	spec, ok, err := s.Store.GetLatestSpecVersion(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "spec not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, spec)
+}
+
 type reviewItem struct {
 	Task            core.Task           `json:"task"`
 	Jobs            []core.Job          `json:"jobs"`
@@ -332,6 +369,7 @@ type reviewItem struct {
 	Interventions   []core.Intervention `json:"interventions"`
 	CheckoutCommand string              `json:"checkout_command"`
 	NeedsAttention  bool                `json:"needs_attention"`
+	Spec            *core.SpecVersion   `json:"spec,omitempty"`
 }
 
 type activityItem struct {
@@ -400,10 +438,20 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	spec, hasSpec, err := s.Store.GetLatestSpecVersion(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var specPointer *core.SpecVersion
+	if hasSpec {
+		specPointer = &spec
+	}
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: "conveyor checkout " + task.ID,
 		NeedsAttention:  task.State == core.TaskAwaiting || task.State == core.TaskParked,
+		Spec:            specPointer,
 	})
 }
 

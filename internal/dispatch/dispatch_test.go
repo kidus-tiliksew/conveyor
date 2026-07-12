@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,17 +16,96 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/runner"
 	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type fakeRunner struct {
-	startErr  error
-	streamErr error
-	specs     []runner.StartJobSpec
-	eventLog  string
+	startErr      error
+	streamErr     error
+	waitForCancel bool
+	specs         []runner.StartJobSpec
+	eventLog      string
+	eventData     string
+	exitCode      int
+}
+
+type deadlineInspectingRunner struct {
+	fakeRunner
+	collectCalls    int
+	collectDeadline time.Time
+	collectBounded  bool
+}
+
+func (r *deadlineInspectingRunner) CollectArtifacts(ctx context.Context, handle runner.JobHandle) (runner.Artifacts, error) {
+	r.collectCalls++
+	if r.collectCalls == 1 {
+		r.collectDeadline, r.collectBounded = ctx.Deadline()
+		return runner.Artifacts{}, errors.New("docker wait remained hung")
+	}
+	return r.fakeRunner.CollectArtifacts(ctx, handle)
+}
+
+type phase3Runner struct {
+	outputs map[core.Stage][]string
+	events  map[runner.JobHandle]string
+}
+
+func (r *phase3Runner) Name() string { return "phase3-fake" }
+func (r *phase3Runner) StartJob(_ context.Context, spec runner.StartJobSpec) (runner.JobHandle, error) {
+	parts := strings.Split(spec.JobID, "-")
+	stage := core.Stage(parts[len(parts)-2])
+	outputs := r.outputs[stage]
+	if len(outputs) == 0 {
+		return "", errors.New("missing scripted output for " + string(stage))
+	}
+	output := outputs[0]
+	r.outputs[stage] = outputs[1:]
+	if stage == core.StageImplement {
+		worktree := spec.Worktrees[0].HostPath
+		path := filepath.Join(worktree, "phase3.txt")
+		file, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		_, _ = file.WriteString(spec.JobID + "\n")
+		_ = file.Close()
+		mustRunNoTest(worktree, "git", "add", "phase3.txt")
+		mustRunNoTest(worktree, "git", "commit", "-m", "test: phase 3 implementation")
+	}
+	path, err := jobartifact.EventLogPath(spec.ControlDir, spec.JobID)
+	if err != nil {
+		return "", err
+	}
+	data := `{"kind":"assistant_text","phase":"main","text":` + strconv.Quote(output) + `,"at":"2026-01-01T00:00:00Z"}` + "\n" +
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:01Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		return "", err
+	}
+	handle := runner.JobHandle(spec.JobID)
+	if r.events == nil {
+		r.events = map[runner.JobHandle]string{}
+	}
+	r.events[handle] = path
+	return handle, nil
+}
+func (r *phase3Runner) StreamLogs(context.Context, runner.JobHandle) (<-chan runner.LogEvent, error) {
+	ch := make(chan runner.LogEvent)
+	close(ch)
+	return ch, nil
+}
+func (r *phase3Runner) Signal(context.Context, runner.JobHandle, runner.Signal) error { return nil }
+func (r *phase3Runner) CollectArtifacts(_ context.Context, handle runner.JobHandle) (runner.Artifacts, error) {
+	return runner.Artifacts{ExitCode: 0, EventLog: r.events[handle]}, nil
+}
+
+func mustRunNoTest(dir, name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic(string(out))
+	}
 }
 
 type noCapacityPool struct{}
@@ -58,6 +138,158 @@ func TestRunTaskLeavesTaskQueuedUntilCapacityIsClaimed(t *testing.T) {
 	}
 	if len(f.specs) != 0 {
 		t.Fatalf("runner started without capacity: %+v", f.specs)
+	}
+}
+
+func TestPhase3PipelineSpecGateAndBoundedReviewBounce(t *testing.T) {
+	specOutput := "# Change\n\n## Intent\nImplement it.\n\n## Non-goals\nUnrelated refactors.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Phase 3 file exists\n  verify: test\n  ref: phase3.txt\n```"
+	r := &phase3Runner{outputs: map[core.Stage][]string{
+		core.StageTriage:    {"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.9,\"route\":\"spec\",\"summary\":\"Contract needed.\"}\n```"},
+		core.StageSpec:      {specOutput},
+		core.StageImplement: {"Implemented v1.", "Implemented review feedback."},
+		core.StageReview: {
+			"```conveyor:review\n{\"verdict\":\"changes_requested\",\"reason_code\":\"scope-creep\",\"summary\":\"Needs correction.\",\"feedback\":\"Tighten the implementation.\"}\n```",
+			"```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"Matches the spec.\",\"feedback\":\"\"}\n```",
+		},
+	}}
+	d, st, task := testDispatcher(t, r)
+	task.Level = core.L2
+	// Replace the fixture with an L2 task while preserving its repository.
+	memory := store.NewMemory()
+	if err := memory.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	d.Store = memory
+	st = memory
+	d.Cfg.PackDir = filepath.Join("..", "..", "pack")
+	d.Cfg.MaxBounces = 2
+	bundle, loadErr := pack.Load(d.Cfg.PackDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	d.Pack = bundle
+
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(context.Background(), task.ID)
+	if current.State != core.TaskAwaiting {
+		t.Fatalf("after spec state=%s", current.State)
+	}
+	storedSpec, ok, err := st.GetLatestSpecVersion(context.Background(), task.ID)
+	if err != nil || !ok || !strings.Contains(string(storedSpec.Acceptance), "AC-1") || string(storedSpec.Decomposition) != "[]" {
+		t.Fatalf("stored spec=%+v ok=%v err=%v", storedSpec, ok, err)
+	}
+	latest, _, _ := st.GetLatestJob(context.Background(), task.ID)
+	intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionApprove, ReasonCode: "approved"}
+	if err := st.CreateIntervention(context.Background(), intervention); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.HandleIntervention(context.Background(), task, latest, intervention); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := d.runTask(context.Background(), task.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ = st.GetTask(context.Background(), task.ID)
+	if current.State != core.TaskAwaiting {
+		t.Fatalf("final state=%s", current.State)
+	}
+	jobs, _ := st.ListJobs(context.Background(), task.ID)
+	want := []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageReview, core.StageImplement, core.StageReview}
+	if len(jobs) != len(want) {
+		t.Fatalf("jobs=%d want=%d", len(jobs), len(want))
+	}
+	for i := range want {
+		if jobs[i].Stage != want[i] {
+			t.Fatalf("job %d stage=%s want=%s", i, jobs[i].Stage, want[i])
+		}
+	}
+}
+
+func TestNextStageUsesPersistedRecoveryDecision(t *testing.T) {
+	_, _, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	task.State = core.TaskQueued
+	task.NextStage = core.StageReview
+	stage, proceed := nextStage(task)
+	if !proceed || stage != core.StageReview {
+		t.Fatalf("stage=%s proceed=%v", stage, proceed)
+	}
+}
+
+func TestInvalidOutputAtBounceLimitPersistsHaltedRecoveryStage(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	d.Cfg.MaxBounces = 1
+	job := core.Job{ID: task.ID + "-triage-1", TaskID: task.ID, Stage: core.StageTriage, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.completeStage(context.Background(), task, d.Cfg.Repos[0], "", job, "malformed"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.NextStage != "" || persisted.RecoveryStage != core.StageTriage {
+		t.Fatalf("halted transition = state:%s next:%s recovery:%s", persisted.State, persisted.NextStage, persisted.RecoveryStage)
+	}
+}
+
+func TestReviewBounceCapDoesNotBecomeRunnableUntilExplicitRedirect(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	d.Cfg.MaxBounces = 1
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	output := "```conveyor:review\n{\"verdict\":\"changes_requested\",\"reason_code\":\"other\",\"summary\":\"fix\",\"feedback\":\"correct it\"}\n```"
+	if err := d.completeStage(context.Background(), task, d.Cfg.Repos[0], "", job, output); err != nil {
+		t.Fatal(err)
+	}
+	halted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if halted.State != core.TaskAwaiting || halted.NextStage != "" || halted.RecoveryStage != core.StageImplement {
+		t.Fatalf("halted transition = %+v", halted)
+	}
+	intervention := core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: "other", Comment: "retry"}
+	if err := d.HandleIntervention(context.Background(), halted, job, intervention); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := st.GetTask(context.Background(), task.ID)
+	if resumed.State != core.TaskQueued || resumed.NextStage != core.StageImplement || resumed.RecoveryStage != "" {
+		t.Fatalf("resumed transition = %+v", resumed)
+	}
+}
+
+func TestApprovePausedJobResumesSamePersistedStage(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	task.Level = core.L2
+	task.State = core.TaskAwaiting
+	task.RecoveryStage = core.StageSpec
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageSpec); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPaused, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.HandleIntervention(context.Background(), task, job, core.Intervention{Action: core.InterventionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := st.GetTask(context.Background(), task.ID)
+	if resumed.State != core.TaskQueued || resumed.NextStage != core.StageSpec {
+		t.Fatalf("resumed transition = %+v", resumed)
 	}
 }
 
@@ -106,17 +338,28 @@ func (f *fakeRunner) StartJob(_ context.Context, spec runner.StartJobSpec) (runn
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(f.eventLog, []byte("{\"kind\":\"done\",\"phase\":\"job\",\"at\":\"2026-01-01T00:00:00Z\"}\n"), 0o600); err != nil {
+	eventData := f.eventData
+	if eventData == "" {
+		eventData = "{\"kind\":\"done\",\"phase\":\"job\",\"at\":\"2026-01-01T00:00:00Z\"}\n"
+	}
+	if err := os.WriteFile(f.eventLog, []byte(eventData), 0o600); err != nil {
 		return "", err
 	}
 	return runner.JobHandle(spec.JobID), nil
 }
 
-func (f *fakeRunner) StreamLogs(_ context.Context, _ runner.JobHandle) (<-chan runner.LogEvent, error) {
+func (f *fakeRunner) StreamLogs(ctx context.Context, _ runner.JobHandle) (<-chan runner.LogEvent, error) {
 	if f.streamErr != nil {
 		return nil, f.streamErr
 	}
 	ch := make(chan runner.LogEvent)
+	if f.waitForCancel {
+		go func() {
+			<-ctx.Done()
+			close(ch)
+		}()
+		return ch, nil
+	}
 	close(ch)
 	return ch, nil
 }
@@ -124,7 +367,7 @@ func (f *fakeRunner) StreamLogs(_ context.Context, _ runner.JobHandle) (<-chan r
 func (f *fakeRunner) Signal(context.Context, runner.JobHandle, runner.Signal) error { return nil }
 
 func (f *fakeRunner) CollectArtifacts(context.Context, runner.JobHandle) (runner.Artifacts, error) {
-	return runner.Artifacts{ExitCode: 0, EventLog: f.eventLog}, nil
+	return runner.Artifacts{ExitCode: f.exitCode, EventLog: f.eventLog}, nil
 }
 
 func TestRunTaskPersistsBootDiagnostics(t *testing.T) {
@@ -193,6 +436,25 @@ func TestInspectTranscriptAggregatesSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestInspectTranscriptUsesLastAssistantOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"draft","at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"final","at":"2026-01-01T00:00:01Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:02Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := inspectTranscript(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.agentOutput != "final" {
+		t.Fatalf("agent output=%q", summary.agentOutput)
+	}
+}
+
 func TestGitHubSource(t *testing.T) {
 	slug, number, ok := githubSource("github:acme/api#42")
 	if !ok || slug != "acme/api" || number != 42 {
@@ -209,6 +471,9 @@ func TestRunTaskUsesUniqueAttemptIDs(t *testing.T) {
 	f := &fakeRunner{}
 	d, st, task := testDispatcher(t, f)
 	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.runTask(context.Background(), task.ID); err != nil {
@@ -307,10 +572,249 @@ func TestInspectTranscriptUsesPhaseAwareCostAndStructuredTerminalRateLimit(t *te
 	}
 }
 
+func TestInspectTranscriptReturnsPartialUsageWithoutTerminalEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := strings.Join([]string{
+		`{"kind":"token_usage","phase":"main","usage":{"in":120,"out":30},"cost_usd":0.60,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"partial result","usage":{"in":20,"out":5},"cost_usd":0.75,"at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := inspectTranscript(path)
+	if err == nil || !strings.Contains(err.Error(), "no terminal event") {
+		t.Fatalf("error = %v", err)
+	}
+	if summary.tokensIn != 140 || summary.tokensOut != 35 || summary.costUSD != 0.75 || summary.agentOutput != "partial result" {
+		t.Fatalf("partial summary = %+v", summary)
+	}
+}
+
+func TestTimedOutJobPersistsPartialTranscriptUsage(t *testing.T) {
+	f := &fakeRunner{waitForCancel: true, eventData: strings.Join([]string{
+		`{"kind":"token_usage","phase":"main","usage":{"in":120,"out":30},"cost_usd":0.60,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"assistant_text","phase":"main","text":"partial result","usage":{"in":20,"out":5},"cost_usd":0.75,"at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	d.Cfg.Routing.Stages = map[string]config.StageRoute{
+		string(core.StageImplement): {Timeout: 5 * time.Millisecond},
+	}
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].State != core.JobPaused || jobs[0].TokensIn != 140 || jobs[0].TokensOut != 35 || jobs[0].CostUSD != 0.75 {
+		t.Fatalf("timed-out job lost partial usage: %+v", jobs)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.RecoveryStage != core.StageImplement {
+		t.Fatalf("timeout recovery = %+v", persisted)
+	}
+}
+
+func TestEarlyLogFailureStillBoundsArtifactCollection(t *testing.T) {
+	r := &deadlineInspectingRunner{fakeRunner: fakeRunner{streamErr: errors.New("docker log stream disconnected")}}
+	d, _, task := testDispatcher(t, r)
+	d.Cfg.Routing.Stages = map[string]config.StageRoute{
+		string(core.StageImplement): {Timeout: 50 * time.Millisecond},
+	}
+	started := time.Now()
+	err := d.runTask(context.Background(), task.ID)
+	if err == nil || !strings.Contains(err.Error(), "collect artifacts") {
+		t.Fatalf("runTask error = %v", err)
+	}
+	if !r.collectBounded {
+		t.Fatal("artifact collection received an unbounded context")
+	}
+	remaining := r.collectDeadline.Sub(started)
+	want := 50*time.Millisecond + artifactCollectionMargin
+	if remaining < want-time.Second || remaining > want+time.Second {
+		t.Fatalf("artifact deadline remaining = %s, want about %s", remaining, want)
+	}
+	if r.collectCalls != 2 {
+		t.Fatalf("collect calls = %d, want failed collection plus bounded deferred cleanup", r.collectCalls)
+	}
+}
+
+func TestSuccessfulJobAtCumulativeBudgetKeepsCompletedOutput(t *testing.T) {
+	f := &fakeRunner{eventData: strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"implementation complete","cost_usd":2.50,"at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"token_usage","phase":"handoff_resume","usage":{"in":10,"out":5},"cost_usd":3.00,"at":"2026-01-01T00:00:01Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:02Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].State != core.JobDone || jobs[0].CostUSD != 3.0 {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskParked {
+		t.Fatalf("task state = %s, want completed output processed into parked/no-commit result", persisted.State)
+	}
+}
+
+func TestReviewStageDoesNotReceivePriorRedirectFeedback(t *testing.T) {
+	f := &fakeRunner{eventData: strings.Join([]string{
+		`{"kind":"assistant_text","phase":"main","text":"\u0060\u0060\u0060conveyor:review\\n{\\\"verdict\\\":\\\"approve\\\",\\\"reason_code\\\":\\\"approved\\\",\\\"summary\\\":\\\"clean\\\",\\\"feedback\\\":\\\"\\\"}\\n\u0060\u0060\u0060","at":"2026-01-01T00:00:00Z"}`,
+		`{"kind":"done","phase":"job","at":"2026-01-01T00:00:01Z"}`,
+	}, "\n") + "\n"}
+	d, st, task := testDispatcher(t, f)
+	task.Level = core.L2
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(context.Background(), core.Intervention{
+		TaskID: task.ID, Action: core.InterventionRedirect, ReasonCode: "scope-creep", Comment: "Remove the unrelated refactor.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load(filepath.Join("..", "..", "pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Pack = bundle
+	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(d.Cfg.JobsDir, "task-"+task.ID, ".conveyor", "prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(prompt), "Remove the unrelated refactor.") || strings.Contains(string(prompt), "Human reviewer feedback") {
+		t.Fatalf("review prompt was primed by prior redirect:\n%s", prompt)
+	}
+}
+
+func TestPollReviewFeedbackRequiresConveyorOpenedPR(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageImplement); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	d.reviewFeedback = func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		calls++
+		return github.ReviewFeedbackPage{PR: 8, State: "open"}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	if calls != 0 {
+		t.Fatalf("feedback API calls = %d, want none before pull_request.opened", calls)
+	}
+}
+
+func TestPollReviewFeedbackUsesCursorAndSharesBounceBudget(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	d.Cfg.MaxBounces = 1
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskAwaiting, "", core.StageImplement); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened"}); err != nil {
+		t.Fatal(err)
+	}
+	wantSince := time.Date(2026, 7, 12, 7, 0, 0, 0, time.UTC)
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, Kind: "github.review_polled", Payload: core.JSONPayload(map[string]any{"cursor": wantSince})}); err != nil {
+		t.Fatal(err)
+	}
+	var gotCursor github.ReviewCursor
+	d.reviewFeedback = func(_ context.Context, _, _ string, cursor github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		gotCursor = cursor
+		return github.ReviewFeedbackPage{PR: 8, State: "open", Cursor: github.ReviewCursor{ReviewAfter: "cursor-2"}, Feedback: []github.ReviewFeedback{
+			{ID: "review:R1", Author: "alice", Body: "Fix the retry.", PR: 8},
+			{ID: "comment:91", Author: "bob", Body: "Cover the timeout.", PR: 8},
+		}}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	if !gotCursor.Since.Equal(wantSince) {
+		t.Fatalf("since = %s, want %s", gotCursor.Since, wantSince)
+	}
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != core.TaskAwaiting || persisted.NextStage != "" || persisted.RecoveryStage != core.StageImplement {
+		t.Fatalf("task bypassed bounce cap: %+v", persisted)
+	}
+	bounces, err := st.CountEvents(context.Background(), task.ID, "pipeline.bounced")
+	if err != nil || bounces != 1 {
+		t.Fatalf("bounces = %d, err=%v", bounces, err)
+	}
+	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interventions) != 1 || !strings.Contains(interventions[0].Comment, "alice: Fix the retry.") || !strings.Contains(interventions[0].Comment, "bob: Cover the timeout.") {
+		t.Fatalf("batched intervention = %+v", interventions)
+	}
+	events, err := st.ListEvents(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, persistedCursor, _ := reviewPollState(events)
+	if persistedCursor.ReviewAfter != "cursor-2" || !persistedCursor.Since.After(wantSince) {
+		t.Fatalf("persisted review cursor = %+v", persistedCursor)
+	}
+}
+
+func TestPollReviewFeedbackNeverRequeuesMergedPR(t *testing.T) {
+	d, st, task := testDispatcher(t, &fakeRunner{})
+	d.Cfg.Repos[0].GitHub = "acme/api"
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskApproved, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(context.Background(), core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	d.reviewFeedback = func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error) {
+		calls++
+		return github.ReviewFeedbackPage{PR: 8, State: "merged", Feedback: []github.ReviewFeedback{{ID: "comment:91", Author: "alice", Body: "late comment", PR: 8}}}, nil
+	}
+	d.pollReviewFeedback(context.Background())
+	d.pollReviewFeedback(context.Background())
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || persisted.State != core.TaskApproved {
+		t.Fatalf("calls=%d task=%+v", calls, persisted)
+	}
+	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	if err != nil || len(interventions) != 0 {
+		t.Fatalf("merged PR interventions = %+v, err=%v", interventions, err)
+	}
+}
+
 func TestRunTaskPersistsAttemptScopedTranscriptURIs(t *testing.T) {
 	f := &fakeRunner{}
 	d, st, task := testDispatcher(t, f)
 	if err := d.runTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTaskTransition(context.Background(), task.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.runTask(context.Background(), task.ID); err != nil {

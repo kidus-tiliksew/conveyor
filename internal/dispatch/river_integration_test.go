@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 )
@@ -37,6 +38,10 @@ func TestRiverNoCapacitySnoozesSingleJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), &fakeRunner{}, cfg)
+	dispatcher.Pack, err = pack.Load(filepath.Join("..", "..", "pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	dispatcher.Router = routing.New(noCapacityPool{}, config.Routing{OwnerID: "operator"})
 	dispatcher.UseDurableQueue()
 	client, err := NewRiverClient(st.Pool(), dispatcher)
@@ -120,6 +125,10 @@ func TestRiverDispatchesTransactionallyInsertedTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), &fakeRunner{}, cfg)
+	dispatcher.Pack, err = pack.Load(filepath.Join("..", "..", "pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	dispatcher.Router = routing.NewStatic(routing.Credential{
 		ID: "test-codex", OwnerID: "operator", OwnerKind: "user",
 		Kind: "personal_sub", Vendor: "openai", Harness: "codex",
@@ -136,7 +145,7 @@ func TestRiverDispatchesTransactionallyInsertedTask(t *testing.T) {
 
 	task := core.Task{
 		ID: "river-task-" + suffix, Workspace: cfg.Workspace, Source: "test", Title: "river dispatch",
-		Level: core.L2, Repo: "api", BaseBranch: "main", Branch: gitx.BranchName("river-task-" + suffix),
+		Repo: "api", BaseBranch: "main", Branch: gitx.BranchName("river-task-" + suffix),
 		State: core.TaskQueued, CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateTask(ctx, task); err != nil {

@@ -149,3 +149,25 @@ park the task and retain all three for inspection.
 **Resolved by.** A runner-owned, non-mounted transcript sink and persisted
 content digest. This is security hardening of the existing Phase 2 boundary,
 not permission to mine or trust sandbox-authored bytes silently.
+
+## 6. A budget breaker skips handoff elicitation
+
+**Status: accepted in Phase 3.** When the shim observes cumulative main-run
+cost at or above the job budget, it cancels the harness promptly, emits the
+terminal budget error, and does not start native-resume or fallback handoff
+elicitation.
+
+**Failure mode.** This is a deliberate exception to the "handoff snapshot —
+always" continuity floor in spec §8.3. A budget-interrupted job can leave useful
+partial work without the compact structured snapshot normally injected into
+its successor. Starting another model turn to write that snapshot would spend
+past the circuit breaker that just fired.
+
+**Recovery.** The dispatcher persists partial token and cost totals from the
+attempt transcript, halts the task at its exact recovery stage, and retains the
+persistent worktree and partial transcript for review. An explicit resume can
+continue from those artifacts, but may pay some rediscovery cost.
+
+**Resolved by.** A runner-owned, non-model checkpoint assembled from already
+captured transcript events and worktree metadata, or a separately reserved
+handoff allowance that can be enforced without exceeding the main job budget.

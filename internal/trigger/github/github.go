@@ -11,9 +11,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ReadyLabel dispatches an issue into the factory (spec §9).
@@ -29,6 +31,139 @@ type Issue struct {
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	URL    string `json:"url"`
+}
+
+type ReviewFeedback struct {
+	ID     string
+	Author string
+	Body   string
+	PR     int
+}
+
+type ReviewCursor struct {
+	Since       time.Time
+	ReviewAfter string
+}
+
+type ReviewFeedbackPage struct {
+	PR       int
+	State    string
+	Feedback []ReviewFeedback
+	Cursor   ReviewCursor
+}
+
+// ListReviewFeedback returns human-authored PR review bodies and inline
+// comments for the task branch. The dispatcher deduplicates IDs in its event
+// log before converting them to redirect interventions (spec §9).
+func ListReviewFeedback(ctx context.Context, repo, branch string, cursor ReviewCursor) (ReviewFeedbackPage, error) {
+	return listReviewFeedback(ctx, repo, branch, cursor, gh)
+}
+
+func listReviewFeedback(ctx context.Context, repo, branch string, cursor ReviewCursor, run ghRunner) (ReviewFeedbackPage, error) {
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,state,mergedAt")
+	if err != nil {
+		return ReviewFeedbackPage{}, err
+	}
+	var view struct {
+		Number   int        `json:"number"`
+		State    string     `json:"state"`
+		MergedAt *time.Time `json:"mergedAt"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil {
+		return ReviewFeedbackPage{}, fmt.Errorf("parse gh pr view: %w", err)
+	}
+	page := ReviewFeedbackPage{PR: view.Number, State: strings.ToLower(view.State), Cursor: cursor}
+	if view.MergedAt != nil {
+		page.State = "merged"
+	}
+	if page.State != "open" {
+		return page, nil
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return ReviewFeedbackPage{}, fmt.Errorf("invalid GitHub repository slug %q", repo)
+	}
+	const reviewsQuery = `query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100,after:$after){nodes{id body state submittedAt author{login}}pageInfo{hasNextPage endCursor}}}}}`
+	reviewAfter := cursor.ReviewAfter
+	feedback := []ReviewFeedback{}
+	for {
+		args := []string{"api", "graphql", "-f", "query=" + reviewsQuery, "-F", "owner=" + owner, "-F", "name=" + name, "-F", "number=" + strconv.Itoa(view.Number)}
+		if reviewAfter != "" {
+			args = append(args, "-f", "after="+reviewAfter)
+		}
+		reviewsOut, err := run(ctx, args...)
+		if err != nil {
+			return ReviewFeedbackPage{}, err
+		}
+		var reviews struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						Reviews struct {
+							Nodes []struct {
+								ID          string     `json:"id"`
+								Body        string     `json:"body"`
+								State       string     `json:"state"`
+								SubmittedAt *time.Time `json:"submittedAt"`
+								Author      struct {
+									Login string `json:"login"`
+								} `json:"author"`
+							} `json:"nodes"`
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+						} `json:"reviews"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(reviewsOut, &reviews); err != nil {
+			return ReviewFeedbackPage{}, fmt.Errorf("parse gh review page: %w", err)
+		}
+		connection := reviews.Data.Repository.PullRequest.Reviews
+		for _, review := range connection.Nodes {
+			if review.SubmittedAt != nil && review.State != "PENDING" && strings.TrimSpace(review.Body) != "" && !strings.HasSuffix(review.Author.Login, "[bot]") {
+				feedback = append(feedback, ReviewFeedback{ID: "review:" + review.ID, Author: review.Author.Login, Body: review.Body, PR: view.Number})
+			}
+		}
+		if connection.PageInfo.EndCursor != "" {
+			reviewAfter = connection.PageInfo.EndCursor
+			page.Cursor.ReviewAfter = reviewAfter
+		}
+		if !connection.PageInfo.HasNextPage {
+			break
+		}
+	}
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d/comments?per_page=100", repo, view.Number)
+	if !cursor.Since.IsZero() {
+		endpoint += "&since=" + url.QueryEscape(cursor.Since.UTC().Format(time.RFC3339Nano))
+	}
+	inline, err := run(ctx, "api", endpoint, "--paginate", "--slurp")
+	if err != nil {
+		return ReviewFeedbackPage{}, err
+	}
+	type reviewComment struct {
+		ID        int64     `json:"id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+		User      struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	var commentPages [][]reviewComment
+	if err := json.Unmarshal(inline, &commentPages); err != nil {
+		return ReviewFeedbackPage{}, fmt.Errorf("parse gh review comments: %w", err)
+	}
+	for _, comments := range commentPages {
+		for _, comment := range comments {
+			if (cursor.Since.IsZero() || !comment.CreatedAt.Before(cursor.Since)) && strings.TrimSpace(comment.Body) != "" && !strings.HasSuffix(comment.User.Login, "[bot]") {
+				feedback = append(feedback, ReviewFeedback{ID: fmt.Sprintf("comment:%d", comment.ID), Author: comment.User.Login, Body: comment.Body, PR: view.Number})
+			}
+		}
+	}
+	page.Feedback = feedback
+	return page, nil
 }
 
 // ListReadyIssues polls a repo for issues carrying the ready label.

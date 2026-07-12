@@ -27,6 +27,14 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 5 {
 		t.Fatalf("fifth migration version = %d, err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/006_phase3_pipeline.sql")
+	if err != nil || version != 6 {
+		t.Fatalf("sixth migration version = %d, err=%v", version, err)
+	}
+	version, err = migrationVersion("migrations/007_durable_pipeline_transition.sql")
+	if err != nil || version != 7 {
+		t.Fatalf("seventh migration version = %d, err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)

@@ -172,7 +172,9 @@ func loadRedactor(control string) (*redact.Redactor, error) {
 }
 
 func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prompt string, budgetUSD float64, policy adapter.ToolPolicy, forward func(adapter.Event)) error {
-	events, err := a.Run(context.Background(), adapter.RunSpec{
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	events, err := a.Run(runCtx, adapter.RunSpec{
 		Workdir:   workdir,
 		Prompt:    prompt,
 		Policy:    policy,
@@ -185,7 +187,14 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 	failed := false
 	sessionRef := ""
 	var terminalError *adapter.Event
+	budgetExceeded := false
 	for ev := range events {
+		if !budgetExceeded && budgetUSD > 0 && ev.CostUSD >= budgetUSD {
+			budgetExceeded = true
+			failed = true
+			cancelRun()
+			terminalError = &adapter.Event{Kind: adapter.EventError, Err: "job budget exhausted", CostUSD: ev.CostUSD, At: time.Now()}
+		}
 		switch ev.Kind {
 		case adapter.EventError:
 			failed = true
@@ -204,6 +213,13 @@ func supervise(a adapter.Adapter, workdir, control, harness, taskID, jobID, prom
 			continue
 		}
 		forward(withPhase(ev, adapter.PhaseMain))
+	}
+	if budgetExceeded {
+		// Do not spend another model turn on handoff after the circuit breaker.
+		// This deliberate §8.3 exception and its recovery path are recorded in
+		// docs/known-limitations.md §6.
+		forward(withPhase(*terminalError, adapter.PhaseMain))
+		return fmt.Errorf("job budget exhausted")
 	}
 
 	// Handoff snapshot — the guaranteed continuity floor between jobs

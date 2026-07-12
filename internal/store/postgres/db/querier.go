@@ -9,18 +9,22 @@ import (
 )
 
 type Querier interface {
+	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
 	ClaimCredential(ctx context.Context, arg ClaimCredentialParams) (Credential, error)
+	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
 	DeleteWorkspaceCredentialRefs(ctx context.Context, workspaceID string) error
 	DeleteWorkspaceVendorPolicyRefs(ctx context.Context, workspaceID string) error
 	DisableCredentialIfUnreferenced(ctx context.Context, id string) error
 	EnableCredential(ctx context.Context, id string) error
 	GetJob(ctx context.Context, arg GetJobParams) (Job, error)
 	GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job, error)
+	GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error)
 	GetTask(ctx context.Context, arg GetTaskParams) (Task, error)
 	GetTranscript(ctx context.Context, arg GetTranscriptParams) (Transcript, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	InsertIntervention(ctx context.Context, arg InsertInterventionParams) (Intervention, error)
 	InsertJob(ctx context.Context, arg InsertJobParams) (Job, error)
+	InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error)
 	InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error)
 	InsertWorkspaceCredentialRef(ctx context.Context, arg InsertWorkspaceCredentialRefParams) error
 	InsertWorkspaceVendorPolicyRef(ctx context.Context, arg InsertWorkspaceVendorPolicyRefParams) error
@@ -39,7 +43,9 @@ type Querier interface {
 	RestrictVendorPolicyIfUnreferenced(ctx context.Context, arg RestrictVendorPolicyIfUnreferencedParams) error
 	ThrottleCredential(ctx context.Context, arg ThrottleCredentialParams) (int64, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)
+	UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error)
 	UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error)
+	UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error)
 	UpsertCredential(ctx context.Context, arg UpsertCredentialParams) error
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) error
 	UpsertTranscript(ctx context.Context, arg UpsertTranscriptParams) (Transcript, error)

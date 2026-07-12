@@ -5,9 +5,9 @@ An orchestration platform for automated software development — a
 implement → review → verify → merge → monitor) against Git
 repositories in disposable containerized sandboxes.
 
-Full design: [conveyor-spec.md](conveyor-spec.md) (v1.1, accepted).
+Full design: [conveyor-spec.md](conveyor-spec.md) (v1.2, accepted).
 
-## Status: Phase 2 complete (spec §19)
+## Status: Phase 3 complete (spec §19)
 
 Phase 1's live GitHub issue → Codex → PR loop remains intact. Phase 2 adds the
 validated durable multi-harness and human-gate substrate:
@@ -20,15 +20,21 @@ validated durable multi-harness and human-gate substrate:
 - [x] Embedded Vite/React activity view with TanStack Router/Query, stage groups, costed timeline, SSE refresh, reason-coded review actions, and deep links
 - [x] Durable GitHub `claiming` state and workspace isolation across tasks, jobs, events, transcripts, and interventions
 - [x] Live Claude OAuth sandbox run through SOPS-backed delivery, including a real commit, native session-resumed handoff, redacted transcript, and `awaiting_human` projection
+- [x] Durable triage → spec gate → implement → independent code-review pipeline with bounded redirects
+- [x] Schema-validated triage/review outputs and §4.1 spec blocks; versioned exact spec approval contract
+- [x] File-backed proto-pack role prompts and stage policies, per-repo images, budgets, and timeouts
+- [x] GitHub PR review feedback ingestion into redirect interventions
 
 Phase 1 closure evidence remains in [docs/phase1-closure.md](docs/phase1-closure.md).
 Phase 2 operation and credential setup are in [docs/phase2.md](docs/phase2.md),
 with accepted trade-offs in [docs/known-limitations.md](docs/known-limitations.md).
+Phase 3 operation and live exit evidence are in
+[docs/phase3.md](docs/phase3.md).
 
 ## Running the loop
 
 ```sh
-make build && make image                 # UI + four Go binaries + dual-harness image
+make build && make image && make conveyor-dev-image
 cp conveyor.example.yaml conveyor.yaml   # configure Postgres, repo, credentials, policy
 export CONVEYOR_DATABASE_URL='postgres://conveyor:...@localhost/conveyor?sslmode=disable'
 export CONVEYOR_API_TOKEN="$(openssl rand -hex 32)"
@@ -65,6 +71,8 @@ internal/routing/     owner/policy/rate-limit-aware credential router
 internal/redact/      shim-boundary exact, encoded, pattern, and entropy scrubber
 internal/trigger/     github/ — issue label → task, branch → PR (§9)
 images/base/          base Conveyor image every repo devcontainer extends (§6.1)
+images/conveyor-dev/  Go + Node dogfood image used to build Conveyor itself
+pack/                 Phase 3 role prompts and per-stage tool policies (§2.2)
 ```
 
 The roadmap was re-phased for the Beta milestone — Conveyor developing
@@ -84,6 +92,7 @@ make test
 make vet
 make shim    # linux static shim binaries for the base image
 make image   # build conveyor-base:dev with the shim baked in
+make conveyor-dev-image # build Conveyor's Go/Node dogfood sandbox
 ```
 
 Run the control plane: `bin/conveyord -addr 127.0.0.1:8080`, then

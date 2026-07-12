@@ -1,6 +1,8 @@
 # Conveyor deployment config. Copy to conveyor.yaml and edit.
 workspace: demo
 image: conveyor-base:dev           # build with: make image
+pack_dir: pack                     # reviewable Phase 3 role prompts/policies
+max_bounces: 2                     # bounded automatic output/review retries
 # cache_dir: ~/.conveyor/cache     # bare repo mirrors
 # jobs_dir: ~/.conveyor/jobs       # isolated task checkouts + control dirs
 # codex_credentials: ~/.codex      # auth.json alone is staged read-only
@@ -44,10 +46,26 @@ database:
 #   lease_seconds: 14400
 #   allow_restricted: false
 #   stages:
+#     triage:
+#       harnesses: [claude-code, codex]
+#       model_tier: strong
+#       budget_usd: 0.75
+#       timeout: 20m
+#     spec:
+#       harnesses: [claude-code, codex]
+#       model_tier: mid
+#       budget_usd: 0.50
+#       timeout: 30m
 #     implement:
 #       harnesses: [codex, claude-code]
 #       model_tier: subscription
 #       budget_usd: 3.00
+#       timeout: 2h
+#     review:
+#       harnesses: [claude-code, codex]
+#       model_tier: mid
+#       budget_usd: 0.75
+#       timeout: 30m
 
 # SOPS is the secure local default. Configure a SOPS creation rule/key before
 # running `conveyor secrets set`. Use backend: plain only for local fixtures.
@@ -65,6 +83,7 @@ repos:
     url: https://github.com/your-org/your-repo
     github: your-org/your-repo     # omit to disable issue polling / PR opening
     base: main
+    # image: conveyor-dev:dev       # per-repo override for Go/Node dogfooding
     # Values resolve only on the runner host and enter the sandbox as env vars.
     # secret_refs:
     #   - secretref://demo/default/DATABASE_URL

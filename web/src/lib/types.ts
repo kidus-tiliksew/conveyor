@@ -14,7 +14,21 @@ export interface Task {
   base_branch: string
   branch: string
   state: TaskState
+  next_stage?: string
+  recovery_stage?: string
   created_at: string
+}
+
+export interface SpecVersion {
+  task_id: string
+  version: number
+  content: string
+  acceptance_count: number
+  acceptance: unknown
+  decomposition: unknown
+  approved: boolean
+  created_at: string
+  approved_at?: string
 }
 
 export interface Job {
@@ -65,6 +79,7 @@ export interface ActivityItem {
   interventions: Intervention[]
   checkout_command: string
   needs_attention: boolean
+  spec?: SpecVersion
 }
 
 export interface ActivitySummary {

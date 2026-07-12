@@ -1,6 +1,6 @@
 # Base Conveyor image (spec §6.1): the common layer every repo
 # devcontainer extends. Provides git, the harness CLIs, the job shim,
-# browsers for verification (Phase 4), and the cloud toolbelt (§11.1).
+# browsers for verification (demand-triggered Phase 8), and the cloud toolbelt (§11.1).
 #
 # Phase 2 keeps this minimal: git + node, both harness CLIs, gh, and the
 # shim. The toolbelt (gcloud, aws, kubectl, terraform) and browsers land

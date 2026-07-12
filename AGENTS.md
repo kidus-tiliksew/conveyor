@@ -1,8 +1,8 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.1, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.2, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
-with a version bump (§20), never silent edits.
+with a version bump (§21), never silent edits.
 
 ## Conventions
 
@@ -19,9 +19,8 @@ with a version bump (§20), never silent edits.
 
 ## Phase discipline
 
-Phase 2 is complete (spec §19): Claude Code + Codex adapters, credential
-routing, Postgres/River state, the standalone local runner, append-only events,
-review UI, and shim-boundary redaction are implemented and validated. Preserve
-the accepted Phase 1 core loop and Phase 2 contracts. Phase 3 has not started;
-do not build K8sRunner, multi-repo worktree sets, aggregate cost dashboard, or
-budget breakers until it is explicitly activated.
+Phases 1–3 are complete. Preserve their contracts and the full multi-stage
+pipeline described by spec §19 and [docs/beta-plan.md](docs/beta-plan.md). Do
+not build Phase 4 or post-Beta work without explicit activation. K8sRunner,
+multi-repo worktree sets, verification, and the aggregate cost dashboard
+remain demand-triggered Phase 8 scope.

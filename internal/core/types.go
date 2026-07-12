@@ -27,6 +27,13 @@ const (
 	StageMonitor   Stage = "monitor"
 )
 
+func InitialStage(level EscalationLevel) Stage {
+	if level == "" {
+		return StageImplement
+	}
+	return StageTriage
+}
+
 // EscalationLevel is the degree of human involvement (spec §13.1).
 type EscalationLevel string
 
@@ -77,19 +84,21 @@ type BootDiagnostics struct {
 
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
-	ID           string          `json:"id"`
-	Workspace    string          `json:"workspace"`
-	Source       string          `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
-	Title        string          `json:"title"`
-	Body         string          `json:"body"`  // free-form description; becomes part of the prompt
-	Class        string          `json:"class"` // bug | feature | chore
-	Level        EscalationLevel `json:"level"`
-	Repo         string          `json:"repo"` // repo name within the workspace (single-repo in Phase 1; task_repos in Phase 3)
-	BaseBranch   string          `json:"base_branch"`
-	Branch       string          `json:"branch"` // conveyor/task-<id>
-	State        TaskState       `json:"state"`
-	ParentTaskID string          `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
-	CreatedAt    time.Time       `json:"created_at"`
+	ID            string          `json:"id"`
+	Workspace     string          `json:"workspace"`
+	Source        string          `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
+	Title         string          `json:"title"`
+	Body          string          `json:"body"`  // free-form description; becomes part of the prompt
+	Class         string          `json:"class"` // bug | feature | chore
+	Level         EscalationLevel `json:"level"`
+	Repo          string          `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch    string          `json:"base_branch"`
+	Branch        string          `json:"branch"` // conveyor/task-<id>
+	State         TaskState       `json:"state"`
+	NextStage     Stage           `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage Stage           `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID  string          `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 // NewTaskID returns a short, human-typeable ID: date prefix for
@@ -198,21 +207,6 @@ type Intervention struct {
 	At         time.Time          `json:"at"`
 }
 
-func InterventionNextState(action InterventionAction) (TaskState, bool) {
-	switch action {
-	case InterventionApprove:
-		return TaskApproved, true
-	case InterventionReject:
-		return TaskClosed, true
-	case InterventionRedirect:
-		return TaskQueued, true
-	case InterventionPull:
-		return "", false
-	default:
-		return "", false
-	}
-}
-
 type RedactionStats struct {
 	Exact   int64 `json:"exact"`
 	Encoded int64 `json:"encoded"`
@@ -234,6 +228,20 @@ type Transcript struct {
 	URI            string         `json:"uri"`
 	RedactionStats RedactionStats `json:"redaction_stats"`
 	CreatedAt      time.Time      `json:"created_at"`
+}
+
+// SpecVersion is an immutable spec-agent artifact. Approval is recorded on
+// the exact version that becomes the implementation contract (spec §4.1).
+type SpecVersion struct {
+	TaskID          string          `json:"task_id"`
+	Version         int             `json:"version"`
+	Content         string          `json:"content"`
+	AcceptanceCount int             `json:"acceptance_count"`
+	Acceptance      json.RawMessage `json:"acceptance"`
+	Decomposition   json.RawMessage `json:"decomposition"`
+	Approved        bool            `json:"approved"`
+	CreatedAt       time.Time       `json:"created_at"`
+	ApprovedAt      time.Time       `json:"approved_at,omitempty"`
 }
 
 // JSONPayload is the single fallback contract for JSON stored inside events.
