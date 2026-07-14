@@ -187,7 +187,9 @@ export interface ActivityItem {
   jobs: Job[]
   events: TaskEvent[]
   interventions: Intervention[]
-  checkout_command: string
+  checkout_command?: string
+  checkout_available: boolean
+  checkout_guidance: string
   needs_attention: boolean
   spec?: SpecVersion
   work_orders: WorkOrder[]

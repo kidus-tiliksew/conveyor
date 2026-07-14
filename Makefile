@@ -2,7 +2,7 @@ BIN := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
-.PHONY: all build ui test vet fmt tidy clean
+.PHONY: all build ui test vet plugin-check fmt tidy clean
 
 all: build
 
@@ -18,6 +18,9 @@ test:
 
 vet:
 	go vet ./...
+
+plugin-check:
+	python3 scripts/validate_codex_plugin.py
 
 fmt:
 	gofmt -l -w .

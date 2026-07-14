@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.6, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.7, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -29,3 +29,6 @@ the aggregate cost dashboard remain demand-triggered Phase 8 scope.
 MCP task intake is part of the accepted Phase 4.7 surface (§21.5): it must
 create the normal durable task and enqueue existing triage, never bypass the
 pipeline with a second ad hoc triage implementation.
+Task branch names are assignments, not pre-created refs (§21.7). The
+implementing agent safely creates or adopts and pushes the assigned branch;
+Conveyor must not mutate the agent's checkout or reset task history.

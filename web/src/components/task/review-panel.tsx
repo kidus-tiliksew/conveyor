@@ -62,11 +62,15 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
             </Button>
           ))}
         </div>
-        {action === 'pull_to_local' ? (
+        {action === 'pull_to_local' && item.checkout_available && item.checkout_command ? (
           <div className="flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5">
             <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/85">{item.checkout_command}</code>
             <CopyButton value={item.checkout_command} label="Copy checkout command" />
           </div>
+        ) : action === 'pull_to_local' ? (
+          <p className="rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 text-muted">
+            {item.checkout_guidance}
+          </p>
         ) : null}
         <div className="grid gap-3 md:grid-cols-[200px_minmax(0,1fr)]">
           <label className="block">
@@ -82,7 +86,7 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
           <label className="block">
             <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">
               {action === 'redirect' ? 'Redirect feedback' : 'Comment'}
-              {action === 'redirect' && <span className="ml-1 normal-case text-faint">— written feedback, not code; it re-dispatches the worktree</span>}
+              {action === 'redirect' && <span className="ml-1 normal-case text-faint">— written feedback, not code; it returns the existing branch to the implementing agent</span>}
             </span>
             <Textarea
               value={comment}
@@ -96,7 +100,13 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
             {token ? hint : 'Set the operator token in Settings to act.'}
           </p>
           <Button
-            disabled={!token || !reasonCode || mutation.isPending || (action === 'redirect' && !comment.trim())}
+            disabled={
+              !token ||
+              !reasonCode ||
+              mutation.isPending ||
+              (action === 'redirect' && !comment.trim()) ||
+              (action === 'pull_to_local' && !item.checkout_available)
+            }
             onClick={() => mutation.mutate()}
           >
             {mutation.isPending ? 'Recording…' : `Confirm ${action.replaceAll('_', ' ')}`}

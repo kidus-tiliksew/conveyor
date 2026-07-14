@@ -1,0 +1,12 @@
+interface:
+  display_name: "Conveyor Operator"
+  short_description: "Operate durable Conveyor work orders"
+  default_prompt: "Use $conveyor-operator to implement the next approved Conveyor work order."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "conveyor-plugin"
+      description: "Local Conveyor task-intake and work-order server"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:8080/mcp"

@@ -1,0 +1,20 @@
+{
+  "name": "conveyor-local",
+  "interface": {
+    "displayName": "Conveyor Local"
+  },
+  "plugins": [
+    {
+      "name": "conveyor",
+      "source": {
+        "source": "local",
+        "path": "./plugins/conveyor"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

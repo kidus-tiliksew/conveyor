@@ -268,13 +268,16 @@ func checkoutTask(ctx context.Context, branch, repo, taskID, destination string)
 		return "", err
 	}
 	remoteExists := strings.TrimSpace(remoteListing) != ""
-	if remoteExists {
-		if _, err := gitOutput(ctx, root, "fetch", "origin", "+"+localRef+":"+remoteRef); err != nil {
-			return "", err
-		}
+	// Intake assigns a branch name but does not create the ref. Human checkout
+	// begins only after the implementation agent pushes it (spec §21.7).
+	if !remoteExists {
+		return "", fmt.Errorf("task branch %s is assigned but is not available on origin yet; checkout becomes available after the implementation agent pushes it", branch)
+	}
+	if _, err := gitOutput(ctx, root, "fetch", "origin", "+"+localRef+":"+remoteRef); err != nil {
+		return "", err
 	}
 	localExists := gitRefExists(ctx, root, localRef)
-	if localExists && remoteExists {
+	if localExists {
 		switch {
 		case gitIsAncestor(ctx, root, localRef, remoteRef):
 			remoteCommit, err := gitOutput(ctx, root, "rev-parse", "--verify", remoteRef)
@@ -294,12 +297,10 @@ func checkoutTask(ctx context.Context, branch, repo, taskID, destination string)
 		if _, err := gitOutput(ctx, root, "worktree", "add", destination, branch); err != nil {
 			return "", err
 		}
-	} else if remoteExists {
+	} else {
 		if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, destination, remoteRef); err != nil {
 			return "", err
 		}
-	} else {
-		return "", fmt.Errorf("task branch %s was not found locally or on origin", branch)
 	}
 	return destination, nil
 }

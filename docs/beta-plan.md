@@ -149,7 +149,9 @@ and leaves state untouched. *(Met; Beta entry moved to the Phase 4.7 exit by
 
 The sandbox execution plane retires; implementation delegates to
 operator-owned agents over MCP; the spec corpus gets its organizing UI;
-context files become first-class. Suggested order:
+context files become first-class. Task intake assigns branch metadata only;
+the implementing agent safely creates or adopts and pushes the exact assigned
+branch from its own checkout (spec §21.7). Suggested order:
 
 1. **Pipeline agents in-process.** Replace harness-dispatched triage and
    spec jobs with direct API calls inside `conveyord` on
@@ -166,11 +168,12 @@ context files become first-class. Suggested order:
    review. Lifecycle tools: `list_work_orders`, `claim_work_order`
    (leases; expiry returns the claim to queue; a review order for task T
    is unclaimable by the token/session that claimed T's implement order),
-   `get_work_order` (implement: approved spec, branch, base, bounce
+   `get_work_order` (implement: approved spec, assigned branch name, base, bounce
    history, prior feedback, artifact refs; review: diff/PR ref, approved
    spec, bounce history, review role prompt), `report_progress` /
-   `report_usage` / `upload_transcript` (self-reported, marked as such),
-   `submit_for_review` (opens the PR if absent, then dispatches review
+   `report_usage` / `upload_transcript` (self-reported, marked as such). The
+   implementing agent owns safe branch setup and pushes before
+   `submit_for_review` (which opens the PR if absent, then dispatches review
    per execution mode), `await_review` (long-poll so the implementer's
    session receives the verdict in-session when a reviewer claims
    promptly), and `submit_review_verdict` (§4.1-validated verdict +
@@ -184,8 +187,9 @@ context files become first-class. Suggested order:
    credential pool/router, `cmd/conveyor-runner`, `cmd/conveyor-shim`,
    `images/`, snapshot/resume machinery; strip credentials, vendor
    policies, tool policies, per-repo images, and secret refs from the
-   config document (§21.4 change 8). `gitx` bare-clone cache stays
-   (branches, diffs, `conveyor checkout`). Mechanical verification is the
+   config document (§21.4 change 8). `gitx` bare-clone cache stays for
+   pushed-branch diffs and post-push `conveyor checkout`; it does not create or
+   reset an implementation branch. Mechanical verification is the
    repo's own CI on the PR.
 4. **Requirements tree.** `features` table (hierarchical) +
    task→feature assignment (triage suggests, human reassigns); a
@@ -197,13 +201,15 @@ context files become first-class. Suggested order:
 6. **UI/CLI updates.** Workspace page reflects the slimmed config;
    work-order state surfaces in the feed and task panel (claimed-by,
    lease, self-reported usage); review independence labels on the review
-   card and timeline entry (§21.4 change 3); MCP connection instructions
-   in Settings; `conveyor config export/import` unchanged.
+   card and timeline entry (§21.4 change 3); assigned-vs-pushed branch state and
+   gated checkout guidance (§21.7); MCP connection instructions in Settings;
+   `conveyor config export/import` unchanged.
 
 **Exit criterion (spec §21.4):** one real task flows issue → triage → spec
 (approved in UI) → implement work order claimed by the operator's Claude
-Code over MCP → implementation on the operator's machine →
-`submit_for_review` → review work order claimed by a *fresh* agent session
+Code over MCP → implementation on the operator's machine → safe creation or
+adoption and push of the assigned branch → `submit_for_review` → review work
+order claimed by a *fresh* agent session
 → `changes_requested` verdict delivered to the waiting implementer via
 `await_review` → fix in the same session → resubmit → approve → PR merged,
 with the full lifecycle audited and the self-review guard verified (the
@@ -211,8 +217,9 @@ implementing session cannot claim the review order). Beta entry follows:
 five consecutive such tasks per the §19 criterion.
 
 **Implementation status (July 14, 2026): complete.** The Phase 4.7 code,
-including the v1.5 MCP task-intake amendment and v1.6 budget removal, and
-operator surfaces are implemented and repository validation passes. The live
+including the v1.5 MCP task-intake amendment, v1.6 budget removal, v1.7
+operator-owned branch contract and repository Codex plugin, and operator
+surfaces are implemented and repository validation passes. The live
 dogfood exit flow and subsequent five-task Beta proof above are still pending;
 they must be recorded from real MCP sessions and are not inferred from tests.
 
