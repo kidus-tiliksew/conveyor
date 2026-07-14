@@ -1,5 +1,5 @@
 CREATE TABLE review_publications (
-    review_work_order_id text PRIMARY KEY REFERENCES work_orders(id) ON DELETE CASCADE,
+    review_work_order_id text PRIMARY KEY,
     workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     job_id text NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,

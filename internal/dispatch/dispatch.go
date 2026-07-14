@@ -302,6 +302,20 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if model == "" {
 		model = job.ModelTier
 	}
+	reviewedCommitSHA := ""
+	events, _ := d.Store.ListEvents(ctx, task.ID)
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
+		}
+		var pullRequest struct {
+			HeadSHA string `json:"head_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
+			reviewedCommitSHA = pullRequest.HeadSHA
+			break
+		}
+	}
 	implementModel := ""
 	jobs, _ := d.Store.ListJobs(ctx, task.ID)
 	for i := len(jobs) - 1; i >= 0; i-- {
@@ -314,7 +328,32 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if model != "" && implementModel != "" {
 		same = fmt.Sprintf("%t", model == implementModel)
 	}
-	payload := map[string]any{"verdict": result.Verdict, "reason_code": result.ReasonCode, "summary": result.Summary, "feedback": result.Feedback, "reviewer_session": "distinct", "reviewer_model": model, "same_model_as_implementer": same, "reviewer": reviewer}
+	payload := map[string]any{"review_work_order_id": reviewWorkOrderID, "verdict": result.Verdict, "reason_code": result.ReasonCode, "summary": result.Summary, "feedback": result.Feedback, "reviewed_commit_sha": reviewedCommitSHA, "reviewer_session": "distinct", "reviewer_model": model, "same_model_as_implementer": same, "reviewer": reviewer}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.completed" {
+			continue
+		}
+		var prior struct {
+			ReviewWorkOrderID      string `json:"review_work_order_id"`
+			Verdict                string `json:"verdict"`
+			ReasonCode             string `json:"reason_code"`
+			Summary                string `json:"summary"`
+			Feedback               string `json:"feedback"`
+			ReviewedCommitSHA      string `json:"reviewed_commit_sha"`
+			ReviewerModel          string `json:"reviewer_model"`
+			ReviewerSession        string `json:"reviewer_session"`
+			SameModelAsImplementer string `json:"same_model_as_implementer"`
+		}
+		if json.Unmarshal(events[i].Payload, &prior) == nil && prior.ReviewWorkOrderID == reviewWorkOrderID {
+			return d.queueReviewPublication(ctx, cfg, task, core.ReviewPublication{
+				ReviewWorkOrderID: prior.ReviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
+				Verdict: prior.Verdict, ReasonCode: prior.ReasonCode, Summary: prior.Summary,
+				Feedback: prior.Feedback, ReviewedCommitSHA: prior.ReviewedCommitSHA,
+				ReviewerModel: prior.ReviewerModel, ReviewerSession: prior.ReviewerSession,
+				SameModelAsImplementer: prior.SameModelAsImplementer,
+			})
+		}
+	}
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(payload)}); err != nil {
 		return err
 	}
@@ -333,30 +372,20 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if transitionErr != nil {
 		return transitionErr
 	}
-	reviewedCommitSHA := ""
-	if events, eventsErr := d.Store.ListEvents(ctx, task.ID); eventsErr == nil {
-		for i := len(events) - 1; i >= 0; i-- {
-			if events[i].Kind != "pull_request.opened" {
-				continue
-			}
-			var pullRequest struct {
-				HeadSHA string `json:"head_sha"`
-			}
-			if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
-				reviewedCommitSHA = pullRequest.HeadSHA
-				break
-			}
-		}
-	}
+	return d.queueReviewPublication(ctx, cfg, task, core.ReviewPublication{
+		ReviewWorkOrderID: reviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
+		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, ReviewerModel: model,
+		ReviewerSession: "distinct", SameModelAsImplementer: same,
+	})
+}
+
+func (d *Dispatcher) queueReviewPublication(ctx context.Context, cfg *config.Config, task core.Task, publication core.ReviewPublication) error {
 	if repo, ok := cfg.Repo(task.Repo); !ok || repo.GitHub == "" {
 		return nil
 	}
-	return d.Store.QueueReviewPublication(ctx, core.ReviewPublication{
-		ReviewWorkOrderID: reviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
-		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
-		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, ReviewerModel: model, ReviewerSession: "distinct",
-		SameModelAsImplementer: same, State: core.ReviewPublicationQueued,
-	})
+	publication.State = core.ReviewPublicationQueued
+	return d.Store.QueueReviewPublication(ctx, publication)
 }
 
 func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {

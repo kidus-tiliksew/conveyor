@@ -98,4 +98,21 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || storedPublication.State != core.ReviewPublicationPublished || storedPublication.CheckRunID != 41 || storedPublication.CommentID != 51 {
 		t.Fatalf("published=%+v err=%v", storedPublication, err)
 	}
+	inProcessJob := core.Job{ID: task.ID + "-review-in-process", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer", StartedAt: time.Now().Add(2 * time.Second)}
+	if err = st.CreateJob(ctx, inProcessJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: inProcessJob.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{
+		"review_work_order_id": inProcessJob.ID, "verdict": "approve", "reason_code": "approved",
+		"summary": "in-process passes", "reviewer_model": "reviewer", "reviewer_session": "distinct",
+		"same_model_as_implementer": "false",
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	if repaired, reconcileErr := st.ReconcileReviewPublications(ctx); reconcileErr != nil || repaired != 1 {
+		t.Fatalf("reconciled in-process publications=%d err=%v", repaired, reconcileErr)
+	}
+	if stored, getErr := st.GetReviewPublication(ctx, inProcessJob.ID); getErr != nil || stored.ReviewWorkOrderID != inProcessJob.ID {
+		t.Fatalf("in-process publication=%+v err=%v", stored, getErr)
+	}
 }

@@ -140,6 +140,14 @@ func main() {
 			if repaired != 0 {
 				log.Printf("reconciled %d queued task(s) missing River jobs", repaired)
 			}
+			publications, publicationErr := pgStore.ReconcileReviewPublications(ctx)
+			if publicationErr != nil {
+				log.Printf("reconcile review publications: %v", publicationErr)
+				return
+			}
+			if publications != 0 {
+				log.Printf("reconciled %d completed review publication(s)", publications)
+			}
 		}
 		reconcile()
 		go func() {

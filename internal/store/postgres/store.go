@@ -897,6 +897,49 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 	})
 }
 
+func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
+		FROM events e
+		JOIN tasks t ON t.id=e.task_id
+		LEFT JOIN review_publications p ON p.workspace_id=t.workspace_id
+			AND p.review_work_order_id=e.payload_json->>'review_work_order_id'
+		WHERE t.workspace_id=$1 AND e.kind='review.completed'
+			AND COALESCE(e.payload_json->>'review_work_order_id','') <> ''
+			AND p.review_work_order_id IS NULL
+		ORDER BY e.id`, s.workspace)
+	if err != nil {
+		return 0, err
+	}
+	var missing []core.ReviewPublication
+	for rows.Next() {
+		var taskID, jobID string
+		var payload []byte
+		if err = rows.Scan(&taskID, &jobID, &payload); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		var publication core.ReviewPublication
+		if json.Unmarshal(payload, &publication) == nil && publication.ReviewWorkOrderID != "" {
+			publication.TaskID, publication.JobID = taskID, jobID
+			publication.State = core.ReviewPublicationQueued
+			missing = append(missing, publication)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	created := 0
+	for _, publication := range missing {
+		if err = s.QueueReviewPublication(ctx, publication); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
 func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPublication, error) {
 	var publication core.ReviewPublication
 	var state string

@@ -27,6 +27,8 @@ type Service struct {
 	Dispatcher     *dispatch.Dispatcher
 	Pack           *pack.Bundle
 	ConfigProvider func(context.Context) (*config.Config, error)
+	OpenPR         func(context.Context, string, string, string, string, string) (string, error)
+	ReviewTarget   func(context.Context, string, string) (github.ReviewTarget, error)
 }
 
 type Context struct {
@@ -231,11 +233,19 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	prURL := ""
 	if repo.GitHub != "" {
-		prURL, err = github.OpenPRForBranch(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task))
+		openPR := s.OpenPR
+		if openPR == nil {
+			openPR = github.OpenPRForBranch
+		}
+		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task))
 		if err != nil {
 			return nil, fmt.Errorf("open PR: %w", err)
 		}
-		target, targetErr := github.ReviewTargetForBranch(ctx, repo.GitHub, task.Branch)
+		reviewTarget := s.ReviewTarget
+		if reviewTarget == nil {
+			reviewTarget = github.ReviewTargetForBranch
+		}
+		target, targetErr := reviewTarget(ctx, repo.GitHub, task.Branch)
 		if targetErr != nil {
 			return nil, fmt.Errorf("resolve reviewed PR head: %w", targetErr)
 		}
@@ -367,6 +377,9 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if err != nil || !ok || job.ID != order.JobID {
 		return nil, fmt.Errorf("review job unavailable")
 	}
+	if err = s.Dispatcher.ApplyExternalReview(ctx, task, job, validated, order.ID, session, order.Model); err != nil {
+		return nil, err
+	}
 	order.State = core.WorkOrderCompleted
 	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
 		return nil, err
@@ -377,9 +390,6 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	job.TokensIn = order.TokensIn
 	job.TokensOut = order.TokensOut
 	if err = s.Store.UpdateJob(ctx, job); err != nil {
-		return nil, err
-	}
-	if err = s.Dispatcher.ApplyExternalReview(ctx, task, job, validated, order.ID, session, order.Model); err != nil {
 		return nil, err
 	}
 	return map[string]any{"verdict": validated.Verdict, "task_id": task.ID}, nil

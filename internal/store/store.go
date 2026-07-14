@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -51,6 +52,7 @@ type Store interface {
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
+	ReconcileReviewPublications(ctx context.Context) (int, error)
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -144,6 +146,46 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: kind, Payload: core.JSONPayload(publication)})
 	return nil
+}
+
+func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	var missing []core.ReviewPublication
+	seen := map[string]bool{}
+	for taskID, events := range m.events {
+		for _, event := range events {
+			if event.Kind != "review.completed" {
+				continue
+			}
+			publication, ok := reviewPublicationFromEvent(taskID, event.JobID, event.Payload)
+			if ok && !seen[publication.ReviewWorkOrderID] {
+				if _, exists := m.publications[publication.ReviewWorkOrderID]; !exists {
+					missing = append(missing, publication)
+					seen[publication.ReviewWorkOrderID] = true
+				}
+			}
+		}
+	}
+	m.mu.RUnlock()
+	created := 0
+	for _, publication := range missing {
+		if err := m.QueueReviewPublication(ctx, publication); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
+func reviewPublicationFromEvent(taskID, jobID string, payload []byte) (core.ReviewPublication, bool) {
+	var publication core.ReviewPublication
+	if json.Unmarshal(payload, &publication) != nil || publication.ReviewWorkOrderID == "" {
+		return core.ReviewPublication{}, false
+	}
+	publication.TaskID = taskID
+	publication.JobID = jobID
+	publication.State = core.ReviewPublicationQueued
+	return publication, true
 }
 
 func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {

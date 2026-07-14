@@ -15,10 +15,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-type publicationFailStore struct{ store.Store }
+type publicationFlakyStore struct {
+	store.Store
+	failures int
+}
 
-func (publicationFailStore) QueueReviewPublication(context.Context, core.ReviewPublication) error {
-	return errors.New("github publication queue unavailable")
+func (st *publicationFlakyStore) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if st.failures > 0 {
+		st.failures--
+		return errors.New("github publication queue unavailable")
+	}
+	return st.Store.QueueReviewPublication(ctx, publication)
 }
 
 type sequenceAgent struct {
@@ -206,7 +213,8 @@ func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T)
 	if err := base.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	d := New(publicationFailStore{Store: base}, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	flaky := &publicationFlakyStore{Store: base, failures: 1}
+	d := New(flaky, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	d.UseDurableQueue()
 	err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review")
 	if err == nil || !strings.Contains(err.Error(), "publication queue unavailable") {
@@ -216,15 +224,22 @@ func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T)
 	if getErr != nil || updated.State != core.TaskApproved {
 		t.Fatalf("task=%+v err=%v", updated, getErr)
 	}
+	if err = d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
+		t.Fatalf("recovery retry failed: %v", err)
+	}
+	publication, err := base.GetReviewPublication(ctx, job.ID)
+	if err != nil || publication.State != core.ReviewPublicationQueued {
+		t.Fatalf("publication=%+v err=%v", publication, err)
+	}
 	events, _ := base.ListEvents(ctx, task.ID)
-	found := false
+	completed := 0
 	for _, event := range events {
 		if event.Kind == "review.completed" {
-			found = true
+			completed++
 		}
 	}
-	if !found {
-		t.Fatal("review.completed was lost")
+	if completed != 1 {
+		t.Fatalf("review.completed events = %d, want 1", completed)
 	}
 }
 
