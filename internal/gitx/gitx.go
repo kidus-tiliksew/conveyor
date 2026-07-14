@@ -162,9 +162,8 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 }
 
 func syncTaskBranch(ctx context.Context, wt, branch string) error {
-	// Human `conveyor checkout` work is handed back by pushing the task
-	// branch before `done --redispatch`. A missing remote branch is normal
-	// for failed pre-PR jobs; an existing branch is fast-forwarded only.
+	// A missing remote branch is normal before an operator-owned agent's first
+	// push; an existing agent-pushed branch is fast-forwarded only.
 	remote, err := commandOutput(ctx, wt, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branch)
 	if err != nil {
 		return err

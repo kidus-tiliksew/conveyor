@@ -218,8 +218,9 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 	}
 	for _, expected := range [][]byte{
 		[]byte(`"needs_attention":true`),
-		[]byte(`"checkout_available":false`),
-		[]byte(`"checkout_guidance":"The branch name is assigned, but checkout is unavailable until the implementation agent creates and pushes that branch."`),
+		[]byte(`"checkout_available":true`),
+		[]byte(`"checkout_command":"conveyor checkout spec-gate"`),
+		[]byte(`"checkout_guidance":"Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."`),
 		[]byte(`"spec":{"task_id":"spec-gate"`),
 		[]byte(`"version":` + fmt.Sprint(created.Version)),
 		[]byte(`"content":"# Proposed change\n\nReview this exact text."`),
@@ -228,9 +229,6 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 		if !bytes.Contains(response.Body.Bytes(), expected) {
 			t.Fatalf("activity body does not contain %s: %s", expected, response.Body.String())
 		}
-	}
-	if bytes.Contains(response.Body.Bytes(), []byte(`"checkout_command"`)) {
-		t.Fatalf("activity exposed checkout before the task branch was pushed: %s", response.Body.String())
 	}
 }
 
@@ -263,7 +261,7 @@ func TestTaskActivityEnablesCheckoutAfterPushedBranchEvent(t *testing.T) {
 	}
 }
 
-func TestPullToLocalRequiresPushedTaskBranch(t *testing.T) {
+func TestPullToLocalProvidesDedicatedWorktreeCommandBeforePush(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := store.NewMemory()
@@ -276,27 +274,15 @@ func TestPullToLocalRequiresPushedTaskBranch(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("checkout is unavailable until the implementation agent")) {
+	if response.Code != http.StatusAccepted || !bytes.Contains(response.Body.Bytes(), []byte(`"checkout_command":"conveyor checkout assigned-only"`)) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	interventions, err := st.ListInterventions(ctx, "assigned-only")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(interventions) != 0 {
-		t.Fatalf("pull-to-local recorded before push: %+v", interventions)
-	}
-	if err := st.AppendEvent(ctx, core.Event{
-		TaskID: "assigned-only", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"url": "https://example.test/pr/2"}),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/assigned-only/review", bytes.NewReader([]byte(`{"action":"pull_to_local","reason_code":"needs-human"}`)))
-	request.Header.Set("Authorization", "Bearer token")
-	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || !bytes.Contains(response.Body.Bytes(), []byte(`"checkout_command":"conveyor checkout assigned-only"`)) {
-		t.Fatalf("post-push status=%d body=%s", response.Code, response.Body.String())
+	if len(interventions) != 1 || interventions[0].Action != core.InterventionPull {
+		t.Fatalf("pull-to-local interventions = %+v", interventions)
 	}
 }
 

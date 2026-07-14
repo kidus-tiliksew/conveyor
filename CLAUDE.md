@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.7, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.8, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -20,7 +20,7 @@ with a version bump (§21), never silent edits.
 ## Phase discipline
 
 Phases 1–2 are complete and validated. The roadmap was re-phased for the
-Beta milestone (spec §19 v1.7, rationale in §21.2–§21.7; working breakdown
+Beta milestone (spec §19 v1.8, rationale in §21.2–§21.8; working breakdown
 in [docs/beta-plan.md](docs/beta-plan.md)). Note §21.4 retires the sandbox
 execution plane — Phase 1–3 execution contracts (runner, adapters,
 credential pool, shim, images) are superseded, not preserved. Pre-Beta is
@@ -47,9 +47,11 @@ exactly four phases:
   enqueues the existing triage pipeline (§21.5) →
   **Beta: Conveyor develops Conveyor**.
 
-Task branch names are assignments, not pre-created refs (§21.7). The
-implementing agent owns safe branch creation/adoption and the push before
-review; Conveyor does not mutate the agent's checkout or reset task history.
+Task branch names are assignments, not pre-created refs (§21.7). Immediately
+after reading a work order, the implementing agent uses `conveyor checkout
+<task-id>` to resolve a dedicated sibling worktree and performs every edit,
+test, commit, and push there (§21.8). Conveyor does not mutate the primary
+checkout or reset task history.
 
 Do NOT build post-Beta or deferred surfaces:
 monitor agent, `.conveyor/` repo hints (Phase 5); memory store / pgvector

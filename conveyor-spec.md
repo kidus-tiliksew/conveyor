@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.7**
+**Specification — v1.8**
 **Date:** July 14, 2026
-**Status:** Accepted — operator-owned branch amendment applied (§21.7)
+**Status:** Accepted — dedicated local task-worktree amendment applied (§21.8)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1181,4 +1181,68 @@ other v1.6 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.7 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), and operator-owned branch creation plus the repository Codex plugin made explicit (§21.7). Subsequent changes proceed by amendment with version bumps.*
+### 21.8 v1.8 — Dedicated local task worktrees (July 14, 2026)
+
+The v1.7 operator-owned branch boundary correctly removed factory mutation of
+the agent's checkout, but it still permitted an implementation agent to switch
+or edit a shared primary checkout and kept `conveyor checkout` behind the first
+push. That leaves operator work exposed and duplicates safe Git setup between
+agents and humans. This amendment supersedes §8.4 and §21.7 changes 2–5 where
+they describe a shared-checkout or post-push-only local flow. The historical
+text remains the v1.0–v1.7 record. Seven changes; all other v1.7 decisions
+remain unchanged:
+
+1. **A dedicated checkout is mandatory.** Immediately after claiming and
+   reading an implementation work order, the agent resolves a clean checkout
+   dedicated to the assigned task branch. A registered Git worktree at the
+   deterministic sibling `../<repo>-task-<task-id>` is the default; an existing
+   clean clone or worktree already dedicated to the branch is acceptable. A
+   shared primary checkout is not an implementation directory. Every edit,
+   build, test, commit, and push occurs in the resolved task checkout, and the
+   primary checkout's branch and files remain untouched.
+2. **`conveyor checkout` is the shared safe resolver.** The command is usable by
+   coding agents and humans before or after the first push, retains `--path`,
+   and emits the resolved path as stable success output. It first inspects the
+   repository root, primary and current checkout safety, current branch,
+   registered worktrees, and assigned branch/base. A clean registered worktree
+   already owning the branch is reused exactly, including across repeated calls
+   and redirects; otherwise the deterministic path is created. Dirty unrelated
+   work, an in-progress Git operation, detached or ambiguous state, a conflicting
+   path or worktree, and a dirty task checkout block the operation.
+3. **Branch creation preserves history.** Before creating a worktree, the helper
+   fetches and verifies `origin/<base>`. An existing unclaimed local task branch
+   is added without reset; an existing remote task branch is fetched and tracked;
+   a missing task branch is created from the freshly fetched base as part of
+   `git worktree add -b`. Ancestry-safe remote-ahead state may fast-forward
+   normally and local-ahead commits are preserved. Divergence blocks. The helper
+   never uses `worktree add -B`, `switch -C`, `checkout -B`, reset, rebase,
+   automatic stash, forced ref updates, or an equivalent history-rewriting path.
+4. **Worktree continuity spans the review loop.** The resolved worktree remains
+   authoritative through `changes_requested` rounds and human redirects. A warm
+   implementation session claims the successor work order before editing,
+   returns to the same path, commits and pushes feedback there, and resubmits the
+   existing PR. Independent review uses the pushed PR diff or a separate
+   read-only/detached checkout; it never shares or mutates the implementation
+   worktree.
+5. **Cleanup follows terminal task state.** `conveyor done <task-id>` removes a
+   task worktree only after the task is merged or closed and only when the
+   worktree is clean. It does not redispatch, mutate the primary checkout, or
+   automatically delete an unmerged branch. Cleanup retains the task branch,
+   reports worktree/branch disposition, and is idempotent when the directory or
+   registration is already gone. Missing on-disk directories with stale Git
+   registrations are removed through Git's normal worktree cleanup.
+6. **Operator guidance and UI use the same contract.** The repository-owned
+   Conveyor skill prefers `conveyor checkout` immediately after
+   `get_work_order`, uses equivalent non-resetting Git worktree operations only
+   when the CLI is unavailable, persists the returned path across review rounds,
+   and documents review isolation and terminal cleanup. The task UI exposes the
+   command without treating a pushed PR as a prerequisite.
+7. **Scope remains single-repository and governance remains deferred.** This
+   amendment does not restore the retired runner/adapter plane or implement
+   Phase 8 multi-repository worktree sets. An audited `update_task`,
+   `add_task_context`, or post-creation spec-amendment operation is a future
+   intake/governance consideration and is not introduced here.
+
+---
+
+*End of specification. v1.8 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), and dedicated local task worktrees made the safe default (§21.8). Subsequent changes proceed by amendment with version bumps.*

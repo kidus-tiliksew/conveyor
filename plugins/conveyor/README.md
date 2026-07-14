@@ -43,8 +43,12 @@ the assigned branch.
 
 The task's branch field is an assigned canonical name, not proof that a Git ref
 already exists. After claiming and reading the work order, the implementation
-agent safely creates or adopts that exact branch in its own checkout and pushes
-it before review. Humans use `conveyor checkout <task-id>` only after that push.
+agent runs `conveyor checkout <task-id>` and uses the returned dedicated
+worktree path for every edit, test, commit, and push. The helper safely reuses
+existing task history or creates the missing branch from the freshly fetched
+base without switching the primary checkout. The same path is reused across
+review bounces. Humans use the same helper, and `conveyor done <task-id>` only
+removes a clean worktree after the task merges or closes.
 
 ## Update
 
