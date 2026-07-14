@@ -17,6 +17,7 @@ import (
 type Store interface {
 	CreateTask(ctx context.Context, t core.Task) error
 	GetTask(ctx context.Context, id string) (core.Task, error)
+	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
 	UpdateTaskState(ctx context.Context, id string, s core.TaskState) error
 	SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error
@@ -372,6 +373,17 @@ func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
 		return core.Task{}, fmt.Errorf("task %s not found", id)
 	}
 	return t, nil
+}
+
+func (m *memory) GetTaskByIntakeKey(_ context.Context, key string) (core.Task, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, task := range m.tasks {
+		if key != "" && task.IntakeKey == key {
+			return task, true, nil
+		}
+	}
+	return core.Task{}, false, nil
 }
 
 func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {

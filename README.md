@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.4. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.5. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -15,10 +15,10 @@ Phase 4.7's implementation is complete. The code now provides:
 - in-process triage and spec stages through the OpenAI Responses API, with
   existing schema validators, redacted transcripts, usage metering, stage
   timeouts, and budget gates;
-- an authenticated MCP work-order server for implementation and review,
-  including leases, self-review prevention, progress/usage/transcript
-  reporting, synchronous or MCP review, and the in-session `await_review`
-  loop;
+- an authenticated MCP server with idempotent `create_task` intake plus
+  implementation/review work orders, including leases, self-review
+  prevention, progress/usage/transcript reporting, synchronous or MCP
+  review, and the in-session `await_review` loop;
 - content-addressed artifacts and a hierarchical requirements tree linking
   features, tasks, approved specs, pull requests, and events;
 - the embedded activity/review UI, requirements UI, slim workspace config,
@@ -55,6 +55,14 @@ bin/conveyor task new 'fix the typo in README' --repo api --level L2
 bin/conveyor task list
 bin/conveyor config export > workspace.yaml
 ```
+
+MCP clients can submit newly discovered work through `create_task`. Required
+arguments are `title`, `repo`, and a caller-stable `idempotency_key`; optional
+arguments are `body`, `source`, `base_branch`, and `level` (default `L2`). The
+tool durably creates and enqueues the normal task, returns immediately, and
+reuses the original task when the same key and input are retried. Luna triage
+then advances through the same audited pipeline used by UI, CLI, API, and
+GitHub intake.
 
 Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
 Each review must use a fresh agent session and client token; Conveyor rejects

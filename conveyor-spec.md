@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.4**
+**Specification — v1.5**
 **Date:** July 14, 2026
-**Status:** Accepted — MCP execution pivot amendment applied (§21.4)
+**Status:** Accepted — MCP task-intake amendment applied (§21.5)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -647,6 +647,24 @@ The user never builds or configures an agent; platform defaults are live on depl
 
 REST + SSE mirroring the CLI: task CRUD, job log streaming, review actions, runner registration, webhook ingestion (GitHub, Slack, error trackers), and workspace configuration read/write (§21.3). All mutating endpoints require auth and are recorded in `events`.
 
+### 17.4 MCP task intake and work orders
+
+`conveyord` exposes one authenticated MCP server for agent-facing intake and
+execution. `create_task` accepts a title, repository, optional task context and
+escalation level, plus a required workspace-scoped idempotency key. It creates
+the same durable task as HTTP/CLI intake, queues its existing triage stage, and
+returns immediately; retries with the same key and input return the original
+task, while reuse for different input is rejected. Triage remains the
+server-owned in-process stage — MCP intake is not a second triage
+implementation (§21.5).
+
+Implementation and review use the leased work-order lifecycle defined by
+§21.4: `list_work_orders`, `claim_work_order`, `get_work_order`,
+`report_progress`, `report_usage`, `upload_transcript`, `submit_for_review`,
+`await_review`, and `submit_review_verdict`. The MCP bearer is authenticated as
+an agent actor; every resulting task, event, claim, report, and verdict follows
+the same durable audit path as the corresponding HTTP or pipeline action.
+
 ---
 
 ## 18. Security summary
@@ -681,7 +699,7 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **3** | Full pipeline: multi-stage orchestration with per-stage gates and bounded bounces; triage, spec, and code-review agents; spec format machinery (§4.1) with versioned, approved specs as the implementation contract; role prompts and tool policies as versioned files (proto-pack, §2.2); per-repo sandbox images (including a Go-toolchain image so Conveyor can build itself); PR review comments → redirect feedback (§9); per-job budget circuit breaker and job timeouts (§14.1) | The full pipeline runs |
 | **4** *(complete)* | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place; app shell with home/workspace/settings surfaces, task intake, and a read-only workspace snapshot | The factory is operable from one screen |
 | **4.5** *(complete)* | Dynamic workspace configuration (§21.3): workspace config moves to Postgres as source of truth with the deployment file as bootstrap seed; authenticated, validated config read/write API with optimistic concurrency and `config.updated` audit events; hot reload of routing, repos, budgets, and bounce limits without a control-plane restart; Workspace UI becomes editable for stage routing, workspace basics, and repos & environments (tool policy, images, secret *references*) | The factory is steerable from its own control surface |
-| **4.7** | MCP execution pivot (§21.4): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; implementation *and code review* delegate to the operator's own agents over a new MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
+| **4.7** | MCP execution pivot (§21.4–§21.5): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; agent-discovered work enters through idempotent MCP task intake; implementation *and code review* delegate to the operator's own agents over the MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
 | **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) *(shim approval cards and environment inference retired with the sandbox lane, §21.4; monitor agent stays)* | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
 | **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
@@ -694,7 +712,8 @@ its exit criterion, and the deferral rationale. Phase 4.5 is inserted by §21.3,
 which moves workspace configuration into the control plane. Phase 4.7 is
 inserted by §21.4, which retires the sandbox execution plane in favor of the
 MCP work-order model and re-gates Beta entry on it; §21.4 also amends the
-Phase 5 and Phase 8 rows.
+Phase 5 and Phase 8 rows. §21.5 extends that same MCP surface with durable,
+idempotent task intake without changing the Beta gate.
 
 **Beta exit criterion (§21.4):** five consecutive real tasks on the Conveyor
 repository shipped through the full pipeline — issue → triage → approved spec
@@ -1018,4 +1037,32 @@ and gates Beta entry. Nine changes; all other v1.3 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.4 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4). Subsequent changes proceed by amendment with version bumps.*
+### 21.5 v1.5 — MCP task intake (July 14, 2026)
+
+v1.4 exposed MCP only after a task had passed triage and its spec gate. That
+left agent-discovered issues dependent on a separate UI, CLI, or REST client
+before the agent could hand work to the factory. The MCP surface now accepts
+intake while preserving one orchestration path. Four changes; all other v1.4
+decisions remain unchanged:
+
+1. **`create_task` is the MCP intake operation.** It accepts `title`, `body`,
+   `repo`, `base_branch`, `source`, and `level` using the same defaults and
+   validation as normal task creation. It creates a standard queued task with
+   the normal generated branch and initial triage stage; it does not return an
+   ad hoc triage answer.
+2. **Idempotency is durable and workspace-scoped.** Every call requires an
+   `idempotency_key`, persisted under a uniqueness constraint. Retrying the
+   same input with the same key returns the original task and does not enqueue
+   triage again. Reusing a key for different task input fails closed.
+3. **The existing pipeline remains authoritative.** The call returns as soon
+   as task creation and enqueue commit. River then dispatches the configured
+   in-process triage stage, including its schema validation, exact usage,
+   timeout, budget, transcript-redaction, bounce, and audit behavior.
+4. **MCP intake uses agent identity and the existing bearer boundary.** The
+   `task.created` event records the authenticated MCP actor. Repository and
+   escalation validation are identical to HTTP intake; this amendment grants
+   no additional execution or repository capability.
+
+---
+
+*End of specification. v1.5 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), and durable MCP task intake added without a parallel triage path (§21.5). Subsequent changes proceed by amendment with version bumps.*

@@ -19,9 +19,10 @@ type Artifact struct {
 }
 
 type ArtifactLink struct {
-	ArtifactID string      `json:"artifact_id"`
-	TaskID     pgtype.Text `json:"task_id"`
-	FeatureID  pgtype.Text `json:"feature_id"`
+	WorkspaceID string      `json:"workspace_id"`
+	ArtifactID  string      `json:"artifact_id"`
+	TaskID      pgtype.Text `json:"task_id"`
+	FeatureID   pgtype.Text `json:"feature_id"`
 }
 
 type Event struct {
@@ -105,6 +106,7 @@ type Task struct {
 	NextStage       string             `json:"next_stage"`
 	RecoveryStage   string             `json:"recovery_stage"`
 	FeatureID       pgtype.Text        `json:"feature_id"`
+	IntakeKey       pgtype.Text        `json:"intake_key"`
 }
 
 type TaskSpec struct {

@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.4, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.5, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -20,7 +20,7 @@ with a version bump (§21), never silent edits.
 ## Phase discipline
 
 Phases 1–2 are complete and validated. The roadmap was re-phased for the
-Beta milestone (spec §19 v1.4, rationale in §21.2–§21.4; working breakdown
+Beta milestone (spec §19 v1.5, rationale in §21.2–§21.5; working breakdown
 in [docs/beta-plan.md](docs/beta-plan.md)). Note §21.4 retires the sandbox
 execution plane — Phase 1–3 execution contracts (runner, adapters,
 credential pool, shim, images) are superseded, not preserved. Pre-Beta is
@@ -42,7 +42,8 @@ exactly four phases:
   operator-owned agents via the MCP work-order server (stage-typed work
   orders, self-review forbidden at claim time, in-session review loop via
   `await_review`, in-process review as fallback); requirements tree UI for
-  the spec corpus; artifacts →
+  the spec corpus; artifacts; idempotent MCP `create_task` intake that
+  enqueues the existing triage pipeline (§21.5) →
   **Beta: Conveyor develops Conveyor**.
 
 Do NOT build post-Beta or deferred surfaces:

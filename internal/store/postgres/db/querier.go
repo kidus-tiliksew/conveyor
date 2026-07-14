@@ -15,6 +15,7 @@ type Querier interface {
 	GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job, error)
 	GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error)
 	GetTask(ctx context.Context, arg GetTaskParams) (Task, error)
+	GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKeyParams) (Task, error)
 	GetTranscript(ctx context.Context, arg GetTranscriptParams) (Transcript, error)
 	GetWorkspaceConfig(ctx context.Context, id string) (Workspace, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)

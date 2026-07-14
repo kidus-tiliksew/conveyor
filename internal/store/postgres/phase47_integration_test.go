@@ -36,9 +36,19 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err = st.CreateFeature(ctx, feature); err != nil {
 		t.Fatal(err)
 	}
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "api", Title: "Audit export", Source: "test", BaseBranch: "main", Branch: "conveyor/integration", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "api", Title: "Audit export", Source: "test", IntakeKey: "issue-42", BaseBranch: "main", Branch: "conveyor/integration-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
+	}
+	if found, ok, getErr := st.GetTaskByIntakeKey(ctx, "issue-42"); getErr != nil || !ok || found.ID != task.ID {
+		t.Fatalf("idempotent task=%+v ok=%t err=%v", found, ok, getErr)
+	}
+	duplicate := task
+	duplicate.ID = core.NewTaskID()
+	duplicate.Branch = task.Branch + "-duplicate"
+	if err = st.CreateTask(ctx, duplicate); err == nil {
+		t.Fatal("duplicate workspace intake key succeeded")
 	}
 	if err = st.AssignTaskFeature(ctx, task.ID, feature.ID); err != nil {
 		t.Fatal(err)

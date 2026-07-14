@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.4, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.5, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -26,3 +26,6 @@ multi-stage pipeline described by spec §19 and
 [docs/beta-plan.md](docs/beta-plan.md). Do not build post-Beta work without
 explicit activation. K8sRunner, multi-repo worktree sets, verification, and
 the aggregate cost dashboard remain demand-triggered Phase 8 scope.
+MCP task intake is part of the accepted Phase 4.7 surface (§21.5): it must
+create the normal durable task and enqueue existing triage, never bypass the
+pipeline with a second ad hoc triage implementation.

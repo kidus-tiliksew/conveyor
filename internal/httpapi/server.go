@@ -16,7 +16,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -240,68 +239,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Title == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
+	result, err := s.createTaskRecord(r.Context(), req, "", "api")
+	if err != nil {
+		http.Error(w, err.Error(), taskCreateStatus(err))
 		return
 	}
-	repos := s.Repos
-	workspace := s.Workspace
-	var current *config.Config
-	if s.ConfigProvider != nil {
-		var err error
-		current, err = s.ConfigProvider(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		repos = current.RepoNames()
-		workspace = current.Workspace
-	}
-	if repos != nil && !contains(repos, req.Repo) {
-		http.Error(w, "unknown repo "+req.Repo, http.StatusBadRequest)
-		return
-	}
-	if req.BaseBranch == "" {
-		req.BaseBranch = "main"
-		if current != nil {
-			if repo, ok := current.Repo(req.Repo); ok {
-				req.BaseBranch = repo.Base
-			}
-		}
-	}
-	if req.Source == "" {
-		req.Source = "api"
-	}
-	if req.Level == "" {
-		req.Level = core.L2
-	}
-	if req.Level != core.L0 && req.Level != core.L1 && req.Level != core.L2 && req.Level != core.L3 {
-		http.Error(w, "level must be L0, L1, L2, or L3", http.StatusBadRequest)
-		return
-	}
-	id := core.NewTaskID()
-	t := core.Task{
-		ID:         id,
-		Workspace:  workspace,
-		Source:     req.Source,
-		Title:      req.Title,
-		Body:       req.Body,
-		Level:      req.Level,
-		Repo:       req.Repo,
-		BaseBranch: req.BaseBranch,
-		Branch:     gitx.BranchName(id),
-		State:      core.TaskQueued,
-		NextStage:  core.InitialStage(req.Level),
-		CreatedAt:  time.Now(),
-	}
-	if err := s.Store.CreateTask(r.Context(), t); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	if s.OnCreate != nil {
-		s.OnCreate(id)
-	}
-	writeJSON(w, http.StatusCreated, t)
+	writeJSON(w, http.StatusCreated, result.Task)
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {

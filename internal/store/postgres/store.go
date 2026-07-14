@@ -256,6 +256,17 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 	return taskFromDB(task), nil
 }
 
+func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
+	task, err := s.queries.GetTaskByIntakeKey(ctx, db.GetTaskByIntakeKeyParams{WorkspaceID: s.workspace, IntakeKey: nullableText(key)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.Task{}, false, nil
+	}
+	if err != nil {
+		return core.Task{}, false, err
+	}
+	return taskFromDB(task), true, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	rows, err := s.queries.ListTasks(ctx, s.workspace)
 	if err != nil {
@@ -1016,13 +1027,13 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
-		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), CreatedAt: timestamp(task.CreatedAt),
+		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
 	}
 }
 
 func taskFromDB(task db.Task) core.Task {
 	return core.Task{
-		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source,
+		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,

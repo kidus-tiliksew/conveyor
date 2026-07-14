@@ -1,7 +1,7 @@
 # Beta plan: phases 3–4.7
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.4),
-restructured by §21.2 and extended by §21.3–§21.4. This document is the
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.5),
+restructured by §21.2 and extended by §21.3–§21.5. This document is the
 working breakdown: what each pre-Beta phase contains, its dependencies, and
 its exit criterion. Phases 1–2 are complete and validated; nothing here
 reopens them.
@@ -158,8 +158,11 @@ context files become first-class. Suggested order:
    feeding the §14.1 breaker, §4.1 output validators unchanged, full
    transcripts persisted through the §10.3 redaction path. This lands
    *before* the demolition so the pipeline never stops working.
-2. **MCP work-order server (§17.4).** Stage-typed work orders (implement,
-   review). Lifecycle tools: `list_work_orders`, `claim_work_order`
+2. **MCP intake and work-order server (§17.4).** `create_task` accepts
+   agent-discovered work with a required workspace-scoped idempotency key,
+   creates the normal durable task, and enqueues existing triage without a
+   parallel triage path (§21.5). Stage-typed work orders cover implement and
+   review. Lifecycle tools: `list_work_orders`, `claim_work_order`
    (leases; expiry returns the claim to queue; a review order for task T
    is unclaimable by the token/session that claimed T's implement order),
    `get_work_order` (implement: approved spec, branch, base, bounce
@@ -206,8 +209,9 @@ with the full lifecycle audited and the self-review guard verified (the
 implementing session cannot claim the review order). Beta entry follows:
 five consecutive such tasks per the §19 criterion.
 
-**Implementation status (July 14, 2026): complete.** The Phase 4.7 code and
-operator surfaces are implemented and repository validation passes. The live
+**Implementation status (July 14, 2026): complete.** The Phase 4.7 code,
+including the v1.5 MCP task-intake amendment, and operator surfaces are
+implemented and repository validation passes. The live
 dogfood exit flow and subsequent five-task Beta proof above are still pending;
 they must be recorded from real MCP sessions and are not inferred from tests.
 

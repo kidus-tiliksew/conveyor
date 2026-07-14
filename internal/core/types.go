@@ -73,6 +73,7 @@ type Task struct {
 	ID            string          `json:"id"`
 	Workspace     string          `json:"workspace"`
 	Source        string          `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
+	IntakeKey     string          `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
 	Title         string          `json:"title"`
 	Body          string          `json:"body"`  // free-form description; becomes part of the prompt
 	Class         string          `json:"class"` // bug | feature | chore

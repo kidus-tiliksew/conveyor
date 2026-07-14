@@ -27,15 +27,18 @@ SET url = EXCLUDED.url,
 -- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13, $14, $15, $16
+    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
 RETURNING *;
 
 -- name: GetTask :one
 SELECT * FROM tasks WHERE id = $1 AND workspace_id = $2;
+
+-- name: GetTaskByIntakeKey :one
+SELECT * FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
 
 -- name: ListTasks :many
 SELECT * FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id;

@@ -170,7 +170,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -199,6 +199,42 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.NextStage,
 		&i.RecoveryStage,
 		&i.FeatureID,
+		&i.IntakeKey,
+	)
+	return i, err
+}
+
+const getTaskByIntakeKey = `-- name: GetTaskByIntakeKey :one
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key FROM tasks WHERE workspace_id = $1 AND intake_key = $2
+`
+
+type GetTaskByIntakeKeyParams struct {
+	WorkspaceID string      `json:"workspace_id"`
+	IntakeKey   pgtype.Text `json:"intake_key"`
+}
+
+func (q *Queries) GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKeyParams) (Task, error) {
+	row := q.db.QueryRow(ctx, getTaskByIntakeKey, arg.WorkspaceID, arg.IntakeKey)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Source,
+		&i.Title,
+		&i.Body,
+		&i.Class,
+		&i.EscalationLevel,
+		&i.RepoName,
+		&i.BaseBranch,
+		&i.Branch,
+		&i.State,
+		&i.ParentTaskID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NextStage,
+		&i.RecoveryStage,
+		&i.FeatureID,
+		&i.IntakeKey,
 	)
 	return i, err
 }
@@ -462,12 +498,12 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 const insertTask = `-- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13, $14, $15, $16
+    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key
 `
 
 type InsertTaskParams struct {
@@ -486,6 +522,7 @@ type InsertTaskParams struct {
 	RecoveryStage   string             `json:"recovery_stage"`
 	ParentTaskID    string             `json:"parent_task_id"`
 	FeatureID       pgtype.Text        `json:"feature_id"`
+	IntakeKey       pgtype.Text        `json:"intake_key"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
@@ -506,6 +543,7 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.RecoveryStage,
 		arg.ParentTaskID,
 		arg.FeatureID,
+		arg.IntakeKey,
 		arg.CreatedAt,
 	)
 	var i Task
@@ -527,6 +565,7 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.NextStage,
 		&i.RecoveryStage,
 		&i.FeatureID,
+		&i.IntakeKey,
 	)
 	return i, err
 }
@@ -820,7 +859,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, error) {
@@ -850,6 +889,7 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, er
 			&i.NextStage,
 			&i.RecoveryStage,
 			&i.FeatureID,
+			&i.IntakeKey,
 		); err != nil {
 			return nil, err
 		}
@@ -952,7 +992,7 @@ UPDATE tasks
 SET class = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key
 `
 
 type UpdateTaskClassificationParams struct {
@@ -982,6 +1022,7 @@ func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskCl
 		&i.NextStage,
 		&i.RecoveryStage,
 		&i.FeatureID,
+		&i.IntakeKey,
 	)
 	return i, err
 }
@@ -991,7 +1032,7 @@ UPDATE tasks
 SET state = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key
 `
 
 type UpdateTaskStateParams struct {
@@ -1021,6 +1062,7 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.NextStage,
 		&i.RecoveryStage,
 		&i.FeatureID,
+		&i.IntakeKey,
 	)
 	return i, err
 }
@@ -1033,7 +1075,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $4
   AND workspace_id = $5
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key
 `
 
 type UpdateTaskTransitionParams struct {
@@ -1071,6 +1113,7 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		&i.NextStage,
 		&i.RecoveryStage,
 		&i.FeatureID,
+		&i.IntakeKey,
 	)
 	return i, err
 }

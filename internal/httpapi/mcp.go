@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -43,7 +44,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	response := rpcResponse{JSONRPC: "2.0", ID: request.ID}
 	switch request.Method {
 	case "initialize":
-		response.Result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "conveyor", "version": "phase-4.7"}}
+		response.Result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "conveyor", "version": "phase-4.7-v1.5"}}
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -79,11 +80,29 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 }
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
+	stringArg := func(key string) string { value, _ := args[key].(string); return value }
+	session := stringArg("session_id")
+	switch name {
+	case "create_task":
+		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
+			return nil, fmt.Errorf("idempotency_key is required")
+		}
+		result, err := s.createTaskRecord(r.Context(), createTaskReq{
+			Title:      stringArg("title"),
+			Body:       stringArg("body"),
+			Repo:       stringArg("repo"),
+			BaseBranch: stringArg("base_branch"),
+			Source:     stringArg("source"),
+			Level:      core.EscalationLevel(stringArg("level")),
+		}, stringArg("idempotency_key"), "mcp")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"task": result.Task, "created": result.Created}, nil
+	}
 	if s.WorkOrders == nil {
 		return nil, fmt.Errorf("work-order service unavailable")
 	}
-	stringArg := func(key string) string { value, _ := args[key].(string); return value }
-	session := stringArg("session_id")
 	switch name {
 	case "list_work_orders":
 		return s.WorkOrders.List(r.Context())
@@ -154,6 +173,7 @@ func mcpTools() []map[string]any {
 	num := map[string]string{"type": "number"}
 	identity := map[string]any{"work_order_id": str, "session_id": str}
 	return []map[string]any{
+		{"name": "create_task", "description": "Create one durable task and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"title": str, "body": str, "repo": str, "base_branch": str, "source": str, "level": map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
 		{"name": "list_work_orders", "description": "List queued or currently claimed implement and review work orders.", "inputSchema": object(map[string]any{})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
