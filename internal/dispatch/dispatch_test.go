@@ -15,17 +15,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-type publicationFlakyStore struct {
+type reviewAcceptanceFlakyStore struct {
 	store.Store
 	failures int
 }
 
-func (st *publicationFlakyStore) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--
-		return errors.New("github publication queue unavailable")
+		return errors.New("review acceptance unavailable")
 	}
-	return st.Store.QueueReviewPublication(ctx, publication)
+	return st.Store.AcceptReviewDecision(ctx, decision)
 }
 
 type sequenceAgent struct {
@@ -201,7 +201,7 @@ func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 	}
 }
 
-func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T) {
+func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := store.NewMemory()
@@ -213,16 +213,22 @@ func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T)
 	if err := base.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	flaky := &publicationFlakyStore{Store: base, failures: 1}
+	flaky := &reviewAcceptanceFlakyStore{Store: base, failures: 1}
 	d := New(flaky, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	d.UseDurableQueue()
 	err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review")
-	if err == nil || !strings.Contains(err.Error(), "publication queue unavailable") {
+	if err == nil || !strings.Contains(err.Error(), "review acceptance unavailable") {
 		t.Fatalf("error = %v", err)
 	}
 	updated, getErr := base.GetTask(ctx, task.ID)
-	if getErr != nil || updated.State != core.TaskApproved {
+	if getErr != nil || updated.State != core.TaskRunning {
 		t.Fatalf("task=%+v err=%v", updated, getErr)
+	}
+	events, _ := base.ListEvents(ctx, task.ID)
+	for _, event := range events {
+		if event.Kind == "review.completed" || event.Kind == "review.publication_queued" {
+			t.Fatalf("partial review acceptance event persisted: %s", event.Kind)
+		}
 	}
 	if err = d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
 		t.Fatalf("recovery retry failed: %v", err)
@@ -231,7 +237,7 @@ func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T)
 	if err != nil || publication.State != core.ReviewPublicationQueued {
 		t.Fatalf("publication=%+v err=%v", publication, err)
 	}
-	events, _ := base.ListEvents(ctx, task.ID)
+	events, _ = base.ListEvents(ctx, task.ID)
 	completed := 0
 	for _, event := range events {
 		if event.Kind == "review.completed" {
@@ -240,6 +246,73 @@ func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T)
 	}
 	if completed != 1 {
 		t.Fatalf("review.completed events = %d, want 1", completed)
+	}
+}
+
+func TestReviewForRepoWithoutGitHubDoesNotCreateOrReconcilePublication(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "non-github-review", Workspace: "test", Repo: "local", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "non-github-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "local", URL: "file:///tmp/local"}}}, nil)
+	d.UseDurableQueue()
+	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetReviewPublication(ctx, job.ID); err == nil {
+		t.Fatal("non-GitHub repository created review publication")
+	}
+	if repaired, err := st.ReconcileReviewPublications(ctx); err != nil || repaired != 0 {
+		t.Fatalf("non-GitHub reconciliation=%d err=%v", repaired, err)
+	}
+	if _, err := st.GetReviewPublication(ctx, job.ID); err == nil {
+		t.Fatal("non-GitHub review was reconciled into publication")
+	}
+}
+
+func TestExistingUnacceptedReviewEventRepairsRouting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "partial-review", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "partial-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{
+		"review_work_order_id": job.ID, "verdict": "changes_requested", "publication_eligible": true,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	d.UseDurableQueue()
+	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "retry", Feedback: "fix it"}, job.ID, "review-session", "review"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+		t.Fatalf("repaired task=%+v err=%v", current, err)
+	}
+	events, _ := st.ListEvents(ctx, task.ID)
+	counts := map[string]int{}
+	for _, event := range events {
+		counts[event.Kind]++
+	}
+	if counts["review.completed"] != 1 || counts["pipeline.bounced"] != 1 || counts["review.accepted"] != 1 {
+		t.Fatalf("recovery event counts=%v", counts)
+	}
+	if publication, getErr := st.GetReviewPublication(ctx, job.ID); getErr != nil || publication.State != core.ReviewPublicationQueued {
+		t.Fatalf("repaired publication=%+v err=%v", publication, getErr)
 	}
 }
 

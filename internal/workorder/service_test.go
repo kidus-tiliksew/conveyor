@@ -19,17 +19,17 @@ import (
 
 type staticAgent struct{ output string }
 
-type flakyPublicationStore struct {
+type flakyReviewAcceptanceStore struct {
 	store.Store
 	failures int
 }
 
-func (st *flakyPublicationStore) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+func (st *flakyReviewAcceptanceStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--
-		return errors.New("publication queue unavailable")
+		return errors.New("review acceptance unavailable")
 	}
-	return st.Store.QueueReviewPublication(ctx, publication)
+	return st.Store.AcceptReviewDecision(ctx, decision)
 }
 
 func (agent staticAgent) Run(context.Context, string, string) (inprocess.Result, error) {
@@ -213,7 +213,7 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 	}
 }
 
-func TestSubmitVerdictQueueFailureRemainsRetryable(t *testing.T) {
+func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := store.NewMemory()
@@ -231,21 +231,24 @@ func TestSubmitVerdictQueueFailureRemainsRetryable(t *testing.T) {
 	if _, err := base.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	flaky := &flakyPublicationStore{Store: base, failures: 1}
+	flaky := &flakyReviewAcceptanceStore{Store: base, failures: 1}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
 	dispatcher := dispatch.New(flaky, cfg, nil)
 	dispatcher.UseDurableQueue()
 	service := &Service{Store: flaky, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}
-	if _, err := service.SubmitVerdict(ctx, job.ID, "review-session", review); err == nil || !strings.Contains(err.Error(), "publication queue unavailable") {
+	if _, err := service.SubmitVerdict(ctx, job.ID, "review-session", review); err == nil || !strings.Contains(err.Error(), "review acceptance unavailable") {
 		t.Fatalf("first verdict error = %v", err)
 	}
 	order, err := base.GetWorkOrder(ctx, job.ID)
 	if err != nil || order.State != core.WorkOrderClaimed {
 		t.Fatalf("order after failed queue=%+v err=%v", order, err)
 	}
-	if repaired, reconcileErr := base.ReconcileReviewPublications(ctx); reconcileErr != nil || repaired != 1 {
-		t.Fatalf("reconciled=%d err=%v", repaired, reconcileErr)
+	events, _ := base.ListEvents(ctx, task.ID)
+	for _, event := range events {
+		if event.Kind == "review.completed" || event.Kind == "review.publication_queued" {
+			t.Fatalf("partial review acceptance event persisted: %s", event.Kind)
+		}
 	}
 	if _, err = service.SubmitVerdict(ctx, job.ID, "review-session", review); err != nil {
 		t.Fatalf("retry verdict: %v", err)

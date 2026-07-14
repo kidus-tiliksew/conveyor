@@ -328,64 +328,26 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if model != "" && implementModel != "" {
 		same = fmt.Sprintf("%t", model == implementModel)
 	}
-	payload := map[string]any{"review_work_order_id": reviewWorkOrderID, "verdict": result.Verdict, "reason_code": result.ReasonCode, "summary": result.Summary, "feedback": result.Feedback, "reviewed_commit_sha": reviewedCommitSHA, "reviewer_session": "distinct", "reviewer_model": model, "same_model_as_implementer": same, "reviewer": reviewer}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "review.completed" {
-			continue
-		}
-		var prior struct {
-			ReviewWorkOrderID      string `json:"review_work_order_id"`
-			Verdict                string `json:"verdict"`
-			ReasonCode             string `json:"reason_code"`
-			Summary                string `json:"summary"`
-			Feedback               string `json:"feedback"`
-			ReviewedCommitSHA      string `json:"reviewed_commit_sha"`
-			ReviewerModel          string `json:"reviewer_model"`
-			ReviewerSession        string `json:"reviewer_session"`
-			SameModelAsImplementer string `json:"same_model_as_implementer"`
-		}
-		if json.Unmarshal(events[i].Payload, &prior) == nil && prior.ReviewWorkOrderID == reviewWorkOrderID {
-			return d.queueReviewPublication(ctx, cfg, task, core.ReviewPublication{
-				ReviewWorkOrderID: prior.ReviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
-				Verdict: prior.Verdict, ReasonCode: prior.ReasonCode, Summary: prior.Summary,
-				Feedback: prior.Feedback, ReviewedCommitSHA: prior.ReviewedCommitSHA,
-				ReviewerModel: prior.ReviewerModel, ReviewerSession: prior.ReviewerSession,
-				SameModelAsImplementer: prior.SameModelAsImplementer,
-			})
-		}
-	}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(payload)}); err != nil {
+	repo, publicationEligible := cfg.Repo(task.Repo)
+	publicationEligible = publicationEligible && repo.GitHub != ""
+	if err := d.Store.AcceptReviewDecision(ctx, core.ReviewDecision{
+		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
+		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
+		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
+		Level: task.Level, MaxBounces: cfg.MaxBounces,
+	}); err != nil {
 		return err
 	}
-	var transitionErr error
-	if result.Verdict == "changes_requested" {
-		actorCtx := store.WithActor(ctx, store.Actor{ID: "review:" + session, Role: core.ActorAgent})
-		if err := d.Store.CreateIntervention(actorCtx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
-			return err
-		}
-		transitionErr = d.bounce(ctx, cfg, task.ID, job.ID, result.ReasonCode, result.Feedback)
-	} else if task.Level == core.L0 {
-		transitionErr = d.transition(ctx, task.ID, core.TaskApproved, "", "")
-	} else {
-		transitionErr = d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return err
 	}
-	if transitionErr != nil {
-		return transitionErr
+	if current.State == core.TaskQueued {
+		d.Enqueue(task.ID)
 	}
-	return d.queueReviewPublication(ctx, cfg, task, core.ReviewPublication{
-		ReviewWorkOrderID: reviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
-		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
-		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, ReviewerModel: model,
-		ReviewerSession: "distinct", SameModelAsImplementer: same,
-	})
-}
-
-func (d *Dispatcher) queueReviewPublication(ctx context.Context, cfg *config.Config, task core.Task, publication core.ReviewPublication) error {
-	if repo, ok := cfg.Repo(task.Repo); !ok || repo.GitHub == "" {
-		return nil
-	}
-	publication.State = core.ReviewPublicationQueued
-	return d.Store.QueueReviewPublication(ctx, publication)
+	return nil
 }
 
 func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {

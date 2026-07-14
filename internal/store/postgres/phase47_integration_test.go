@@ -105,7 +105,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: inProcessJob.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{
 		"review_work_order_id": inProcessJob.ID, "verdict": "approve", "reason_code": "approved",
 		"summary": "in-process passes", "reviewer_model": "reviewer", "reviewer_session": "distinct",
-		"same_model_as_implementer": "false",
+		"same_model_as_implementer": "false", "publication_eligible": true,
 	})}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +114,49 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}
 	if stored, getErr := st.GetReviewPublication(ctx, inProcessJob.ID); getErr != nil || stored.ReviewWorkOrderID != inProcessJob.ID {
 		t.Fatalf("in-process publication=%+v err=%v", stored, getErr)
+	}
+
+	atomicTaskID := core.NewTaskID()
+	atomicTask := core.Task{ID: atomicTaskID, Workspace: workspace, Repo: "api", Title: "Atomic review", Source: "test", Level: core.L0, BaseBranch: "main", Branch: "conveyor/atomic-" + atomicTaskID, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err = st.CreateTask(ctx, atomicTask); err != nil {
+		t.Fatal(err)
+	}
+	atomicJob := core.Job{ID: atomicTaskID + "-review", TaskID: atomicTaskID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer", StartedAt: time.Now()}
+	if err = st.CreateJob(ctx, atomicJob); err != nil {
+		t.Fatal(err)
+	}
+	decision := core.ReviewDecision{
+		TaskID: atomicTaskID, JobID: atomicJob.ID, ReviewWorkOrderID: atomicJob.ID,
+		Verdict: "invalid", ReasonCode: "approved", Summary: "passes",
+		Reviewer: "integration", ReviewerModel: "reviewer", ReviewerSession: "distinct",
+		SameModelAsImplementer: "false", PublicationEligible: true, Level: core.L0, MaxBounces: 2,
+	}
+	if err = st.AcceptReviewDecision(ctx, decision); err == nil {
+		t.Fatal("invalid publication verdict unexpectedly committed")
+	}
+	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 0 {
+		t.Fatalf("review.completed after rollback=%d err=%v", count, countErr)
+	}
+	if current, getErr := st.GetTask(ctx, atomicTaskID); getErr != nil || current.State != core.TaskRunning {
+		t.Fatalf("atomic task after rollback=%+v err=%v", current, getErr)
+	}
+	if _, getErr := st.GetReviewPublication(ctx, atomicJob.ID); getErr == nil {
+		t.Fatal("publication persisted despite transaction rollback")
+	}
+	decision.Verdict = "approve"
+	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+		t.Fatalf("idempotent retry: %v", err)
+	}
+	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 1 {
+		t.Fatalf("review.completed after retry=%d err=%v", count, countErr)
+	}
+	if current, getErr := st.GetTask(ctx, atomicTaskID); getErr != nil || current.State != core.TaskApproved {
+		t.Fatalf("atomic task after acceptance=%+v err=%v", current, getErr)
+	}
+	if stored, getErr := st.GetReviewPublication(ctx, atomicJob.ID); getErr != nil || stored.State != core.ReviewPublicationQueued {
+		t.Fatalf("atomic publication=%+v err=%v", stored, getErr)
 	}
 }

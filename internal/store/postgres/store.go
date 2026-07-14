@@ -825,6 +825,12 @@ reviewer_session, same_model_as_implementer, state, attempts, check_run_id,
 comment_id, last_error, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		return s.queueReviewPublicationTx(ctx, tx, q, publication)
+	})
+}
+
+func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Queries, publication core.ReviewPublication) error {
 	if publication.State == "" {
 		publication.State = core.ReviewPublicationQueued
 	}
@@ -832,36 +838,155 @@ func (s *Store) QueueReviewPublication(ctx context.Context, publication core.Rev
 		publication.CreatedAt = time.Now().UTC()
 	}
 	publication.UpdatedAt = publication.CreatedAt
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		command, err := tx.Exec(ctx, `INSERT INTO review_publications (
+	command, err := tx.Exec(ctx, `INSERT INTO review_publications (
 			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
 			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
 			same_model_as_implementer, state
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
-			s.workspace, publication.TaskID, publication.JobID, publication.Verdict,
-			publication.ReasonCode, publication.Summary, publication.Feedback,
-			publication.ReviewedCommitSHA, publication.ReviewerModel,
-			publication.ReviewerSession, publication.SameModelAsImplementer,
-			publication.State)
-		if err != nil {
+		s.workspace, publication.TaskID, publication.JobID, publication.Verdict,
+		publication.ReasonCode, publication.Summary, publication.Feedback,
+		publication.ReviewedCommitSHA, publication.ReviewerModel,
+		publication.ReviewerSession, publication.SameModelAsImplementer,
+		publication.State)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return nil
+	}
+	if err := insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)}); err != nil {
+		return err
+	}
+	_, err = s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{ReviewWorkOrderID: publication.ReviewWorkOrderID}, &river.InsertOpts{
+		MaxAttempts: 5,
+		Queue:       queueargs.ReviewPublicationQueue(s.workspace),
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
+		}},
+	})
+	return err
+}
+
+// AcceptReviewDecision commits the durable verdict, routing decision, and
+// eligible GitHub publication job as one transaction. A retry therefore sees
+// either the entire accepted decision or none of it.
+func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:review:"+s.workspace+":"+decision.ReviewWorkOrderID); err != nil {
 			return err
 		}
-		if command.RowsAffected() == 0 {
+		var completed, accepted bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+			WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='review.completed'
+				AND e.payload_json->>'review_work_order_id'=$3
+		), EXISTS (
+			SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+			WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='review.accepted'
+				AND e.payload_json->>'review_work_order_id'=$3
+		)`, s.workspace, decision.TaskID, decision.ReviewWorkOrderID).Scan(&completed, &accepted); err != nil {
+			return err
+		}
+		if accepted {
 			return nil
 		}
-		if err := insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)}); err != nil {
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: decision.TaskID, WorkspaceID: s.workspace})
+		if err != nil {
+			return notFound(err, "task %s", decision.TaskID)
+		}
+		job, err := q.GetJob(ctx, db.GetJobParams{ID: decision.JobID, WorkspaceID: s.workspace})
+		if err != nil || job.TaskID != decision.TaskID {
+			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, s.workspace)
+		}
+		if !completed {
+			if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
+				return err
+			}
+		}
+
+		state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
+		if decision.Verdict == "changes_requested" {
+			var interventionExists, bounceExists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+				WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.job_id=$3
+					AND e.kind='intervention.redirect' AND e.actor_id=$4
+			), EXISTS (
+				SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+				WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.job_id=$3
+					AND e.kind='pipeline.bounced'
+					AND (e.payload_json->>'review_work_order_id'=$5 OR e.job_id=$3)
+			)`, s.workspace, decision.TaskID, decision.JobID, decision.InterventionActorID, decision.ReviewWorkOrderID).Scan(&interventionExists, &bounceExists); err != nil {
+				return err
+			}
+			if !interventionExists {
+				now := time.Now().UTC()
+				intervention := core.Intervention{
+					TaskID: decision.TaskID, JobID: decision.JobID,
+					ActorID: decision.InterventionActorID, ActorRole: core.ActorAgent,
+					Action: core.InterventionRedirect, ReasonCode: decision.ReasonCode,
+					Comment: decision.Feedback, At: now,
+				}
+				if _, err := q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
+					return err
+				}
+				if err := insertEvent(ctx, q, core.Event{
+					TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect",
+					ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, At: now,
+					Payload: core.JSONPayload(map[string]any{"reason_code": decision.ReasonCode, "comment": decision.Feedback}),
+				}); err != nil {
+					return err
+				}
+			}
+			count, err := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: s.workspace})
+			if err != nil {
+				return err
+			}
+			if !bounceExists {
+				count++
+				if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{
+					"from": "review", "to": "implement", "reason_code": decision.ReasonCode,
+					"feedback": decision.Feedback, "count": count, "source": "mcp-review",
+					"review_work_order_id": decision.ReviewWorkOrderID,
+				})}); err != nil {
+					return err
+				}
+			}
+			if int(count) < decision.MaxBounces {
+				state, next, recovery = core.TaskQueued, core.StageImplement, ""
+			}
+		} else if decision.Level == core.L0 {
+			state, recovery = core.TaskApproved, ""
+		}
+
+		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
+			ID: decision.TaskID, WorkspaceID: s.workspace, State: string(state),
+			NextStage: string(next), RecoveryStage: string(recovery),
+		}); err != nil {
 			return err
 		}
-		_, err = s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{ReviewWorkOrderID: publication.ReviewWorkOrderID}, &river.InsertOpts{
-			MaxAttempts: 5,
-			Queue:       queueargs.ReviewPublicationQueue(s.workspace),
-			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-				rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-			}},
-		})
-		return err
+		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state})}); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
+			"from_stage": before.NextStage, "next_stage": next, "recovery_stage": recovery, "state": state,
+			"review_work_order_id": decision.ReviewWorkOrderID,
+		})}); err != nil {
+			return err
+		}
+		if state == core.TaskQueued {
+			if _, err := s.enqueueTaskTx(ctx, tx, decision.TaskID, before.WorkspaceID); err != nil {
+				return err
+			}
+		}
+		if decision.PublicationEligible {
+			if err := s.queueReviewPublicationTx(ctx, tx, q, reviewPublicationFromDecision(decision)); err != nil {
+				return err
+			}
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]string{"review_work_order_id": decision.ReviewWorkOrderID})})
 	})
 }
 
@@ -905,6 +1030,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			AND p.review_work_order_id=e.payload_json->>'review_work_order_id'
 		WHERE t.workspace_id=$1 AND e.kind='review.completed'
 			AND COALESCE(e.payload_json->>'review_work_order_id','') <> ''
+			AND e.payload_json @> '{"publication_eligible": true}'::jsonb
 			AND p.review_work_order_id IS NULL
 		ORDER BY e.id`, s.workspace)
 	if err != nil {
@@ -938,6 +1064,27 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		created++
 	}
 	return created, nil
+}
+
+func reviewDecisionPayload(decision core.ReviewDecision) []byte {
+	return core.JSONPayload(map[string]any{
+		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
+		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
+		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
+		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"same_model_as_implementer": decision.SameModelAsImplementer,
+		"publication_eligible":      decision.PublicationEligible,
+	})
+}
+
+func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPublication {
+	return core.ReviewPublication{
+		ReviewWorkOrderID: decision.ReviewWorkOrderID, TaskID: decision.TaskID, JobID: decision.JobID,
+		Verdict: decision.Verdict, ReasonCode: decision.ReasonCode, Summary: decision.Summary,
+		Feedback: decision.Feedback, ReviewedCommitSHA: decision.ReviewedCommitSHA,
+		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
+		SameModelAsImplementer: decision.SameModelAsImplementer,
+	}
 }
 
 func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPublication, error) {

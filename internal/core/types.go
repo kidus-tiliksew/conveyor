@@ -285,6 +285,28 @@ type ReviewPublication struct {
 	UpdatedAt              time.Time              `json:"updated_at"`
 }
 
+// ReviewDecision is the atomic internal acceptance record for one completed
+// review attempt. GitHub publication is queued in the same store transaction;
+// the external GitHub side effects remain asynchronous.
+type ReviewDecision struct {
+	TaskID                 string
+	JobID                  string
+	ReviewWorkOrderID      string
+	Verdict                string
+	ReasonCode             string
+	Summary                string
+	Feedback               string
+	ReviewedCommitSHA      string
+	Reviewer               string
+	ReviewerModel          string
+	ReviewerSession        string
+	SameModelAsImplementer string
+	InterventionActorID    string
+	PublicationEligible    bool
+	Level                  EscalationLevel
+	MaxBounces             int
+}
+
 type Feature struct {
 	ID          string    `json:"id"`
 	Workspace   string    `json:"workspace"`
