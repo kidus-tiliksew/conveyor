@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -885,6 +886,30 @@ func TestRunTaskDoesNotReuseOlderHandoffWhenImmediatePredecessorHasNone(t *testi
 	}
 	if !strings.Contains(string(prompt), "Remove the unrelated refactor.") {
 		t.Fatalf("prompt omitted redirect without a handoff:\n%s", prompt)
+	}
+}
+
+func TestConfigSnapshotRefreshesBetweenDispatchesAndStaysFixedWithinOne(t *testing.T) {
+	version := 1
+	d := &Dispatcher{Cfg: &config.Config{Workspace: "fallback"}}
+	d.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: fmt.Sprintf("workspace-v%d", version)}, nil
+	}
+	ctx, first, err := d.configSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	version = 2
+	_, retained, err := d.configSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refreshed, err := d.configSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Workspace != "workspace-v1" || retained.Workspace != "workspace-v1" || refreshed.Workspace != "workspace-v2" {
+		t.Fatalf("snapshots: first=%q retained=%q refreshed=%q", first.Workspace, retained.Workspace, refreshed.Workspace)
 	}
 }
 

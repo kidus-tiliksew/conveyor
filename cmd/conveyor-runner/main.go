@@ -26,24 +26,32 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load(*configPath)
+	deployment, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	packBundle, err := pack.Load(cfg.PackDir)
+	packBundle, err := pack.Load(deployment.PackDir)
 	if err != nil {
 		log.Fatalf("load Phase 3 pack: %v", err)
 	}
-	if cfg.Database.Backend != "postgres" {
+	if deployment.Database.Backend != "postgres" {
 		log.Fatal("standalone runner requires the postgres backend")
 	}
-	st, err := postgresstore.Open(ctx, cfg.Database.URL)
+	st, err := postgresstore.Open(ctx, deployment.Database.URL)
 	if err != nil {
 		log.Fatalf("open Postgres store: %v", err)
 	}
 	defer st.Close()
-	if err := st.BootstrapConfig(ctx, cfg); err != nil {
+	seeded, err := st.BootstrapWorkspaceConfig(ctx, deployment)
+	if err != nil {
 		log.Fatalf("bootstrap runner capacity: %v", err)
+	}
+	if !seeded {
+		log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
+	}
+	cfg, err := st.RuntimeConfig(ctx, deployment)
+	if err != nil {
+		log.Fatalf("load database workspace config: %v", err)
 	}
 
 	local := localdocker.New()
@@ -52,7 +60,12 @@ func main() {
 	dispatcher := dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), local, cfg)
 	dispatcher.Pack = packBundle
 	dispatcher.UseDurableQueue()
-	dispatcher.Router = routing.New(st, cfg.Routing)
+	dispatcher.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+		return st.RuntimeConfig(ctx, deployment)
+	}
+	dispatcher.RouterFactory = func(cfg config.Routing) routing.Selector {
+		return routing.New(st, cfg)
+	}
 	client, err := dispatch.NewRiverClient(st.Pool(), dispatcher)
 	if err != nil {
 		log.Fatalf("create River worker: %v", err)

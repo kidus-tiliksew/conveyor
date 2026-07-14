@@ -1,9 +1,19 @@
--- name: UpsertWorkspace :exec
+-- name: InsertWorkspace :one
 INSERT INTO workspaces (id, name, config_yaml)
 VALUES ($1, $2, $3)
-ON CONFLICT (id) DO UPDATE
-SET name = EXCLUDED.name,
-    config_yaml = EXCLUDED.config_yaml;
+ON CONFLICT (id) DO NOTHING
+RETURNING *;
+
+-- name: GetWorkspaceConfig :one
+SELECT * FROM workspaces WHERE id = $1;
+
+-- name: UpdateWorkspaceConfig :one
+UPDATE workspaces
+SET config_yaml = sqlc.arg(config_yaml),
+    config_version = config_version + 1
+WHERE id = sqlc.arg(id)
+  AND config_version = sqlc.arg(expected_version)
+RETURNING *;
 
 -- name: UpsertRepo :exec
 INSERT INTO repos (workspace_id, name, url, github_slug, default_base, devcontainer_path)
@@ -112,8 +122,16 @@ ORDER BY j.started_at DESC, j.id DESC
 LIMIT 1;
 
 -- name: InsertEvent :one
-INSERT INTO events (task_id, job_id, kind, actor_id, actor_role, payload_json, at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, payload_json, at)
+SELECT t.workspace_id, sqlc.arg(task_id), sqlc.arg(job_id), sqlc.arg(kind),
+       sqlc.arg(actor_id), sqlc.arg(actor_role), sqlc.arg(payload_json), sqlc.arg(at)
+FROM tasks t
+WHERE t.id = sqlc.arg(task_id)
+RETURNING *;
+
+-- name: InsertWorkspaceEvent :one
+INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, payload_json, at)
+VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: ListEvents :many

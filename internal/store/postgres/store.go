@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -60,55 +61,77 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// BootstrapConfig projects the file-backed configuration into durable rows
-// before tasks reference them. The stored YAML is canonical and sanitized;
-// database credentials remain process-local (spec §2.1, §10, §16).
 func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
-	configYAML, err := sanitizedConfigYAML(cfg)
+	_, err := s.BootstrapWorkspaceConfig(ctx, cfg)
+	return err
+}
+
+// BootstrapWorkspaceConfig imports workspace scope only when the row is
+// empty. Subsequent starts reconcile only the file-owned capacity metadata
+// and report seeded=false so callers can emit the required startup notice
+// (spec §21.3).
+func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
+	configYAML, err := config.MarshalWorkspaceDocument(cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	q := s.queries.WithTx(tx)
-	if err := q.UpsertWorkspace(ctx, db.UpsertWorkspaceParams{
-		ID: cfg.Workspace, Name: cfg.Workspace, ConfigYaml: configYAML,
-	}); err != nil {
-		return err
+	seeded := true
+	if _, err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{
+		ID: cfg.Workspace, Name: cfg.Workspace, ConfigYaml: string(configYAML),
+	}); errors.Is(err, pgx.ErrNoRows) {
+		seeded = false
+		row, getErr := q.GetWorkspaceConfig(ctx, cfg.Workspace)
+		if getErr != nil {
+			return false, getErr
+		}
+		stored, legacy, parseErr := config.ParseStoredWorkspaceDocument([]byte(row.ConfigYaml), cfg, "database workspace config")
+		if parseErr != nil {
+			return false, parseErr
+		}
+		if legacy {
+			canonical, marshalErr := config.MarshalWorkspaceDocument(stored)
+			if marshalErr != nil {
+				return false, marshalErr
+			}
+			if _, updateErr := tx.Exec(ctx, "UPDATE workspaces SET config_yaml = $1 WHERE id = $2", string(canonical), cfg.Workspace); updateErr != nil {
+				return false, updateErr
+			}
+		}
+	} else if err != nil {
+		return false, err
 	}
 	previousCredentialIDs, err := q.ListWorkspaceCredentialIDs(ctx, cfg.Workspace)
 	if err != nil {
-		return err
+		return false, err
 	}
 	previousPolicyRefs, err := q.ListWorkspaceVendorPolicyRefs(ctx, cfg.Workspace)
 	if err != nil {
-		return err
+		return false, err
 	}
-	for _, repo := range cfg.Repos {
-		if err := q.UpsertRepo(ctx, db.UpsertRepoParams{
-			WorkspaceID: cfg.Workspace,
-			Name:        repo.Name,
-			Url:         repo.URL,
-			GithubSlug:  repo.GitHub,
-			DefaultBase: repo.Base,
-		}); err != nil {
-			return err
+	if seeded {
+		for _, repo := range cfg.Repos {
+			if err := upsertRepo(ctx, q, cfg.Workspace, repo); err != nil {
+				return false, err
+			}
 		}
 	}
 	for _, policy := range cfg.VendorPolicies {
 		reviewedAt, err := time.Parse("2006-01-02", policy.ReviewedAt)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if err := q.UpsertVendorPolicy(ctx, db.UpsertVendorPolicyParams{
 			Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
 			SubscriptionHeadless: policy.SubscriptionHeadless,
 			ReviewedAt:           pgtype.Date{Time: reviewedAt, Valid: true}, SourceUrl: policy.SourceURL,
 		}); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, credential := range cfg.Credentials {
@@ -116,11 +139,11 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 			ID: credential.ID, OwnerID: credential.OwnerID, OwnerKind: credential.OwnerKind,
 			Kind: credential.Kind, Vendor: credential.Vendor, Harness: credential.Harness, EncRef: credential.Ref,
 		}); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := q.DeleteWorkspaceCredentialRefs(ctx, cfg.Workspace); err != nil {
-		return err
+		return false, err
 	}
 	configuredCredentialIDs := make(map[string]struct{}, len(cfg.Credentials))
 	for _, credential := range cfg.Credentials {
@@ -128,10 +151,10 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 		if err := q.InsertWorkspaceCredentialRef(ctx, db.InsertWorkspaceCredentialRefParams{
 			WorkspaceID: cfg.Workspace, CredentialID: credential.ID,
 		}); err != nil {
-			return err
+			return false, err
 		}
 		if err := q.EnableCredential(ctx, credential.ID); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, id := range previousCredentialIDs {
@@ -139,11 +162,11 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 			continue
 		}
 		if err := q.DisableCredentialIfUnreferenced(ctx, id); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := q.DeleteWorkspaceVendorPolicyRefs(ctx, cfg.Workspace); err != nil {
-		return err
+		return false, err
 	}
 	configuredPolicyKeys := make(map[string]struct{}, len(cfg.VendorPolicies))
 	for _, policy := range cfg.VendorPolicies {
@@ -151,7 +174,7 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 		if err := q.InsertWorkspaceVendorPolicyRef(ctx, db.InsertWorkspaceVendorPolicyRefParams{
 			WorkspaceID: cfg.Workspace, Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
 		}); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, policy := range previousPolicyRefs {
@@ -161,28 +184,116 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 		if err := q.RestrictVendorPolicyIfUnreferenced(ctx, db.RestrictVendorPolicyIfUnreferencedParams{
 			Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
 		}); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return false, err
 	}
 	s.workspace = cfg.Workspace
-	return nil
+	return seeded, nil
 }
 
 func capacityPolicyKey(vendor, harness, authMode string) string {
 	return strings.Join([]string{vendor, harness, authMode}, "\x1f")
 }
 
-func sanitizedConfigYAML(cfg *config.Config) (string, error) {
-	sanitized := *cfg
-	sanitized.Database.URL = ""
-	data, err := yaml.Marshal(&sanitized)
+func upsertRepo(ctx context.Context, q *db.Queries, workspace string, repo config.Repo) error {
+	return q.UpsertRepo(ctx, db.UpsertRepoParams{
+		WorkspaceID: workspace, Name: repo.Name, Url: repo.URL,
+		GithubSlug: repo.GitHub, DefaultBase: repo.Base,
+	})
+}
+
+func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, error) {
+	row, err := s.queries.GetWorkspaceConfig(ctx, s.workspace)
 	if err != nil {
-		return "", fmt.Errorf("sanitize workspace config: %w", err)
+		return config.VersionedDocument{}, notFound(err, "workspace %s", s.workspace)
 	}
-	return string(data), nil
+	var document config.WorkspaceDocument
+	decoder := yaml.NewDecoder(strings.NewReader(row.ConfigYaml))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&document); err != nil {
+		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
+	}
+	return config.VersionedDocument{Document: document, Version: row.ConfigVersion}, nil
+}
+
+// RuntimeConfig overlays the latest database document onto immutable
+// deployment settings. Callers take one value per dispatch so running jobs do
+// not observe mid-flight policy changes (spec §14.1, §21.3).
+func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	row, err := s.queries.GetWorkspaceConfig(ctx, deployment.Workspace)
+	if err != nil {
+		return nil, notFound(err, "workspace %s", deployment.Workspace)
+	}
+	cfg, _, err := config.ParseStoredWorkspaceDocument([]byte(row.ConfigYaml), deployment, "database workspace config")
+	return cfg, err
+}
+
+func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
+	data, err := config.MarshalWorkspaceDocument(next)
+	if err != nil {
+		return config.UpdateReceipt{}, err
+	}
+	var result config.UpdateReceipt
+	err = s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		before, err := q.GetWorkspaceConfig(ctx, s.workspace)
+		if err != nil {
+			return err
+		}
+		updated, err := q.UpdateWorkspaceConfig(ctx, db.UpdateWorkspaceConfigParams{
+			ID: s.workspace, ExpectedVersion: expectedVersion, ConfigYaml: string(data),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return config.ErrVersionConflict
+		}
+		if err != nil {
+			return err
+		}
+		for _, repo := range next.Repos {
+			if err := upsertRepo(ctx, q, s.workspace, repo); err != nil {
+				return err
+			}
+		}
+		var previous config.WorkspaceDocument
+		if err := yaml.Unmarshal([]byte(before.ConfigYaml), &previous); err != nil {
+			return fmt.Errorf("decode previous workspace config: %w", err)
+		}
+		sections := configDiff(previous, next.WorkspaceDocument())
+		actor := store.ActorFromContext(ctx)
+		event, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+			WorkspaceID: s.workspace, Kind: "config.updated", ActorID: actor.ID,
+			ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{
+				"from_version": before.ConfigVersion,
+				"to_version":   updated.ConfigVersion,
+				"sections":     sections,
+			}), At: timestamp(time.Now().UTC()),
+		})
+		if err != nil {
+			return err
+		}
+		result = config.UpdateReceipt{
+			VersionedDocument: config.VersionedDocument{Document: next.WorkspaceDocument(), Version: updated.ConfigVersion},
+			EventID:           event.ID, ActorID: actor.ID, Sections: sections,
+		}
+		return nil
+	})
+	return result, err
+}
+
+func configDiff(before, after config.WorkspaceDocument) []string {
+	sections := make([]string, 0, 3)
+	if before.Workspace != after.Workspace || before.Image != after.Image || before.MaxBounces != after.MaxBounces {
+		sections = append(sections, "workspace")
+	}
+	if !reflect.DeepEqual(before.Routing, after.Routing) {
+		sections = append(sections, "routing")
+	}
+	if !reflect.DeepEqual(before.Repos, after.Repos) {
+		sections = append(sections, "repos")
+	}
+	return sections
 }
 
 func (s *Store) ClaimCredential(ctx context.Context, request routing.ClaimRequest) (routing.Credential, error) {
@@ -539,7 +650,7 @@ func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
 }
 
 func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
-	rows, err := s.queries.ListEvents(ctx, db.ListEventsParams{TaskID: taskID, WorkspaceID: s.workspace})
+	rows, err := s.queries.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(taskID), WorkspaceID: s.workspace})
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +663,7 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
 	rows, err := s.queries.ListEventsAfter(ctx, db.ListEventsAfterParams{
-		TaskID: taskID, WorkspaceID: s.workspace, ID: afterID,
+		TaskID: nullableText(taskID), WorkspaceID: s.workspace, ID: afterID,
 	})
 	if err != nil {
 		return nil, err
@@ -565,7 +676,7 @@ func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int6
 }
 
 func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, error) {
-	count, err := s.queries.CountEvents(ctx, db.CountEventsParams{TaskID: taskID, Kind: kind, WorkspaceID: s.workspace})
+	count, err := s.queries.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(taskID), Kind: kind, WorkspaceID: s.workspace})
 	return int(count), err
 }
 
@@ -727,7 +838,7 @@ func insertEvent(ctx context.Context, q *db.Queries, event core.Event) error {
 		event.Payload = json.RawMessage(`{}`)
 	}
 	_, err := q.InsertEvent(ctx, db.InsertEventParams{
-		TaskID: event.TaskID, JobID: nullableText(event.JobID), Kind: event.Kind,
+		TaskID: nullableText(event.TaskID), JobID: nullableText(event.JobID), Kind: event.Kind,
 		ActorID: event.ActorID, ActorRole: string(event.ActorRole),
 		PayloadJson: event.Payload, At: timestamp(event.At),
 	})
@@ -813,7 +924,7 @@ func jobFromDB(job db.Job) core.Job {
 
 func eventFromDB(event db.Event) core.Event {
 	return core.Event{
-		ID: event.ID, TaskID: event.TaskID, JobID: event.JobID.String,
+		ID: event.ID, TaskID: event.TaskID.String, JobID: event.JobID.String,
 		Kind: event.Kind, ActorID: event.ActorID, ActorRole: core.ActorRole(event.ActorRole),
 		Payload: append(json.RawMessage(nil), event.PayloadJson...), At: event.At.Time,
 	}

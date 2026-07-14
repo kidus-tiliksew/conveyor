@@ -1,4 +1,8 @@
-# Conveyor deployment config. Copy to conveyor.yaml and edit.
+# Conveyor deployment config. Copy to conveyor.yaml and edit. Workspace,
+# image, max_bounces, routing, and repos seed Postgres on first boot only;
+# afterward edit them through the Workspace UI or `conveyor config import`.
+# Deployment settings, credentials, vendor policies, and secret backend stay
+# file-managed (spec §21.3).
 workspace: demo
 image: conveyor-base:dev           # build with: make image
 pack_dir: pack                     # reviewable Phase 3 role prompts/policies

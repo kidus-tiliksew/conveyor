@@ -31,11 +31,12 @@ func main() {
 	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")
 	flag.Parse()
 
-	cfg, err := config.Load(*configPath)
+	deployment, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	packBundle, err := pack.Load(cfg.PackDir)
+	cfg := deployment
+	packBundle, err := pack.Load(deployment.PackDir)
 	if err != nil {
 		log.Fatalf("load Phase 3 pack: %v", err)
 	}
@@ -49,15 +50,24 @@ func main() {
 	var st store.Store
 	var pgStore *postgresstore.Store
 	var closeStore func()
-	switch cfg.Database.Backend {
+	switch deployment.Database.Backend {
 	case "postgres":
-		pgStore, err = postgresstore.Open(ctx, cfg.Database.URL)
+		pgStore, err = postgresstore.Open(ctx, deployment.Database.URL)
 		if err != nil {
 			log.Fatalf("open Postgres store: %v", err)
 		}
-		if err := pgStore.BootstrapConfig(ctx, cfg); err != nil {
+		seeded, bootstrapErr := pgStore.BootstrapWorkspaceConfig(ctx, deployment)
+		if bootstrapErr != nil {
 			pgStore.Close()
-			log.Fatalf("bootstrap workspace: %v", err)
+			log.Fatalf("bootstrap workspace: %v", bootstrapErr)
+		}
+		if !seeded {
+			log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
+		}
+		cfg, err = pgStore.RuntimeConfig(ctx, deployment)
+		if err != nil {
+			pgStore.Close()
+			log.Fatalf("load database workspace config: %v", err)
 		}
 		st = pgStore
 		closeStore = pgStore.Close
@@ -73,6 +83,9 @@ func main() {
 		// Durable task mutations enqueue River transactionally. Execution-plane
 		// access stays in the standalone conveyor-runner process.
 		d = dispatch.New(st, nil, nil, cfg)
+		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+			return pgStore.RuntimeConfig(ctx, deployment)
+		}
 		d.UseDurableQueue()
 		log.Printf("standalone conveyor-runner required for execution")
 	} else {
@@ -100,10 +113,15 @@ func main() {
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
 	srv.WorkspaceInfo = httpapi.NewWorkspaceInfo(cfg)
+	srv.Deployment = deployment
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 	srv.OnIntervention = d.HandleIntervention
 	if pgStore != nil {
+		srv.ConfigStore = pgStore
+		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+			return pgStore.RuntimeConfig(ctx, deployment)
+		}
 		reconcile := func() {
 			repaired, err := pgStore.ReconcileQueuedTasks(ctx)
 			if err != nil {

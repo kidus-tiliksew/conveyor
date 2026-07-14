@@ -41,6 +41,10 @@ type Dispatcher struct {
 	Router routing.Selector
 	Cfg    *config.Config
 	Pack   *pack.Bundle
+	// ConfigProvider resolves one immutable workspace snapshot per dispatch.
+	// RouterFactory binds routing to that same snapshot (spec §14.1, §21.3).
+	ConfigProvider func(context.Context) (*config.Config, error)
+	RouterFactory  func(config.Routing) routing.Selector
 
 	reviewFeedback func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error)
 
@@ -54,6 +58,33 @@ func New(st store.Store, git *gitx.Manager, r runner.Runner, cfg *config.Config)
 		reviewFeedback: github.ListReviewFeedback,
 		queue:          make(chan string, 64),
 	}
+}
+
+type configSnapshotKey struct{}
+
+func (d *Dispatcher) configSnapshot(ctx context.Context) (context.Context, *config.Config, error) {
+	if existing, ok := ctx.Value(configSnapshotKey{}).(*config.Config); ok {
+		return ctx, existing, nil
+	}
+	cfg := d.Cfg
+	if d.ConfigProvider != nil {
+		var err error
+		cfg, err = d.ConfigProvider(ctx)
+		if err != nil {
+			return ctx, nil, err
+		}
+	}
+	if cfg == nil {
+		return ctx, nil, fmt.Errorf("dispatcher requires workspace config")
+	}
+	return context.WithValue(ctx, configSnapshotKey{}, cfg), cfg, nil
+}
+
+func configSnapshot(ctx context.Context, fallback *config.Config) *config.Config {
+	if cfg, ok := ctx.Value(configSnapshotKey{}).(*config.Config); ok {
+		return cfg
+	}
+	return fallback
 }
 
 // Enqueue schedules a task for dispatch. Safe from HTTP handlers.
@@ -91,17 +122,25 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
-	if d.Router == nil {
+	ctx, cfg, err := d.configSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("load workspace config: %w", err)
+	}
+	router := d.Router
+	if d.RouterFactory != nil {
+		router = d.RouterFactory(cfg.Routing)
+	}
+	if router == nil {
 		return fmt.Errorf("dispatcher requires an explicit credential router")
 	}
 	t, err := d.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if t.Workspace != d.Cfg.Workspace {
-		return fmt.Errorf("task %s belongs to workspace %q, worker serves %q", t.ID, t.Workspace, d.Cfg.Workspace)
+	if t.Workspace != cfg.Workspace {
+		return fmt.Errorf("task %s belongs to workspace %q, worker serves %q", t.ID, t.Workspace, cfg.Workspace)
 	}
-	repo, ok := d.Cfg.Repo(t.Repo)
+	repo, ok := cfg.Repo(t.Repo)
 	if !ok {
 		return fmt.Errorf("unknown repo %q", t.Repo)
 	}
@@ -115,7 +154,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	}
 	image := repo.Image
 	if image == "" {
-		image = d.Cfg.Image
+		image = cfg.Image
 	}
 	attempt := 1
 	var predecessor *core.Job
@@ -144,14 +183,14 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if stage == core.StageReview {
 		excludeHarness = latestHarness(priorJobs, core.StageImplement)
 	}
-	selection, err = d.Router.Select(ctx, t.ID, jobID, stage, excludeHarness)
+	selection, err = router.Select(ctx, t.ID, jobID, stage, excludeHarness)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		completeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := d.Router.Complete(completeCtx, selection, routeOutcome); err != nil {
+		if err := router.Complete(completeCtx, selection, routeOutcome); err != nil {
 			log.Printf("[task %s] release credential %s: %v", t.ID, selection.ID, err)
 		}
 	}()
@@ -178,7 +217,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("task checkout: %w", err)
 	}
 
-	control := filepath.Join(d.Cfg.JobsDir, "task-"+t.ID, ".conveyor")
+	control := filepath.Join(cfg.JobsDir, "task-"+t.ID, ".conveyor")
 	if err := os.MkdirAll(control, 0o755); err != nil {
 		return err
 	}
@@ -285,8 +324,8 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		ControlDir:         control,
 		ControlPath:        "/conveyor/control",
 		CredentialsDir:     credentialDir,
-		CredentialStageDir: filepath.Join(d.Cfg.CacheDir, "credentials"),
-		SecretStageDir:     filepath.Join(d.Cfg.CacheDir, "secrets"),
+		CredentialStageDir: filepath.Join(cfg.CacheDir, "credentials"),
+		SecretStageDir:     filepath.Join(cfg.CacheDir, "secrets"),
 		SecretRefs:         secretRefs,
 		BudgetUSD:          budgetUSD,
 		Policy:             toolPolicy,
@@ -339,7 +378,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	timeout := stageTimeout(d.Cfg.Routing, stage)
+	timeout := stageTimeout(cfg.Routing, stage)
 	stageDeadline := time.Now().Add(timeout)
 	jobCtx, cancelJob := context.WithDeadline(ctx, stageDeadline)
 	defer cancelJob()
@@ -630,7 +669,7 @@ func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo con
 		if countErr != nil {
 			return countErr
 		}
-		if count >= d.Cfg.MaxBounces {
+		if count >= configSnapshot(ctx, d.Cfg).MaxBounces {
 			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"stage": job.Stage, "count": count})})
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", job.Stage)
 		}
@@ -762,7 +801,7 @@ func (d *Dispatcher) bounceToImplement(ctx context.Context, taskID, jobID, reaso
 	})}); err != nil {
 		return err
 	}
-	if bounces >= d.Cfg.MaxBounces {
+	if bounces >= configSnapshot(ctx, d.Cfg).MaxBounces {
 		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{
 			"stage": core.StageReview, "count": bounces, "recovery_stage": core.StageImplement,
 		})}); err != nil {
@@ -851,9 +890,14 @@ func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
 }
 
 func (d *Dispatcher) pollOnce(ctx context.Context) {
+	ctx, cfg, err := d.configSnapshot(ctx)
+	if err != nil {
+		log.Printf("poll workspace config: %v", err)
+		return
+	}
 	d.recoverGitHubClaims(ctx)
 	d.pollReviewFeedback(ctx)
-	for _, repo := range d.Cfg.Repos {
+	for _, repo := range cfg.Repos {
 		if repo.GitHub == "" {
 			continue
 		}
@@ -874,7 +918,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 				id = core.NewTaskID()
 				existing = core.Task{
 					ID:         id,
-					Workspace:  d.Cfg.Workspace,
+					Workspace:  cfg.Workspace,
 					Source:     source,
 					Title:      is.Title,
 					Body:       is.Body,
@@ -922,7 +966,7 @@ func (d *Dispatcher) pollReviewFeedback(ctx context.Context) {
 		if task.State != core.TaskAwaiting && task.State != core.TaskApproved {
 			continue
 		}
-		repo, ok := d.Cfg.Repo(task.Repo)
+		repo, ok := configSnapshot(ctx, d.Cfg).Repo(task.Repo)
 		if !ok || repo.GitHub == "" {
 			continue
 		}

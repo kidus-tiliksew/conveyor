@@ -1,6 +1,11 @@
 package postgres
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+)
 
 func TestMigrationVersion(t *testing.T) {
 	t.Parallel()
@@ -35,9 +40,23 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 7 {
 		t.Fatalf("seventh migration version = %d, err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/008_dynamic_workspace_config.sql")
+	if err != nil || version != 8 {
+		t.Fatalf("eighth migration version = %d, err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
 		}
+	}
+}
+
+func TestConfigDiffIgnoresRuntimeParsedTimeout(t *testing.T) {
+	cfg := &config.Config{Workspace: "demo", Image: "image", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"implement": {Harnesses: []string{"codex"}, TimeoutText: "2h", Timeout: 2 * time.Hour},
+	}}}
+	document := cfg.WorkspaceDocument()
+	if sections := configDiff(document, document); len(sections) != 0 {
+		t.Fatalf("unchanged config diff = %v", sections)
 	}
 }

@@ -1,4 +1,14 @@
-import type { ActivityItem, ActivitySummary, EscalationLevel, InterventionAction, Task, WorkspaceInfo } from './types'
+import type {
+  ActivityItem,
+  ActivitySummary,
+  EscalationLevel,
+  InterventionAction,
+  Task,
+  VersionedWorkspaceConfig,
+  WorkspaceConfigDocument,
+  WorkspaceConfigReceipt,
+  WorkspaceInfo,
+} from './types'
 
 async function getJSON<T>(url: string): Promise<T> {
   const response = await fetch(url)
@@ -16,6 +26,35 @@ export function fetchTaskActivity(taskId: string) {
 
 export function fetchWorkspace() {
   return getJSON<WorkspaceInfo>('/v1/workspace')
+}
+
+export function fetchWorkspaceConfig(token: string) {
+  return fetch('/v1/workspace/config', { headers: mutationHeaders(token) }).then(async (response) => {
+    if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+    return response.json() as Promise<VersionedWorkspaceConfig>
+  })
+}
+
+export class ConfigValidationError extends Error {
+  fields: Array<{ field: string; message: string }>
+
+  constructor(message: string, fields: Array<{ field: string; message: string }> = []) {
+    super(message)
+    this.fields = fields
+  }
+}
+
+export async function updateWorkspaceConfig(token: string, document: WorkspaceConfigDocument, version: number) {
+  const response = await fetch('/v1/workspace/config', {
+    method: 'PUT',
+    headers: { ...mutationHeaders(token), 'If-Match': String(version) },
+    body: JSON.stringify({ document }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { message?: string; fields?: Array<{ field: string; message: string }> } | null
+    throw new ConfigValidationError(body?.message ?? body?.fields?.[0]?.message ?? response.statusText, body?.fields)
+  }
+  return response.json() as Promise<WorkspaceConfigReceipt>
 }
 
 function mutationHeaders(token: string) {

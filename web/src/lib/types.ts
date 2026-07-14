@@ -138,8 +138,8 @@ export interface ActivitySummary {
   needs_attention: boolean
 }
 
-// Read-only workspace snapshot (GET /v1/workspace) — conveyor.yaml as the
-// dashboard sees it. Mutation stays with the operator-owned file (spec §2.1).
+// Unauthenticated display snapshot (GET /v1/workspace). The authenticated
+// config document below is the mutable Postgres-backed source of truth.
 export interface WorkspaceRepo {
   name: string
   url: string
@@ -176,6 +176,50 @@ export interface WorkspaceInfo {
   repos: WorkspaceRepo[] | null
   routing: WorkspaceRoute[] | null
   credentials: WorkspaceCredential[] | null
+}
+
+export interface WorkspaceToolPolicy {
+  allowed_commands?: string[][]
+  denied_commands?: string[][]
+  network_allow?: string[]
+}
+
+export interface WorkspaceConfigRepo {
+  name: string
+  url: string
+  github?: string
+  base: string
+  image: string
+  secret_refs?: string[]
+  tool_policy: WorkspaceToolPolicy
+}
+
+export interface WorkspaceConfigRoute {
+  harnesses: string[]
+  model_tier?: string
+  budget_usd: number
+  timeout: string
+}
+
+export interface WorkspaceConfigDocument {
+  workspace: string
+  image: string
+  max_bounces: number
+  routing: {
+    stages: Record<string, WorkspaceConfigRoute>
+  }
+  repos: WorkspaceConfigRepo[]
+}
+
+export interface VersionedWorkspaceConfig {
+  document: WorkspaceConfigDocument
+  version: number
+}
+
+export interface WorkspaceConfigReceipt extends VersionedWorkspaceConfig {
+  event_id: number
+  actor_id: string
+  sections: string[]
 }
 
 export interface ActivityItem {

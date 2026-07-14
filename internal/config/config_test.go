@@ -173,3 +173,93 @@ repos:
 		t.Fatalf("phase 3 config = %+v", cfg)
 	}
 }
+
+func TestWorkspaceDocumentUsesSharedValidationAndPreservesDeploymentScope(t *testing.T) {
+	deployment := &Config{
+		Workspace: "demo", PackDir: t.TempDir(), CacheDir: t.TempDir(), JobsDir: t.TempDir(),
+		Database:    Database{Backend: "postgres", URL: "postgres://private"},
+		Secrets:     Secrets{Root: t.TempDir(), Backend: "plain", Sets: map[string]SecretSet{"default": {LocalEligible: true}}},
+		Credentials: []Credential{{ID: "codex", OwnerID: "operator", OwnerKind: "user", Kind: "personal_sub", Vendor: "openai", Harness: "codex", Ref: "/tmp/codex"}},
+	}
+	document := []byte(`workspace: demo
+image: conveyor-dev:dev
+max_bounces: 3
+routing:
+  stages:
+    implement:
+      harnesses: [codex]
+      budget_usd: 2
+      timeout: 45m
+repos:
+  - name: conveyor
+    url: https://example.com/conveyor
+    base: main
+    secret_refs: [secretref://demo/default/API_KEY]
+    tool_policy:
+      denied_commands: [[git, push, --force]]
+`)
+	cfg, err := ParseWorkspaceDocument(document, deployment, "test document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.URL != "postgres://private" || len(cfg.Credentials) != 1 || cfg.Routing.Stages["implement"].Timeout != 45*time.Minute {
+		t.Fatalf("merged config = %+v", cfg)
+	}
+	if _, err := ParseWorkspaceDocument([]byte("workspace: other\nmax_bounces: 2\n"), deployment, "test document"); err == nil {
+		t.Fatal("workspace identity change succeeded")
+	}
+	if _, err := ParseWorkspaceDocument([]byte("workspace: demo\nmax_bounces: -1\n"), deployment, "test document"); err == nil {
+		t.Fatal("invalid workspace document succeeded")
+	}
+}
+
+func TestParseStoredWorkspaceDocumentUpgradesLegacyFullConfig(t *testing.T) {
+	deployment := &Config{
+		Workspace: "demo", PackDir: t.TempDir(), CacheDir: t.TempDir(), JobsDir: t.TempDir(),
+		Database: Database{Backend: "postgres", URL: "postgres://current"},
+		Routing:  Routing{OwnerID: "current-owner", LeaseSeconds: 120},
+		Secrets:  Secrets{Root: t.TempDir(), Backend: "plain"},
+	}
+	legacy := []byte(`workspace: demo
+image: legacy-image
+pack_dir: /legacy/pack
+max_bounces: 4
+cache_dir: /legacy/cache
+jobs_dir: /legacy/jobs
+codex_credentials: /legacy/codex
+database:
+  backend: postgres
+  url: ""
+secrets:
+  backend: plain
+credentials:
+  - id: legacy-secret-metadata
+    owner_id: old
+    owner_kind: user
+    kind: personal_sub
+    vendor: openai
+    harness: codex
+    ref: /legacy/credential
+routing:
+  owner_id: old-owner
+  lease_seconds: 999
+  stages:
+    implement:
+      harnesses: [codex]
+      timeout: 30m
+repos:
+  - name: conveyor
+    url: https://example.com/conveyor
+    base: main
+`)
+	cfg, upgraded, err := ParseStoredWorkspaceDocument(legacy, deployment, "legacy database config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !upgraded || cfg.Image != "legacy-image" || cfg.MaxBounces != 4 {
+		t.Fatalf("workspace scope was not upgraded: upgraded=%v cfg=%+v", upgraded, cfg)
+	}
+	if cfg.Database.URL != "postgres://current" || cfg.PackDir != deployment.PackDir || cfg.Routing.OwnerID != "current-owner" || len(cfg.Credentials) != 0 {
+		t.Fatalf("legacy deployment scope leaked into runtime: %+v", cfg)
+	}
+}

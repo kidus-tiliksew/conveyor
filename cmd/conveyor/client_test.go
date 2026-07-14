@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
@@ -24,6 +25,27 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	c := &client{base: srv.URL, token: "secret-token"}
 	if _, err := c.createTask("fix it", "", "api", "main"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientWorkspaceConfigUpdateSendsIfMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/workspace/config" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("If-Match") != "7" || r.Header.Get("X-Conveyor-Actor") != "cli-operator" {
+			t.Fatalf("headers = %#v", r.Header)
+		}
+		_ = json.NewEncoder(w).Encode(config.UpdateReceipt{VersionedDocument: config.VersionedDocument{Version: 8}, EventID: 9})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, token: "secret-token"}
+	receipt, err := c.updateWorkspaceConfig(config.WorkspaceDocument{Workspace: "demo"}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Version != 8 || receipt.EventID != 9 {
+		t.Fatalf("receipt = %+v", receipt)
 	}
 }
 

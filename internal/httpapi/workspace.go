@@ -8,11 +8,11 @@ import (
 
 // WorkspaceInfo is the read-only workspace snapshot served at
 // GET /v1/workspace: identity, repos, stage routing, and credential
-// metadata. It is derived from conveyor.yaml at boot; mutation stays with
-// the operator-owned config file (spec §2.1), so the dashboard renders —
-// never edits — this surface. Credential refs are excluded outright: refs
-// are metadata rather than secrets (spec §5.2), but they name host paths
-// and env vars, and the read API is unauthenticated.
+// metadata. It is derived from the current database-backed workspace document
+// while deployment and credential metadata remain file-backed (spec §21.3).
+// Credential refs are excluded outright: refs are metadata rather than
+// secrets (spec §5.2), but they name host paths and env vars, and the read API
+// is unauthenticated.
 type WorkspaceInfo struct {
 	Workspace   string                `json:"workspace"`
 	Image       string                `json:"image"`
@@ -111,7 +111,16 @@ func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
 	return info
 }
 
-func (s *Server) getWorkspace(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) {
+	if s.ConfigProvider != nil {
+		cfg, err := s.ConfigProvider(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, NewWorkspaceInfo(cfg))
+		return
+	}
 	if s.WorkspaceInfo == nil {
 		http.Error(w, "workspace config unavailable", http.StatusNotFound)
 		return

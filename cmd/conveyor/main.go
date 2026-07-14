@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var version = "dev" // set via -ldflags at build time
@@ -36,6 +37,7 @@ func main() {
 
 	root.AddCommand(
 		taskCmd(),
+		configCmd(),
 		checkoutCmd(),
 		doneCmd(),
 		runnerCmd(&configPath),
@@ -46,6 +48,59 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func configCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "config", Short: "Export or import database-backed workspace config"}
+	export := &cobra.Command{
+		Use: "export", Short: "Write the current workspace config as YAML",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			record, err := newClient().getWorkspaceConfig()
+			if err != nil {
+				return err
+			}
+			data, err := yaml.Marshal(record.Document)
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(data)
+			return err
+		},
+	}
+	importConfig := &cobra.Command{
+		Use: "import <path|->", Short: "Replace workspace config from a YAML document", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var data []byte
+			var err error
+			if args[0] == "-" {
+				data, err = io.ReadAll(cmd.InOrStdin())
+			} else {
+				data, err = os.ReadFile(args[0])
+			}
+			if err != nil {
+				return err
+			}
+			var document config.WorkspaceDocument
+			decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+			decoder.KnownFields(true)
+			if err := decoder.Decode(&document); err != nil {
+				return fmt.Errorf("parse workspace config: %w", err)
+			}
+			client := newClient()
+			current, err := client.getWorkspaceConfig()
+			if err != nil {
+				return err
+			}
+			receipt, err := client.updateWorkspaceConfig(document, current.Version)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "updated workspace config v%d -> v%d (event %d)\n", current.Version, receipt.Version, receipt.EventID)
+			return nil
+		},
+	}
+	cmd.AddCommand(export, importConfig)
+	return cmd
 }
 
 func taskCmd() *cobra.Command {

@@ -64,7 +64,8 @@ func TestPostgresStorePersistsEventsAndRejectsMutation(t *testing.T) {
 	}
 	suffix := time.Now().UTC().Format("150405.000000000")
 	cfg := &config.Config{
-		Workspace: "integration", Repos: []config.Repo{{Name: "api", URL: "file:///tmp/api", Base: "main"}},
+		Workspace: "integration", Database: config.Database{Backend: "postgres", URL: databaseURL},
+		Repos: []config.Repo{{Name: "api", URL: "file:///tmp/api", Base: "main"}},
 		Credentials: []config.Credential{{
 			ID: "cred-" + suffix, OwnerID: "operator-" + suffix, OwnerKind: "user", Kind: "personal_sub",
 			Vendor: "openai", Harness: "codex", Ref: "/tmp/codex-auth",
@@ -426,5 +427,73 @@ func TestBootstrapConfigSanitizesAndRevokesRemovedCapacity(t *testing.T) {
 	claimed, err = st.ClaimCredential(ctx, claim)
 	if err != nil || claimed.ID != credential.ID {
 		t.Fatalf("re-added capacity was not restored: credential=%+v err=%v", claimed, err)
+	}
+}
+
+func TestWorkspaceConfigBootstrapUpdateAuditAndHotRead(t *testing.T) {
+	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	st, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	suffix := time.Now().UTC().Format("150405.000000000")
+	deployment := &config.Config{
+		Workspace: "dynamic-" + suffix, Image: "seed:1", MaxBounces: 2,
+		Database: config.Database{Backend: "postgres", URL: databaseURL},
+		Routing: config.Routing{OwnerID: "operator", LeaseSeconds: 60, Stages: map[string]config.StageRoute{
+			"implement": {Harnesses: []string{"codex"}, BudgetUSD: 3, TimeoutText: "2h", Timeout: 2 * time.Hour},
+		}},
+		Repos: []config.Repo{{Name: "one", URL: "https://example.com/one", Base: "main", Image: "seed:1"}},
+	}
+	seeded, err := st.BootstrapWorkspaceConfig(ctx, deployment)
+	if err != nil || !seeded {
+		t.Fatalf("first bootstrap seeded=%v err=%v", seeded, err)
+	}
+	changedFile := *deployment
+	changedFile.Image = "ignored:2"
+	seeded, err = st.BootstrapWorkspaceConfig(ctx, &changedFile)
+	if err != nil || seeded {
+		t.Fatalf("second bootstrap seeded=%v err=%v", seeded, err)
+	}
+	runtimeConfig, err := st.RuntimeConfig(ctx, deployment)
+	if err != nil || runtimeConfig.Image != "seed:1" {
+		t.Fatalf("database did not win: image=%q err=%v", runtimeConfig.Image, err)
+	}
+
+	next := *runtimeConfig
+	next.Routing = runtimeConfig.Routing
+	next.Routing.Stages = map[string]config.StageRoute{
+		"implement": {Harnesses: []string{"claude-code", "codex"}, BudgetUSD: 2, TimeoutText: "45m", Timeout: 45 * time.Minute},
+	}
+	next.Repos = append(append([]config.Repo(nil), runtimeConfig.Repos...), config.Repo{
+		Name: "two", URL: "https://example.com/two", Base: "main", Image: "seed:1",
+	})
+	actorCtx := basestore.WithActor(ctx, basestore.Actor{ID: "integration-operator", Role: core.ActorHuman})
+	receipt, err := st.UpdateWorkspaceConfig(actorCtx, 1, &next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Version != 2 || receipt.ActorID != "integration-operator" || len(receipt.Sections) != 2 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	if _, err := st.UpdateWorkspaceConfig(actorCtx, 1, &next); !errors.Is(err, config.ErrVersionConflict) {
+		t.Fatalf("stale update error = %v", err)
+	}
+	hot, err := st.RuntimeConfig(ctx, deployment)
+	if err != nil || len(hot.Repos) != 2 || hot.Routing.Stages["implement"].Timeout != 45*time.Minute {
+		t.Fatalf("hot config = %+v err=%v", hot, err)
+	}
+	var eventKind, actorID string
+	var taskID *string
+	if err := st.pool.QueryRow(ctx, "SELECT kind, actor_id, task_id FROM events WHERE id = $1", receipt.EventID).Scan(&eventKind, &actorID, &taskID); err != nil {
+		t.Fatal(err)
+	}
+	if eventKind != "config.updated" || actorID != "integration-operator" || taskID != nil {
+		t.Fatalf("audit event kind=%q actor=%q task=%v", eventKind, actorID, taskID)
 	}
 }

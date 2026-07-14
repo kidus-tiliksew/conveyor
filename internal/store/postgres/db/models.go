@@ -29,13 +29,14 @@ type Credential struct {
 
 type Event struct {
 	ID          int64              `json:"id"`
-	TaskID      string             `json:"task_id"`
+	TaskID      pgtype.Text        `json:"task_id"`
 	JobID       pgtype.Text        `json:"job_id"`
 	Kind        string             `json:"kind"`
 	ActorID     string             `json:"actor_id"`
 	ActorRole   string             `json:"actor_role"`
 	PayloadJson []byte             `json:"payload_json"`
 	At          pgtype.Timestamptz `json:"at"`
+	WorkspaceID string             `json:"workspace_id"`
 }
 
 type Intervention struct {
@@ -139,10 +140,11 @@ type VendorPolicy struct {
 }
 
 type Workspace struct {
-	ID         string             `json:"id"`
-	Name       string             `json:"name"`
-	ConfigYaml string             `json:"config_yaml"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	ConfigYaml    string             `json:"config_yaml"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ConfigVersion int64              `json:"config_version"`
 }
 
 type WorkspaceCredential struct {

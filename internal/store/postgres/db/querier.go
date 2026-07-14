@@ -21,12 +21,15 @@ type Querier interface {
 	GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error)
 	GetTask(ctx context.Context, arg GetTaskParams) (Task, error)
 	GetTranscript(ctx context.Context, arg GetTranscriptParams) (Transcript, error)
+	GetWorkspaceConfig(ctx context.Context, id string) (Workspace, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	InsertIntervention(ctx context.Context, arg InsertInterventionParams) (Intervention, error)
 	InsertJob(ctx context.Context, arg InsertJobParams) (Job, error)
 	InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error)
 	InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error)
+	InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) (Workspace, error)
 	InsertWorkspaceCredentialRef(ctx context.Context, arg InsertWorkspaceCredentialRefParams) error
+	InsertWorkspaceEvent(ctx context.Context, arg InsertWorkspaceEventParams) (Event, error)
 	InsertWorkspaceVendorPolicyRef(ctx context.Context, arg InsertWorkspaceVendorPolicyRefParams) error
 	ListActivityMarkers(ctx context.Context, workspaceID string) ([]ListActivityMarkersRow, error)
 	ListCredentials(ctx context.Context) ([]Credential, error)
@@ -46,11 +49,11 @@ type Querier interface {
 	UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error)
 	UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error)
 	UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error)
+	UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspaceConfigParams) (Workspace, error)
 	UpsertCredential(ctx context.Context, arg UpsertCredentialParams) error
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) error
 	UpsertTranscript(ctx context.Context, arg UpsertTranscriptParams) (Transcript, error)
 	UpsertVendorPolicy(ctx context.Context, arg UpsertVendorPolicyParams) error
-	UpsertWorkspace(ctx context.Context, arg UpsertWorkspaceParams) error
 }
 
 var _ Querier = (*Queries)(nil)

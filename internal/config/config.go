@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,13 +17,13 @@ import (
 )
 
 type Repo struct {
-	Name       string             `yaml:"name"`
-	URL        string             `yaml:"url"`
-	GitHub     string             `yaml:"github"` // owner/repo slug for gh; empty disables PR/issue flow
-	Base       string             `yaml:"base"`   // default base branch
-	Image      string             `yaml:"image"`  // per-repo sandbox image override (spec §19)
-	SecretRefs []string           `yaml:"secret_refs"`
-	ToolPolicy adapter.ToolPolicy `yaml:"tool_policy"`
+	Name       string             `yaml:"name" json:"name"`
+	URL        string             `yaml:"url" json:"url"`
+	GitHub     string             `yaml:"github" json:"github,omitempty"` // owner/repo slug for gh; empty disables PR/issue flow
+	Base       string             `yaml:"base" json:"base"`               // default base branch
+	Image      string             `yaml:"image" json:"image"`             // per-repo sandbox image override (spec §19)
+	SecretRefs []string           `yaml:"secret_refs" json:"secret_refs,omitempty"`
+	ToolPolicy adapter.ToolPolicy `yaml:"tool_policy" json:"tool_policy"`
 }
 
 type SecretSet struct {
@@ -64,20 +65,49 @@ type VendorPolicy struct {
 }
 
 type StageRoute struct {
-	Harnesses   []string      `yaml:"harnesses"`
-	ModelTier   string        `yaml:"model_tier"`
-	BudgetUSD   float64       `yaml:"budget_usd"`
-	Timeout     time.Duration `yaml:"-"`
-	TimeoutText string        `yaml:"timeout"`
+	Harnesses   []string      `yaml:"harnesses" json:"harnesses"`
+	ModelTier   string        `yaml:"model_tier" json:"model_tier,omitempty"`
+	BudgetUSD   float64       `yaml:"budget_usd" json:"budget_usd"`
+	Timeout     time.Duration `yaml:"-" json:"-"`
+	TimeoutText string        `yaml:"timeout" json:"timeout"`
 }
 
 const DefaultStageTimeout = 2 * time.Hour
 
 type Routing struct {
-	OwnerID         string                `yaml:"owner_id"`
-	LeaseSeconds    int                   `yaml:"lease_seconds"`
-	AllowRestricted bool                  `yaml:"allow_restricted"`
-	Stages          map[string]StageRoute `yaml:"stages"`
+	OwnerID         string                `yaml:"owner_id" json:"owner_id,omitempty"`
+	LeaseSeconds    int                   `yaml:"lease_seconds" json:"lease_seconds,omitempty"`
+	AllowRestricted bool                  `yaml:"allow_restricted" json:"allow_restricted,omitempty"`
+	Stages          map[string]StageRoute `yaml:"stages" json:"stages"`
+}
+
+type WorkspaceRouting struct {
+	Stages map[string]StageRoute `yaml:"stages" json:"stages"`
+}
+
+// WorkspaceDocument is the mutable, Postgres-backed portion of Config. The
+// deployment substrate, credential pool, vendor policy, and secret backend
+// deliberately do not cross the workspace config API boundary (spec §21.3).
+type WorkspaceDocument struct {
+	Workspace  string           `yaml:"workspace" json:"workspace"`
+	Image      string           `yaml:"image" json:"image"`
+	MaxBounces int              `yaml:"max_bounces" json:"max_bounces"`
+	Routing    WorkspaceRouting `yaml:"routing" json:"routing"`
+	Repos      []Repo           `yaml:"repos" json:"repos"`
+}
+
+var ErrVersionConflict = errors.New("workspace config version conflict")
+
+type VersionedDocument struct {
+	Document WorkspaceDocument `json:"document"`
+	Version  int64             `json:"version"`
+}
+
+type UpdateReceipt struct {
+	VersionedDocument
+	EventID  int64    `json:"event_id"`
+	ActorID  string   `json:"actor_id"`
+	Sections []string `json:"sections"`
 }
 
 type Config struct {
@@ -104,11 +134,68 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&c); err != nil {
+	if err := decodeKnown(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	return normalize(&c, path)
+}
+
+// ParseWorkspaceDocument applies a database/API document to the file-backed
+// deployment settings and runs the exact same normalization and validation as
+// Load. The workspace identity is immutable because durable tasks and repos
+// are keyed by it (spec §16, §21.3).
+func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, error) {
+	var document WorkspaceDocument
+	if err := decodeKnown(data, &document); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", source, err)
+	}
+	if document.Workspace != "" && document.Workspace != deployment.Workspace {
+		return nil, fmt.Errorf("workspace must remain %q", deployment.Workspace)
+	}
+	next := *deployment
+	if document.Workspace == "" {
+		document.Workspace = deployment.Workspace
+	}
+	next.Workspace = document.Workspace
+	next.Image = document.Image
+	next.MaxBounces = document.MaxBounces
+	next.Routing = deployment.Routing
+	next.Routing.Stages = document.Routing.Stages
+	next.Repos = document.Repos
+	return normalize(&next, source)
+}
+
+// ParseStoredWorkspaceDocument accepts both the Phase 4.5 workspace-only
+// document and the legacy full sanitized Config written by Phase 2/3. The
+// legacy path extracts only workspace scope; deployment and credential fields
+// continue to come from the current file (spec §21.3).
+func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, bool, error) {
+	cfg, err := ParseWorkspaceDocument(data, deployment, source)
+	if err == nil {
+		return cfg, false, nil
+	}
+	var legacy Config
+	if legacyErr := decodeKnown(data, &legacy); legacyErr != nil {
+		return nil, false, err
+	}
+	legacyData, legacyErr := yaml.Marshal(legacy.WorkspaceDocument())
+	if legacyErr != nil {
+		return nil, false, legacyErr
+	}
+	cfg, legacyErr = ParseWorkspaceDocument(legacyData, deployment, source)
+	if legacyErr != nil {
+		return nil, false, legacyErr
+	}
+	return cfg, true, nil
+}
+
+func decodeKnown(data []byte, target any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	return decoder.Decode(target)
+}
+
+func normalize(c *Config, path string) (*Config, error) {
 	if c.Workspace == "" {
 		c.Workspace = "default"
 	}
@@ -261,10 +348,15 @@ func Load(path string) (*Config, error) {
 	if len(c.Credentials) > 0 && c.Database.Backend != "postgres" {
 		return nil, fmt.Errorf("credential routing requires the postgres database backend")
 	}
+	repoNames := make(map[string]struct{}, len(c.Repos))
 	for i := range c.Repos {
 		if c.Repos[i].Name == "" || c.Repos[i].URL == "" {
 			return nil, fmt.Errorf("repo %d: name and url are required", i)
 		}
+		if _, duplicate := repoNames[c.Repos[i].Name]; duplicate {
+			return nil, fmt.Errorf("duplicate repo name %q", c.Repos[i].Name)
+		}
+		repoNames[c.Repos[i].Name] = struct{}{}
 		if !safePathSegment(c.Repos[i].Name) {
 			return nil, fmt.Errorf("repo %d: name %q must be one path-safe segment", i, c.Repos[i].Name)
 		}
@@ -290,7 +382,46 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("repo %s tool_policy: %w", c.Repos[i].Name, err)
 		}
 	}
-	return &c, nil
+	return c, nil
+}
+
+// WorkspaceDocument returns a detached copy of the database-backed scope.
+// Runtime-only parsed durations are omitted; TimeoutText is the wire value.
+func (c *Config) WorkspaceDocument() WorkspaceDocument {
+	document := WorkspaceDocument{
+		Workspace: c.Workspace, Image: c.Image, MaxBounces: c.MaxBounces,
+		Routing: WorkspaceRouting{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
+		Repos:   make([]Repo, len(c.Repos)),
+	}
+	for stage, route := range c.Routing.Stages {
+		route.Harnesses = append([]string(nil), route.Harnesses...)
+		route.Timeout = 0
+		document.Routing.Stages[stage] = route
+	}
+	for i, repo := range c.Repos {
+		repo.SecretRefs = append([]string(nil), repo.SecretRefs...)
+		repo.ToolPolicy.AllowedCommands = cloneCommands(repo.ToolPolicy.AllowedCommands)
+		repo.ToolPolicy.DeniedCommands = cloneCommands(repo.ToolPolicy.DeniedCommands)
+		repo.ToolPolicy.NetworkAllow = append([]string(nil), repo.ToolPolicy.NetworkAllow...)
+		document.Repos[i] = repo
+	}
+	return document
+}
+
+func cloneCommands(commands [][]string) [][]string {
+	cloned := make([][]string, len(commands))
+	for i := range commands {
+		cloned[i] = append([]string(nil), commands[i]...)
+	}
+	return cloned
+}
+
+func MarshalWorkspaceDocument(c *Config) ([]byte, error) {
+	data, err := yaml.Marshal(c.WorkspaceDocument())
+	if err != nil {
+		return nil, fmt.Errorf("marshal workspace config: %w", err)
+	}
+	return data, nil
 }
 
 func validHarnessCredentialEnv(harness, kind, name string) bool {

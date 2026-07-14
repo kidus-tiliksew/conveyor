@@ -5,9 +5,9 @@ An orchestration platform for automated software development — a
 implement → review → verify → merge → monitor) against Git
 repositories in disposable containerized sandboxes.
 
-Full design: [conveyor-spec.md](conveyor-spec.md) (v1.2, accepted).
+Full design: [conveyor-spec.md](conveyor-spec.md) (v1.3, accepted).
 
-## Status: Phase 3 complete (spec §19)
+## Status: Phase 4.5 complete — Beta entry (spec §19, §21.3)
 
 Phase 1's live GitHub issue → Codex → PR loop remains intact. Phase 2 adds the
 validated durable multi-harness and human-gate substrate:
@@ -24,6 +24,9 @@ validated durable multi-harness and human-gate substrate:
 - [x] Schema-validated triage/review outputs and §4.1 spec blocks; versioned exact spec approval contract
 - [x] File-backed proto-pack role prompts and stage policies, per-repo images, budgets, and timeouts
 - [x] GitHub PR review feedback ingestion into redirect interventions
+- [x] Polished Phase 4 app shell, activity/task review surfaces, task intake, and workspace view
+- [x] Postgres-backed, versioned workspace config with first-boot YAML seeding and `config.updated` audit events
+- [x] Authenticated config API, optimistic concurrency, dispatch-time hot reload, CLI import/export, and editable Workspace forms
 
 Phase 1 closure evidence remains in [docs/phase1-closure.md](docs/phase1-closure.md).
 Phase 2 operation and credential setup are in [docs/phase2.md](docs/phase2.md),
@@ -42,7 +45,15 @@ bin/conveyord -config conveyor.yaml -poll-github 60s
 # In another terminal / host with Docker and harness credentials:
 bin/conveyor --config conveyor.yaml runner start --local
 bin/conveyor task new "fix the typo in README" --repo api
+# Back up or restore the database-owned workspace document:
+bin/conveyor config export > workspace.yaml
+bin/conveyor config import workspace.yaml
 ```
+
+On the first Postgres boot, the workspace sections in `conveyor.yaml` seed the
+database. Later starts keep database workspace config and ignore those file
+sections with a startup notice. Database/listen/pack/secrets/cache/jobs settings,
+the credential pool, and vendor policies remain file-managed.
 
 Requires: Postgres, Docker on the runner, at least one configured harness
 credential, and `gh`
@@ -54,7 +65,7 @@ sets additionally require `sops` plus a configured age/KMS/PGP identity; see
 ## Layout
 
 ```
-cmd/conveyor/         CLI (cobra) — task new/list/show, checkout, runner start, secrets set
+cmd/conveyor/         CLI (cobra) — tasks, config import/export, checkout, runner, secrets
 cmd/conveyord/        control-plane daemon — API, GitHub ingestion, embedded activity UI
 cmd/conveyor-runner/  standalone LocalDockerRunner River worker
 cmd/conveyor-shim/    job shim — in-sandbox supervisor; stdlib-only static binary
@@ -76,10 +87,9 @@ pack/                 Phase 3 role prompts and per-stage tool policies (§2.2)
 ```
 
 The roadmap was re-phased for the Beta milestone — Conveyor developing
-Conveyor — in spec v1.2 (§19, §21.2); the working breakdown is
-[docs/beta-plan.md](docs/beta-plan.md). Pre-Beta is exactly two phases:
-the full pipeline (triage / spec / code-review agents) and a ground-up UI
-rewrite. Post-Beta, built through the factory: platform agents & command
+Conveyor — in spec v1.3 (§19, §21.2–§21.3); the working breakdown is
+[docs/beta-plan.md](docs/beta-plan.md). The full pipeline, UI rewrite, and
+dynamic workspace configuration now gate Beta entry. Post-Beta, built through the factory: platform agents & command
 policy, the memory store, then the flywheel. Demand-triggered: the
 verification agent, K8sRunner, multi-repo worktree sets, aggregate cost
 dashboard, and enterprise hardening.
@@ -87,7 +97,7 @@ dashboard, and enterprise hardening.
 ## Development
 
 ```sh
-make build   # bin/conveyor, bin/conveyord
+make build   # CLI, control plane, runner, and resume experiment binaries
 make test
 make vet
 make shim    # linux static shim binaries for the base image

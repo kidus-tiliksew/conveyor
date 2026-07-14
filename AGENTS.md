@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.2, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.3, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -19,8 +19,8 @@ with a version bump (§21), never silent edits.
 
 ## Phase discipline
 
-Phases 1–3 are complete. Preserve their contracts and the full multi-stage
+Phases 1–4.5 are complete. Preserve their contracts and the full multi-stage
 pipeline described by spec §19 and [docs/beta-plan.md](docs/beta-plan.md). Do
-not build Phase 4 or post-Beta work without explicit activation. K8sRunner,
+not build post-Beta work without explicit activation. K8sRunner,
 multi-repo worktree sets, verification, and the aggregate cost dashboard
 remain demand-triggered Phase 8 scope.

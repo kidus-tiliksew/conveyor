@@ -133,9 +133,9 @@ WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3
 `
 
 type CountEventsParams struct {
-	TaskID      string `json:"task_id"`
-	Kind        string `json:"kind"`
-	WorkspaceID string `json:"workspace_id"`
+	TaskID      pgtype.Text `json:"task_id"`
+	Kind        string      `json:"kind"`
+	WorkspaceID string      `json:"workspace_id"`
 }
 
 func (q *Queries) CountEvents(ctx context.Context, arg CountEventsParams) (int64, error) {
@@ -356,14 +356,34 @@ func (q *Queries) GetTranscript(ctx context.Context, arg GetTranscriptParams) (T
 	return i, err
 }
 
+const getWorkspaceConfig = `-- name: GetWorkspaceConfig :one
+SELECT id, name, config_yaml, created_at, config_version FROM workspaces WHERE id = $1
+`
+
+func (q *Queries) GetWorkspaceConfig(ctx context.Context, id string) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceConfig, id)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ConfigYaml,
+		&i.CreatedAt,
+		&i.ConfigVersion,
+	)
+	return i, err
+}
+
 const insertEvent = `-- name: InsertEvent :one
-INSERT INTO events (task_id, job_id, kind, actor_id, actor_role, payload_json, at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, task_id, job_id, kind, actor_id, actor_role, payload_json, at
+INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, payload_json, at)
+SELECT t.workspace_id, $1, $2, $3,
+       $4, $5, $6, $7
+FROM tasks t
+WHERE t.id = $1
+RETURNING id, task_id, job_id, kind, actor_id, actor_role, payload_json, at, workspace_id
 `
 
 type InsertEventParams struct {
-	TaskID      string             `json:"task_id"`
+	TaskID      pgtype.Text        `json:"task_id"`
 	JobID       pgtype.Text        `json:"job_id"`
 	Kind        string             `json:"kind"`
 	ActorID     string             `json:"actor_id"`
@@ -392,6 +412,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 		&i.ActorRole,
 		&i.PayloadJson,
 		&i.At,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -645,6 +666,32 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 	return i, err
 }
 
+const insertWorkspace = `-- name: InsertWorkspace :one
+INSERT INTO workspaces (id, name, config_yaml)
+VALUES ($1, $2, $3)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, name, config_yaml, created_at, config_version
+`
+
+type InsertWorkspaceParams struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ConfigYaml string `json:"config_yaml"`
+}
+
+func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, insertWorkspace, arg.ID, arg.Name, arg.ConfigYaml)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ConfigYaml,
+		&i.CreatedAt,
+		&i.ConfigVersion,
+	)
+	return i, err
+}
+
 const insertWorkspaceCredentialRef = `-- name: InsertWorkspaceCredentialRef :exec
 INSERT INTO workspace_credentials (workspace_id, credential_id)
 VALUES ($1, $2)
@@ -658,6 +705,45 @@ type InsertWorkspaceCredentialRefParams struct {
 func (q *Queries) InsertWorkspaceCredentialRef(ctx context.Context, arg InsertWorkspaceCredentialRefParams) error {
 	_, err := q.db.Exec(ctx, insertWorkspaceCredentialRef, arg.WorkspaceID, arg.CredentialID)
 	return err
+}
+
+const insertWorkspaceEvent = `-- name: InsertWorkspaceEvent :one
+INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, payload_json, at)
+VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6)
+RETURNING id, task_id, job_id, kind, actor_id, actor_role, payload_json, at, workspace_id
+`
+
+type InsertWorkspaceEventParams struct {
+	WorkspaceID string             `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	ActorID     string             `json:"actor_id"`
+	ActorRole   string             `json:"actor_role"`
+	PayloadJson []byte             `json:"payload_json"`
+	At          pgtype.Timestamptz `json:"at"`
+}
+
+func (q *Queries) InsertWorkspaceEvent(ctx context.Context, arg InsertWorkspaceEventParams) (Event, error) {
+	row := q.db.QueryRow(ctx, insertWorkspaceEvent,
+		arg.WorkspaceID,
+		arg.Kind,
+		arg.ActorID,
+		arg.ActorRole,
+		arg.PayloadJson,
+		arg.At,
+	)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.JobID,
+		&i.Kind,
+		&i.ActorID,
+		&i.ActorRole,
+		&i.PayloadJson,
+		&i.At,
+		&i.WorkspaceID,
+	)
+	return i, err
 }
 
 const insertWorkspaceVendorPolicyRef = `-- name: InsertWorkspaceVendorPolicyRef :exec
@@ -770,15 +856,15 @@ func (q *Queries) ListCredentials(ctx context.Context) ([]Credential, error) {
 }
 
 const listEvents = `-- name: ListEvents :many
-SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at FROM events e
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND t.workspace_id = $2
 ORDER BY e.at, e.id
 `
 
 type ListEventsParams struct {
-	TaskID      string `json:"task_id"`
-	WorkspaceID string `json:"workspace_id"`
+	TaskID      pgtype.Text `json:"task_id"`
+	WorkspaceID string      `json:"workspace_id"`
 }
 
 func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error) {
@@ -799,6 +885,7 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 			&i.ActorRole,
 			&i.PayloadJson,
 			&i.At,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -811,16 +898,16 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 }
 
 const listEventsAfter = `-- name: ListEventsAfter :many
-SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at FROM events e
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id > $3
 ORDER BY e.id
 `
 
 type ListEventsAfterParams struct {
-	TaskID      string `json:"task_id"`
-	WorkspaceID string `json:"workspace_id"`
-	ID          int64  `json:"id"`
+	TaskID      pgtype.Text `json:"task_id"`
+	WorkspaceID string      `json:"workspace_id"`
+	ID          int64       `json:"id"`
 }
 
 func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error) {
@@ -841,6 +928,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 			&i.ActorRole,
 			&i.PayloadJson,
 			&i.At,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -1402,6 +1490,34 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 	return i, err
 }
 
+const updateWorkspaceConfig = `-- name: UpdateWorkspaceConfig :one
+UPDATE workspaces
+SET config_yaml = $1,
+    config_version = config_version + 1
+WHERE id = $2
+  AND config_version = $3
+RETURNING id, name, config_yaml, created_at, config_version
+`
+
+type UpdateWorkspaceConfigParams struct {
+	ConfigYaml      string `json:"config_yaml"`
+	ID              string `json:"id"`
+	ExpectedVersion int64  `json:"expected_version"`
+}
+
+func (q *Queries) UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspaceConfigParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, updateWorkspaceConfig, arg.ConfigYaml, arg.ID, arg.ExpectedVersion)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ConfigYaml,
+		&i.CreatedAt,
+		&i.ConfigVersion,
+	)
+	return i, err
+}
+
 const upsertCredential = `-- name: UpsertCredential :exec
 INSERT INTO credentials (
     id, owner_id, owner_kind, kind, vendor, harness, enc_ref
@@ -1532,24 +1648,5 @@ func (q *Queries) UpsertVendorPolicy(ctx context.Context, arg UpsertVendorPolicy
 		arg.ReviewedAt,
 		arg.SourceUrl,
 	)
-	return err
-}
-
-const upsertWorkspace = `-- name: UpsertWorkspace :exec
-INSERT INTO workspaces (id, name, config_yaml)
-VALUES ($1, $2, $3)
-ON CONFLICT (id) DO UPDATE
-SET name = EXCLUDED.name,
-    config_yaml = EXCLUDED.config_yaml
-`
-
-type UpsertWorkspaceParams struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	ConfigYaml string `json:"config_yaml"`
-}
-
-func (q *Queries) UpsertWorkspace(ctx context.Context, arg UpsertWorkspaceParams) error {
-	_, err := q.db.Exec(ctx, upsertWorkspace, arg.ID, arg.Name, arg.ConfigYaml)
 	return err
 }

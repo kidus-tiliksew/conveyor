@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -34,9 +35,14 @@ type Server struct {
 	// BearerToken authenticates mutating requests (spec §17.3). An empty
 	// token denies all mutations rather than silently disabling auth.
 	BearerToken string
-	// WorkspaceInfo is the read-only config snapshot served at
-	// GET /v1/workspace; nil (tests, minimal wiring) responds 404.
+	// WorkspaceInfo is the static fallback for the unauthenticated display
+	// snapshot; production resolves it dynamically through ConfigProvider.
 	WorkspaceInfo *WorkspaceInfo
+	// ConfigProvider resolves current database-backed workspace scope while
+	// preserving file-backed deployment fields (spec §21.3).
+	ConfigProvider func(context.Context) (*config.Config, error)
+	ConfigStore    WorkspaceConfigStore
+	Deployment     *config.Config
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -61,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks/{id}/spec", s.getLatestSpec)
 		r.Get("/reviews", s.listReviews)
 		r.Get("/workspace", s.getWorkspace)
+		r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
+		r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
@@ -221,12 +229,30 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
 	}
-	if s.Repos != nil && !contains(s.Repos, req.Repo) {
+	repos := s.Repos
+	workspace := s.Workspace
+	var current *config.Config
+	if s.ConfigProvider != nil {
+		var err error
+		current, err = s.ConfigProvider(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		repos = current.RepoNames()
+		workspace = current.Workspace
+	}
+	if repos != nil && !contains(repos, req.Repo) {
 		http.Error(w, "unknown repo "+req.Repo, http.StatusBadRequest)
 		return
 	}
 	if req.BaseBranch == "" {
 		req.BaseBranch = "main"
+		if current != nil {
+			if repo, ok := current.Repo(req.Repo); ok {
+				req.BaseBranch = repo.Base
+			}
+		}
 	}
 	if req.Source == "" {
 		req.Source = "api"
@@ -241,7 +267,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	id := core.NewTaskID()
 	t := core.Task{
 		ID:         id,
-		Workspace:  s.Workspace,
+		Workspace:  workspace,
 		Source:     req.Source,
 		Title:      req.Title,
 		Body:       req.Body,

@@ -30,7 +30,7 @@ exactly three phases:
 - **Phase 4** *(complete)* — UI rewrite (shadcn/ui, full §13.3): app shell,
   stage-grouped feed, task detail panel, task intake, read-only workspace
   snapshot.
-- **Phase 4.5** *(active)* — dynamic workspace configuration (spec §21.3):
+- **Phase 4.5** *(complete)* — dynamic workspace configuration (spec §21.3):
   Postgres-backed workspace config, validated config write API with
   `config.updated` audit events, hot reload, editable Workspace UI →
   **Beta: Conveyor develops Conveyor**. Credential pool and vendor policies

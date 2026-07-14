@@ -136,7 +136,7 @@ control-plane restart, each recorded as a `config.updated` event with actor
 identity; a rejected invalid write surfaces its validation error in the UI
 and leaves state untouched. Beta entry follows: five consecutive real tasks,
 one redirect round, zero manual git ops, all human actions through the UI or
-CLI.
+CLI. *(Phase 4.5 implementation complete.)*
 
 ---
 

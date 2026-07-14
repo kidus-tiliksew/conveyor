@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
@@ -93,7 +95,35 @@ func (c *client) reviewTask(id string, action core.InterventionAction, reasonCod
 	return response.Task, err
 }
 
+func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
+	if c.token == "" {
+		return config.VersionedDocument{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")
+	}
+	var record config.VersionedDocument
+	err := c.do(http.MethodGet, "/v1/workspace/config", nil, &record)
+	return record, err
+}
+
+func (c *client) updateWorkspaceConfig(document config.WorkspaceDocument, version int64) (config.UpdateReceipt, error) {
+	if c.token == "" {
+		return config.UpdateReceipt{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")
+	}
+	payload, err := json.Marshal(map[string]any{"document": document})
+	if err != nil {
+		return config.UpdateReceipt{}, err
+	}
+	var receipt config.UpdateReceipt
+	err = c.doHeaders(http.MethodPut, "/v1/workspace/config", payload, &receipt, map[string]string{
+		"If-Match": strconv.FormatInt(version, 10),
+	})
+	return receipt, err
+}
+
 func (c *client) do(method, path string, body []byte, out any) error {
+	return c.doHeaders(method, path, body, out, nil)
+}
+
+func (c *client) doHeaders(method, path string, body []byte, out any, headers map[string]string) error {
 	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -103,6 +133,10 @@ func (c *client) do(method, path string, body []byte, out any) error {
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-Conveyor-Actor", "cli-operator")
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
