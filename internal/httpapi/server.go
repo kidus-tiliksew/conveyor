@@ -465,28 +465,15 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) checkoutState(ctx context.Context, taskID string) (string, bool, string, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
-	if err != nil {
-		return "", false, "", err
-	}
-	command, available, guidance := checkoutStateFromHistory(taskID, events)
+	command, available, guidance := checkoutStateFromHistory(taskID, nil)
 	return command, available, guidance, nil
 }
 
-func checkoutStateFromHistory(taskID string, events []core.Event) (string, bool, string) {
-	// A PR event is Conveyor's durable observation that the agent-pushed branch
-	// reached the review boundary (spec §21.7).
-	available := false
-	for _, event := range events {
-		if event.Kind == "pull_request.opened" {
-			available = true
-			break
-		}
-	}
-	if available {
-		return "conveyor checkout " + taskID, true, "The pushed task branch is available for human checkout."
-	}
-	return "", false, "The branch name is assigned, but checkout is unavailable until the implementation agent creates and pushes that branch."
+func checkoutStateFromHistory(taskID string, _ []core.Event) (string, bool, string) {
+	// The checkout helper can safely create a missing assigned branch from the
+	// freshly fetched base, so the dedicated-worktree command is available as
+	// soon as the task exists (spec §21.8).
+	return "conveyor checkout " + taskID, true, "Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."
 }
 
 func contains(xs []string, x string) bool {

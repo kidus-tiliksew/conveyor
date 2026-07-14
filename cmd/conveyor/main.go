@@ -1,15 +1,12 @@
 // conveyor is the CLI — the primary human surface alongside the review UI
-// (spec §17.1). It manages tasks, config, and the human checkout escape hatch.
+// (spec §17.1). It manages tasks, config, and safe local task worktrees.
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -198,14 +195,14 @@ func checkoutCmd() *cobra.Command {
 	var destination string
 	cmd := &cobra.Command{
 		Use:   "checkout <task-id>",
-		Short: "Add the task branch as a worktree in your local clone (spec §8.4)",
+		Short: "Create or reuse the task's dedicated local worktree (spec §21.8)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task, err := newClient().getTask(args[0])
 			if err != nil {
 				return err
 			}
-			path, err := checkoutTask(cmd.Context(), task.Branch, task.Repo, task.ID, destination)
+			path, err := checkoutTask(cmd.Context(), task.Branch, task.BaseBranch, task.Repo, task.ID, destination)
 			if err != nil {
 				return err
 			}
@@ -218,151 +215,22 @@ func checkoutCmd() *cobra.Command {
 }
 
 func doneCmd() *cobra.Command {
-	var redispatch bool
 	cmd := &cobra.Command{
 		Use:   "done <task-id>",
-		Short: "Remove the task worktree, optionally re-dispatching",
+		Short: "Remove a clean task worktree after merge or close (spec §21.8)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client := newClient()
-			task, err := client.getTask(args[0])
+			task, err := newClient().getTask(args[0])
 			if err != nil {
 				return err
 			}
-			if err := removeTaskWorktree(cmd.Context(), task.Branch, redispatch); err != nil {
+			result, err := removeTaskWorktree(cmd.Context(), task.Branch, task.State)
+			if err != nil {
 				return err
 			}
-			if redispatch {
-				if _, err := client.redispatchTask(task.ID); err != nil {
-					return err
-				}
-				fmt.Printf("removed checkout and re-dispatched task %s\n", task.ID)
-			} else {
-				fmt.Printf("removed checkout for task %s\n", task.ID)
-			}
+			fmt.Printf("worktree=%s branch=%s path=%s\n", result.Worktree, result.Branch, result.Path)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&redispatch, "redispatch", false, "re-dispatch the task after removing the worktree")
 	return cmd
-}
-
-func checkoutTask(ctx context.Context, branch, repo, taskID, destination string) (string, error) {
-	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", fmt.Errorf("checkout must run inside the target repository: %w", err)
-	}
-	root = strings.TrimSpace(root)
-	if destination == "" {
-		destination = filepath.Join(filepath.Dir(root), repo+"-task-"+taskID)
-	} else if !filepath.IsAbs(destination) {
-		destination, err = filepath.Abs(destination)
-		if err != nil {
-			return "", err
-		}
-	}
-	localRef := "refs/heads/" + branch
-	remoteRef := "refs/remotes/origin/" + branch
-	remoteListing, err := gitOutput(ctx, root, "ls-remote", "--heads", "origin", localRef)
-	if err != nil {
-		return "", err
-	}
-	remoteExists := strings.TrimSpace(remoteListing) != ""
-	// Intake assigns a branch name but does not create the ref. Human checkout
-	// begins only after the implementation agent pushes it (spec §21.7).
-	if !remoteExists {
-		return "", fmt.Errorf("task branch %s is assigned but is not available on origin yet; checkout becomes available after the implementation agent pushes it", branch)
-	}
-	if _, err := gitOutput(ctx, root, "fetch", "origin", "+"+localRef+":"+remoteRef); err != nil {
-		return "", err
-	}
-	localExists := gitRefExists(ctx, root, localRef)
-	if localExists {
-		switch {
-		case gitIsAncestor(ctx, root, localRef, remoteRef):
-			remoteCommit, err := gitOutput(ctx, root, "rev-parse", "--verify", remoteRef)
-			if err != nil {
-				return "", err
-			}
-			if _, err := gitOutput(ctx, root, "update-ref", localRef, strings.TrimSpace(remoteCommit)); err != nil {
-				return "", err
-			}
-		case gitIsAncestor(ctx, root, remoteRef, localRef):
-			// The human branch is ahead of origin; preserve it for checkout.
-		default:
-			return "", fmt.Errorf("task branch %s diverged between the local clone and origin", branch)
-		}
-	}
-	if localExists {
-		if _, err := gitOutput(ctx, root, "worktree", "add", destination, branch); err != nil {
-			return "", err
-		}
-	} else {
-		if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, destination, remoteRef); err != nil {
-			return "", err
-		}
-	}
-	return destination, nil
-}
-
-func removeTaskWorktree(ctx context.Context, branch string, push bool) error {
-	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
-	if err != nil {
-		return fmt.Errorf("done must run inside the repository's primary checkout: %w", err)
-	}
-	root = strings.TrimSpace(root)
-	listing, err := gitOutput(ctx, root, "worktree", "list", "--porcelain")
-	if err != nil {
-		return err
-	}
-	var path, candidate string
-	for _, line := range strings.Split(listing, "\n") {
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			candidate = strings.TrimPrefix(line, "worktree ")
-		case line == "branch refs/heads/"+branch:
-			path = candidate
-		}
-	}
-	if path == "" {
-		return fmt.Errorf("no local worktree found for branch %s", branch)
-	}
-	if filepath.Clean(path) == filepath.Clean(root) {
-		return fmt.Errorf("refusing to remove the primary checkout")
-	}
-	if push {
-		status, err := gitOutput(ctx, path, "status", "--porcelain")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(status) != "" {
-			return fmt.Errorf("task worktree has uncommitted changes; commit them before --redispatch")
-		}
-		if _, err := gitOutput(ctx, path, "push", "--set-upstream", "origin", branch); err != nil {
-			return err
-		}
-	}
-	_, err = gitOutput(ctx, root, "worktree", "remove", path)
-	return err
-}
-
-func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = dir
-	out, err := command.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
-}
-
-func gitRefExists(ctx context.Context, dir, ref string) bool {
-	_, err := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
-	return err == nil
-}
-
-func gitIsAncestor(ctx context.Context, dir, older, newer string) bool {
-	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
-	command.Dir = dir
-	return command.Run() == nil
 }

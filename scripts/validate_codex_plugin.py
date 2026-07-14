@@ -97,13 +97,18 @@ def main() -> int:
     )
     require("[TODO:" not in skill_text, "skill contains an unfinished TODO placeholder")
     for required in (
-        "Safe assigned-branch setup",
+        "Safe task-worktree setup",
+        "conveyor checkout <task-id>",
+        "git worktree add -B",
+        "git worktree add --track -b",
         "git switch -C",
         "git checkout -B",
         "git push --set-upstream origin",
+        "conveyor done <task-id>",
+        "never share or mutate the implementation",
         "submit_for_review",
     ):
-        require(required in skill_text, f"skill is missing required branch guidance: {required}")
+        require(required in skill_text, f"skill is missing required worktree guidance: {required}")
 
     metadata_text = SKILL_METADATA.read_text(encoding="utf-8")
     for required in (

@@ -149,9 +149,10 @@ and leaves state untouched. *(Met; Beta entry moved to the Phase 4.7 exit by
 
 The sandbox execution plane retires; implementation delegates to
 operator-owned agents over MCP; the spec corpus gets its organizing UI;
-context files become first-class. Task intake assigns branch metadata only;
-the implementing agent safely creates or adopts and pushes the exact assigned
-branch from its own checkout (spec §21.7). Suggested order:
+context files become first-class. Task intake assigns branch metadata only; the
+implementing agent resolves a task-dedicated local worktree, safely creates or
+adopts and pushes the exact assigned branch there, and leaves the primary
+checkout untouched (spec §21.8). Suggested order:
 
 1. **Pipeline agents in-process.** Replace harness-dispatched triage and
    spec jobs with direct API calls inside `conveyord` on
@@ -195,8 +196,9 @@ branch from its own checkout (spec §21.7). Suggested order:
    `images/`, snapshot/resume machinery; strip credentials, vendor
    policies, tool policies, per-repo images, and secret refs from the
    config document (§21.4 change 8). `gitx` bare-clone cache stays for
-   pushed-branch diffs and post-push `conveyor checkout`; it does not create or
-   reset an implementation branch. Mechanical verification is the
+   pushed-branch diffs. The local `conveyor checkout` helper is agent-owned and
+   may safely create a missing implementation branch from its fetched base;
+   the factory does not create or reset that branch. Mechanical verification is the
    repo's own CI on the PR.
 4. **Requirements tree.** `features` table (hierarchical) +
    task→feature assignment (triage suggests, human reassigns); a
@@ -208,16 +210,16 @@ branch from its own checkout (spec §21.7). Suggested order:
 6. **UI/CLI updates.** Workspace page reflects the slimmed config;
    work-order state surfaces in the feed and task panel (claimed-by,
    lease, self-reported usage); review independence labels on the review
-   card and timeline entry (§21.4 change 3); assigned-vs-pushed branch state and
-   gated checkout guidance (§21.7); MCP connection instructions in Settings;
+   card and timeline entry (§21.4 change 3); assigned branch state and
+   dedicated-worktree checkout guidance (§21.8); MCP connection instructions in Settings;
    `conveyor config export/import` unchanged.
 
 **Exit criterion (spec §21.4):** one real task flows issue → triage → spec
 (approved in UI) → implement work order claimed by the operator's Claude
-Code over MCP → implementation on the operator's machine → safe creation or
-adoption and push of the assigned branch → `submit_for_review` → review work
-order claimed by a *fresh* agent session
-→ `changes_requested` verdict delivered to the waiting implementer via
+Code over MCP → safe creation or adoption of the assigned branch in a dedicated
+sibling worktree with the primary checkout left untouched → implementation and
+push on the operator's machine → `submit_for_review` → review work order claimed
+by a *fresh* agent session → `changes_requested` verdict delivered to the waiting implementer via
 `await_review` → fix in the same session → resubmit → approve → PR merged,
 with the full lifecycle audited and the self-review guard verified (the
 implementing session cannot claim the review order). Beta entry follows:
@@ -225,7 +227,8 @@ five consecutive such tasks per the §19 criterion.
 
 **Implementation status (July 14, 2026): complete.** The Phase 4.7 code,
 including the v1.5 MCP task-intake amendment, v1.6 budget removal, v1.7
-operator-owned branch contract and repository Codex plugin, and operator
+operator-owned branch contract, v1.8 dedicated-worktree default, repository
+Codex plugin, and operator
 surfaces are implemented and repository validation passes. The live
 dogfood exit flow and subsequent five-task Beta proof above are still pending;
 they must be recorded from real MCP sessions and are not inferred from tests.
@@ -267,3 +270,7 @@ Built through the factory, prioritized by observed operational load:
   scaling as quality control; K8sRunner/multi-repo when a second machine or
   second repo actually joins; anomaly breaker when task volume makes the
   trailing-median meaningful; enterprise on demand (§18.1).
+- **Future intake governance:** evaluate an audited `update_task`,
+  `add_task_context`, or spec-amendment operation so accepted context can be
+  appended after task creation without opening a duplicate task. This is not
+  part of the pre-Beta worktree implementation.

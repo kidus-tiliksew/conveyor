@@ -98,13 +98,13 @@ export function SummaryRail({ item }: { item: ActivityItem }) {
           </dl>
           <p className="mt-2 text-[11px] leading-5 text-faint">
             {item.checkout_available
-              ? 'Conveyor recorded the pushed-branch PR.'
-              : 'This is the canonical assigned name; it does not mean a local or remote Git ref exists yet.'}
+              ? 'The helper creates or reuses a dedicated worktree without switching your primary checkout.'
+              : item.checkout_guidance}
           </p>
           {item.checkout_available && item.checkout_command ? (
             <div className="mt-3 flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1">
               <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
-              <CopyButton value={item.checkout_command} label="Copy post-push checkout command" />
+              <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
             </div>
           ) : (
             <p className="mt-3 rounded-md border border-border bg-background px-2.5 py-2 text-[11px] leading-5 text-muted">

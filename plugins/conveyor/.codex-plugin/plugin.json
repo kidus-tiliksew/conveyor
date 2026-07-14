@@ -1,6 +1,6 @@
 {
   "name": "conveyor",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.local-20260714-153937",
   "description": "Operate Conveyor task intake and work-order lifecycles from Codex.",
   "author": {
     "name": "Kidus Tiliksew",
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Conveyor",
     "shortDescription": "Create and run Conveyor tasks from Codex.",
-    "longDescription": "Connect Codex to Conveyor for durable task intake, safe agent-owned branch setup, implementation work orders, independent review, and audited handoffs.",
+    "longDescription": "Connect Codex to Conveyor for durable task intake, dedicated local task worktrees, implementation work orders, independent review, and audited handoffs.",
     "developerName": "Kidus Tiliksew",
     "category": "Productivity",
     "capabilities": [
@@ -29,7 +29,7 @@
     "websiteURL": "https://github.com/kidus-tiliksew/conveyor",
     "defaultPrompt": [
       "Create a Conveyor task from this issue.",
-      "Implement my next approved Conveyor work order.",
+      "Implement my approved Conveyor work order in its dedicated task worktree.",
       "Review the next Conveyor change independently."
     ],
     "brandColor": "#2563EB"

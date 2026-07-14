@@ -27,14 +27,15 @@ queue when work orders are listed or claimed. Phase 4.7 has no heartbeat tool;
 long work should claim again after expiry or choose a lease matching the
 expected operation.
 
-## Assigned branches do not exist until implementation creates them
+## Task worktrees are local operator state
 
 Task intake stores a canonical branch name and selected base as metadata; it
 does not create a local or remote ref. The operator-owned implementation agent
-must safely create or adopt and then push that exact branch from its own
-checkout (spec §21.7). Until Conveyor records the pushed branch through a PR
-event, the dashboard keeps pull-to-local unavailable, and the CLI independently
-refuses checkout when `origin` lacks the task ref.
+must resolve a dedicated checkout with `conveyor checkout <task-id>` and then
+push that exact branch before review (spec §21.8). Worktree registrations and
+paths remain local to the operator's clone; Conveyor stores the assigned branch
+and base but does not centrally track or clean those local directories. The CLI
+therefore performs the safety checks and returns the local path on each use.
 
 ## Artifacts are stored in Postgres
 

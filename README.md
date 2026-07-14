@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.7. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.8. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -72,15 +72,21 @@ an implementer's attempt to claim the corresponding review work order.
 
 Task intake records the canonical `conveyor/task-<id>` branch name and selected
 base, but it does not create a local or remote Git ref. After claiming and
-reading an implementation work order, the operator-owned agent safely creates
-or adopts that exact branch in its own clean checkout, preserves existing task
-commits across redispatches and review bounces, and pushes it before
-`submit_for_review`. Conveyor then opens or reuses the PR from the pushed
-branch; it never resets or pushes the agent's branch.
+reading an implementation work order, the operator-owned agent runs
+`conveyor checkout <task-id>` to create or reuse a clean, task-dedicated sibling
+worktree. The helper safely creates or adopts the exact assigned branch,
+preserves existing task commits across redispatches and review bounces, and
+returns the resolved path for all edits, tests, commits, and pushes. The
+primary checkout is never switched, stashed, reset, or edited. The agent pushes
+before `submit_for_review`; Conveyor then opens or reuses the PR and never
+resets or pushes the agent's branch.
 
-The dashboard labels this value as an assigned branch until Conveyor records
-the pushed-branch PR. `conveyor checkout <task-id>` is a post-push human escape
-hatch and fails closed with guidance while `origin` has no task ref.
+The dashboard exposes the same checkout command before or after the first push.
+If the task branch does not exist locally or remotely, the helper creates it
+from a freshly fetched `origin/<base>`; existing local, remote, or registered
+worktree history is preserved, and dirty, in-progress, or divergent states fail
+closed. After the task merges or closes, `conveyor done <task-id>` removes only
+a clean task worktree and retains the task branch.
 
 ### Codex plugin
 
