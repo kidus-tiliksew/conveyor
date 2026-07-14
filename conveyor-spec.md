@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.6**
+**Specification — v1.7**
 **Date:** July 14, 2026
-**Status:** Accepted — budget-removal amendment applied (§21.6)
+**Status:** Accepted — operator-owned branch amendment applied (§21.7)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -399,6 +399,11 @@ Fetches into a bare cache are serialized with a per-repo lock; concurrent fetche
 
 Dispatching a task atomically creates: the branch `conveyor/task-<id>` cut from the chosen base (default `main`, selectable per task — this is how users "switch between branches": long-lived feature work simply becomes the base for its tasks), the worktree set, and the sandbox. They are torn down together.
 
+> **Current contract:** §21.7 supersedes this factory-owned branch creation
+> statement for Phase 4.7's operator-owned execution model. The paragraph is
+> retained as the historical v1.0 contract; current intake assigns branch and
+> base metadata only.
+
 ### 8.3 Worktree persistence across the review loop
 
 Worktrees outlive individual jobs. When a human redirects a task with comments, the re-dispatched implementation job lands in the same worktree, preserving build artifacts, dependency installs, and — where it restores cleanly — the harness's session state. This keeps multi-round review cheap in both wall-clock time and tokens (no cold re-exploration of the repo).
@@ -421,6 +426,10 @@ conveyor checkout task-123   # adds the task branch as a worktree in the
                             # human's local clone, beside their own work
 conveyor done task-123       # removes it (and optionally re-dispatches)
 ```
+
+Under the current §21.7 contract, `checkout` is a post-push human escape hatch.
+It is unavailable while the task has only an assigned branch name and no
+pushed remote ref; the implementing agent creates and pushes that ref first.
 
 Intervening on a stuck agent never requires stashing or switching the human's own branch: open the task worktree in a second editor window, fix or nudge, push, re-dispatch. Lowering the cost of intervention is what makes the semi-automated middle ground livable.
 
@@ -1114,4 +1123,62 @@ Six changes; all other v1.5 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.6 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), and budget allocation/enforcement removed while usage telemetry remains observational (§21.6). Subsequent changes proceed by amendment with version bumps.*
+### 21.7 v1.7 — Operator-owned task branches and repository Codex plugin (July 14, 2026)
+
+Phase 4.7 moved implementation out of Conveyor's retired sandbox plane and into
+operator-owned agents, but the historical §8.2 branch-creation language and
+parts of §21.4 still implied that Conveyor had already created a task ref or
+owned the agent's checkout. That implication is unsafe and contradicts the
+BYOA responsibility boundary. This amendment supersedes §8.2, the factory-
+worktree interpretation of §8.3, §8.4's pre-push checkout implication, and
+§21.4 changes 1, 3, 4, and 5 wherever they assign Git mutation to Conveyor.
+The older text remains as the v1.0–v1.6 historical record. Six changes; all
+other v1.6 decisions remain unchanged:
+
+1. **Intake assigns metadata, not a ref.** Task creation selects the base and
+   reserves the canonical `conveyor/task-<id>` branch name in the durable task
+   record. Conveyor does not create, check out, push, reset, delete, or
+   otherwise mutate a corresponding local or remote Git ref. Ordinary task
+   reads and UI rendering expose that assigned name as metadata and never imply
+   that the ref exists.
+2. **The implementation agent owns branch setup in its checkout.** Immediately
+   after `get_work_order` and before edits, the agent inspects repository
+   cleanliness and its current branch, fetches the assigned base from `origin`,
+   and then safely adopts an existing local task branch, tracks an existing
+   remote task branch, or creates the exact assigned branch from the freshly
+   fetched `origin/<base>`. Dirty or unsafe Git state, ambiguous ownership, or
+   divergent local and remote task histories block the run. The agent never
+   cleans or stashes unrelated work and never uses reset-style `-B`/`-C`,
+   forced ref updates, or equivalent commit-overwriting behavior.
+3. **Branch availability has three explicit states.** (a) Assigned: the task
+   stores a canonical branch name and base but no local or remote task ref need
+   exist. (b) Local: the implementation agent has created or adopted the branch
+   in its checkout but has not pushed it; this is agent-owned state and is not
+   represented as a factory branch. (c) Pushed: the agent has pushed the exact
+   assigned branch, making it available to Conveyor's review coordination and
+   the human checkout flow.
+4. **Redispatch and review bounces preserve the branch.** A successor
+   implementation session resumes the existing assigned branch when present.
+   It may fast-forward an ancestry-safe local branch from its remote counterpart
+   but must not recreate the branch from base, rebase or force-reset it, or
+   discard task commits. Divergence is reported as a blocker instead of being
+   resolved by history rewriting.
+5. **The pushed branch remains the review trust boundary.** The implementation
+   agent commits and pushes the assigned branch with upstream tracking before
+   `submit_for_review`. Conveyor then opens or reuses the PR and dispatches
+   independent review; it does not push on the agent's behalf. Review,
+   self-review prevention, CI, and human gates judge the pushed artifact.
+   `conveyor checkout <task-id>` and pull-to-local UI guidance remain unavailable
+   until Conveyor records a pushed-branch PR; the CLI independently fails
+   closed when `origin` lacks the task ref.
+6. **The Codex integration is repository-owned.** This repository contains the
+   installable Conveyor plugin manifest, token-free local MCP configuration,
+   operator skill, and local marketplace metadata. Authentication is supplied
+   only through the operator environment's `CONVEYOR_API_TOKEN`. The operator
+   skill is the reusable procedure for the safe branch setup above and for the
+   push-before-review handoff; it does not restore factory-side checkout or the
+   retired sandbox execution plane.
+
+---
+
+*End of specification. v1.7 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), and operator-owned branch creation plus the repository Codex plugin made explicit (§21.7). Subsequent changes proceed by amendment with version bumps.*

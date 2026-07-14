@@ -184,6 +184,15 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reason_code is required and must be at most 64 characters", http.StatusBadRequest)
 		return
 	}
+	checkoutCommand, checkoutAvailable, checkoutGuidance, err := s.checkoutState(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if request.Action == core.InterventionPull && !checkoutAvailable {
+		http.Error(w, checkoutGuidance, http.StatusConflict)
+		return
+	}
 	latestJob, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -215,8 +224,10 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"task":             updated,
-		"checkout_command": "conveyor checkout " + id,
+		"task":               updated,
+		"checkout_command":   checkoutCommand,
+		"checkout_available": checkoutAvailable,
+		"checkout_guidance":  checkoutGuidance,
 	})
 }
 
@@ -351,14 +362,16 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 type reviewItem struct {
-	Task            core.Task           `json:"task"`
-	Jobs            []core.Job          `json:"jobs"`
-	Events          []core.Event        `json:"events"`
-	Interventions   []core.Intervention `json:"interventions"`
-	CheckoutCommand string              `json:"checkout_command"`
-	NeedsAttention  bool                `json:"needs_attention"`
-	Spec            *core.SpecVersion   `json:"spec,omitempty"`
-	WorkOrders      []core.WorkOrder    `json:"work_orders"`
+	Task              core.Task           `json:"task"`
+	Jobs              []core.Job          `json:"jobs"`
+	Events            []core.Event        `json:"events"`
+	Interventions     []core.Intervention `json:"interventions"`
+	CheckoutCommand   string              `json:"checkout_command,omitempty"`
+	CheckoutAvailable bool                `json:"checkout_available"`
+	CheckoutGuidance  string              `json:"checkout_guidance"`
+	NeedsAttention    bool                `json:"needs_attention"`
+	Spec              *core.SpecVersion   `json:"spec,omitempty"`
+	WorkOrders        []core.WorkOrder    `json:"work_orders"`
 }
 
 type activityItem struct {
@@ -441,13 +454,39 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
-		CheckoutCommand: "conveyor checkout " + task.ID,
-		NeedsAttention:  task.State == core.TaskAwaiting || task.State == core.TaskParked,
-		Spec:            specPointer,
-		WorkOrders:      workOrders,
+		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
+		NeedsAttention: task.State == core.TaskAwaiting || task.State == core.TaskParked,
+		Spec:           specPointer,
+		WorkOrders:     workOrders,
 	})
+}
+
+func (s *Server) checkoutState(ctx context.Context, taskID string) (string, bool, string, error) {
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return "", false, "", err
+	}
+	command, available, guidance := checkoutStateFromHistory(taskID, events)
+	return command, available, guidance, nil
+}
+
+func checkoutStateFromHistory(taskID string, events []core.Event) (string, bool, string) {
+	// A PR event is Conveyor's durable observation that the agent-pushed branch
+	// reached the review boundary (spec §21.7).
+	available := false
+	for _, event := range events {
+		if event.Kind == "pull_request.opened" {
+			available = true
+			break
+		}
+	}
+	if available {
+		return "conveyor checkout " + taskID, true, "The pushed task branch is available for human checkout."
+	}
+	return "", false, "The branch name is assigned, but checkout is unavailable until the implementation agent creates and pushes that branch."
 }
 
 func contains(xs []string, x string) bool {

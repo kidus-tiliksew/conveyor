@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "conveyor-plugin": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "bearer_token_env_var": "CONVEYOR_API_TOKEN"
+    }
+  }
+}

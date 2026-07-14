@@ -79,7 +79,7 @@ type Task struct {
 	Level         EscalationLevel `json:"level"`
 	Repo          string          `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
 	BaseBranch    string          `json:"base_branch"`
-	Branch        string          `json:"branch"` // conveyor/task-<id>
+	Branch        string          `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
 	State         TaskState       `json:"state"`
 	NextStage     Stage           `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage Stage           `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted

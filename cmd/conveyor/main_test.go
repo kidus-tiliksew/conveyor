@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,33 @@ func TestCheckoutAndDoneWorktreeLifecycle(t *testing.T) {
 	}
 	if err := removeTaskWorktree(context.Background(), "conveyor/task-123", false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckoutWaitsForImplementationAgentToPushBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	mustGit(t, "", "init", "-b", "main", origin)
+	mustGit(t, origin, "config", "user.name", "test")
+	mustGit(t, origin, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, origin, "add", ".")
+	mustGit(t, origin, "commit", "-m", "initial")
+
+	primary := filepath.Join(tmp, "primary")
+	mustGit(t, "", "clone", origin, primary)
+	t.Chdir(primary)
+	_, err := checkoutTask(context.Background(), "conveyor/task-not-pushed", "api", "not-pushed", filepath.Join(tmp, "human-task"))
+	if err == nil || !strings.Contains(err.Error(), "checkout becomes available after the implementation agent pushes it") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), primary, "refs/heads/conveyor/task-not-pushed") {
+		t.Fatal("checkout created the assigned task branch before the implementation agent pushed it")
 	}
 }
 

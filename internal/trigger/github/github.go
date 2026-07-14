@@ -223,7 +223,7 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 
 // OpenPRForBranch trusts the operator-owned agent to have pushed branch. It
 // creates or reuses the PR without requiring Conveyor to own a worktree
-// (spec §21.4 change 5).
+// (spec §21.4 change 5, amended by §21.7).
 func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
 	existing, err := gh(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err != nil {

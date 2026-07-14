@@ -119,5 +119,10 @@ export async function reviewTask(taskId: string, token: string, input: ReviewInp
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-  return response.json() as Promise<{ task: Task; checkout_command: string }>
+  return response.json() as Promise<{
+    task: Task
+    checkout_command?: string
+    checkout_available: boolean
+    checkout_guidance: string
+  }>
 }

@@ -21,8 +21,8 @@ export const interventionActions: ReadonlyArray<{
 }> = [
   { action: 'approve', label: 'Approve', hint: 'Merge or advance the task' },
   { action: 'reject', label: 'Reject', hint: 'Close with a reason code' },
-  { action: 'redirect', label: 'Redirect', hint: 'Comment; re-dispatch into the existing worktree' },
-  { action: 'pull_to_local', label: 'Pull to local', hint: 'Take the task over in a local checkout' },
+  { action: 'redirect', label: 'Redirect', hint: 'Comment; return the pushed branch to the implementing agent' },
+  { action: 'pull_to_local', label: 'Pull to local', hint: 'Available after the implementation agent pushes the assigned branch' },
 ]
 
 // Baseline reason-code taxonomy (spec §13.2). The API accepts free-form

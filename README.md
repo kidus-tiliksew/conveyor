@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.6. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.7. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -68,6 +68,28 @@ Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
 Each review must use a fresh agent session and client token; Conveyor rejects
 an implementer's attempt to claim the corresponding review work order.
 
+### Branch ownership
+
+Task intake records the canonical `conveyor/task-<id>` branch name and selected
+base, but it does not create a local or remote Git ref. After claiming and
+reading an implementation work order, the operator-owned agent safely creates
+or adopts that exact branch in its own clean checkout, preserves existing task
+commits across redispatches and review bounces, and pushes it before
+`submit_for_review`. Conveyor then opens or reuses the PR from the pushed
+branch; it never resets or pushes the agent's branch.
+
+The dashboard labels this value as an assigned branch until Conveyor records
+the pushed-branch PR. `conveyor checkout <task-id>` is a post-push human escape
+hatch and fails closed with guidance while `origin` has no task ref.
+
+### Codex plugin
+
+The repository-owned plugin lives in `plugins/conveyor`, with repo-local
+marketplace metadata in `.agents/plugins/marketplace.json`. It connects to the
+local MCP endpoint using `CONVEYOR_API_TOKEN` from the Codex process environment
+and never stores the credential. Installation, update, resume, and validation
+instructions are in [plugins/conveyor/README.md](plugins/conveyor/README.md).
+
 ## Configuration ownership
 
 `conveyor.yaml` bootstraps a workspace on first Postgres start. After that,
@@ -113,4 +135,5 @@ web/                      embedded React operator interface
 make build
 make test
 make vet
+make plugin-check
 ```

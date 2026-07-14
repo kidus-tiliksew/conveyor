@@ -6,7 +6,7 @@ import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 
-// The task-header facts (spec §13.3, amended by §21.6): the verification
+// The task-header facts (spec §13.3, amended by §§21.6–21.7): the verification
 // badge fed by the §4.1 acceptance block, the PR deep link, and provenance.
 export function SummaryRail({ item }: { item: ActivityItem }) {
   const prURL = pullRequestURL(item.events)
@@ -71,7 +71,7 @@ export function SummaryRail({ item }: { item: ActivityItem }) {
           <dl className="space-y-2 text-xs">
             <Fact label="Repo" value={item.task.repo} />
             <Fact
-              label="Branch"
+              label="Assigned branch"
               value={
                 <span className="inline-flex max-w-full items-center gap-1 font-mono">
                   <GitBranch className="size-3 shrink-0 text-faint" />
@@ -96,10 +96,21 @@ export function SummaryRail({ item }: { item: ActivityItem }) {
             {item.task.class && <Fact label="Class" value={item.task.class} />}
             <Fact label="Created" value={absoluteTime(item.task.created_at)} />
           </dl>
-          <div className="mt-3 flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1">
-            <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
-            <CopyButton value={item.checkout_command} label="Copy checkout command" />
-          </div>
+          <p className="mt-2 text-[11px] leading-5 text-faint">
+            {item.checkout_available
+              ? 'Conveyor recorded the pushed-branch PR.'
+              : 'This is the canonical assigned name; it does not mean a local or remote Git ref exists yet.'}
+          </p>
+          {item.checkout_available && item.checkout_command ? (
+            <div className="mt-3 flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1">
+              <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
+              <CopyButton value={item.checkout_command} label="Copy post-push checkout command" />
+            </div>
+          ) : (
+            <p className="mt-3 rounded-md border border-border bg-background px-2.5 py-2 text-[11px] leading-5 text-muted">
+              {item.checkout_guidance}
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
