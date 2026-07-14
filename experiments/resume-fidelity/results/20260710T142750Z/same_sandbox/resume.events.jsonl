@@ -1,4 +1,0 @@
-{"type":"thread.started","thread_id":"019f4c6d-83e3-71b3-bdc4-d874d376b019"}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"decision\":\"use lease_epoch as the worker-claim mechanism\",\"rationale\":[\"Monotonically increasing epochs fence stale workers after ownership changes.\",\"Explicit epochs make crash recovery deterministic under event replay.\"],\"rejected_alternative\":\"heartbeat_only, because a network partition can leave a stale worker active\",\"continuity_marker\":\"amber-orchid-27\"}"}}
-{"type":"turn.completed","usage":{"input_tokens":35657,"cached_input_tokens":16000,"output_tokens":151,"reasoning_output_tokens":10}}

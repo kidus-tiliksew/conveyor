@@ -39,6 +39,62 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "task", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []core.Job{{ID: "implement", TaskID: "task", Stage: core.StageImplement}, {ID: "review", TaskID: "task", Stage: core.StageReview}} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, order := range []core.WorkOrder{{ID: "implement", TaskID: "task", JobID: "implement", Stage: core.StageImplement, State: core.WorkOrderQueued}, {ID: "review", TaskID: "task", JobID: "review", Stage: core.StageReview, State: core.WorkOrderQueued}} {
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim := core.WorkOrderClaim{SessionID: "session-a", ClientToken: "token-a", Agent: "codex", Model: "gpt"}
+	if _, err := st.ClaimWorkOrder(ctx, "implement", claim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, "review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+		t.Fatalf("self review error=%v", err)
+	}
+	claim.SessionID = "session-b"
+	claim.ClientToken = "token-b"
+	if _, err := st.ClaimWorkOrder(ctx, "review", claim); err != nil {
+		t.Fatalf("fresh review claim: %v", err)
+	}
+}
+
+func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	artifact := core.Artifact{Name: "brief.txt", ContentType: "text/plain", TaskID: "task"}
+	created, err := st.CreateArtifact(ctx, artifact, []byte("brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.CreateArtifact(ctx, artifact, []byte("brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != again.ID {
+		t.Fatalf("dedupe failed")
+	}
+	_, content, err := st.GetArtifact(ctx, created.ID)
+	if err != nil || string(content) != "brief" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+}
+
 func TestMemoryCreateSpecVersionAlwaysStartsUnapproved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

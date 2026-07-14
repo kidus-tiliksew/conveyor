@@ -23,12 +23,10 @@ export type Stage =
 
 export type JobState =
   | 'pending'
-  | 'booting'
   | 'running'
   | 'paused'
   | 'done'
   | 'failed'
-  | 'sandbox_boot_failed'
 
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
 
@@ -47,14 +45,8 @@ export interface Task {
   next_stage?: Stage
   recovery_stage?: Stage
   parent_task_id?: string
+  feature_id?: string
   created_at: string
-}
-
-export interface BootDiagnostics {
-  image_build_log?: string
-  validation_error?: string
-  runtime_error?: string
-  missing_env_vars?: string[]
 }
 
 export interface Job {
@@ -63,10 +55,8 @@ export interface Job {
   stage: Stage
   harness: string
   model_tier: string
-  credential_id?: string
   auth_mode?: string
   runner: string
-  sandbox_ref?: string
   pack_version?: string
   confinement: string
   budget_usd: number
@@ -74,7 +64,6 @@ export interface Job {
   tokens_in: number
   tokens_out: number
   state: JobState
-  boot_diagnostics?: BootDiagnostics
   started_at: string
   ended_at?: string
 }
@@ -145,43 +134,22 @@ export interface WorkspaceRepo {
   url: string
   github?: string
   base: string
-  image: string
-  secret_ref_count: number
-  allowed_commands?: string[][]
-  denied_commands?: string[][]
 }
 
 export interface WorkspaceRoute {
   stage: string
-  harnesses: string[]
-  model_tier?: string
+  model: string
   budget_usd: number
   timeout: string
-}
-
-export interface WorkspaceCredential {
-  id: string
-  owner_id: string
-  owner_kind: string
-  kind: string
-  vendor: string
-  harness: string
+  execution: 'in_process' | 'mcp'
 }
 
 export interface WorkspaceInfo {
   workspace: string
-  image: string
   max_bounces: number
   database: string
   repos: WorkspaceRepo[] | null
   routing: WorkspaceRoute[] | null
-  credentials: WorkspaceCredential[] | null
-}
-
-export interface WorkspaceToolPolicy {
-  allowed_commands?: string[][]
-  denied_commands?: string[][]
-  network_allow?: string[]
 }
 
 export interface WorkspaceConfigRepo {
@@ -189,21 +157,17 @@ export interface WorkspaceConfigRepo {
   url: string
   github?: string
   base: string
-  image: string
-  secret_refs?: string[]
-  tool_policy: WorkspaceToolPolicy
 }
 
 export interface WorkspaceConfigRoute {
-  harnesses: string[]
-  model_tier?: string
+  model: string
   budget_usd: number
   timeout: string
+  execution: 'in_process' | 'mcp'
 }
 
 export interface WorkspaceConfigDocument {
   workspace: string
-  image: string
   max_bounces: number
   routing: {
     stages: Record<string, WorkspaceConfigRoute>
@@ -230,4 +194,27 @@ export interface ActivityItem {
   checkout_command: string
   needs_attention: boolean
   spec?: SpecVersion
+  work_orders: WorkOrder[]
 }
+
+export interface WorkOrder {
+  id: string
+  task_id: string
+  job_id: string
+  stage: 'implement' | 'review'
+  state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled'
+  claimed_by?: string
+  session_id?: string
+  agent?: string
+  model?: string
+  lease_expires_at?: string
+  progress?: string
+  cost_usd: number
+  tokens_in: number
+  tokens_out: number
+  self_reported: boolean
+}
+
+export interface Feature { id: string; workspace: string; parent_id?: string; name: string; description?: string; created_at: string }
+export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; task_id?: string; feature_id?: string; download_url?: string; created_at: string }
+export interface RequirementNode { feature: Feature; tasks: Task[] | null; approved_specs: SpecVersion[] | null; events: TaskEvent[] | null }

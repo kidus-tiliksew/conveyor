@@ -1,6 +1,5 @@
-// Package redact removes credentials from sandbox output before it crosses the
-// shim boundary. It is deliberately stdlib-only because conveyor-shim is a
-// static binary embedded in every runner image (spec §10.3, §17.0).
+// Package redact removes credentials from transcripts before they cross the
+// control-plane persistence boundary (spec §10.3, §21.4).
 package redact
 
 import (
@@ -32,9 +31,9 @@ type needle struct {
 	class       string
 }
 
-// Redactor combines authoritative values from this job's injected environment
-// with conservative well-known credential patterns. Secret values are held in
-// memory only; callers persist only Stats.
+// Redactor combines caller-known sensitive values with conservative
+// well-known credential patterns. Values are held in memory only; callers
+// persist only Stats.
 type Redactor struct {
 	needles []needle
 }

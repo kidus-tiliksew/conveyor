@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 type Server struct {
@@ -43,6 +44,7 @@ type Server struct {
 	ConfigProvider func(context.Context) (*config.Config, error)
 	ConfigStore    WorkspaceConfigStore
 	Deployment     *config.Config
+	WorkOrders     *workorder.Service
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -67,15 +69,20 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/tasks/{id}/spec", s.getLatestSpec)
 		r.Get("/reviews", s.listReviews)
 		r.Get("/workspace", s.getWorkspace)
+		r.Get("/work-orders", s.listWorkOrders)
+		r.Get("/requirements", s.listRequirements)
 		r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
 		r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 		r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
-		// TODO(phase1-followup): GET /v1/jobs/{id}/logs — SSE stream
-		// (spec §17.3); Phase 1 logs land in the control dir and
-		// conveyord stdout.
+		r.With(s.requireMutationAuth).Post("/features", s.createFeature)
+		r.With(s.requireMutationAuth).Put("/tasks/{id}/feature", s.assignTaskFeature)
+		r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
+		r.With(s.requireMutationAuth).Post("/artifacts", s.uploadArtifact)
+		r.With(s.requireMutationAuth).Get("/artifacts/{id}", s.downloadArtifact)
 	})
+	r.With(s.requireMCPAuth).Post("/mcp", s.handleMCP)
 	r.Get("/", serveDashboard)
 	// The SPA router owns all non-API paths; adding a client route no longer
 	// requires duplicating it in the Go server.
@@ -123,6 +130,14 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
+	return s.requireBearerRole(core.ActorHuman, "local-operator", next)
+}
+
+func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
+	return s.requireBearerRole(core.ActorAgent, "mcp-agent", next)
+}
+
+func (s *Server) requireBearerRole(role core.ActorRole, defaultID string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || s.BearerToken == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) != 1 {
@@ -132,9 +147,9 @@ func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
 		}
 		actorID := strings.TrimSpace(r.Header.Get("X-Conveyor-Actor"))
 		if actorID == "" {
-			actorID = "local-operator"
+			actorID = defaultID
 		}
-		ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: core.ActorHuman})
+		ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: role})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -400,6 +415,7 @@ type reviewItem struct {
 	CheckoutCommand string              `json:"checkout_command"`
 	NeedsAttention  bool                `json:"needs_attention"`
 	Spec            *core.SpecVersion   `json:"spec,omitempty"`
+	WorkOrders      []core.WorkOrder    `json:"work_orders"`
 }
 
 type activityItem struct {
@@ -477,11 +493,17 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if hasSpec {
 		specPointer = &spec
 	}
+	workOrders, err := s.Store.ListTaskWorkOrders(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: "conveyor checkout " + task.ID,
 		NeedsAttention:  task.State == core.TaskAwaiting || task.State == core.TaskParked,
 		Spec:            specPointer,
+		WorkOrders:      workOrders,
 	})
 }
 

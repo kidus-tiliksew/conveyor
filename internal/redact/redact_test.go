@@ -59,19 +59,6 @@ func TestRedactJSONScrubsObjectKeys(t *testing.T) {
 	}
 }
 
-func TestJSONStringValuesIncludesNestedOAuthTokens(t *testing.T) {
-	values, err := JSONStringValues([]byte(`{"oauth":{"access":"secret-access","refresh":"secret-refresh"},"account":"user-1"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(values, ",")
-	for _, want := range []string{"secret-access", "secret-refresh", "user-1"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("values = %v, missing %q", values, want)
-		}
-	}
-}
-
 func TestExactValueWinsOverEquivalentEncoding(t *testing.T) {
 	r := New([]string{"plainvalue"})
 	clean, stats := r.Redact("plainvalue")

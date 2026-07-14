@@ -58,29 +58,15 @@ const (
 	TaskParked   TaskState = "parked"
 )
 
-// JobState includes sandbox boot failure as a first-class state with
-// structured diagnostics (spec §6.2) — not a generic "failed".
 type JobState string
 
 const (
-	JobPending         JobState = "pending"
-	JobBooting         JobState = "booting"
-	JobRunning         JobState = "running"
-	JobPaused          JobState = "paused"
-	JobDone            JobState = "done"
-	JobFailed          JobState = "failed"
-	JobSandboxBootFail JobState = "sandbox_boot_failed"
+	JobPending JobState = "pending"
+	JobRunning JobState = "running"
+	JobPaused  JobState = "paused"
+	JobDone    JobState = "done"
+	JobFailed  JobState = "failed"
 )
-
-// BootDiagnostics is the structured explanation for a sandbox boot
-// failure (spec §6.2). It is stored on the job so the CLI/API can show
-// the cause without relying on conveyord's process log.
-type BootDiagnostics struct {
-	ImageBuildLog   string   `json:"image_build_log,omitempty"`
-	ValidationError string   `json:"validation_error,omitempty"`
-	RuntimeError    string   `json:"runtime_error,omitempty"`
-	MissingEnvVars  []string `json:"missing_env_vars,omitempty"`
-}
 
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
@@ -98,6 +84,7 @@ type Task struct {
 	NextStage     Stage           `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage Stage           `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
 	ParentTaskID  string          `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	FeatureID     string          `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
@@ -109,29 +96,24 @@ func NewTaskID() string {
 	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }
 
-// Job is one execution of one stage in one sandbox by one harness.
+// Job is one execution of one pipeline stage.
 type Job struct {
-	ID           string   `json:"id"`
-	TaskID       string   `json:"task_id"`
-	Stage        Stage    `json:"stage"`
-	Harness      string   `json:"harness"`
-	ModelTier    string   `json:"model_tier"`
-	CredentialID string   `json:"credential_id,omitempty"`
-	AuthMode     string   `json:"auth_mode,omitempty"`
-	Runner       string   `json:"runner"`
-	SandboxRef   string   `json:"sandbox_ref,omitempty"`
-	PackVersion  string   `json:"pack_version,omitempty"`
-	Confinement  string   `json:"confinement"` // tierA | tierB | tierC, recorded per job (spec §8.5)
-	BudgetUSD    float64  `json:"budget_usd"`
-	CostUSD      float64  `json:"cost_usd"`
-	TokensIn     int64    `json:"tokens_in"`
-	TokensOut    int64    `json:"tokens_out"`
-	State        JobState `json:"state"`
-	// BootDiagnostics is populated only when State is
-	// JobSandboxBootFail.
-	BootDiagnostics *BootDiagnostics `json:"boot_diagnostics,omitempty"`
-	StartedAt       time.Time        `json:"started_at"`
-	EndedAt         time.Time        `json:"ended_at,omitempty"`
+	ID          string    `json:"id"`
+	TaskID      string    `json:"task_id"`
+	Stage       Stage     `json:"stage"`
+	Harness     string    `json:"harness"`
+	ModelTier   string    `json:"model_tier"`
+	AuthMode    string    `json:"auth_mode,omitempty"`
+	Runner      string    `json:"runner"`
+	PackVersion string    `json:"pack_version,omitempty"`
+	Confinement string    `json:"confinement"`
+	BudgetUSD   float64   `json:"budget_usd"`
+	CostUSD     float64   `json:"cost_usd"`
+	TokensIn    int64     `json:"tokens_in"`
+	TokensOut   int64     `json:"tokens_out"`
+	State       JobState  `json:"state"`
+	StartedAt   time.Time `json:"started_at"`
+	EndedAt     time.Time `json:"ended_at,omitempty"`
 }
 
 // MarshalJSON makes the wire contract honor ended_at's optionality. The
@@ -228,6 +210,69 @@ type Transcript struct {
 	URI            string         `json:"uri"`
 	RedactionStats RedactionStats `json:"redaction_stats"`
 	CreatedAt      time.Time      `json:"created_at"`
+}
+
+type WorkOrderState string
+
+const (
+	WorkOrderQueued    WorkOrderState = "queued"
+	WorkOrderClaimed   WorkOrderState = "claimed"
+	WorkOrderSubmitted WorkOrderState = "submitted"
+	WorkOrderCompleted WorkOrderState = "completed"
+	WorkOrderCancelled WorkOrderState = "cancelled"
+)
+
+// WorkOrder is the durable protocol boundary between Conveyor and an
+// operator-owned implementation or review agent (spec §21.4).
+type WorkOrder struct {
+	ID              string         `json:"id"`
+	TaskID          string         `json:"task_id"`
+	JobID           string         `json:"job_id"`
+	Stage           Stage          `json:"stage"`
+	State           WorkOrderState `json:"state"`
+	ClaimantID      string         `json:"claimed_by,omitempty"`
+	SessionID       string         `json:"session_id,omitempty"`
+	ClientTokenHash string         `json:"-"`
+	Agent           string         `json:"agent,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	LeaseExpiresAt  time.Time      `json:"lease_expires_at,omitempty"`
+	Progress        string         `json:"progress,omitempty"`
+	CostUSD         float64        `json:"cost_usd"`
+	TokensIn        int64          `json:"tokens_in"`
+	TokensOut       int64          `json:"tokens_out"`
+	SelfReported    bool           `json:"self_reported"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+type WorkOrderClaim struct {
+	SessionID   string
+	ClientToken string
+	ClaimantID  string
+	Agent       string
+	Model       string
+	Lease       time.Duration
+}
+
+type Feature struct {
+	ID          string    `json:"id"`
+	Workspace   string    `json:"workspace"`
+	ParentID    string    `json:"parent_id,omitempty"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type Artifact struct {
+	ID          string    `json:"id"` // sha256 content address
+	Workspace   string    `json:"workspace"`
+	Name        string    `json:"name"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	TaskID      string    `json:"task_id,omitempty"`
+	FeatureID   string    `json:"feature_id,omitempty"`
+	DownloadURL string    `json:"download_url,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on

@@ -6,6 +6,7 @@ import { HomePage } from './pages/home'
 import { NewTaskPage } from './pages/new-task'
 import { SettingsPage } from './pages/settings'
 import { WorkspacePage } from './pages/workspace'
+import { RequirementsPage } from './pages/requirements'
 
 function ActivityPage() {
   return <ActivityList />
@@ -32,8 +33,9 @@ const taskRoute = createRoute({ getParentRoute: () => rootRoute, path: '/tasks/$
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspacePage })
 const newTaskRoute = createRoute({ getParentRoute: () => rootRoute, path: '/new', component: NewTaskPage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
+const requirementsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requirements', component: RequirementsPage })
 
-const routeTree = rootRoute.addChildren([homeRoute, activityRoute, taskRoute, workspaceRoute, newTaskRoute, settingsRoute])
+const routeTree = rootRoute.addChildren([homeRoute, activityRoute, taskRoute, workspaceRoute, requirementsRoute, newTaskRoute, settingsRoute])
 export const router = createRouter({ routeTree })
 
 declare module '@tanstack/react-router' {

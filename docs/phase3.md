@@ -1,5 +1,9 @@
 # Phase 3 operations and validation
 
+> Historical closure record. Its pipeline and validators survive, but the
+> sandbox execution mechanism described here was retired by spec §21.4. Use
+> the repository README for current Phase 4.7 operation.
+
 **Status: complete.** The automated test suite and the live dogfood run both
 exercise triage → spec gate → implement → code-review redirect → implement
 → approval. The live run opened a GitHub PR from the persistent task

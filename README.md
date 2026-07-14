@@ -1,109 +1,99 @@
 # Conveyor
 
-An orchestration platform for automated software development — a
-"software factory" that runs coding-agent pipelines (triage → spec →
-implement → review → verify → merge → monitor) against Git
-repositories in disposable containerized sandboxes.
+Conveyor is a durable software-development orchestrator. It owns the task
+pipeline, specifications, review gates, audit history, and requirements
+corpus; operator-owned coding agents perform implementation and code review
+through MCP.
 
-Full design: [conveyor-spec.md](conveyor-spec.md) (v1.3, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.4. The
+working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
-## Status: Phase 4.5 complete — Beta entry (spec §19, §21.3)
+## Status
 
-Phase 1's live GitHub issue → Codex → PR loop remains intact. Phase 2 adds the
-validated durable multi-harness and human-gate substrate:
+Phase 4.7's implementation is complete. The code now provides:
 
-- [x] Postgres projections + append-only events through pgx/sqlc; transactional River enqueue and retry
-- [x] Standalone `conveyor-runner` process; workspace-scoped durable queue and recovery
-- [x] Claude Code 2.1.206 adapter alongside Codex, including stream-json, resume, budgets, and native permission mapping
-- [x] Owner-scoped credential leasing, vendor-policy registry, rate-limit cooldown, and data-driven stage routing
-- [x] Exact/common-encoding, credential-pattern, and entropy redaction at the shim boundary; safe redaction counts persisted with authoritative transcripts
-- [x] Embedded Vite/React activity view with TanStack Router/Query, stage groups, costed timeline, SSE refresh, reason-coded review actions, and deep links
-- [x] Durable GitHub `claiming` state and workspace isolation across tasks, jobs, events, transcripts, and interventions
-- [x] Live Claude OAuth sandbox run through SOPS-backed delivery, including a real commit, native session-resumed handoff, redacted transcript, and `awaiting_human` projection
-- [x] Durable triage → spec gate → implement → independent code-review pipeline with bounded redirects
-- [x] Schema-validated triage/review outputs and §4.1 spec blocks; versioned exact spec approval contract
-- [x] File-backed proto-pack role prompts and stage policies, per-repo images, budgets, and timeouts
-- [x] GitHub PR review feedback ingestion into redirect interventions
-- [x] Polished Phase 4 app shell, activity/task review surfaces, task intake, and workspace view
-- [x] Postgres-backed, versioned workspace config with first-boot YAML seeding and `config.updated` audit events
-- [x] Authenticated config API, optimistic concurrency, dispatch-time hot reload, CLI import/export, and editable Workspace forms
+- in-process triage and spec stages through the OpenAI Responses API, with
+  existing schema validators, redacted transcripts, usage metering, stage
+  timeouts, and budget gates;
+- an authenticated MCP work-order server for implementation and review,
+  including leases, self-review prevention, progress/usage/transcript
+  reporting, synchronous or MCP review, and the in-session `await_review`
+  loop;
+- content-addressed artifacts and a hierarchical requirements tree linking
+  features, tasks, approved specs, pull requests, and events;
+- the embedded activity/review UI, requirements UI, slim workspace config,
+  and MCP connection guidance; and
+- Postgres projections plus River-backed durable dispatch.
 
-Phase 1 closure evidence remains in [docs/phase1-closure.md](docs/phase1-closure.md).
-Phase 2 operation and credential setup are in [docs/phase2.md](docs/phase2.md),
-with accepted trade-offs in [docs/known-limitations.md](docs/known-limitations.md).
-Phase 3 operation and live exit evidence are in
-[docs/phase3.md](docs/phase3.md).
+The Phase 4.7 live dogfood exit and the five-task Beta criterion remain to be
+run; implementation completion is not recorded as Beta evidence.
 
-## Running the loop
+## Run locally
+
+Requirements: Go 1.24, Node/npm, Postgres for durable operation, and an
+authenticated `gh` CLI when GitHub issue intake or PR creation is enabled.
 
 ```sh
-make build && make image && make conveyor-dev-image
-cp conveyor.example.yaml conveyor.yaml   # configure Postgres, repo, credentials, policy
-export CONVEYOR_DATABASE_URL='postgres://conveyor:...@localhost/conveyor?sslmode=disable'
+cp conveyor.example.yaml conveyor.yaml
+export CONVEYOR_DATABASE_URL='postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable'
 export CONVEYOR_API_TOKEN="$(openssl rand -hex 32)"
+export CONVEYOR_API_KEY='your-deployment-openai-key'
+
+make build
 bin/conveyord -config conveyor.yaml -poll-github 60s
-# In another terminal / host with Docker and harness credentials:
-bin/conveyor --config conveyor.yaml runner start --local
-bin/conveyor task new "fix the typo in README" --repo api
-# Back up or restore the database-owned workspace document:
-bin/conveyor config export > workspace.yaml
-bin/conveyor config import workspace.yaml
 ```
 
-On the first Postgres boot, the workspace sections in `conveyor.yaml` seed the
-database. Later starts keep database workspace config and ignore those file
-sections with a startup notice. Database/listen/pack/secrets/cache/jobs settings,
-the credential pool, and vendor policies remain file-managed.
+`CONVEYOR_API_KEY` is used only by server-owned in-process stages. MCP clients
+authenticate to Conveyor with `CONVEYOR_API_TOKEN` and bring their own model
+credentials or subscriptions.
 
-Requires: Postgres, Docker on the runner, at least one configured harness
-credential, and `gh`
-authenticated for issue claiming and PR opening, and the same
-`CONVEYOR_API_TOKEN` in the daemon and CLI environment. SOPS-backed secret
-sets additionally require `sops` plus a configured age/KMS/PGP identity; see
-[docs/secrets-and-policy.md](docs/secrets-and-policy.md).
+Create and inspect work:
+
+```sh
+export CONVEYOR_URL='http://127.0.0.1:8080'
+bin/conveyor task new 'fix the typo in README' --repo api --level L2
+bin/conveyor task list
+bin/conveyor config export > workspace.yaml
+```
+
+Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
+Each review must use a fresh agent session and client token; Conveyor rejects
+an implementer's attempt to claim the corresponding review work order.
+
+## Configuration ownership
+
+`conveyor.yaml` bootstraps a workspace on first Postgres start. After that,
+the workspace name, routes, bounce cap, and repositories are versioned in
+Postgres and editable through the UI/API or `conveyor config import`. The
+deployment file retains the database connection, prompt-pack path, and bare
+repository cache path.
+
+The Phase 4.7 document deliberately has no runner, image, credential pool,
+secret reference, vendor policy, or tool policy fields. Operator agents own
+their execution environment; repository CI is the mechanical verifier until
+managed execution is explicitly activated in Phase 8.
 
 ## Layout
 
+```text
+cmd/conveyor/             Cobra CLI: tasks, gates, config, checkout
+cmd/conveyord/            control plane, River worker, API, MCP, embedded UI
+internal/dispatch/        durable multi-stage orchestration
+internal/inprocess/       direct server-owned Responses API stages
+internal/workorder/       leased MCP lifecycle and protocol enforcement
+internal/store/           memory test store and pgx/sqlc Postgres store
+internal/httpapi/         REST, SSE, MCP, requirements/artifact APIs
+internal/gitx/            bare repository cache and checkout support
+internal/trigger/github/  issue intake, branch diff, and PR integration
+internal/redact/          transcript redaction
+pack/roles/               reviewable stage prompts
+web/                      embedded React operator interface
 ```
-cmd/conveyor/         CLI (cobra) — tasks, config import/export, checkout, runner, secrets
-cmd/conveyord/        control-plane daemon — API, GitHub ingestion, embedded activity UI
-cmd/conveyor-runner/  standalone LocalDockerRunner River worker
-cmd/conveyor-shim/    job shim — in-sandbox supervisor; stdlib-only static binary
-cmd/conveyor-resume-experiment/  live Codex resume/cold calibration (§20.2)
-internal/core/        shared domain types (tasks, jobs, stages, states)
-internal/adapter/     harness adapter interface (§5.1) + codex/
-internal/runner/      runner protocol (§3.2) + localdocker/
-internal/gitx/        fetch-only bare mirrors + isolated task checkouts (§8, amendment §21.1)
-internal/secrets/     secretref:// model + SOPS/plain local backend (§10)
-internal/snapshot/    handoff snapshots — the job-to-job continuity contract (§8.3)
-internal/store/       event-sourced Postgres store + explicit memory test/dev implementation
-internal/httpapi/     REST/SSE activity + human review API and embedded SPA
-internal/routing/     owner/policy/rate-limit-aware credential router
-internal/redact/      shim-boundary exact, encoded, pattern, and entropy scrubber
-internal/trigger/     github/ — issue label → task, branch → PR (§9)
-images/base/          base Conveyor image every repo devcontainer extends (§6.1)
-images/conveyor-dev/  Go + Node dogfood image used to build Conveyor itself
-pack/                 Phase 3 role prompts and per-stage tool policies (§2.2)
-```
-
-The roadmap was re-phased for the Beta milestone — Conveyor developing
-Conveyor — in spec v1.3 (§19, §21.2–§21.3); the working breakdown is
-[docs/beta-plan.md](docs/beta-plan.md). The full pipeline, UI rewrite, and
-dynamic workspace configuration now gate Beta entry. Post-Beta, built through the factory: platform agents & command
-policy, the memory store, then the flywheel. Demand-triggered: the
-verification agent, K8sRunner, multi-repo worktree sets, aggregate cost
-dashboard, and enterprise hardening.
 
 ## Development
 
 ```sh
-make build   # CLI, control plane, runner, and resume experiment binaries
+make build
 make test
 make vet
-make shim    # linux static shim binaries for the base image
-make image   # build conveyor-base:dev with the shim baked in
-make conveyor-dev-image # build Conveyor's Go/Node dogfood sandbox
 ```
-
-Run the control plane: `bin/conveyord -addr 127.0.0.1:8080`, then
-`curl -s localhost:8080/v1/tasks`.

@@ -1,6 +1,6 @@
 // conveyord is the control-plane daemon: orchestrator, task queue, and
-// HTTP API (spec §3.1). Postgres-backed Phase 2 runs only the control plane;
-// conveyor-runner owns Docker and claims River work independently. The
+// HTTP API (spec §3.1). Phase 4.7 runs the durable pipeline worker in-process;
+// implementation and review execution are claimed over MCP. The
 // dashboard SPA embeds here so API and UI ship as one binary (spec §17.0).
 package main
 
@@ -16,13 +16,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
-	"github.com/kidus-tiliksew/conveyor/internal/routing"
-	"github.com/kidus-tiliksew/conveyor/internal/runner/localdocker"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func main() {
@@ -43,6 +42,10 @@ func main() {
 	apiToken := os.Getenv("CONVEYOR_API_TOKEN")
 	if apiToken == "" {
 		log.Fatal("CONVEYOR_API_TOKEN is required for authenticated task creation")
+	}
+	pipelineKey := os.Getenv("CONVEYOR_API_KEY")
+	if pipelineKey == "" {
+		log.Fatal("CONVEYOR_API_KEY is required for in-process triage and spec stages")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -78,36 +81,36 @@ func main() {
 		log.Printf("WARNING: using volatile memory store; set CONVEYOR_DATABASE_URL for Phase 2 durability")
 	}
 	defer closeStore()
-	var d *dispatch.Dispatcher
+	agent := &inprocess.OpenAI{APIKey: pipelineKey, BaseURL: os.Getenv("CONVEYOR_API_BASE_URL")}
+	d := dispatch.New(st, cfg, agent)
+	d.Pack = packBundle
+	var stopRiver func()
 	if pgStore != nil {
-		// Durable task mutations enqueue River transactionally. Execution-plane
-		// access stays in the standalone conveyor-runner process.
-		d = dispatch.New(st, nil, nil, cfg)
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
 		d.UseDurableQueue()
-		log.Printf("standalone conveyor-runner required for execution")
-	} else {
-		localRunner := localdocker.New()
-		localRunner.SecretResolver = cfg.SecretResolver()
-		localRunner.SecretPolicies = cfg.SecretPolicies()
-		d = dispatch.New(st, gitx.NewManager(cfg.CacheDir, cfg.JobsDir), localRunner, cfg)
-		credential := routing.Credential{
-			ID: "memory-local-codex", OwnerID: cfg.Routing.OwnerID, OwnerKind: "user",
-			Kind: "personal_sub", Vendor: "openai", Harness: "codex", Ref: cfg.CodexCredentials,
+		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d)
+		if clientErr != nil {
+			log.Fatalf("create River worker: %v", clientErr)
 		}
-		if len(cfg.Credentials) != 0 {
-			configured := cfg.Credentials[0]
-			credential = routing.Credential{
-				ID: configured.ID, OwnerID: configured.OwnerID, OwnerKind: configured.OwnerKind,
-				Kind: configured.Kind, Vendor: configured.Vendor, Harness: configured.Harness, Ref: configured.Ref,
+		if clientErr = client.Start(ctx); clientErr != nil {
+			log.Fatalf("start River worker: %v", clientErr)
+		}
+		stopRiver = func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := client.Stop(stopCtx); err != nil {
+				log.Printf("stop River worker: %v", err)
 			}
 		}
-		d.Router = routing.NewStatic(credential, cfg.Routing)
+		log.Printf("durable pipeline worker active; implementation/review available over MCP")
+	} else {
 		go d.Run(ctx)
 	}
-	d.Pack = packBundle
+	if stopRiver != nil {
+		defer stopRiver()
+	}
 
 	srv := httpapi.NewServer(st)
 	srv.Repos = cfg.RepoNames()
@@ -117,6 +120,12 @@ func main() {
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 	srv.OnIntervention = d.HandleIntervention
+	srv.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
+		if pgStore != nil {
+			return pgStore.RuntimeConfig(ctx, deployment)
+		}
+		return cfg, nil
+	}}
 	if pgStore != nil {
 		srv.ConfigStore = pgStore
 		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {

@@ -1,101 +1,40 @@
-# Conveyor deployment config. Copy to conveyor.yaml and edit. Workspace,
-# image, max_bounces, routing, and repos seed Postgres on first boot only;
-# afterward edit them through the Workspace UI or `conveyor config import`.
-# Deployment settings, credentials, vendor policies, and secret backend stay
-# file-managed (spec §21.3).
+# Conveyor deployment/bootstrap config (spec §21.4). CONVEYOR_API_KEY is the
+# deployment-owned key used only by in-process triage/spec. MCP clients use
+# their own agent subscriptions or API credentials on their own machines.
 workspace: demo
-image: conveyor-base:dev           # build with: make image
-pack_dir: pack                     # reviewable Phase 3 role prompts/policies
-max_bounces: 2                     # bounded automatic output/review retries
-# cache_dir: ~/.conveyor/cache     # bare repo mirrors
-# jobs_dir: ~/.conveyor/jobs       # isolated task checkouts + control dirs
-# codex_credentials: ~/.codex      # auth.json alone is staged read-only
+pack_dir: pack
+max_bounces: 2
+# cache_dir: ~/.conveyor/cache     # bare repo cache for checkout/diff flows
 
-# Phase 2 uses Postgres for durable state, append-only events, and River.
-# Keep credentials out of this file: export CONVEYOR_DATABASE_URL instead.
 database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
-# Phase 2 credential capacity. A subscription credential is ineligible until
-# its exact vendor/harness/auth-mode policy below is explicitly allowed. On
-# macOS, Claude credentials live in Keychain: use `claude setup-token`, store
-# it through `conveyor secrets set`, and reference that SOPS value here.
-# credentials:
-#   - id: local-codex
-#     owner_id: local-operator
-#     owner_kind: user
-#     kind: personal_sub
-#     vendor: openai
-#     harness: codex
-#     ref: ~/.codex
-#   - id: local-claude
-#     owner_id: local-operator
-#     owner_kind: user
-#     kind: personal_sub
-#     vendor: anthropic
-#     harness: claude-code
-#     ref: secretref://demo/default/CLAUDE_CODE_OAUTH_TOKEN
-#
-# vendor_policies:
-#   - vendor: anthropic
-#     harness: claude-code
-#     auth_mode: personal_sub
-#     subscription_headless: unknown  # review terms before changing
-#     reviewed_at: 2026-07-10
-#     source_url: https://www.anthropic.com/legal/consumer-terms
-#
-# routing:
-#   owner_id: local-operator
-#   lease_seconds: 14400
-#   allow_restricted: false
-#   stages:
-#     triage:
-#       harnesses: [claude-code, codex]
-#       model_tier: strong
-#       budget_usd: 0.75
-#       timeout: 20m
-#     spec:
-#       harnesses: [claude-code, codex]
-#       model_tier: mid
-#       budget_usd: 0.50
-#       timeout: 30m
-#     implement:
-#       harnesses: [codex, claude-code]
-#       model_tier: subscription
-#       budget_usd: 3.00
-#       timeout: 2h
-#     review:
-#       harnesses: [claude-code, codex]
-#       model_tier: mid
-#       budget_usd: 0.75
-#       timeout: 30m
-
-# SOPS is the secure local default. Configure a SOPS creation rule/key before
-# running `conveyor secrets set`. Use backend: plain only for local fixtures.
-secrets:
-  # root: ~/.conveyor/secrets
-  backend: sops
-  # sops_binary: sops
-  # sops_config: ~/.conveyor/secrets/.sops.yaml
-  sets:
-    default:
-      local_eligible: true
+routing:
+  stages:
+    triage:
+      model: gpt-5.6-luna
+      budget_usd: 0.75
+      timeout: 20m
+      execution: in_process
+    spec:
+      model: gpt-5.6-luna
+      budget_usd: 1.00
+      timeout: 30m
+      execution: in_process
+    implement:
+      model: operator-owned
+      budget_usd: 10.00
+      timeout: 4h
+      execution: mcp
+    review:
+      model: operator-owned
+      budget_usd: 3.00
+      timeout: 1h
+      execution: mcp
 
 repos:
   - name: api
     url: https://github.com/your-org/your-repo
-    github: your-org/your-repo     # omit to disable issue polling / PR opening
+    github: your-org/your-repo
     base: main
-    # image: conveyor-dev:dev       # per-repo override for Go/Node dogfooding
-    # Values resolve only on the runner host and enter the sandbox as env vars.
-    # secret_refs:
-    #   - secretref://demo/default/DATABASE_URL
-    tool_policy:
-      allowed_commands:
-        - [git]
-        - [go]
-        - [make]
-      denied_commands:
-        - [printenv]
-        - [env]

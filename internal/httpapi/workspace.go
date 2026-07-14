@@ -2,111 +2,36 @@ package httpapi
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
-// WorkspaceInfo is the read-only workspace snapshot served at
-// GET /v1/workspace: identity, repos, stage routing, and credential
-// metadata. It is derived from the current database-backed workspace document
-// while deployment and credential metadata remain file-backed (spec §21.3).
-// Credential refs are excluded outright: refs are metadata rather than
-// secrets (spec §5.2), but they name host paths and env vars, and the read API
-// is unauthenticated.
 type WorkspaceInfo struct {
-	Workspace   string                `json:"workspace"`
-	Image       string                `json:"image"`
-	MaxBounces  int                   `json:"max_bounces"`
-	Database    string                `json:"database"`
-	Repos       []WorkspaceRepo       `json:"repos"`
-	Routing     []WorkspaceRoute      `json:"routing"`
-	Credentials []WorkspaceCredential `json:"credentials"`
+	Workspace  string           `json:"workspace"`
+	MaxBounces int              `json:"max_bounces"`
+	Database   string           `json:"database"`
+	Repos      []config.Repo    `json:"repos"`
+	Routing    []WorkspaceRoute `json:"routing"`
 }
-
-type WorkspaceRepo struct {
-	Name            string     `json:"name"`
-	URL             string     `json:"url"`
-	GitHub          string     `json:"github,omitempty"`
-	Base            string     `json:"base"`
-	Image           string     `json:"image"`
-	SecretRefCount  int        `json:"secret_ref_count"`
-	AllowedCommands [][]string `json:"allowed_commands,omitempty"`
-	DeniedCommands  [][]string `json:"denied_commands,omitempty"`
-}
-
 type WorkspaceRoute struct {
-	Stage     string   `json:"stage"`
-	Harnesses []string `json:"harnesses"`
-	ModelTier string   `json:"model_tier,omitempty"`
-	BudgetUSD float64  `json:"budget_usd"`
-	Timeout   string   `json:"timeout"`
+	Stage     string               `json:"stage"`
+	Model     string               `json:"model"`
+	BudgetUSD float64              `json:"budget_usd"`
+	Timeout   string               `json:"timeout"`
+	Execution config.ExecutionMode `json:"execution"`
 }
-
-type WorkspaceCredential struct {
-	ID        string `json:"id"`
-	OwnerID   string `json:"owner_id"`
-	OwnerKind string `json:"owner_kind"`
-	Kind      string `json:"kind"`
-	Vendor    string `json:"vendor"`
-	Harness   string `json:"harness"`
-}
-
-// Stage order for the routing table; map iteration order would jitter the UI.
-var routeOrder = []string{"triage", "spec", "implement", "review", "verify", "gate", "merge", "monitor"}
 
 func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
-	info := &WorkspaceInfo{
-		Workspace:  cfg.Workspace,
-		Image:      cfg.Image,
-		MaxBounces: cfg.MaxBounces,
-		Database:   cfg.Database.Backend,
+	info := &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...)}
+	stages := make([]string, 0, len(cfg.Routing.Stages))
+	for stage := range cfg.Routing.Stages {
+		stages = append(stages, stage)
 	}
-	for _, repo := range cfg.Repos {
-		info.Repos = append(info.Repos, WorkspaceRepo{
-			Name:            repo.Name,
-			URL:             repo.URL,
-			GitHub:          repo.GitHub,
-			Base:            repo.Base,
-			Image:           repo.Image,
-			SecretRefCount:  len(repo.SecretRefs),
-			AllowedCommands: repo.ToolPolicy.AllowedCommands,
-			DeniedCommands:  repo.ToolPolicy.DeniedCommands,
-		})
-	}
-	seen := make(map[string]bool, len(cfg.Routing.Stages))
-	appendRoute := func(stage string, route config.StageRoute) {
-		timeout := route.Timeout
-		if timeout == 0 {
-			timeout = config.DefaultStageTimeout
-		}
-		info.Routing = append(info.Routing, WorkspaceRoute{
-			Stage:     stage,
-			Harnesses: route.Harnesses,
-			ModelTier: route.ModelTier,
-			BudgetUSD: route.BudgetUSD,
-			Timeout:   timeout.String(),
-		})
-		seen[stage] = true
-	}
-	for _, stage := range routeOrder {
-		if route, ok := cfg.Routing.Stages[stage]; ok {
-			appendRoute(stage, route)
-		}
-	}
-	for stage, route := range cfg.Routing.Stages {
-		if !seen[stage] {
-			appendRoute(stage, route)
-		}
-	}
-	for _, credential := range cfg.Credentials {
-		info.Credentials = append(info.Credentials, WorkspaceCredential{
-			ID:        credential.ID,
-			OwnerID:   credential.OwnerID,
-			OwnerKind: credential.OwnerKind,
-			Kind:      credential.Kind,
-			Vendor:    credential.Vendor,
-			Harness:   credential.Harness,
-		})
+	sort.Strings(stages)
+	for _, stage := range stages {
+		route := cfg.Routing.Stages[stage]
+		info.Routing = append(info.Routing, WorkspaceRoute{Stage: stage, Model: route.Model, BudgetUSD: route.BudgetUSD, Timeout: route.TimeoutText, Execution: route.Execution})
 	}
 	return info
 }

@@ -1,4 +1,4 @@
-import { KeyRound } from 'lucide-react'
+import { KeyRound, PlugZap } from 'lucide-react'
 import { useTokenState } from '../components/app-shell'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
@@ -33,6 +33,20 @@ export function SettingsPage() {
             <p className="text-xs text-faint">
               {token ? 'Token set — review actions and task creation are enabled.' : 'No token — the dashboard is read-only.'}
             </p>
+          </CardContent>
+        </Card>
+        <Card className="mt-4">
+          <CardHeader><CardTitle>MCP work-order server</CardTitle><PlugZap className="size-4 text-primary" /></CardHeader>
+          <CardContent className="space-y-2 text-sm leading-6 text-muted">
+            <p>Connect each operator-owned coding-agent session to <code className="font-mono text-xs text-foreground">{location.origin}/mcp</code> using the bearer token above. Start a fresh session for review: Conveyor rejects self-review at claim time.</p>
+            <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">{`{
+  "mcpServers": {
+    "conveyor": {
+      "url": "${location.origin}/mcp",
+      "headers": { "Authorization": "Bearer <CONVEYOR_API_TOKEN>" }
+    }
+  }
+}`}</pre>
           </CardContent>
         </Card>
       </div>

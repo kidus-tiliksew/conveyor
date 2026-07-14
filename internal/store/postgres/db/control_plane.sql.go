@@ -46,86 +46,6 @@ func (q *Queries) ApproveLatestSpecVersion(ctx context.Context, arg ApproveLates
 	return i, err
 }
 
-const claimCredential = `-- name: ClaimCredential :one
-WITH candidate AS (
-    SELECT c.id
-    FROM credentials c
-    LEFT JOIN vendor_policies p
-      ON p.vendor = c.vendor AND p.harness = c.harness AND p.auth_mode = c.kind
-    WHERE c.harness = ANY($4::text[])
-      AND ($5::text = '' OR c.harness <> $5::text)
-      AND (c.owner_kind = 'org' OR c.owner_id = $6)
-      AND (c.kind = 'api' OR c.owner_kind = 'user')
-      AND (c.leased_by = $1 OR c.lease_until IS NULL OR c.lease_until <= now())
-      AND (c.cooldown_until IS NULL OR c.cooldown_until <= now())
-      AND c.rate_limit_state <> 'disabled'
-      AND (
-          c.kind = 'api'
-          OR p.subscription_headless = 'allowed'
-          OR ($7::boolean AND p.subscription_headless = 'restricted')
-      )
-    ORDER BY array_position($4::text[], c.harness),
-             CASE c.kind WHEN 'personal_sub' THEN 0 WHEN 'team_sub' THEN 1 ELSE 2 END,
-             c.updated_at,
-             c.id
-    FOR UPDATE OF c SKIP LOCKED
-    LIMIT 1
-)
-UPDATE credentials c
-SET leased_by = $1,
-    lease_task_id = $2,
-    lease_until = now() + $3::bigint * interval '1 second',
-    rate_limit_state = 'available',
-    cooldown_until = NULL,
-    last_error = '',
-    updated_at = now()
-FROM candidate
-WHERE c.id = candidate.id
-RETURNING c.id, c.owner_id, c.owner_kind, c.kind, c.harness, c.enc_ref, c.rate_limit_state, c.policy_flag, c.cooldown_until, c.last_error, c.created_at, c.updated_at, c.vendor, c.leased_by, c.lease_until, c.lease_task_id
-`
-
-type ClaimCredentialParams struct {
-	JobID           string   `json:"job_id"`
-	TaskID          string   `json:"task_id"`
-	LeaseSeconds    int64    `json:"lease_seconds"`
-	Harnesses       []string `json:"harnesses"`
-	ExcludeHarness  string   `json:"exclude_harness"`
-	OwnerID         string   `json:"owner_id"`
-	AllowRestricted bool     `json:"allow_restricted"`
-}
-
-func (q *Queries) ClaimCredential(ctx context.Context, arg ClaimCredentialParams) (Credential, error) {
-	row := q.db.QueryRow(ctx, claimCredential,
-		arg.JobID,
-		arg.TaskID,
-		arg.LeaseSeconds,
-		arg.Harnesses,
-		arg.ExcludeHarness,
-		arg.OwnerID,
-		arg.AllowRestricted,
-	)
-	var i Credential
-	err := row.Scan(
-		&i.ID,
-		&i.OwnerID,
-		&i.OwnerKind,
-		&i.Kind,
-		&i.Harness,
-		&i.EncRef,
-		&i.RateLimitState,
-		&i.PolicyFlag,
-		&i.CooldownUntil,
-		&i.LastError,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Vendor,
-		&i.LeasedBy,
-		&i.LeaseUntil,
-		&i.LeaseTaskID,
-	)
-	return i, err
-}
-
 const countEvents = `-- name: CountEvents :one
 SELECT count(*)::bigint FROM events e
 JOIN tasks t ON t.id = e.task_id
@@ -145,52 +65,8 @@ func (q *Queries) CountEvents(ctx context.Context, arg CountEventsParams) (int64
 	return column_1, err
 }
 
-const deleteWorkspaceCredentialRefs = `-- name: DeleteWorkspaceCredentialRefs :exec
-DELETE FROM workspace_credentials WHERE workspace_id = $1
-`
-
-func (q *Queries) DeleteWorkspaceCredentialRefs(ctx context.Context, workspaceID string) error {
-	_, err := q.db.Exec(ctx, deleteWorkspaceCredentialRefs, workspaceID)
-	return err
-}
-
-const deleteWorkspaceVendorPolicyRefs = `-- name: DeleteWorkspaceVendorPolicyRefs :exec
-DELETE FROM workspace_vendor_policies WHERE workspace_id = $1
-`
-
-func (q *Queries) DeleteWorkspaceVendorPolicyRefs(ctx context.Context, workspaceID string) error {
-	_, err := q.db.Exec(ctx, deleteWorkspaceVendorPolicyRefs, workspaceID)
-	return err
-}
-
-const disableCredentialIfUnreferenced = `-- name: DisableCredentialIfUnreferenced :exec
-UPDATE credentials c
-SET rate_limit_state = 'disabled', updated_at = now()
-WHERE c.id = $1
-  AND c.rate_limit_state <> 'disabled'
-  AND NOT EXISTS (
-      SELECT 1 FROM workspace_credentials wc WHERE wc.credential_id = c.id
-  )
-`
-
-func (q *Queries) DisableCredentialIfUnreferenced(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, disableCredentialIfUnreferenced, id)
-	return err
-}
-
-const enableCredential = `-- name: EnableCredential :exec
-UPDATE credentials
-SET rate_limit_state = 'available', updated_at = now()
-WHERE id = $1 AND rate_limit_state = 'disabled'
-`
-
-func (q *Queries) EnableCredential(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, enableCredential, id)
-	return err
-}
-
 const getJob = `-- name: GetJob :one
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.sandbox_ref, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.boot_diagnostics, j.started_at, j.ended_at, j.updated_at, j.credential_id, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.id = $1 AND t.workspace_id = $2
 `
@@ -210,7 +86,6 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (Job, error) {
 		&i.Harness,
 		&i.ModelTier,
 		&i.Runner,
-		&i.SandboxRef,
 		&i.PackVersion,
 		&i.ConfinementTier,
 		&i.BudgetUsd,
@@ -218,18 +93,16 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (Job, error) {
 		&i.TokensIn,
 		&i.TokensOut,
 		&i.State,
-		&i.BootDiagnostics,
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.UpdatedAt,
-		&i.CredentialID,
 		&i.AuthMode,
 	)
 	return i, err
 }
 
 const getLatestJob = `-- name: GetLatestJob :one
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.sandbox_ref, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.boot_diagnostics, j.started_at, j.ended_at, j.updated_at, j.credential_id, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.task_id = $1 AND t.workspace_id = $2
 ORDER BY j.started_at DESC, j.id DESC
@@ -251,7 +124,6 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 		&i.Harness,
 		&i.ModelTier,
 		&i.Runner,
-		&i.SandboxRef,
 		&i.PackVersion,
 		&i.ConfinementTier,
 		&i.BudgetUsd,
@@ -259,11 +131,9 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 		&i.TokensIn,
 		&i.TokensOut,
 		&i.State,
-		&i.BootDiagnostics,
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.UpdatedAt,
-		&i.CredentialID,
 		&i.AuthMode,
 	)
 	return i, err
@@ -300,7 +170,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -328,6 +198,7 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
+		&i.FeatureID,
 	)
 	return i, err
 }
@@ -463,15 +334,15 @@ func (q *Queries) InsertIntervention(ctx context.Context, arg InsertIntervention
 
 const insertJob = `-- name: InsertJob :one
 INSERT INTO jobs (
-    id, task_id, stage, harness, model_tier, credential_id, auth_mode, runner, sandbox_ref,
+    id, task_id, stage, harness, model_tier, auth_mode, runner,
     pack_version, confinement_tier, budget_usd, cost_usd, tokens_in,
-    tokens_out, state, boot_diagnostics, started_at, ended_at
+    tokens_out, state, started_at, ended_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-    $10, $11, $12, $13, $14,
-    $15, $16, $17, $18, $19
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12,
+    $13, $14, $15, $16
 )
-RETURNING id, task_id, stage, harness, model_tier, runner, sandbox_ref, pack_version, confinement_tier, budget_usd, cost_usd, tokens_in, tokens_out, state, boot_diagnostics, started_at, ended_at, updated_at, credential_id, auth_mode
+RETURNING id, task_id, stage, harness, model_tier, runner, pack_version, confinement_tier, budget_usd, cost_usd, tokens_in, tokens_out, state, started_at, ended_at, updated_at, auth_mode
 `
 
 type InsertJobParams struct {
@@ -480,10 +351,8 @@ type InsertJobParams struct {
 	Stage           string             `json:"stage"`
 	Harness         string             `json:"harness"`
 	ModelTier       string             `json:"model_tier"`
-	CredentialID    string             `json:"credential_id"`
 	AuthMode        string             `json:"auth_mode"`
 	Runner          string             `json:"runner"`
-	SandboxRef      string             `json:"sandbox_ref"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
 	BudgetUsd       float64            `json:"budget_usd"`
@@ -491,7 +360,6 @@ type InsertJobParams struct {
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`
-	BootDiagnostics []byte             `json:"boot_diagnostics"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
 	EndedAt         pgtype.Timestamptz `json:"ended_at"`
 }
@@ -503,10 +371,8 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		arg.Stage,
 		arg.Harness,
 		arg.ModelTier,
-		arg.CredentialID,
 		arg.AuthMode,
 		arg.Runner,
-		arg.SandboxRef,
 		arg.PackVersion,
 		arg.ConfinementTier,
 		arg.BudgetUsd,
@@ -514,7 +380,6 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		arg.TokensIn,
 		arg.TokensOut,
 		arg.State,
-		arg.BootDiagnostics,
 		arg.StartedAt,
 		arg.EndedAt,
 	)
@@ -526,7 +391,6 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		&i.Harness,
 		&i.ModelTier,
 		&i.Runner,
-		&i.SandboxRef,
 		&i.PackVersion,
 		&i.ConfinementTier,
 		&i.BudgetUsd,
@@ -534,11 +398,9 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		&i.TokensIn,
 		&i.TokensOut,
 		&i.State,
-		&i.BootDiagnostics,
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.UpdatedAt,
-		&i.CredentialID,
 		&i.AuthMode,
 	)
 	return i, err
@@ -600,12 +462,12 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 const insertTask = `-- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13, $14, $15
+    $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
 `
 
 type InsertTaskParams struct {
@@ -623,6 +485,7 @@ type InsertTaskParams struct {
 	NextStage       string             `json:"next_stage"`
 	RecoveryStage   string             `json:"recovery_stage"`
 	ParentTaskID    string             `json:"parent_task_id"`
+	FeatureID       pgtype.Text        `json:"feature_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
@@ -642,6 +505,7 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.NextStage,
 		arg.RecoveryStage,
 		arg.ParentTaskID,
+		arg.FeatureID,
 		arg.CreatedAt,
 	)
 	var i Task
@@ -662,6 +526,7 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
+		&i.FeatureID,
 	)
 	return i, err
 }
@@ -690,21 +555,6 @@ func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams
 		&i.ConfigVersion,
 	)
 	return i, err
-}
-
-const insertWorkspaceCredentialRef = `-- name: InsertWorkspaceCredentialRef :exec
-INSERT INTO workspace_credentials (workspace_id, credential_id)
-VALUES ($1, $2)
-`
-
-type InsertWorkspaceCredentialRefParams struct {
-	WorkspaceID  string `json:"workspace_id"`
-	CredentialID string `json:"credential_id"`
-}
-
-func (q *Queries) InsertWorkspaceCredentialRef(ctx context.Context, arg InsertWorkspaceCredentialRefParams) error {
-	_, err := q.db.Exec(ctx, insertWorkspaceCredentialRef, arg.WorkspaceID, arg.CredentialID)
-	return err
 }
 
 const insertWorkspaceEvent = `-- name: InsertWorkspaceEvent :one
@@ -746,28 +596,6 @@ func (q *Queries) InsertWorkspaceEvent(ctx context.Context, arg InsertWorkspaceE
 	return i, err
 }
 
-const insertWorkspaceVendorPolicyRef = `-- name: InsertWorkspaceVendorPolicyRef :exec
-INSERT INTO workspace_vendor_policies (workspace_id, vendor, harness, auth_mode)
-VALUES ($1, $2, $3, $4)
-`
-
-type InsertWorkspaceVendorPolicyRefParams struct {
-	WorkspaceID string `json:"workspace_id"`
-	Vendor      string `json:"vendor"`
-	Harness     string `json:"harness"`
-	AuthMode    string `json:"auth_mode"`
-}
-
-func (q *Queries) InsertWorkspaceVendorPolicyRef(ctx context.Context, arg InsertWorkspaceVendorPolicyRefParams) error {
-	_, err := q.db.Exec(ctx, insertWorkspaceVendorPolicyRef,
-		arg.WorkspaceID,
-		arg.Vendor,
-		arg.Harness,
-		arg.AuthMode,
-	)
-	return err
-}
-
 const listActivityMarkers = `-- name: ListActivityMarkers :many
 SELECT
     t.id AS task_id,
@@ -804,47 +632,6 @@ func (q *Queries) ListActivityMarkers(ctx context.Context, workspaceID string) (
 	for rows.Next() {
 		var i ListActivityMarkersRow
 		if err := rows.Scan(&i.TaskID, &i.LatestStage, &i.LastEventAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listCredentials = `-- name: ListCredentials :many
-SELECT id, owner_id, owner_kind, kind, harness, enc_ref, rate_limit_state, policy_flag, cooldown_until, last_error, created_at, updated_at, vendor, leased_by, lease_until, lease_task_id FROM credentials ORDER BY harness, owner_id, id
-`
-
-func (q *Queries) ListCredentials(ctx context.Context) ([]Credential, error) {
-	rows, err := q.db.Query(ctx, listCredentials)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Credential{}
-	for rows.Next() {
-		var i Credential
-		if err := rows.Scan(
-			&i.ID,
-			&i.OwnerID,
-			&i.OwnerKind,
-			&i.Kind,
-			&i.Harness,
-			&i.EncRef,
-			&i.RateLimitState,
-			&i.PolicyFlag,
-			&i.CooldownUntil,
-			&i.LastError,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Vendor,
-			&i.LeasedBy,
-			&i.LeaseUntil,
-			&i.LeaseTaskID,
-		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -983,7 +770,7 @@ func (q *Queries) ListInterventions(ctx context.Context, arg ListInterventionsPa
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.sandbox_ref, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.boot_diagnostics, j.started_at, j.ended_at, j.updated_at, j.credential_id, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.task_id = $1 AND t.workspace_id = $2
 ORDER BY j.started_at, j.id
@@ -1010,7 +797,6 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 			&i.Harness,
 			&i.ModelTier,
 			&i.Runner,
-			&i.SandboxRef,
 			&i.PackVersion,
 			&i.ConfinementTier,
 			&i.BudgetUsd,
@@ -1018,11 +804,9 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 			&i.TokensIn,
 			&i.TokensOut,
 			&i.State,
-			&i.BootDiagnostics,
 			&i.StartedAt,
 			&i.EndedAt,
 			&i.UpdatedAt,
-			&i.CredentialID,
 			&i.AuthMode,
 		); err != nil {
 			return nil, err
@@ -1036,7 +820,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, error) {
@@ -1065,6 +849,7 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, er
 			&i.UpdatedAt,
 			&i.NextStage,
 			&i.RecoveryStage,
+			&i.FeatureID,
 		); err != nil {
 			return nil, err
 		}
@@ -1074,197 +859,6 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, er
 		return nil, err
 	}
 	return items, nil
-}
-
-const listVendorPolicies = `-- name: ListVendorPolicies :many
-SELECT vendor, harness, auth_mode, subscription_headless, reviewed_at, source_url, updated_at FROM vendor_policies ORDER BY vendor, harness, auth_mode
-`
-
-func (q *Queries) ListVendorPolicies(ctx context.Context) ([]VendorPolicy, error) {
-	rows, err := q.db.Query(ctx, listVendorPolicies)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []VendorPolicy{}
-	for rows.Next() {
-		var i VendorPolicy
-		if err := rows.Scan(
-			&i.Vendor,
-			&i.Harness,
-			&i.AuthMode,
-			&i.SubscriptionHeadless,
-			&i.ReviewedAt,
-			&i.SourceUrl,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listWorkspaceCredentialIDs = `-- name: ListWorkspaceCredentialIDs :many
-SELECT credential_id
-FROM workspace_credentials
-WHERE workspace_id = $1
-ORDER BY credential_id
-`
-
-func (q *Queries) ListWorkspaceCredentialIDs(ctx context.Context, workspaceID string) ([]string, error) {
-	rows, err := q.db.Query(ctx, listWorkspaceCredentialIDs, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var credential_id string
-		if err := rows.Scan(&credential_id); err != nil {
-			return nil, err
-		}
-		items = append(items, credential_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listWorkspaceVendorPolicyRefs = `-- name: ListWorkspaceVendorPolicyRefs :many
-SELECT vendor, harness, auth_mode
-FROM workspace_vendor_policies
-WHERE workspace_id = $1
-ORDER BY vendor, harness, auth_mode
-`
-
-type ListWorkspaceVendorPolicyRefsRow struct {
-	Vendor   string `json:"vendor"`
-	Harness  string `json:"harness"`
-	AuthMode string `json:"auth_mode"`
-}
-
-func (q *Queries) ListWorkspaceVendorPolicyRefs(ctx context.Context, workspaceID string) ([]ListWorkspaceVendorPolicyRefsRow, error) {
-	rows, err := q.db.Query(ctx, listWorkspaceVendorPolicyRefs, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListWorkspaceVendorPolicyRefsRow{}
-	for rows.Next() {
-		var i ListWorkspaceVendorPolicyRefsRow
-		if err := rows.Scan(&i.Vendor, &i.Harness, &i.AuthMode); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const releaseCredential = `-- name: ReleaseCredential :execrows
-UPDATE credentials
-SET leased_by = '', lease_task_id = '', lease_until = NULL, last_error = $1, updated_at = now()
-WHERE id = $2 AND leased_by = $3
-`
-
-type ReleaseCredentialParams struct {
-	LastError string `json:"last_error"`
-	ID        string `json:"id"`
-	JobID     string `json:"job_id"`
-}
-
-func (q *Queries) ReleaseCredential(ctx context.Context, arg ReleaseCredentialParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseCredential, arg.LastError, arg.ID, arg.JobID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const rescueTaskCredentialLeases = `-- name: RescueTaskCredentialLeases :execrows
-UPDATE credentials
-SET leased_by = '', lease_task_id = '', lease_until = NULL,
-    last_error = 'rescued after abandoned task attempt', updated_at = now()
-WHERE lease_task_id = $1
-  AND leased_by <> ''
-  AND leased_by <> $2
-`
-
-type RescueTaskCredentialLeasesParams struct {
-	TaskID       string `json:"task_id"`
-	CurrentJobID string `json:"current_job_id"`
-}
-
-func (q *Queries) RescueTaskCredentialLeases(ctx context.Context, arg RescueTaskCredentialLeasesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, rescueTaskCredentialLeases, arg.TaskID, arg.CurrentJobID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const restrictVendorPolicyIfUnreferenced = `-- name: RestrictVendorPolicyIfUnreferenced :exec
-UPDATE vendor_policies p
-SET subscription_headless = 'unknown', updated_at = now()
-WHERE p.vendor = $1 AND p.harness = $2 AND p.auth_mode = $3
-  AND p.subscription_headless <> 'unknown'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM workspace_vendor_policies wp
-      WHERE wp.vendor = p.vendor
-        AND wp.harness = p.harness
-        AND wp.auth_mode = p.auth_mode
-  )
-`
-
-type RestrictVendorPolicyIfUnreferencedParams struct {
-	Vendor   string `json:"vendor"`
-	Harness  string `json:"harness"`
-	AuthMode string `json:"auth_mode"`
-}
-
-func (q *Queries) RestrictVendorPolicyIfUnreferenced(ctx context.Context, arg RestrictVendorPolicyIfUnreferencedParams) error {
-	_, err := q.db.Exec(ctx, restrictVendorPolicyIfUnreferenced, arg.Vendor, arg.Harness, arg.AuthMode)
-	return err
-}
-
-const throttleCredential = `-- name: ThrottleCredential :execrows
-UPDATE credentials
-SET leased_by = '',
-    lease_task_id = '',
-    lease_until = NULL,
-    rate_limit_state = 'throttled',
-    cooldown_until = now() + $1::bigint * interval '1 second',
-    last_error = $2,
-    updated_at = now()
-WHERE id = $3 AND leased_by = $4
-`
-
-type ThrottleCredentialParams struct {
-	CooldownSeconds int64  `json:"cooldown_seconds"`
-	LastError       string `json:"last_error"`
-	ID              string `json:"id"`
-	JobID           string `json:"job_id"`
-}
-
-func (q *Queries) ThrottleCredential(ctx context.Context, arg ThrottleCredentialParams) (int64, error) {
-	result, err := q.db.Exec(ctx, throttleCredential,
-		arg.CooldownSeconds,
-		arg.LastError,
-		arg.ID,
-		arg.JobID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const updateJob = `-- name: UpdateJob :one
@@ -1272,27 +866,24 @@ UPDATE jobs
 SET stage = $2,
     harness = $3,
     model_tier = $4,
-    credential_id = $5,
-    auth_mode = $6,
-    runner = $7,
-    sandbox_ref = $8,
-    pack_version = $9,
-    confinement_tier = $10,
-    budget_usd = $11,
-    cost_usd = $12,
-    tokens_in = $13,
-    tokens_out = $14,
-    state = $15,
-    boot_diagnostics = $16,
-    started_at = $17,
-    ended_at = $18,
+    auth_mode = $5,
+    runner = $6,
+    pack_version = $7,
+    confinement_tier = $8,
+    budget_usd = $9,
+    cost_usd = $10,
+    tokens_in = $11,
+    tokens_out = $12,
+    state = $13,
+    started_at = $14,
+    ended_at = $15,
     updated_at = now()
 WHERE jobs.id = $1
   AND EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.id = jobs.task_id AND t.workspace_id = $19
+      WHERE t.id = jobs.task_id AND t.workspace_id = $16
   )
-RETURNING jobs.id, jobs.task_id, jobs.stage, jobs.harness, jobs.model_tier, jobs.runner, jobs.sandbox_ref, jobs.pack_version, jobs.confinement_tier, jobs.budget_usd, jobs.cost_usd, jobs.tokens_in, jobs.tokens_out, jobs.state, jobs.boot_diagnostics, jobs.started_at, jobs.ended_at, jobs.updated_at, jobs.credential_id, jobs.auth_mode
+RETURNING jobs.id, jobs.task_id, jobs.stage, jobs.harness, jobs.model_tier, jobs.runner, jobs.pack_version, jobs.confinement_tier, jobs.budget_usd, jobs.cost_usd, jobs.tokens_in, jobs.tokens_out, jobs.state, jobs.started_at, jobs.ended_at, jobs.updated_at, jobs.auth_mode
 `
 
 type UpdateJobParams struct {
@@ -1300,10 +891,8 @@ type UpdateJobParams struct {
 	Stage           string             `json:"stage"`
 	Harness         string             `json:"harness"`
 	ModelTier       string             `json:"model_tier"`
-	CredentialID    string             `json:"credential_id"`
 	AuthMode        string             `json:"auth_mode"`
 	Runner          string             `json:"runner"`
-	SandboxRef      string             `json:"sandbox_ref"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
 	BudgetUsd       float64            `json:"budget_usd"`
@@ -1311,7 +900,6 @@ type UpdateJobParams struct {
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`
-	BootDiagnostics []byte             `json:"boot_diagnostics"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
 	EndedAt         pgtype.Timestamptz `json:"ended_at"`
 	WorkspaceID     string             `json:"workspace_id"`
@@ -1323,10 +911,8 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		arg.Stage,
 		arg.Harness,
 		arg.ModelTier,
-		arg.CredentialID,
 		arg.AuthMode,
 		arg.Runner,
-		arg.SandboxRef,
 		arg.PackVersion,
 		arg.ConfinementTier,
 		arg.BudgetUsd,
@@ -1334,7 +920,6 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		arg.TokensIn,
 		arg.TokensOut,
 		arg.State,
-		arg.BootDiagnostics,
 		arg.StartedAt,
 		arg.EndedAt,
 		arg.WorkspaceID,
@@ -1347,7 +932,6 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		&i.Harness,
 		&i.ModelTier,
 		&i.Runner,
-		&i.SandboxRef,
 		&i.PackVersion,
 		&i.ConfinementTier,
 		&i.BudgetUsd,
@@ -1355,11 +939,9 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		&i.TokensIn,
 		&i.TokensOut,
 		&i.State,
-		&i.BootDiagnostics,
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.UpdatedAt,
-		&i.CredentialID,
 		&i.AuthMode,
 	)
 	return i, err
@@ -1370,7 +952,7 @@ UPDATE tasks
 SET class = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
 `
 
 type UpdateTaskClassificationParams struct {
@@ -1399,6 +981,7 @@ func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskCl
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
+		&i.FeatureID,
 	)
 	return i, err
 }
@@ -1408,7 +991,7 @@ UPDATE tasks
 SET state = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
 `
 
 type UpdateTaskStateParams struct {
@@ -1437,6 +1020,7 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
+		&i.FeatureID,
 	)
 	return i, err
 }
@@ -1449,7 +1033,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $4
   AND workspace_id = $5
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id
 `
 
 type UpdateTaskTransitionParams struct {
@@ -1486,6 +1070,7 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
+		&i.FeatureID,
 	)
 	return i, err
 }
@@ -1516,43 +1101,6 @@ func (q *Queries) UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspace
 		&i.ConfigVersion,
 	)
 	return i, err
-}
-
-const upsertCredential = `-- name: UpsertCredential :exec
-INSERT INTO credentials (
-    id, owner_id, owner_kind, kind, vendor, harness, enc_ref
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (id) DO UPDATE
-SET owner_id = EXCLUDED.owner_id,
-    owner_kind = EXCLUDED.owner_kind,
-    kind = EXCLUDED.kind,
-    vendor = EXCLUDED.vendor,
-    harness = EXCLUDED.harness,
-    enc_ref = EXCLUDED.enc_ref,
-    updated_at = now()
-`
-
-type UpsertCredentialParams struct {
-	ID        string `json:"id"`
-	OwnerID   string `json:"owner_id"`
-	OwnerKind string `json:"owner_kind"`
-	Kind      string `json:"kind"`
-	Vendor    string `json:"vendor"`
-	Harness   string `json:"harness"`
-	EncRef    string `json:"enc_ref"`
-}
-
-func (q *Queries) UpsertCredential(ctx context.Context, arg UpsertCredentialParams) error {
-	_, err := q.db.Exec(ctx, upsertCredential,
-		arg.ID,
-		arg.OwnerID,
-		arg.OwnerKind,
-		arg.Kind,
-		arg.Vendor,
-		arg.Harness,
-		arg.EncRef,
-	)
-	return err
 }
 
 const upsertRepo = `-- name: UpsertRepo :exec
@@ -1617,36 +1165,4 @@ func (q *Queries) UpsertTranscript(ctx context.Context, arg UpsertTranscriptPara
 		&i.CreatedAt,
 	)
 	return i, err
-}
-
-const upsertVendorPolicy = `-- name: UpsertVendorPolicy :exec
-INSERT INTO vendor_policies (
-    vendor, harness, auth_mode, subscription_headless, reviewed_at, source_url
-) VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (vendor, harness, auth_mode) DO UPDATE
-SET subscription_headless = EXCLUDED.subscription_headless,
-    reviewed_at = EXCLUDED.reviewed_at,
-    source_url = EXCLUDED.source_url,
-    updated_at = now()
-`
-
-type UpsertVendorPolicyParams struct {
-	Vendor               string      `json:"vendor"`
-	Harness              string      `json:"harness"`
-	AuthMode             string      `json:"auth_mode"`
-	SubscriptionHeadless string      `json:"subscription_headless"`
-	ReviewedAt           pgtype.Date `json:"reviewed_at"`
-	SourceUrl            string      `json:"source_url"`
-}
-
-func (q *Queries) UpsertVendorPolicy(ctx context.Context, arg UpsertVendorPolicyParams) error {
-	_, err := q.db.Exec(ctx, upsertVendorPolicy,
-		arg.Vendor,
-		arg.Harness,
-		arg.AuthMode,
-		arg.SubscriptionHeadless,
-		arg.ReviewedAt,
-		arg.SourceUrl,
-	)
-	return err
 }

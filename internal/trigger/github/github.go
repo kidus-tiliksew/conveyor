@@ -221,6 +221,32 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 	return openPR(ctx, worktreeDir, repo, branch, base, title, body, run, gh)
 }
 
+// OpenPRForBranch trusts the operator-owned agent to have pushed branch. It
+// creates or reuses the PR without requiring Conveyor to own a worktree
+// (spec §21.4 change 5).
+func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
+	existing, err := gh(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
+	if err != nil {
+		return "", fmt.Errorf("find existing PR: %w", err)
+	}
+	if value := strings.TrimSpace(string(existing)); value != "" {
+		return value, nil
+	}
+	out, err := gh(ctx, "pr", "create", "--repo", repo, "--head", branch, "--base", base, "--title", title, "--body", body)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func DiffForBranch(ctx context.Context, repo, branch string) (string, error) {
+	out, err := gh(ctx, "pr", "diff", branch, "--repo", repo)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 type gitRunner func(context.Context, string, string, ...string) error
 
 func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body string, runGit gitRunner, runGH ghRunner) (string, error) {

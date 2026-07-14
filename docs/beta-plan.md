@@ -1,23 +1,27 @@
-# Beta plan: phases 3–4.5
+# Beta plan: phases 3–4.7
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.3),
-restructured by §21.2 and extended by §21.3. This document is the working
-breakdown: what each pre-Beta phase contains, its dependencies, and its exit
-criterion. Phases 1–2 are complete and validated; nothing here reopens them.
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.4),
+restructured by §21.2 and extended by §21.3–§21.4. This document is the
+working breakdown: what each pre-Beta phase contains, its dependencies, and
+its exit criterion. Phases 1–2 are complete and validated; nothing here
+reopens them.
 
 **The milestone:** Beta = Conveyor develops Conveyor. A GitHub issue on the
 Conveyor repository flows issue → triage → approved spec → implementation →
 PR → (redirect rounds) → merge, with human involvement limited to gate
 decisions and merges, all taken through the UI or CLI.
 
-**Beta exit criterion (spec §19):** five consecutive real tasks shipped
-through the full pipeline, at least one completing a redirect round, zero
-manual git operations.
+**Beta exit criterion (spec §19, restated by §21.4):** five consecutive real
+tasks where the operator's own agent claims each work order over MCP, at
+least one completing a `changes_requested` round in-session, zero manual git
+operations outside the implementing agent's workflow, all human actions
+through the UI or CLI.
 
-Pre-Beta is deliberately three phases — the pipeline, the UI to operate it,
-and the configuration surface to steer it (§21.3). Everything else (platform
-agents, memory store, flywheel) is sequenced post-Beta, built with and
-increasingly by the factory itself.
+Pre-Beta is four phases — the pipeline, the UI to operate it, the
+configuration surface to steer it (§21.3), and the MCP execution pivot that
+changes who runs the code (§21.4). Everything else (monitor agent, memory
+store, flywheel) is sequenced post-Beta, built with and increasingly by the
+factory itself.
 
 ---
 
@@ -134,9 +138,78 @@ mutable through the authenticated API and the Workspace UI. Suggested order:
 made through the UI take effect on the next dispatched job without a
 control-plane restart, each recorded as a `config.updated` event with actor
 identity; a rejected invalid write surfaces its validation error in the UI
-and leaves state untouched. Beta entry follows: five consecutive real tasks,
-one redirect round, zero manual git ops, all human actions through the UI or
-CLI. *(Phase 4.5 implementation complete.)*
+and leaves state untouched. *(Met; Beta entry moved to the Phase 4.7 exit by
+§21.4.)*
+
+## Phase 4.7 — MCP execution pivot → Beta
+
+*Proves: the factory orchestrates; the operator's own agents implement
+(spec §21.4).*
+
+The sandbox execution plane retires; implementation delegates to
+operator-owned agents over MCP; the spec corpus gets its organizing UI;
+context files become first-class. Suggested order:
+
+1. **Pipeline agents in-process.** Replace harness-dispatched triage and
+   spec jobs with direct API calls inside `conveyord` on
+   `CONVEYOR_API_KEY`: per-stage `{model, budget_usd, timeout, execution}`
+   from the §21.3 config document (triage/spec fixed `in_process`; review
+   defaults `mcp` with `in_process` as fallback), exact token metering
+   feeding the §14.1 breaker, §4.1 output validators unchanged, full
+   transcripts persisted through the §10.3 redaction path. This lands
+   *before* the demolition so the pipeline never stops working.
+2. **MCP work-order server (§17.4).** Stage-typed work orders (implement,
+   review). Lifecycle tools: `list_work_orders`, `claim_work_order`
+   (leases; expiry returns the claim to queue; a review order for task T
+   is unclaimable by the token/session that claimed T's implement order),
+   `get_work_order` (implement: approved spec, branch, base, bounce
+   history, prior feedback, artifact refs; review: diff/PR ref, approved
+   spec, bounce history, review role prompt), `report_progress` /
+   `report_usage` / `upload_transcript` (self-reported, marked as such),
+   `submit_for_review` (opens the PR if absent, then dispatches review
+   per execution mode), `await_review` (long-poll so the implementer's
+   session receives the verdict in-session when a reviewer claims
+   promptly), and `submit_review_verdict` (§4.1-validated verdict +
+   structured feedback; reviewer identity plus self-reported agent/model
+   recorded on the intervention → independence labels:
+   `reviewer_session`, `reviewer_model`, `same_model_as_implementer`).
+   Budget/clock enforcement at the protocol boundary: claims and submits
+   refused once spent. Jobs recorded `harness: external-mcp,
+   confinement: none, auth: byoa`.
+3. **Demolition.** Delete `internal/runner`, `internal/adapter`, the
+   credential pool/router, `cmd/conveyor-runner`, `cmd/conveyor-shim`,
+   `images/`, snapshot/resume machinery; strip credentials, vendor
+   policies, tool policies, per-repo images, and secret refs from the
+   config document (§21.4 change 8). `gitx` bare-clone cache stays
+   (branches, diffs, `conveyor checkout`). Mechanical verification is the
+   repo's own CI on the PR.
+4. **Requirements tree.** `features` table (hierarchical) +
+   task→feature assignment (triage suggests, human reassigns); a
+   Requirements UI module rendering each node's accumulated approved
+   specs with linked tasks, PRs, and events.
+5. **Artifacts.** Content-addressed, size-bounded file storage;
+   upload/browse UI; attach to features and tasks; injected into
+   pipeline-agent context; listed with fetch access in `get_work_order`.
+6. **UI/CLI updates.** Workspace page reflects the slimmed config;
+   work-order state surfaces in the feed and task panel (claimed-by,
+   lease, self-reported usage); review independence labels on the review
+   card and timeline entry (§21.4 change 3); MCP connection instructions
+   in Settings; `conveyor config export/import` unchanged.
+
+**Exit criterion (spec §21.4):** one real task flows issue → triage → spec
+(approved in UI) → implement work order claimed by the operator's Claude
+Code over MCP → implementation on the operator's machine →
+`submit_for_review` → review work order claimed by a *fresh* agent session
+→ `changes_requested` verdict delivered to the waiting implementer via
+`await_review` → fix in the same session → resubmit → approve → PR merged,
+with the full lifecycle audited and the self-review guard verified (the
+implementing session cannot claim the review order). Beta entry follows:
+five consecutive such tasks per the §19 criterion.
+
+**Implementation status (July 14, 2026): complete.** The Phase 4.7 code and
+operator surfaces are implemented and repository validation passes. The live
+dogfood exit flow and subsequent five-task Beta proof above are still pending;
+they must be recorded from real MCP sessions and are not inferred from tests.
 
 ---
 
@@ -144,15 +217,20 @@ CLI. *(Phase 4.5 implementation complete.)*
 
 Built through the factory, prioritized by observed operational load:
 
-- **Phase 5 — platform agents & policy:** command-policy shim + approval
-  cards (§11.2), environment inference & repair (§6.4), monitor agent
-  (CI → task, reverse sync §4.2).
-- **Phase 6 — memory store** (§15.1): pgvector retrieval, lessons, the
-  spec corpus, per-role context budgets.
+- **Phase 5 — platform agents & policy:** monitor agent (CI → task,
+  reverse sync §4.2); repo-resident `.conveyor/` hints (verify commands,
+  triage area hints — advisory only, never capability grants). The
+  command-policy shim + approval cards and environment inference/repair
+  retired with the sandbox lane (§21.4).
+- **Phase 6 — memory store** (§15.1): pgvector retrieval, lessons,
+  per-role context budgets; extends the Phase 4.7 requirements tree and
+  artifacts rather than introducing the corpus.
 - **Phase 7 — flywheel:** transcript mining, self-improvement proposals,
-  escalation graduation, pack versioning + eval rig (§2.2, §15.2).
-- **Phase 8 (demand-triggered):** verification agent, K8sRunner, multi-repo
-  sets, aggregate cost dashboard. **Phase 9 (demand-triggered):** enterprise.
+  escalation graduation, pack versioning + eval rig (§2.2, §15.2) — over
+  native pipeline-agent transcripts plus self-reported MCP transcripts.
+- **Phase 8 (demand-triggered):** the reintroduction of managed execution
+  (§21.4): verification agent, K8sRunner, multi-repo sets, aggregate cost
+  dashboard. **Phase 9 (demand-triggered):** enterprise.
 
 ## Standing notes
 

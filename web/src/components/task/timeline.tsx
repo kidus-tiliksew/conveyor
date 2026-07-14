@@ -80,7 +80,7 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
 }
 
 function JobEntry({ job, summary }: { job: Job; summary: string }) {
-  const running = job.state === 'running' || job.state === 'booting'
+  const running = job.state === 'running'
   return (
     <li className="relative pl-7">
       <TimelineDot
@@ -88,7 +88,7 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
           'bg-edge',
           job.state === 'done' && 'bg-positive',
           job.state === 'paused' && 'bg-attention-dot',
-          (job.state === 'failed' || job.state === 'sandbox_boot_failed') && 'bg-failure',
+          job.state === 'failed' && 'bg-failure',
           running && 'animate-pulse bg-primary',
         )}
       />
@@ -100,7 +100,7 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
           <Badge
             variant={
               job.state === 'done' ? 'positive'
-              : job.state === 'failed' || job.state === 'sandbox_boot_failed' ? 'failure'
+              : job.state === 'failed' ? 'failure'
               : 'default'
             }
           >
@@ -109,7 +109,6 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
         </div>
         <p className="whitespace-pre-line px-4 py-3 text-sm leading-6 text-foreground/85">{summary}</p>
-        {job.boot_diagnostics && <BootDiagnostics job={job} />}
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-2.5 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
           <span>{usd(job.cost_usd)}</span>
@@ -123,32 +122,6 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
         </div>
       </article>
     </li>
-  )
-}
-
-// Structured sandbox boot failure diagnostics (spec §6.2).
-function BootDiagnostics({ job }: { job: Job }) {
-  const diag = job.boot_diagnostics
-  if (!diag) return null
-  const lines = [
-    diag.validation_error && `Validation: ${diag.validation_error}`,
-    diag.runtime_error && `Runtime: ${diag.runtime_error}`,
-    diag.missing_env_vars?.length && `Missing env vars: ${diag.missing_env_vars.join(', ')}`,
-  ].filter(Boolean) as string[]
-  return (
-    <div className="mx-4 mb-3 rounded-md bg-failure-soft px-3 py-2">
-      <p className="text-xs font-semibold text-failure">Sandbox boot diagnostics</p>
-      {lines.map((line) => (
-        <p key={line} className="mt-1 text-xs leading-5 text-failure/90">
-          {line}
-        </p>
-      ))}
-      {diag.image_build_log && (
-        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-failure/80">
-          {diag.image_build_log}
-        </pre>
-      )}
-    </div>
   )
 }
 

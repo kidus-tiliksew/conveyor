@@ -35,11 +35,14 @@ func (f *fakeWorkspaceConfigStore) UpdateWorkspaceConfig(ctx context.Context, ex
 
 func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	document := config.WorkspaceDocument{
-		Workspace: "demo", Image: "conveyor-base:dev", MaxBounces: 2,
-		Routing: config.WorkspaceRouting{Stages: map[string]config.StageRoute{
-			"implement": {Harnesses: []string{"codex"}, BudgetUSD: 3, TimeoutText: "2h"},
+		Workspace: "demo", MaxBounces: 2,
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"triage":    {Model: "gpt", BudgetUSD: 1, TimeoutText: "20m", Execution: config.ExecutionInProcess},
+			"spec":      {Model: "gpt", BudgetUSD: 1, TimeoutText: "30m", Execution: config.ExecutionInProcess},
+			"implement": {Model: "operator", BudgetUSD: 3, TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"review":    {Model: "operator", BudgetUSD: 1, TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
-		Repos: []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main", Image: "conveyor-base:dev"}},
+		Repos: []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main"}},
 	}
 	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 3}}
 	s := NewServer(store.NewMemory())
@@ -75,7 +78,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 		t.Fatalf("invalid status=%d updates=%d body=%s", invalidResult.Code, backend.updates, invalidResult.Body)
 	}
 
-	document.Routing.Stages["implement"] = config.StageRoute{Harnesses: []string{"claude-code", "codex"}, BudgetUSD: 2, TimeoutText: "45m"}
+	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", BudgetUSD: 2, TimeoutText: "45m", Execution: config.ExecutionMCP}
 	body, _ := json.Marshal(map[string]any{"document": document})
 	put := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
 	put.Header.Set("Authorization", "Bearer token")

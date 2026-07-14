@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.3**
-**Date:** July 12, 2026
-**Status:** Accepted — dynamic workspace configuration amendment applied (§21.3)
+**Specification — v1.4**
+**Date:** July 14, 2026
+**Status:** Accepted — MCP execution pivot amendment applied (§21.4)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -680,24 +680,30 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **2** *(complete)* | Claude Code adapter, credential pool + router, Postgres state + events, activity view + review queue with reason codes (§13.3), redaction | Multi-harness + human gate |
 | **3** | Full pipeline: multi-stage orchestration with per-stage gates and bounded bounces; triage, spec, and code-review agents; spec format machinery (§4.1) with versioned, approved specs as the implementation contract; role prompts and tool policies as versioned files (proto-pack, §2.2); per-repo sandbox images (including a Go-toolchain image so Conveyor can build itself); PR review comments → redirect feedback (§9); per-job budget circuit breaker and job timeouts (§14.1) | The full pipeline runs |
 | **4** *(complete)* | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place; app shell with home/workspace/settings surfaces, task intake, and a read-only workspace snapshot | The factory is operable from one screen |
-| **4.5** | Dynamic workspace configuration (§21.3): workspace config moves to Postgres as source of truth with the deployment file as bootstrap seed; authenticated, validated config read/write API with optimistic concurrency and `config.updated` audit events; hot reload of routing, repos, budgets, and bounce limits without a control-plane restart; Workspace UI becomes editable for stage routing, workspace basics, and repos & environments (tool policy, images, secret *references*) | **Beta: Conveyor develops Conveyor** |
-| **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) | The factory guards and onboards itself |
+| **4.5** *(complete)* | Dynamic workspace configuration (§21.3): workspace config moves to Postgres as source of truth with the deployment file as bootstrap seed; authenticated, validated config read/write API with optimistic concurrency and `config.updated` audit events; hot reload of routing, repos, budgets, and bounce limits without a control-plane restart; Workspace UI becomes editable for stage routing, workspace basics, and repos & environments (tool policy, images, secret *references*) | The factory is steerable from its own control surface |
+| **4.7** | MCP execution pivot (§21.4): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; implementation *and code review* delegate to the operator's own agents over a new MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
+| **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) *(shim approval cards and environment inference retired with the sandbox lane, §21.4; monitor agent stays)* | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
 | **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
-| **8** *(demand-triggered)* | Verification agent (Playwright + computer use, §12), K8sRunner, multi-repo worktree sets + linked-PR gating (§7.1), aggregate cost dashboard and budget policy (§14) | Trust + scale |
+| **8** *(demand-triggered)* | Verification agent (Playwright + computer use, §12), K8sRunner, multi-repo worktree sets + linked-PR gating (§7.1), aggregate cost dashboard and budget policy (§14) *(per §21.4, this phase is the reintroduction of managed execution — until then, repo CI is the mechanical verifier)* | Trust + scale |
 | **9** *(demand-triggered)* | SSO/OIDC adapter, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Enterprise-ready |
 
 The Phase 1 runner and checkout storage mechanics in this table are amended by
 §21.1; phases 3–9 are restructured by §21.2, which records the Beta milestone,
 its exit criterion, and the deferral rationale. Phase 4.5 is inserted by §21.3,
-which moves workspace configuration into the control plane and re-gates Beta
-entry on it.
+which moves workspace configuration into the control plane. Phase 4.7 is
+inserted by §21.4, which retires the sandbox execution plane in favor of the
+MCP work-order model and re-gates Beta entry on it; §21.4 also amends the
+Phase 5 and Phase 8 rows.
 
-**Beta exit criterion (§21.2):** five consecutive real tasks on the Conveyor
+**Beta exit criterion (§21.4):** five consecutive real tasks on the Conveyor
 repository shipped through the full pipeline — issue → triage → approved spec
-→ implementation → PR → merge — with at least one task completing a redirect
-round, zero manual git operations, and all human actions taken through the
-Phase 4 UI or CLI.
+→ implement work order claimed over MCP by the operator's own agent →
+`submit_for_review` → review work order claimed by a *different* agent
+session → PR → merge — with at least one task completing a
+`changes_requested` round inside the implementing agent's session, zero manual
+git operations outside the agents' own workflows, and all human actions taken
+through the UI or CLI.
 
 ---
 
@@ -870,6 +876,146 @@ entry. Six changes; all other v1.2 decisions remain unchanged:
    validation error in the UI and leaves state untouched. The Beta exit
    criterion itself (§19) is unchanged.
 
+### 21.4 v1.4 — MCP execution pivot, requirements tree, artifacts (July 14, 2026)
+
+The largest amendment to date, and a deliberate change of thesis. v1.0–v1.3
+Conveyor owned execution: sandboxes, harness adapters, and a pooled credential
+layer existed so the factory could run implementation itself. Operating
+experience and the arrival of capable operator-owned coding agents (Claude
+Code, Cursor) invert the economics: the hardest parts of the execution plane —
+subscription pooling, headless-use terms, sandbox provisioning — exist to
+solve a problem the ecosystem now solves for us. **Conveyor keeps the brain
+and delegates the hands**: the control plane owns orchestration, gates,
+specs, audit, and branch management; implementation happens in agents the
+operator brings, connected over MCP. A new **Phase 4.7** is inserted pre-Beta
+and gates Beta entry. Nine changes; all other v1.3 decisions remain unchanged:
+
+1. **The sandbox execution plane is retired.** LocalDockerRunner, the
+   harness adapters, the credential pool and router, the job shim, sandbox
+   images, handoff snapshots and session resume, confinement tiers, and
+   sandbox CLI provisioning are removed — code deleted in Phase 4.7, not
+   mothballed. This supersedes §3.2, §5.1–§5.3, §6, §8.3 (snapshots; the
+   worktree-persistence *contract* survives trivially since the implementer
+   owns its own checkout), §8.5, and §11. Repo-level tool policies,
+   per-repo sandbox images, and sandbox secret injection retire with it;
+   transcript redaction (§10.3) survives and applies to everything the
+   control plane stores. The bare-clone cache (§8.1) survives for branch
+   management, diffing, and the human/CLI checkout flow.
+
+2. **Pipeline agents move in-process; code review is MCP-first.** Triage
+   and spec run as direct vendor-API calls inside `conveyord` on a single
+   deployment-owned key (`CONVEYOR_API_KEY`) — no harness CLI, no
+   container, no credential routing; they are cheap, bounded, and must be
+   always-on. Code review is the expensive stage (it reads the diff, the
+   spec, and surrounding code), so it **executes as an MCP work order by
+   default**, with the in-process agent as per-stage fallback: routing
+   becomes a per-stage `{model, budget_usd, timeout, execution:
+   in_process | mcp}` table, with triage and spec fixed `in_process` and
+   review defaulting to `mcp`. The §4/§4.1 output validators are
+   unchanged regardless of where a stage executes. Two structural wins
+   are recorded as design intent: exact token metering makes the §14.1
+   budget breaker natively enforceable for in-process stages, and the
+   control plane captures complete in-process transcripts first-hand — a
+   better Phase 7 corpus than sandbox log scraping ever produced.
+
+3. **Implementation and review are delegated over MCP (new §17.4).**
+   `conveyord` exposes an MCP server with the work-order lifecycle:
+   `list_work_orders`, `claim_work_order` (leased; abandoned claims
+   return to queue), `get_work_order`, `report_progress`,
+   `report_usage`, `upload_transcript`, `submit_for_review`, and
+   `submit_review_verdict`. Work orders are **stage-typed**: an
+   *implement* work order delivers the approved spec, task branch, base,
+   bounce history, prior feedback, and artifact references; a *review*
+   work order delivers the diff/PR reference, the approved spec, the
+   bounce history, and the review role prompt, and is answered with a
+   §4.1-validated verdict via `submit_review_verdict`. **Self-review is
+   forbidden at the protocol boundary**: a review work order for task T
+   cannot be claimed by the token or session that claimed T's implement
+   work order — §5.3's different-from-implementer rule restated for the
+   BYOA world; reviewer identity is recorded on the intervention.
+   Deeper independence — a different model family, a different human —
+   is deliberately the operator's responsibility, not platform
+   enforcement; the platform's obligation is **independence labels**
+   (the §8.5 audit-labeling pattern applied to review provenance):
+   `submit_review_verdict` carries the reviewer's self-reported agent
+   and model, and each review is recorded and surfaced with
+   `reviewer_session: distinct` (guard-enforced),
+   `reviewer_model: <self-reported>`, and
+   `same_model_as_implementer: true | false | unknown`, shown on the
+   review card and timeline entry so an operator reads at a glance how
+   independent a verdict actually was. Claims
+   and submissions are refused once a task's budget or wall clock is
+   spent — enforcement moves from the process boundary to the protocol
+   boundary. Jobs run this way are recorded `harness: external-mcp,
+   confinement: none, auth: byoa`, with usage and transcripts marked
+   self-reported. Every credential-class concern of §5.2 becomes moot:
+   the operator's agents run under the operator's own login,
+   interactively or headless, on the operator's machines.
+
+4. **The review loop lives in the implementer's session when a reviewer
+   is available.** `submit_for_review` pushes the factory forward: the
+   control plane opens the PR if none exists (retaining the §9 GitHub
+   machinery) and dispatches review per the stage's execution mode. With
+   `in_process` review the verdict returns synchronously *as the tool
+   result*. With `mcp` review (the default), submit enqueues a review
+   work order and the implementing session may block on an
+   `await_review` long-poll tool — so when a reviewer agent claims
+   promptly (the single-operator pattern: a fresh session of the
+   operator's agent), a bounce is still a conversation turn in a warm
+   session; when no reviewer is available, the loop degrades gracefully
+   to async and feedback is delivered on the next claim. Either way this
+   is strictly better than what §8.3's snapshot machinery existed to
+   approximate. Bounce counting, `pipeline.bounced` events, and the
+   §21.2 bounce cap apply unchanged.
+
+5. **The pushed branch is the trust boundary.** Every merge gate judges
+   the artifact, not the environment: spec approval and human gates are
+   factory-side; code review is an independent-session judgment against
+   the pushed branch (change 3's no-self-review rule) wherever it
+   executes; mechanical verification delegates to the repository's own
+   CI (PR checks) until the Phase 8 verification agent — which, with
+   K8sRunner, is now explicitly the demand-triggered *reintroduction* of
+   managed execution. What is given up is recorded plainly: no
+   confinement of the implementing or reviewing process, no observed
+   transcripts of either, and unattended automation becomes "a headless
+   agent the operator points at the MCP server" rather than a capability
+   the factory provides.
+
+6. **Requirements tree (amends §13.3, pulls the corpus UI forward from
+   Phase 6).** Approved specs accumulate into a browsable, hierarchical
+   feature tree — the spec corpus (§15.1) as a first-class UI module
+   rather than a retrieval store. Feature nodes are operator-managed;
+   triage suggests a node for each task and a human can reassign; a node
+   renders its accumulated approved requirement text and links every
+   task, PR, and event that touched it. This is the durable
+   requirement → work → code lineage, built on the existing event graph.
+   Embedding retrieval and per-role context budgets remain Phase 6.
+
+7. **Artifacts.** Workspace-scoped context files (documents, images,
+   audio), uploaded through the UI, attachable to feature nodes and
+   tasks. Attached artifacts are injected into pipeline-agent context and
+   listed in `get_work_order` for MCP clients to fetch. Artifacts are
+   context, never secrets (§10.1 unchanged); storage is size-bounded and
+   content-addressed.
+
+8. **The §21.3 config document slims.** Credentials, vendor policies,
+   tool policies, per-repo images, and repo secret references leave
+   workspace configuration; repos keep `{name, url, github, base}`;
+   routing becomes the per-stage `{model, budget_usd, timeout}` of
+   change 2. The Phase 4.5 storage, API, hot-reload, and audit mechanics
+   are unchanged — only the document shrinks.
+
+9. **Beta is redefined around the pivot.** Phase 4.7 gates Beta; the exit
+   criterion is restated in §19: five consecutive real tasks where the
+   operator's own agent claims each work order over MCP, at least one
+   completes a `changes_requested` round in-session, zero manual git
+   operations outside the implementing agent's workflow, and all human
+   actions go through the UI or CLI. Phase 5 sheds the command-policy
+   shim approval cards and environment inference (retired with the
+   sandboxes it policed and provisioned); the monitor agent is
+   unaffected. Phase 7's corpus improves (change 2); Phase 8 absorbs
+   managed execution as demand-triggered scope.
+
 ---
 
-*End of specification. v1.3 accepted July 12, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane with Phase 4.5 gating Beta (§21.3). Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.4 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4). Subsequent changes proceed by amendment with version bumps.*

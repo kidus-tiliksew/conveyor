@@ -94,12 +94,12 @@ export function HomePage() {
                 <p className="mt-0.5 font-medium">{workspace.repos?.length ?? 0}</p>
               </div>
               <div>
-                <p className="text-[11px] uppercase tracking-wider text-faint">Credentials</p>
-                <p className="mt-0.5 font-medium">{workspace.credentials?.length ?? 0}</p>
+                <p className="text-[11px] uppercase tracking-wider text-faint">Execution</p>
+                <p className="mt-0.5 font-medium">BYOA over MCP</p>
               </div>
               <div>
-                <p className="text-[11px] uppercase tracking-wider text-faint">Base image</p>
-                <p className="mt-0.5 truncate font-mono text-xs">{workspace.image}</p>
+                <p className="text-[11px] uppercase tracking-wider text-faint">Stage routes</p>
+                <p className="mt-0.5 font-medium">{workspace.routing?.length ?? 0}</p>
               </div>
               <div>
                 <p className="text-[11px] uppercase tracking-wider text-faint">Database</p>

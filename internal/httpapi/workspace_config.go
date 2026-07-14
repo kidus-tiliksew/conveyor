@@ -106,7 +106,7 @@ func writeValidationError(w http.ResponseWriter, field string, err error) {
 
 func validationField(err error) string {
 	message := err.Error()
-	for _, field := range []string{"max_bounces", "routing", "repo", "workspace", "image"} {
+	for _, field := range []string{"max_bounces", "routing", "repo", "workspace"} {
 		if strings.Contains(message, field) {
 			if field == "repo" {
 				return "repos"

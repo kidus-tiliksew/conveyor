@@ -1,6 +1,5 @@
 // conveyor is the CLI — the primary human surface alongside the review UI
-// (spec §17.1). It manages tasks, the standalone local runner, human
-// checkout/done, and secret input.
+// (spec §17.1). It manages tasks, config, and the human checkout escape hatch.
 package main
 
 import (
@@ -16,7 +15,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/secrets"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -24,24 +22,19 @@ import (
 var version = "dev" // set via -ldflags at build time
 
 func main() {
-	configPath := "conveyor.yaml"
 	root := &cobra.Command{
 		Use:           "conveyor",
 		Short:         "Conveyor: a software factory platform",
-		Long:          "Conveyor orchestrates coding-agent pipelines against Git repositories in disposable sandboxes.",
+		Long:          "Conveyor orchestrates coding-agent pipelines and delegates implementation through MCP.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&configPath, "config", configPath, "path to deployment config")
-
 	root.AddCommand(
 		taskCmd(),
 		configCmd(),
 		checkoutCmd(),
 		doneCmd(),
-		runnerCmd(&configPath),
-		secretsCmd(&configPath),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -254,76 +247,6 @@ func doneCmd() *cobra.Command {
 	return cmd
 }
 
-func runnerCmd(configPath *string) *cobra.Command {
-	cmd := &cobra.Command{Use: "runner", Short: "Manage runners"}
-	var local bool
-	start := &cobra.Command{
-		Use:   "start",
-		Short: "Start the standalone local Docker runner",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !local {
-				return fmt.Errorf("only --local is implemented; K8sRunner is demand-triggered Phase 8")
-			}
-			binary, err := siblingBinary("conveyor-runner")
-			if err != nil {
-				return err
-			}
-			commandArgs := []string{"-config", *configPath}
-			child := exec.CommandContext(cmd.Context(), binary, commandArgs...)
-			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-			return child.Run()
-		},
-	}
-	start.Flags().BoolVar(&local, "local", false, "run the local Docker runner")
-	cmd.AddCommand(start)
-	return cmd
-}
-
-func secretsCmd(configPath *string) *cobra.Command {
-	cmd := &cobra.Command{Use: "secrets", Short: "Manage workspace secrets"}
-	var fromStdin bool
-	set := &cobra.Command{
-		Use:   "set <workspace>/<set>/<NAME>",
-		Short: "Set a secret value (spec §17.1)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !fromStdin {
-				return fmt.Errorf("--from-stdin is required so secret values never enter argv or shell history")
-			}
-			cfg, err := config.Load(*configPath)
-			if err != nil {
-				return err
-			}
-			ref, err := secrets.ParseRef("secretref://" + strings.TrimPrefix(args[0], "secretref://"))
-			if err != nil {
-				return err
-			}
-			if ref.Workspace != cfg.Workspace {
-				return fmt.Errorf("secret workspace %q does not match configured workspace %q", ref.Workspace, cfg.Workspace)
-			}
-			if _, ok := cfg.Secrets.Sets[ref.Set]; !ok {
-				return fmt.Errorf("secret set %q has no configured delivery policy", ref.Set)
-			}
-			value, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1024*1024+1))
-			if err != nil {
-				return err
-			}
-			if len(value) > 1024*1024 {
-				return fmt.Errorf("secret value exceeds 1 MiB")
-			}
-			value = bytesTrimOneNewline(value)
-			if err := cfg.SecretResolver().Set(cmd.Context(), ref, string(value)); err != nil {
-				return err
-			}
-			fmt.Printf("stored %s\n", ref.String())
-			return nil
-		},
-	}
-	set.Flags().BoolVar(&fromStdin, "from-stdin", false, "read the value from stdin")
-	cmd.AddCommand(set)
-	return cmd
-}
-
 func checkoutTask(ctx context.Context, branch, repo, taskID, destination string) (string, error) {
 	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -422,19 +345,6 @@ func removeTaskWorktree(ctx context.Context, branch string, push bool) error {
 	return err
 }
 
-func siblingBinary(name string) (string, error) {
-	if executable, err := os.Executable(); err == nil {
-		sibling := filepath.Join(filepath.Dir(executable), name)
-		if info, statErr := os.Stat(sibling); statErr == nil && !info.IsDir() {
-			return sibling, nil
-		}
-	}
-	if binary, err := exec.LookPath(name); err == nil {
-		return binary, nil
-	}
-	return "", fmt.Errorf("%s not found beside conveyor or on PATH; run make build", name)
-}
-
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = dir
@@ -454,9 +364,4 @@ func gitIsAncestor(ctx context.Context, dir, older, newer string) bool {
 	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
 	command.Dir = dir
 	return command.Run() == nil
-}
-
-func bytesTrimOneNewline(value []byte) []byte {
-	value = []byte(strings.TrimSuffix(string(value), "\n"))
-	return []byte(strings.TrimSuffix(string(value), "\r"))
 }

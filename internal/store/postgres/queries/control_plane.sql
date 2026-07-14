@@ -27,10 +27,10 @@ SET url = EXCLUDED.url,
 -- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13, $14, $15
+    $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 RETURNING *;
 
@@ -66,13 +66,13 @@ RETURNING *;
 
 -- name: InsertJob :one
 INSERT INTO jobs (
-    id, task_id, stage, harness, model_tier, credential_id, auth_mode, runner, sandbox_ref,
+    id, task_id, stage, harness, model_tier, auth_mode, runner,
     pack_version, confinement_tier, budget_usd, cost_usd, tokens_in,
-    tokens_out, state, boot_diagnostics, started_at, ended_at
+    tokens_out, state, started_at, ended_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-    $10, $11, $12, $13, $14,
-    $15, $16, $17, $18, $19
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12,
+    $13, $14, $15, $16
 )
 RETURNING *;
 
@@ -81,25 +81,22 @@ UPDATE jobs
 SET stage = $2,
     harness = $3,
     model_tier = $4,
-    credential_id = $5,
-    auth_mode = $6,
-    runner = $7,
-    sandbox_ref = $8,
-    pack_version = $9,
-    confinement_tier = $10,
-    budget_usd = $11,
-    cost_usd = $12,
-    tokens_in = $13,
-    tokens_out = $14,
-    state = $15,
-    boot_diagnostics = $16,
-    started_at = $17,
-    ended_at = $18,
+    auth_mode = $5,
+    runner = $6,
+    pack_version = $7,
+    confinement_tier = $8,
+    budget_usd = $9,
+    cost_usd = $10,
+    tokens_in = $11,
+    tokens_out = $12,
+    state = $13,
+    started_at = $14,
+    ended_at = $15,
     updated_at = now()
 WHERE jobs.id = $1
   AND EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.id = jobs.task_id AND t.workspace_id = $19
+      WHERE t.id = jobs.task_id AND t.workspace_id = $16
   )
 RETURNING jobs.*;
 
@@ -232,146 +229,3 @@ WHERE s.task_id = t.id
   AND t.workspace_id = sqlc.arg(workspace_id)
   AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = sqlc.arg(task_id))
 RETURNING s.*;
-
--- name: UpsertVendorPolicy :exec
-INSERT INTO vendor_policies (
-    vendor, harness, auth_mode, subscription_headless, reviewed_at, source_url
-) VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (vendor, harness, auth_mode) DO UPDATE
-SET subscription_headless = EXCLUDED.subscription_headless,
-    reviewed_at = EXCLUDED.reviewed_at,
-    source_url = EXCLUDED.source_url,
-    updated_at = now();
-
--- name: UpsertCredential :exec
-INSERT INTO credentials (
-    id, owner_id, owner_kind, kind, vendor, harness, enc_ref
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (id) DO UPDATE
-SET owner_id = EXCLUDED.owner_id,
-    owner_kind = EXCLUDED.owner_kind,
-    kind = EXCLUDED.kind,
-    vendor = EXCLUDED.vendor,
-    harness = EXCLUDED.harness,
-    enc_ref = EXCLUDED.enc_ref,
-    updated_at = now();
-
--- name: ListWorkspaceCredentialIDs :many
-SELECT credential_id
-FROM workspace_credentials
-WHERE workspace_id = $1
-ORDER BY credential_id;
-
--- name: DeleteWorkspaceCredentialRefs :exec
-DELETE FROM workspace_credentials WHERE workspace_id = $1;
-
--- name: InsertWorkspaceCredentialRef :exec
-INSERT INTO workspace_credentials (workspace_id, credential_id)
-VALUES ($1, $2);
-
--- name: EnableCredential :exec
-UPDATE credentials
-SET rate_limit_state = 'available', updated_at = now()
-WHERE id = $1 AND rate_limit_state = 'disabled';
-
--- name: DisableCredentialIfUnreferenced :exec
-UPDATE credentials c
-SET rate_limit_state = 'disabled', updated_at = now()
-WHERE c.id = $1
-  AND c.rate_limit_state <> 'disabled'
-  AND NOT EXISTS (
-      SELECT 1 FROM workspace_credentials wc WHERE wc.credential_id = c.id
-  );
-
--- name: ListWorkspaceVendorPolicyRefs :many
-SELECT vendor, harness, auth_mode
-FROM workspace_vendor_policies
-WHERE workspace_id = $1
-ORDER BY vendor, harness, auth_mode;
-
--- name: DeleteWorkspaceVendorPolicyRefs :exec
-DELETE FROM workspace_vendor_policies WHERE workspace_id = $1;
-
--- name: InsertWorkspaceVendorPolicyRef :exec
-INSERT INTO workspace_vendor_policies (workspace_id, vendor, harness, auth_mode)
-VALUES ($1, $2, $3, $4);
-
--- name: RestrictVendorPolicyIfUnreferenced :exec
-UPDATE vendor_policies p
-SET subscription_headless = 'unknown', updated_at = now()
-WHERE p.vendor = $1 AND p.harness = $2 AND p.auth_mode = $3
-  AND p.subscription_headless <> 'unknown'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM workspace_vendor_policies wp
-      WHERE wp.vendor = p.vendor
-        AND wp.harness = p.harness
-        AND wp.auth_mode = p.auth_mode
-  );
-
--- name: ClaimCredential :one
-WITH candidate AS (
-    SELECT c.id
-    FROM credentials c
-    LEFT JOIN vendor_policies p
-      ON p.vendor = c.vendor AND p.harness = c.harness AND p.auth_mode = c.kind
-    WHERE c.harness = ANY(sqlc.arg(harnesses)::text[])
-      AND (sqlc.arg(exclude_harness)::text = '' OR c.harness <> sqlc.arg(exclude_harness)::text)
-      AND (c.owner_kind = 'org' OR c.owner_id = sqlc.arg(owner_id))
-      AND (c.kind = 'api' OR c.owner_kind = 'user')
-      AND (c.leased_by = sqlc.arg(job_id) OR c.lease_until IS NULL OR c.lease_until <= now())
-      AND (c.cooldown_until IS NULL OR c.cooldown_until <= now())
-      AND c.rate_limit_state <> 'disabled'
-      AND (
-          c.kind = 'api'
-          OR p.subscription_headless = 'allowed'
-          OR (sqlc.arg(allow_restricted)::boolean AND p.subscription_headless = 'restricted')
-      )
-    ORDER BY array_position(sqlc.arg(harnesses)::text[], c.harness),
-             CASE c.kind WHEN 'personal_sub' THEN 0 WHEN 'team_sub' THEN 1 ELSE 2 END,
-             c.updated_at,
-             c.id
-    FOR UPDATE OF c SKIP LOCKED
-    LIMIT 1
-)
-UPDATE credentials c
-SET leased_by = sqlc.arg(job_id),
-    lease_task_id = sqlc.arg(task_id),
-    lease_until = now() + sqlc.arg(lease_seconds)::bigint * interval '1 second',
-    rate_limit_state = 'available',
-    cooldown_until = NULL,
-    last_error = '',
-    updated_at = now()
-FROM candidate
-WHERE c.id = candidate.id
-RETURNING c.*;
-
--- name: RescueTaskCredentialLeases :execrows
-UPDATE credentials
-SET leased_by = '', lease_task_id = '', lease_until = NULL,
-    last_error = 'rescued after abandoned task attempt', updated_at = now()
-WHERE lease_task_id = sqlc.arg(task_id)
-  AND leased_by <> ''
-  AND leased_by <> sqlc.arg(current_job_id);
-
--- name: ReleaseCredential :execrows
-UPDATE credentials
-SET leased_by = '', lease_task_id = '', lease_until = NULL, last_error = sqlc.arg(last_error), updated_at = now()
-WHERE id = sqlc.arg(id) AND leased_by = sqlc.arg(job_id);
-
--- name: ThrottleCredential :execrows
-UPDATE credentials
-SET leased_by = '',
-    lease_task_id = '',
-    lease_until = NULL,
-    rate_limit_state = 'throttled',
-    cooldown_until = now() + sqlc.arg(cooldown_seconds)::bigint * interval '1 second',
-    last_error = sqlc.arg(last_error),
-    updated_at = now()
-WHERE id = sqlc.arg(id) AND leased_by = sqlc.arg(job_id);
-
--- name: ListCredentials :many
-SELECT * FROM credentials ORDER BY harness, owner_id, id;
-
--- name: ListVendorPolicies :many
-SELECT * FROM vendor_policies ORDER BY vendor, harness, auth_mode;

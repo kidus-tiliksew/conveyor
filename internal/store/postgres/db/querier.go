@@ -10,12 +10,7 @@ import (
 
 type Querier interface {
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
-	ClaimCredential(ctx context.Context, arg ClaimCredentialParams) (Credential, error)
 	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
-	DeleteWorkspaceCredentialRefs(ctx context.Context, workspaceID string) error
-	DeleteWorkspaceVendorPolicyRefs(ctx context.Context, workspaceID string) error
-	DisableCredentialIfUnreferenced(ctx context.Context, id string) error
-	EnableCredential(ctx context.Context, id string) error
 	GetJob(ctx context.Context, arg GetJobParams) (Job, error)
 	GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job, error)
 	GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error)
@@ -28,32 +23,20 @@ type Querier interface {
 	InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error)
 	InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error)
 	InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) (Workspace, error)
-	InsertWorkspaceCredentialRef(ctx context.Context, arg InsertWorkspaceCredentialRefParams) error
 	InsertWorkspaceEvent(ctx context.Context, arg InsertWorkspaceEventParams) (Event, error)
-	InsertWorkspaceVendorPolicyRef(ctx context.Context, arg InsertWorkspaceVendorPolicyRefParams) error
 	ListActivityMarkers(ctx context.Context, workspaceID string) ([]ListActivityMarkersRow, error)
-	ListCredentials(ctx context.Context) ([]Credential, error)
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
 	ListTasks(ctx context.Context, workspaceID string) ([]Task, error)
-	ListVendorPolicies(ctx context.Context) ([]VendorPolicy, error)
-	ListWorkspaceCredentialIDs(ctx context.Context, workspaceID string) ([]string, error)
-	ListWorkspaceVendorPolicyRefs(ctx context.Context, workspaceID string) ([]ListWorkspaceVendorPolicyRefsRow, error)
-	ReleaseCredential(ctx context.Context, arg ReleaseCredentialParams) (int64, error)
-	RescueTaskCredentialLeases(ctx context.Context, arg RescueTaskCredentialLeasesParams) (int64, error)
-	RestrictVendorPolicyIfUnreferenced(ctx context.Context, arg RestrictVendorPolicyIfUnreferencedParams) error
-	ThrottleCredential(ctx context.Context, arg ThrottleCredentialParams) (int64, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)
 	UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error)
 	UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error)
 	UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error)
 	UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspaceConfigParams) (Workspace, error)
-	UpsertCredential(ctx context.Context, arg UpsertCredentialParams) error
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) error
 	UpsertTranscript(ctx context.Context, arg UpsertTranscriptParams) (Transcript, error)
-	UpsertVendorPolicy(ctx context.Context, arg UpsertVendorPolicyParams) error
 }
 
 var _ Querier = (*Queries)(nil)

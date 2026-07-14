@@ -8,23 +8,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type Credential struct {
-	ID             string             `json:"id"`
-	OwnerID        string             `json:"owner_id"`
-	OwnerKind      string             `json:"owner_kind"`
-	Kind           string             `json:"kind"`
-	Harness        string             `json:"harness"`
-	EncRef         string             `json:"enc_ref"`
-	RateLimitState string             `json:"rate_limit_state"`
-	PolicyFlag     string             `json:"policy_flag"`
-	CooldownUntil  pgtype.Timestamptz `json:"cooldown_until"`
-	LastError      string             `json:"last_error"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	Vendor         string             `json:"vendor"`
-	LeasedBy       string             `json:"leased_by"`
-	LeaseUntil     pgtype.Timestamptz `json:"lease_until"`
-	LeaseTaskID    string             `json:"lease_task_id"`
+type Artifact struct {
+	ID          string             `json:"id"`
+	WorkspaceID string             `json:"workspace_id"`
+	Name        string             `json:"name"`
+	ContentType string             `json:"content_type"`
+	SizeBytes   int64              `json:"size_bytes"`
+	Content     []byte             `json:"content"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type ArtifactLink struct {
+	ArtifactID string      `json:"artifact_id"`
+	TaskID     pgtype.Text `json:"task_id"`
+	FeatureID  pgtype.Text `json:"feature_id"`
 }
 
 type Event struct {
@@ -37,6 +34,15 @@ type Event struct {
 	PayloadJson []byte             `json:"payload_json"`
 	At          pgtype.Timestamptz `json:"at"`
 	WorkspaceID string             `json:"workspace_id"`
+}
+
+type Feature struct {
+	ID          string             `json:"id"`
+	WorkspaceID string             `json:"workspace_id"`
+	ParentID    pgtype.Text        `json:"parent_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type Intervention struct {
@@ -58,7 +64,6 @@ type Job struct {
 	Harness         string             `json:"harness"`
 	ModelTier       string             `json:"model_tier"`
 	Runner          string             `json:"runner"`
-	SandboxRef      string             `json:"sandbox_ref"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
 	BudgetUsd       float64            `json:"budget_usd"`
@@ -66,11 +71,9 @@ type Job struct {
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`
-	BootDiagnostics []byte             `json:"boot_diagnostics"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
 	EndedAt         pgtype.Timestamptz `json:"ended_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	CredentialID    string             `json:"credential_id"`
 	AuthMode        string             `json:"auth_mode"`
 }
 
@@ -101,6 +104,7 @@ type Task struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	NextStage       string             `json:"next_stage"`
 	RecoveryStage   string             `json:"recovery_stage"`
+	FeatureID       pgtype.Text        `json:"feature_id"`
 }
 
 type TaskSpec struct {
@@ -129,14 +133,26 @@ type User struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
-type VendorPolicy struct {
-	Vendor               string             `json:"vendor"`
-	Harness              string             `json:"harness"`
-	AuthMode             string             `json:"auth_mode"`
-	SubscriptionHeadless string             `json:"subscription_headless"`
-	ReviewedAt           pgtype.Date        `json:"reviewed_at"`
-	SourceUrl            string             `json:"source_url"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+type WorkOrder struct {
+	ID              string             `json:"id"`
+	WorkspaceID     string             `json:"workspace_id"`
+	TaskID          string             `json:"task_id"`
+	JobID           string             `json:"job_id"`
+	Stage           string             `json:"stage"`
+	State           string             `json:"state"`
+	ClaimantID      string             `json:"claimant_id"`
+	SessionID       string             `json:"session_id"`
+	ClientTokenHash string             `json:"client_token_hash"`
+	Agent           string             `json:"agent"`
+	Model           string             `json:"model"`
+	LeaseExpiresAt  pgtype.Timestamptz `json:"lease_expires_at"`
+	Progress        string             `json:"progress"`
+	CostUsd         float64            `json:"cost_usd"`
+	TokensIn        int64              `json:"tokens_in"`
+	TokensOut       int64              `json:"tokens_out"`
+	SelfReported    bool               `json:"self_reported"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Workspace struct {
@@ -145,16 +161,4 @@ type Workspace struct {
 	ConfigYaml    string             `json:"config_yaml"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	ConfigVersion int64              `json:"config_version"`
-}
-
-type WorkspaceCredential struct {
-	WorkspaceID  string `json:"workspace_id"`
-	CredentialID string `json:"credential_id"`
-}
-
-type WorkspaceVendorPolicy struct {
-	WorkspaceID string `json:"workspace_id"`
-	Vendor      string `json:"vendor"`
-	Harness     string `json:"harness"`
-	AuthMode    string `json:"auth_mode"`
 }

@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"sync"
@@ -39,6 +40,20 @@ type Store interface {
 	CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error)
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
+
+	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
+	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
+	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
+	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
+	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
+
+	CreateFeature(ctx context.Context, feature core.Feature) error
+	ListFeatures(ctx context.Context) ([]core.Feature, error)
+	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
+	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
+	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
+	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
 
 // ActivityMarker contains only the changing fields needed by the activity
@@ -58,7 +73,15 @@ func NewMemory() Store {
 		interventions: map[string][]core.Intervention{},
 		transcripts:   map[string]core.Transcript{},
 		specs:         map[string][]core.SpecVersion{},
+		workOrders:    map[string]core.WorkOrder{},
+		features:      map[string]core.Feature{},
+		artifacts:     map[string]memoryArtifact{},
 	}
+}
+
+type memoryArtifact struct {
+	meta    core.Artifact
+	content []byte
 }
 
 type memory struct {
@@ -69,8 +92,211 @@ type memory struct {
 	interventions map[string][]core.Intervention
 	transcripts   map[string]core.Transcript
 	specs         map[string][]core.SpecVersion
+	workOrders    map[string]core.WorkOrder
+	features      map[string]core.Feature
+	artifacts     map[string]memoryArtifact
 	nextEventID   int64
 	nextReviewID  int64
+}
+
+func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[order.TaskID]; !ok {
+		return fmt.Errorf("task %s not found", order.TaskID)
+	}
+	if _, exists := m.workOrders[order.ID]; exists {
+		return fmt.Errorf("work order %s already exists", order.ID)
+	}
+	now := time.Now().UTC()
+	if order.CreatedAt.IsZero() {
+		order.CreatedAt = now
+	}
+	order.UpdatedAt = now
+	if order.State == "" {
+		order.State = core.WorkOrderQueued
+	}
+	m.workOrders[order.ID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	return nil
+}
+
+func (m *memory) GetWorkOrder(_ context.Context, id string) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(time.Now()) {
+		order.State, order.ClaimantID, order.SessionID, order.Agent, order.Model = core.WorkOrderQueued, "", "", "", ""
+		order.ClientTokenHash = ""
+		order.LeaseExpiresAt = time.Time{}
+		m.workOrders[id] = order
+	}
+	return order, nil
+}
+
+func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	orders := make([]core.WorkOrder, 0, len(m.workOrders))
+	for id, order := range m.workOrders {
+		if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
+			order.State, order.ClaimantID, order.SessionID, order.Agent, order.Model = core.WorkOrderQueued, "", "", "", ""
+			order.ClientTokenHash = ""
+			order.LeaseExpiresAt = time.Time{}
+			m.workOrders[id] = order
+		}
+		orders = append(orders, order)
+	}
+	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
+	return orders, nil
+}
+
+func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, _ := m.ListWorkOrders(ctx)
+	out := orders[:0]
+	for _, order := range orders {
+		if order.TaskID == taskID {
+			out = append(out, order)
+		}
+	}
+	return out, nil
+}
+
+func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	now := time.Now().UTC()
+	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is already claimed", id)
+	}
+	if order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimable", id)
+	}
+	if order.Stage == core.StageReview {
+		for _, candidate := range m.workOrders {
+			if candidate.TaskID == order.TaskID && candidate.Stage == core.StageImplement &&
+				((claim.SessionID != "" && candidate.SessionID == claim.SessionID) || (claim.ClientToken != "" && candidate.ClientTokenHash == tokenHash(claim.ClientToken))) {
+				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: use a fresh agent session")
+			}
+		}
+	}
+	lease := claim.Lease
+	if lease <= 0 {
+		lease = 15 * time.Minute
+	}
+	order.State, order.ClaimantID, order.SessionID = core.WorkOrderClaimed, claim.ClaimantID, claim.SessionID
+	order.Agent, order.Model, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, now.Add(lease), now
+	if claim.ClientToken != "" {
+		order.ClientTokenHash = tokenHash(claim.ClientToken)
+	}
+	m.workOrders[id] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)})
+	return order, nil
+}
+
+func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
+
+func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.workOrders[order.ID]; !ok {
+		return fmt.Errorf("work order %s not found", order.ID)
+	}
+	order.UpdatedAt = time.Now().UTC()
+	m.workOrders[order.ID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
+	return nil
+}
+
+func (m *memory) CreateFeature(ctx context.Context, feature core.Feature) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.features[feature.ID]; ok {
+		return fmt.Errorf("feature %s already exists", feature.ID)
+	}
+	if feature.ParentID != "" {
+		if _, ok := m.features[feature.ParentID]; !ok {
+			return fmt.Errorf("parent feature %s not found", feature.ParentID)
+		}
+	}
+	if feature.CreatedAt.IsZero() {
+		feature.CreatedAt = time.Now().UTC()
+	}
+	m.features[feature.ID] = feature
+	return nil
+}
+
+func (m *memory) ListFeatures(_ context.Context) ([]core.Feature, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]core.Feature, 0, len(m.features))
+	for _, feature := range m.features {
+		out = append(out, feature)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *memory) AssignTaskFeature(ctx context.Context, taskID, featureID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	if featureID != "" {
+		if _, ok := m.features[featureID]; !ok {
+			return fmt.Errorf("feature %s not found", featureID)
+		}
+	}
+	task.FeatureID = featureID
+	m.tasks[taskID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.feature_assigned", Payload: core.JSONPayload(map[string]string{"feature_id": featureID})})
+	return nil
+}
+
+func (m *memory) CreateArtifact(_ context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
+	artifact.SizeBytes = int64(len(content))
+	if artifact.CreatedAt.IsZero() {
+		artifact.CreatedAt = time.Now().UTC()
+	}
+	if existing, ok := m.artifacts[artifact.ID]; ok {
+		return existing.meta, nil
+	}
+	m.artifacts[artifact.ID] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...)}
+	return artifact, nil
+}
+
+func (m *memory) GetArtifact(_ context.Context, id string) (core.Artifact, []byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	artifact, ok := m.artifacts[id]
+	if !ok {
+		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+	}
+	return artifact.meta, append([]byte(nil), artifact.content...), nil
+}
+
+func (m *memory) ListArtifacts(_ context.Context) ([]core.Artifact, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]core.Artifact, 0, len(m.artifacts))
+	for _, artifact := range m.artifacts {
+		out = append(out, artifact.meta)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
 }
 
 func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {

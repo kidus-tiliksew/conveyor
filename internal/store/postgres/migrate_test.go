@@ -44,6 +44,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 8 {
 		t.Fatalf("eighth migration version = %d, err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/009_phase47_mcp.sql")
+	if err != nil || version != 9 {
+		t.Fatalf("ninth migration version = %d, err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
@@ -52,8 +56,8 @@ func TestMigrationVersion(t *testing.T) {
 }
 
 func TestConfigDiffIgnoresRuntimeParsedTimeout(t *testing.T) {
-	cfg := &config.Config{Workspace: "demo", Image: "image", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Harnesses: []string{"codex"}, TimeoutText: "2h", Timeout: 2 * time.Hour},
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "2h", Timeout: 2 * time.Hour},
 	}}}
 	document := cfg.WorkspaceDocument()
 	if sections := configDiff(document, document); len(sections) != 0 {

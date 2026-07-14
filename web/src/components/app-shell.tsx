@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Activity, FolderGit2, Home, Play, Plus, Settings, type LucideIcon } from 'lucide-react'
+import { Activity, FolderGit2, Home, Play, Plus, Settings, Workflow, type LucideIcon } from 'lucide-react'
 import { fetchActivity, fetchWorkspace } from '../lib/api'
 import { Badge } from './ui/badge'
 
@@ -85,6 +85,7 @@ function NavSidebar() {
           {attention > 0 && <Badge variant="attention">{attention}</Badge>}
         </NavItem>
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
+        <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/new" icon={Play} label="New task" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>

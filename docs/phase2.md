@@ -1,5 +1,9 @@
 # Phase 2 operations and validation
 
+> Historical closure record. The runner, sandbox, credentials, and shim
+> described here were retired by the accepted v1.4 amendment (spec §21.4).
+> Use the repository README for current Phase 4.7 operation.
+
 **Status: complete as of July 11, 2026.** The spec §19 deliverables and the
 multi-harness + human-gate proof are implemented and validated. Phase 3 (full
 pipeline, per the v1.2 Beta re-phasing) is now implemented; see
@@ -71,7 +75,7 @@ metadata contains only the URI and counts by detector class. The dispatcher
 also derives token/cost totals and a bounded redacted job summary for the
 activity timeline.
 The current sandbox-writable integrity boundary is documented explicitly in
-[known limitations](known-limitations.md#5-the-sandbox-can-write-its-own-authoritative-transcript-file).
+[known limitations](known-limitations.md).
 
 ## Dashboard query model
 

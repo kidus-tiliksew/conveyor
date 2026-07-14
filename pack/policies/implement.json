@@ -1,1 +1,0 @@
-{"allowed_commands":[["git"],["go"],["make"],["npm"]],"denied_commands":[["git","push"]]}

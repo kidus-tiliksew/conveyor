@@ -1,105 +1,55 @@
-// Package dispatch takes a durable queued task through isolated checkout →
-// sandbox → redacted transcript → artifacts → PR. Postgres mutations
-// enqueue River transactionally; conveyor-runner owns execution (spec §3.1,
-// §3.2, §17.0).
+// Package dispatch advances the durable pipeline. Triage/spec execute inside
+// conveyord; implementation and MCP-first review pause at leased work orders
+// claimed by operator-owned agents (spec §21.4).
 package dispatch
 
 import (
-	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/adapter"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
-	"github.com/kidus-tiliksew/conveyor/internal/jobartifact"
+	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
-	"github.com/kidus-tiliksew/conveyor/internal/routing"
-	"github.com/kidus-tiliksew/conveyor/internal/runner"
-	"github.com/kidus-tiliksew/conveyor/internal/snapshot"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
-const artifactCollectionMargin = 15 * time.Second
-
 type Dispatcher struct {
-	Store  store.Store
-	Git    *gitx.Manager
-	Runner runner.Runner
-	Router routing.Selector
-	Cfg    *config.Config
-	Pack   *pack.Bundle
-	// ConfigProvider resolves one immutable workspace snapshot per dispatch.
-	// RouterFactory binds routing to that same snapshot (spec §14.1, §21.3).
+	Store          store.Store
+	Cfg            *config.Config
+	Pack           *pack.Bundle
+	Agent          inprocess.Agent
 	ConfigProvider func(context.Context) (*config.Config, error)
-	RouterFactory  func(config.Routing) routing.Selector
-
-	reviewFeedback func(context.Context, string, string, github.ReviewCursor) (github.ReviewFeedbackPage, error)
-
-	queue        chan string
-	durableQueue bool
+	queue          chan string
+	durableQueue   bool
 }
 
-func New(st store.Store, git *gitx.Manager, r runner.Runner, cfg *config.Config) *Dispatcher {
-	return &Dispatcher{
-		Store: st, Git: git, Runner: r, Cfg: cfg,
-		reviewFeedback: github.ListReviewFeedback,
-		queue:          make(chan string, 64),
-	}
+func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
+	return &Dispatcher{Store: st, Cfg: cfg, Agent: agent, queue: make(chan string, 64)}
 }
 
-type configSnapshotKey struct{}
-
-func (d *Dispatcher) configSnapshot(ctx context.Context) (context.Context, *config.Config, error) {
-	if existing, ok := ctx.Value(configSnapshotKey{}).(*config.Config); ok {
-		return ctx, existing, nil
-	}
-	cfg := d.Cfg
-	if d.ConfigProvider != nil {
-		var err error
-		cfg, err = d.ConfigProvider(ctx)
-		if err != nil {
-			return ctx, nil, err
-		}
-	}
-	if cfg == nil {
-		return ctx, nil, fmt.Errorf("dispatcher requires workspace config")
-	}
-	return context.WithValue(ctx, configSnapshotKey{}, cfg), cfg, nil
-}
-
-func configSnapshot(ctx context.Context, fallback *config.Config) *config.Config {
-	if cfg, ok := ctx.Value(configSnapshotKey{}).(*config.Config); ok {
-		return cfg
-	}
-	return fallback
-}
-
-// Enqueue schedules a task for dispatch. Safe from HTTP handlers.
 func (d *Dispatcher) Enqueue(taskID string) {
-	if d.durableQueue {
-		return // Postgres Store inserted the River job in the mutation transaction.
+	if !d.durableQueue {
+		d.queue <- taskID
 	}
-	d.queue <- taskID
 }
 
-// UseDurableQueue disables the compatibility in-memory channel. It must be
-// called during startup before API/poller goroutines begin.
-func (d *Dispatcher) UseDurableQueue() { d.durableQueue = true }
+// DispatchNow advances one task synchronously. The MCP submit_for_review tool
+// uses this when review is configured in-process so its result includes the
+// completed review instead of a polling instruction (spec §21.4).
+func (d *Dispatcher) DispatchNow(ctx context.Context, taskID string) error {
+	return d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), taskID)
+}
 
-// Run consumes the compatibility memory queue until ctx is cancelled.
+func (d *Dispatcher) UseDurableQueue() { d.durableQueue = true }
 func (d *Dispatcher) Run(ctx context.Context) {
 	if d.durableQueue {
 		return
@@ -109,585 +59,203 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case id := <-d.queue:
-			if err := d.runTask(ctx, id); err != nil {
-				log.Printf("[task %s] failed: %v", id, err)
-				recovery := core.Stage("")
-				if task, getErr := d.Store.GetTask(context.Background(), id); getErr == nil {
-					recovery = task.NextStage
-				}
-				_ = d.Store.SetTaskTransition(context.Background(), id, core.TaskParked, "", recovery)
+			if err := d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), id); err != nil {
+				log.Printf("[task %s] dispatch failed: %v", id, err)
 			}
 		}
 	}
 }
 
+func (d *Dispatcher) currentConfig(ctx context.Context) (*config.Config, error) {
+	if d.ConfigProvider != nil {
+		return d.ConfigProvider(ctx)
+	}
+	if d.Cfg == nil {
+		return nil, fmt.Errorf("dispatcher requires workspace config")
+	}
+	return d.Cfg, nil
+}
+
 func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
-	ctx, cfg, err := d.configSnapshot(ctx)
-	if err != nil {
-		return fmt.Errorf("load workspace config: %w", err)
-	}
-	router := d.Router
-	if d.RouterFactory != nil {
-		router = d.RouterFactory(cfg.Routing)
-	}
-	if router == nil {
-		return fmt.Errorf("dispatcher requires an explicit credential router")
-	}
-	t, err := d.Store.GetTask(ctx, taskID)
+	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
-	if t.Workspace != cfg.Workspace {
-		return fmt.Errorf("task %s belongs to workspace %q, worker serves %q", t.ID, t.Workspace, cfg.Workspace)
-	}
-	repo, ok := cfg.Repo(t.Repo)
-	if !ok {
-		return fmt.Errorf("unknown repo %q", t.Repo)
-	}
-	priorJobs, err := d.Store.ListJobs(ctx, t.ID)
+	task, err := d.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	stage, proceed := nextStage(t)
-	if !proceed {
+	if task.NextStage == "" {
 		return nil
 	}
-	image := repo.Image
-	if image == "" {
-		image = cfg.Image
+	route, ok := cfg.Routing.Stages[string(task.NextStage)]
+	if !ok {
+		return fmt.Errorf("no route for stage %s", task.NextStage)
+	}
+	if task.NextStage == core.StageImplement || (task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP) {
+		return d.createWorkOrder(ctx, cfg, task, route)
+	}
+	return d.runInProcess(ctx, cfg, task, route)
+}
+
+func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+	prior, err := d.Store.ListJobs(ctx, task.ID)
+	if err != nil {
+		return err
 	}
 	attempt := 1
-	var predecessor *core.Job
-	for i := range priorJobs {
-		prior := priorJobs[i]
-		if prior.Stage != stage {
-			continue
-		}
-		attempt++
-		if predecessor == nil || !prior.StartedAt.Before(predecessor.StartedAt) {
-			candidate := prior
-			predecessor = &candidate
+	for _, job := range prior {
+		if job.Stage == task.NextStage {
+			attempt++
 		}
 	}
-	jobID := fmt.Sprintf("%s-%s-%d", t.ID, stage, attempt)
-	harness := ""
-	modelTier := ""
-	budgetUSD := 0.0
-	credentialID := ""
-	authMode := ""
-	credentialDir := ""
-	secretRefs := append([]string(nil), repo.SecretRefs...)
-	var selection routing.Selection
-	var routeOutcome = routing.Outcome{Error: "job did not complete"}
-	excludeHarness := ""
-	if stage == core.StageReview {
-		excludeHarness = latestHarness(priorJobs, core.StageImplement)
-	}
-	selection, err = router.Select(ctx, t.ID, jobID, stage, excludeHarness)
-	if err != nil {
+	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", BudgetUSD: route.BudgetUSD, State: core.JobPending, StartedAt: time.Now().UTC()}
+	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
-	}
-	defer func() {
-		completeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := router.Complete(completeCtx, selection, routeOutcome); err != nil {
-			log.Printf("[task %s] release credential %s: %v", t.ID, selection.ID, err)
-		}
-	}()
-	harness = selection.Harness
-	modelTier = selection.ModelTier
-	budgetUSD = selection.BudgetUSD
-	credentialID = selection.ID
-	authMode = selection.Kind
-	if strings.HasPrefix(selection.Ref, "secretref://") {
-		secretRefs = append(secretRefs, selection.Ref)
-	} else {
-		credentialDir = selection.Ref
-	}
-	// Keep the task queued until capacity is secured. A River snooze retains
-	// the current queue row; transitioning back to queued here would insert a
-	// duplicate dispatch job in the durable store.
-	if err := d.Store.UpdateTaskState(ctx, t.ID, core.TaskRunning); err != nil {
-		return err
-	}
-	log.Printf("[task %s] dispatching %q (repo %s, base %s)", t.ID, t.Title, repo.Name, t.BaseBranch)
-
-	wt, err := d.Git.AddWorktree(ctx, repo.URL, repo.Name, t.ID, t.BaseBranch)
-	if err != nil {
-		return fmt.Errorf("task checkout: %w", err)
-	}
-
-	control := filepath.Join(cfg.JobsDir, "task-"+t.ID, ".conveyor")
-	if err := os.MkdirAll(control, 0o755); err != nil {
-		return err
-	}
-
-	prompt, err := d.buildStagePrompt(ctx, stage, t, wt)
-	if err != nil {
-		return err
-	}
-	// A retry after a malformed-output bounce repeats the mistake unless the
-	// agent sees the validator's rejection (spec §4.1 rule 1 bounces are
-	// invisible to humans, so this is the only corrective signal).
-	if predecessor != nil {
-		notice, noticeErr := d.invalidOutputNotice(ctx, t.ID, stage, predecessor.ID)
-		if noticeErr != nil {
-			return noticeErr
-		}
-		if notice != "" {
-			prompt += "\n\n# Previous attempt failed validation\n\nYour previous output was rejected by the pipeline validator:\n\n" +
-				notice + "\n\nProduce a corrected answer that satisfies the required output format."
-		}
-	}
-	toolPolicy := repo.ToolPolicy
-	if t.Level != "" {
-		if d.Pack == nil {
-			return fmt.Errorf("Phase 3 pack is not loaded")
-		}
-		toolPolicy = d.Pack.Policy(stage, repo.ToolPolicy)
-	}
-	redirectFeedback := ""
-	if stage == core.StageImplement {
-		interventions, err := d.Store.ListInterventions(ctx, t.ID)
-		if err != nil {
-			return err
-		}
-		redirectFeedback = redirectComments(interventions)
-	}
-	feedbackDelivered := false
-	// A prior attempt's handoff snapshot briefs the successor
-	// (spec §8.3): the persistent worktree carries the code state, the
-	// snapshot carries the reasoning state. Redirect comments join it
-	// alongside structured review redirects.
-	if predecessor != nil && stage == core.StageImplement {
-		handoffPath, pathErr := snapshot.Path(control, predecessor.ID)
-		if pathErr != nil {
-			return pathErr
-		}
-		if h, loadErr := snapshot.Load(handoffPath); loadErr == nil {
-			if h.TaskID == t.ID && h.JobID == predecessor.ID {
-				prompt += "\n\n" + h.OpeningContext(redirectFeedback)
-				feedbackDelivered = redirectFeedback != ""
-				log.Printf("[task %s] briefing successor with handoff from job %s", t.ID, h.JobID)
-			} else {
-				log.Printf("[task %s] ignoring handoff with mismatched provenance task=%q job=%q", t.ID, h.TaskID, h.JobID)
-			}
-		} else if !os.IsNotExist(loadErr) {
-			log.Printf("[task %s] ignoring unreadable handoff for job %s: %v", t.ID, predecessor.ID, loadErr)
-		}
-	}
-	if redirectFeedback != "" && !feedbackDelivered {
-		prompt += "\n\nHuman reviewer feedback to address:\n" + redirectFeedback
-	}
-	if err := os.WriteFile(filepath.Join(control, "prompt.txt"), []byte(prompt), 0o644); err != nil {
-		return err
-	}
-	job := core.Job{
-		ID:           jobID,
-		TaskID:       t.ID,
-		Stage:        stage,
-		Harness:      harness,
-		ModelTier:    modelTier,
-		CredentialID: credentialID,
-		AuthMode:     authMode,
-		BudgetUSD:    budgetUSD,
-		Runner:       d.Runner.Name(),
-		// Tier A: containerized local (spec §8.5), recorded per job.
-		Confinement: "tierA",
-		State:       core.JobBooting,
-		StartedAt:   time.Now(),
 	}
 	if err := d.Store.CreateJob(ctx, job); err != nil {
 		return err
 	}
-	jobTerminal := false
-	defer func() {
-		if jobTerminal {
-			return
-		}
-		job.State = core.JobFailed
-		job.EndedAt = time.Now()
-		if err := d.Store.UpdateJob(context.Background(), job); err != nil {
-			log.Printf("[task %s] record failed job %s: %v", t.ID, job.ID, err)
-		}
-	}()
+	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage, State: core.WorkOrderQueued, SelfReported: true, CreatedAt: time.Now().UTC()}
+	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
+		return err
+	}
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": task.NextStage, "execution": "mcp"})})
+}
 
-	sandboxWorkdir := gitx.SandboxPath(t.ID, repo.Name)
-	handle, err := d.Runner.StartJob(ctx, runner.StartJobSpec{
-		JobID:  job.ID,
-		TaskID: t.ID,
-		Image:  image,
-		Worktrees: []runner.WorktreeMount{
-			{HostPath: wt, SandboxPath: sandboxWorkdir},
-		},
-		Workdir:            sandboxWorkdir,
-		ControlDir:         control,
-		ControlPath:        "/conveyor/control",
-		CredentialsDir:     credentialDir,
-		CredentialStageDir: filepath.Join(cfg.CacheDir, "credentials"),
-		SecretStageDir:     filepath.Join(cfg.CacheDir, "secrets"),
-		SecretRefs:         secretRefs,
-		BudgetUSD:          budgetUSD,
-		Policy:             toolPolicy,
-		Harness:            harness,
-		// The current shim is one-shot; persistent task checkouts provide
-		// continuity while task-TTL container reuse is implemented.
-		SandboxTTL: "job",
-	})
-	if err != nil {
-		job.State = core.JobSandboxBootFail
-		job.EndedAt = time.Now()
-		var bootErr *runner.BootError
-		if errors.As(err, &bootErr) {
-			diagnostics := bootErr.Diagnostics
-			job.BootDiagnostics = &diagnostics
-		} else {
-			job.BootDiagnostics = &core.BootDiagnostics{RuntimeError: err.Error()}
-		}
-		if updateErr := d.Store.UpdateJob(ctx, job); updateErr != nil {
-			return fmt.Errorf("%w; record boot failure: %v", err, updateErr)
-		}
-		jobTerminal = true
-		return err
+func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+	if d.Agent == nil {
+		return fmt.Errorf("in-process agent is not configured")
 	}
-	runnerFinalized := false
-	defer func() {
-		if runnerFinalized {
-			return
-		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = d.Runner.Signal(cleanupCtx, handle, runner.SignalKill)
-		_, _ = d.Runner.CollectArtifacts(cleanupCtx, handle)
-	}()
-	job.State = core.JobRunning
-	job.SandboxRef = string(handle)
-	if err := d.Store.UpdateJob(ctx, job); err != nil {
-		return err
-	}
-
-	// Docker's live stream is an operator convenience. The shim-authored,
-	// redacted attempt-scoped events JSONL artifact is the authoritative transcript in Phase 2
-	// (spec §10.3); a transient stream failure must not discard a successful
-	// job whose artifact is complete.
-	jobLogPath, err := jobartifact.LogPath(control, job.ID)
+	prior, err := d.Store.ListJobs(ctx, task.ID)
 	if err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(jobLogPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	attempt := 1
+	for _, job := range prior {
+		if job.Stage == task.NextStage {
+			attempt++
+		}
+	}
+	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
+	now := time.Now().UTC()
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", BudgetUSD: route.BudgetUSD, State: core.JobRunning, StartedAt: now}
+	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
+		return err
+	}
+	if err := d.Store.CreateJob(ctx, job); err != nil {
+		return err
+	}
+	prompt, err := d.buildStagePrompt(ctx, task.NextStage, task)
 	if err != nil {
 		return err
 	}
-	timeout := stageTimeout(cfg.Routing, stage)
-	stageDeadline := time.Now().Add(timeout)
-	jobCtx, cancelJob := context.WithDeadline(ctx, stageDeadline)
-	defer cancelJob()
-	logs, err := d.Runner.StreamLogs(jobCtx, handle)
-	if err != nil {
-		logs = nil
-	}
-	var streamErr = err
-	var writeErr error
-	if logs != nil {
-		for ev := range logs {
-			if ev.Err != "" {
-				streamErr = fmt.Errorf("runner log stream: %s", ev.Err)
-				continue
-			}
-			if _, err := fmt.Fprintln(logFile, ev.Line); err != nil && writeErr == nil {
-				writeErr = fmt.Errorf("write job log: %w", err)
-			}
-			log.Printf("[task %s] %s", t.ID, ev.Line)
+	stageCtx, cancel := context.WithTimeout(ctx, route.Timeout)
+	defer cancel()
+	result, runErr := d.Agent.Run(stageCtx, route.Model, prompt)
+	job.EndedAt = time.Now().UTC()
+	job.TokensIn = result.TokensIn
+	job.TokensOut = result.TokensOut
+	job.CostUSD = result.CostUSD
+	if len(result.Transcript) != 0 {
+		sum := sha256.Sum256(result.Transcript)
+		id := fmt.Sprintf("%x", sum)
+		artifact, artifactErr := d.Store.CreateArtifact(ctx, core.Artifact{ID: id, Workspace: task.Workspace, Name: job.ID + "-transcript.json", ContentType: "application/json", SizeBytes: int64(len(result.Transcript)), TaskID: task.ID}, result.Transcript)
+		if artifactErr == nil {
+			_ = d.Store.UpsertTranscript(ctx, core.Transcript{JobID: job.ID, URI: "artifact://" + artifact.ID, RedactionStats: result.Redactions, CreatedAt: time.Now().UTC()})
 		}
 	}
-	if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
-		killCtx, killCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_ = d.Runner.Signal(killCtx, handle, runner.SignalKill)
-		killCancel()
-		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.timeout", Payload: core.JSONPayload(map[string]string{"timeout": timeout.String()})})
-	}
-	if err := logFile.Close(); err != nil && writeErr == nil {
-		writeErr = fmt.Errorf("close job log: %w", err)
-	}
-	collectCtx, cancelCollect := context.WithDeadline(ctx, stageDeadline.Add(artifactCollectionMargin))
-	art, err := d.Runner.CollectArtifacts(collectCtx, handle)
-	cancelCollect()
-	if err != nil {
-		return fmt.Errorf("collect artifacts: %w", err)
-	}
-	runnerFinalized = true
-	timedOut := errors.Is(jobCtx.Err(), context.DeadlineExceeded)
-	var summary transcriptSummary
-	if art.EventLog == "" {
-		if !timedOut {
-			return fmt.Errorf("job produced no authoritative attempt event artifact")
-		}
-	} else {
-		summary, err = inspectTranscript(art.EventLog)
-		if err != nil && !timedOut {
-			return fmt.Errorf("validate transcript: %w", err)
-		}
-	}
-	if summary.rateLimited && art.ExitCode != 0 {
-		routeOutcome.RateLimited = true
-		routeOutcome.Error = "harness reported rate limiting"
-	}
-	job.TokensIn = summary.tokensIn
-	job.TokensOut = summary.tokensOut
-	job.CostUSD = summary.costUSD
-	if art.EventLog != "" {
-		transcriptURI := (&url.URL{Scheme: "file", Path: art.EventLog}).String()
-		if err := d.Store.UpsertTranscript(ctx, core.Transcript{
-			JobID: job.ID, URI: transcriptURI, RedactionStats: summary.redactions, CreatedAt: time.Now().UTC(),
-		}); err != nil {
-			return fmt.Errorf("persist transcript metadata: %w", err)
-		}
-	}
-	if summary.agentSummary != "" {
-		_ = d.Store.AppendEvent(ctx, core.Event{
-			TaskID: t.ID, JobID: job.ID, Kind: "job.summary",
-			Payload: core.JSONPayload(map[string]string{"summary": summary.agentSummary}),
-		})
-	}
-	if streamErr != nil || writeErr != nil {
-		problem := streamErr
-		if problem == nil {
-			problem = writeErr
-		}
-		log.Printf("[task %s] live log stream degraded; authoritative artifact retained: %v", t.ID, problem)
-		_ = d.Store.AppendEvent(ctx, core.Event{
-			TaskID: t.ID, JobID: job.ID, Kind: "job.log_stream_degraded",
-			Payload: json.RawMessage(`{"authoritative_artifact":true}`),
-		})
-	}
-	job.EndedAt = time.Now()
-	if timedOut {
-		job.State = core.JobPaused
-	} else if art.ExitCode == 0 {
-		job.State = core.JobDone
-		if budgetUSD > 0 && summary.costUSD >= budgetUSD {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.budget_reached", Payload: core.JSONPayload(map[string]any{
-				"budget_usd": budgetUSD, "cost_usd": summary.costUSD, "completed": true,
-			})})
-		}
-	} else if budgetUSD > 0 && summary.costUSD >= budgetUSD {
-		job.State = core.JobPaused
-		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: t.ID, JobID: job.ID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]float64{"budget_usd": budgetUSD, "cost_usd": summary.costUSD})})
-	} else {
+	if runErr != nil {
 		job.State = core.JobFailed
+		_ = d.Store.UpdateJob(ctx, job)
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.failed", Payload: core.JSONPayload(map[string]string{"error": runErr.Error()})})
+		return d.transition(ctx, task.ID, core.TaskAwaiting, "", task.NextStage)
+	}
+	job.State = core.JobDone
+	if route.BudgetUSD > 0 && result.CostUSD >= route.BudgetUSD {
+		job.State = core.JobPaused
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]float64{"budget_usd": route.BudgetUSD, "cost_usd": result.CostUSD})})
 	}
 	if err := d.Store.UpdateJob(ctx, job); err != nil {
 		return err
 	}
-	jobTerminal = true
 	if job.State == core.JobPaused {
-		if timedOut {
-			routeOutcome.Error = "job timed out"
-		} else {
-			routeOutcome.Error = "job budget exhausted"
-		}
-		return d.transition(ctx, t.ID, core.TaskAwaiting, "", stage)
+		return d.transition(ctx, task.ID, core.TaskAwaiting, "", task.NextStage)
 	}
-	if art.ExitCode != 0 {
-		return fmt.Errorf("job exited %d (log: %s)", art.ExitCode, jobLogPath)
-	}
-	routeOutcome = routing.Outcome{}
-
-	return d.completeStage(ctx, t, repo, wt, job, summary.agentOutput)
+	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
 }
 
-type transcriptSummary struct {
-	redactions   core.RedactionStats
-	tokensIn     int64
-	tokensOut    int64
-	costUSD      float64
-	rateLimited  bool
-	agentSummary string
-	agentOutput  string
-}
-
-func inspectTranscript(path string) (transcriptSummary, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return transcriptSummary{}, err
-	}
-	defer file.Close()
-
-	var summary transcriptSummary
-	phaseCost := make(map[string]float64)
-	terminal := false
-	lines := 0
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		lines++
-		var event adapter.Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return transcriptSummary{}, fmt.Errorf("line %d: %w", lines, err)
-		}
-		if event.Usage != nil {
-			summary.tokensIn += event.Usage.In
-			summary.tokensOut += event.Usage.Out
-		}
-		if event.CostUSD > phaseCost[event.Phase] {
-			phaseCost[event.Phase] = event.CostUSD
-		}
-		if event.Kind == adapter.EventAssistantText && event.Phase == adapter.PhaseMain && strings.TrimSpace(event.Text) != "" {
-			summary.agentSummary = truncateRunes(strings.TrimSpace(event.Text), 2000)
-			// Harnesses may emit the same final answer once as an assistant
-			// message and again in their terminal result. The last normalized
-			// assistant text is authoritative; concatenating duplicates specs
-			// and machine-owned fenced blocks.
-			summary.agentOutput = event.Text
-		}
-		switch event.Kind {
-		case adapter.EventDone:
-			terminal = true
-			summary.rateLimited = false
-		case adapter.EventError:
-			terminal = true
-			summary.rateLimited = isRateLimitError(event.Err)
-		case adapter.EventRedaction:
-			var stats core.RedactionStats
-			if err := json.Unmarshal(event.Payload, &stats); err != nil {
-				return transcriptSummary{}, fmt.Errorf("line %d redaction stats: %w", lines, err)
-			}
-			if stats.Exact < 0 || stats.Encoded < 0 || stats.Pattern < 0 || stats.Entropy < 0 {
-				return transcriptSummary{}, fmt.Errorf("line %d has negative redaction count", lines)
-			}
-			summary.redactions.Exact += stats.Exact
-			summary.redactions.Encoded += stats.Encoded
-			summary.redactions.Pattern += stats.Pattern
-			summary.redactions.Entropy += stats.Entropy
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return transcriptSummary{}, err
-	}
-	mainCost := phaseCost[adapter.PhaseMain]
-	resumeCost := phaseCost[adapter.PhaseHandoffResume] - mainCost
-	if resumeCost < 0 {
-		resumeCost = 0
-	}
-	summary.costUSD = mainCost + resumeCost + phaseCost[adapter.PhaseHandoffFallback]
-	if lines == 0 {
-		return summary, fmt.Errorf("empty event artifact")
-	}
-	if !terminal {
-		return summary, fmt.Errorf("event artifact has no terminal event")
-	}
-	return summary, nil
-}
-
-func isRateLimitError(message string) bool {
-	message = strings.ToLower(message)
-	return strings.Contains(message, "rate limit") || strings.Contains(message, "rate_limit") ||
-		strings.Contains(message, "usage limit") || strings.Contains(message, "status 429")
-}
-
-func redirectComments(interventions []core.Intervention) string {
-	var comments []string
-	for _, intervention := range interventions {
-		comment := strings.TrimSpace(intervention.Comment)
-		if intervention.Action != core.InterventionRedirect || comment == "" {
-			continue
-		}
-		comments = append(comments, comment)
-	}
-	return strings.Join(comments, "\n\n")
-}
-
-func truncateRunes(value string, max int) string {
-	runes := []rune(value)
-	if len(runes) <= max {
-		return value
-	}
-	return string(runes[:max]) + "…"
-}
-
-func stageTimeout(routingConfig config.Routing, stage core.Stage) time.Duration {
-	if route, ok := routingConfig.Stages[string(stage)]; ok && route.Timeout > 0 {
-		return route.Timeout
-	}
-	return config.DefaultStageTimeout
-}
-
-func latestHarness(jobs []core.Job, stage core.Stage) string {
-	for i := len(jobs) - 1; i >= 0; i-- {
-		if jobs[i].Stage == stage {
-			return jobs[i].Harness
-		}
-	}
-	return ""
-}
-
-func nextStage(task core.Task) (core.Stage, bool) {
-	return task.NextStage, task.NextStage != ""
-}
-
-func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, task core.Task, worktree string) (string, error) {
-	if task.Level == "" && stage == core.StageImplement {
-		return buildPrompt(task), nil
-	}
-	if d.Pack == nil {
-		return "", fmt.Errorf("Phase 3 pack is not loaded")
-	}
+func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, task core.Task) (string, error) {
 	role, err := d.Pack.Role(stage)
 	if err != nil {
 		return "", err
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nEscalation level: %s · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n",
-		task.ID, task.Title, task.Level, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nEscalation level: %s · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Level, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	events, _ := d.Store.ListEvents(ctx, task.ID)
+	invalidKind := string(stage) + ".output_invalid"
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != invalidKind {
+			continue
+		}
+		var prior struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(events[i].Payload, &prior) == nil && prior.Error != "" {
+			fmt.Fprintf(&prompt, "\n# Previous output rejected\n\nCorrect this validation error in the next response: %s\n", prior.Error)
+		}
+		break
+	}
 	if stage == core.StageImplement || stage == core.StageReview {
-		spec, exists, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
-		if err != nil {
-			return "", err
+		spec, exists, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
+		if getErr != nil {
+			return "", getErr
 		}
 		if exists && spec.Approved {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
 		}
 	}
-	if stage == core.StageReview {
-		diff, err := gitx.DiffAgainstBase(ctx, worktree, task.BaseBranch)
-		if err != nil {
-			return "", err
+	artifacts, _ := d.Store.ListArtifacts(ctx)
+	for _, artifact := range artifacts {
+		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
+			continue
 		}
-		prompt.WriteString("\n# Branch diff\n\n```diff\n" + diff + "\n```\n")
+		fmt.Fprintf(&prompt, "\nContext artifact: %s (%s, %d bytes, id %s)", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID)
+		if strings.HasPrefix(artifact.ContentType, "text/") || artifact.ContentType == "application/json" {
+			_, content, getErr := d.Store.GetArtifact(ctx, artifact.ID)
+			if getErr == nil && len(content) <= 1<<20 {
+				prompt.WriteString("\n\n" + string(content) + "\n")
+			}
+		}
 	}
 	return prompt.String(), nil
 }
 
-func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo config.Repo, worktree string, job core.Job, output string) error {
-	invalid := func(err error) error {
+func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, output, reviewer string) error {
+	invalid := func(parseErr error) error {
 		kind := string(job.Stage) + ".output_invalid"
-		if appendErr := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: kind, Payload: core.JSONPayload(map[string]string{"error": err.Error()})}); appendErr != nil {
-			return appendErr
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: kind, Payload: core.JSONPayload(map[string]string{"error": parseErr.Error()})}); err != nil {
+			return err
 		}
-		count, countErr := d.Store.CountEvents(ctx, task.ID, kind)
-		if countErr != nil {
-			return countErr
-		}
-		if count >= configSnapshot(ctx, d.Cfg).MaxBounces {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"stage": job.Stage, "count": count})})
+		count, _ := d.Store.CountEvents(ctx, task.ID, kind)
+		if count >= cfg.MaxBounces {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", job.Stage)
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, job.Stage, "")
 	}
-
 	switch job.Stage {
 	case core.StageTriage:
 		result, err := pipeline.ParseTriage(output)
 		if err != nil {
 			return invalid(err)
 		}
-		if err := d.Store.UpdateTaskClassification(ctx, task.ID, result.Class); err != nil {
+		if err = d.Store.UpdateTaskClassification(ctx, task.ID, result.Class); err != nil {
 			return err
 		}
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)}); err != nil {
-			return err
-		}
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
+		d.suggestFeature(ctx, task, result.Summary)
 		if task.Level == core.L3 || result.Route == "human" {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageTriage)
 		}
@@ -700,120 +268,93 @@ func (d *Dispatcher) completeStage(ctx context.Context, task core.Task, repo con
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, next, "")
 	case core.StageSpec:
-		parsed, err := pipeline.ParseSpec(output)
+		result, err := pipeline.ParseSpec(output)
 		if err != nil {
 			return invalid(err)
 		}
-		version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{
-			TaskID: task.ID, Content: parsed.Markdown, AcceptanceCount: len(parsed.Acceptance),
-			Acceptance: core.JSONPayload(parsed.Acceptance), Decomposition: core.JSONPayload(parsed.Decomposition),
-		})
+		version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition)})
 		if err != nil {
 			return err
 		}
 		if task.Level == core.L2 {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
 		}
-		if err := d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
+		if err = d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
 			return err
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
-	case core.StageImplement:
-		commits, err := gitx.CommitsAhead(ctx, worktree, task.BaseBranch)
-		if err != nil {
-			return err
-		}
-		if len(commits) == 0 {
-			return d.transition(ctx, task.ID, core.TaskParked, "", core.StageImplement)
-		}
-		if task.Level == "" {
-			if repo.GitHub != "" {
-				if _, err := github.OpenPR(ctx, worktree, repo.GitHub, task.Branch, task.BaseBranch, task.Title, prBody(task)); err != nil {
-					return fmt.Errorf("open PR: %w", err)
-				}
-			}
-			return d.transition(ctx, task.ID, core.TaskAwaiting, core.StageImplement, core.StageImplement)
-		}
-		return d.transition(ctx, task.ID, core.TaskQueued, core.StageReview, "")
 	case core.StageReview:
 		result, err := pipeline.ParseReview(output)
 		if err != nil {
 			return invalid(err)
 		}
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(result)}); err != nil {
-			return err
-		}
-		if result.Verdict == "changes_requested" {
-			if err := d.Store.CreateIntervention(store.WithActor(ctx, store.Actor{ID: "review-agent", Role: core.ActorAgent}), core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
-				return err
-			}
-			return d.bounceToImplement(ctx, task.ID, job.ID, result.ReasonCode, result.Feedback, "review-agent")
-		}
-		if repo.GitHub != "" {
-			prURL, err := github.OpenPR(ctx, worktree, repo.GitHub, task.Branch, task.BaseBranch, task.Title, prBody(task))
-			if err != nil {
-				return fmt.Errorf("open PR: %w", err)
-			}
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"url": prURL})})
-		}
-		if task.Level == core.L0 {
-			return d.transition(ctx, task.ID, core.TaskApproved, "", "")
-		}
-		return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, "", "")
+	default:
+		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
-	return fmt.Errorf("unsupported stage %s", job.Stage)
 }
 
-// invalidOutputNotice returns the validator error recorded against the
-// predecessor job of the same stage, if its output was rejected. Empty when
-// the predecessor completed cleanly (e.g. an implement retry after a review
-// bounce).
-func (d *Dispatcher) invalidOutputNotice(ctx context.Context, taskID string, stage core.Stage, predecessorID string) (string, error) {
-	events, err := d.Store.ListEvents(ctx, taskID)
-	if err != nil {
-		return "", err
-	}
-	kind := string(stage) + ".output_invalid"
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != kind || events[i].JobID != predecessorID {
-			continue
-		}
-		var payload struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(events[i].Payload, &payload) == nil {
-			return strings.TrimSpace(payload.Error), nil
-		}
-		return "", nil
-	}
-	return "", nil
-}
-
-func (d *Dispatcher) bounceToImplement(ctx context.Context, taskID, jobID, reasonCode, feedback, source string) error {
-	priorBounces, err := d.Store.CountEvents(ctx, taskID, "pipeline.bounced")
+func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, session, model string) error {
+	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
-	bounces := priorBounces + 1
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{
-		"from": "review", "to": "implement", "reason_code": reasonCode,
-		"feedback": feedback, "count": bounces, "source": source,
-	})}); err != nil {
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", session, model)
+}
+
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, session, model string) error {
+	implementModel := ""
+	jobs, _ := d.Store.ListJobs(ctx, task.ID)
+	for i := len(jobs) - 1; i >= 0; i-- {
+		if jobs[i].Stage == core.StageImplement {
+			implementModel = jobs[i].ModelTier
+			break
+		}
+	}
+	same := "unknown"
+	if model != "" && implementModel != "" {
+		same = fmt.Sprintf("%t", model == implementModel)
+	}
+	payload := map[string]any{"verdict": result.Verdict, "reason_code": result.ReasonCode, "summary": result.Summary, "feedback": result.Feedback, "reviewer_session": "distinct", "reviewer_model": model, "same_model_as_implementer": same, "reviewer": reviewer}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(payload)}); err != nil {
 		return err
 	}
-	if bounces >= configSnapshot(ctx, d.Cfg).MaxBounces {
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{
-			"stage": core.StageReview, "count": bounces, "recovery_stage": core.StageImplement,
-		})}); err != nil {
+	if result.Verdict == "changes_requested" {
+		actorCtx := store.WithActor(ctx, store.Actor{ID: "review:" + session, Role: core.ActorAgent})
+		if err := d.Store.CreateIntervention(actorCtx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
 			return err
 		}
+		return d.bounce(ctx, cfg, task.ID, job.ID, result.ReasonCode, result.Feedback)
+	}
+	if task.Level == core.L0 {
+		return d.transition(ctx, task.ID, core.TaskApproved, "", "")
+	}
+	return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+}
+
+func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {
+	count, _ := d.Store.CountEvents(ctx, taskID, "pipeline.bounced")
+	count++
+	_ = d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": reason, "feedback": feedback, "count": count, "source": "mcp-review"})})
+	if count >= cfg.MaxBounces {
 		return d.transition(ctx, taskID, core.TaskAwaiting, "", core.StageImplement)
 	}
 	return d.transition(ctx, taskID, core.TaskQueued, core.StageImplement, "")
 }
 
-func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
-	if err := d.Store.SetTaskTransition(ctx, taskID, state, nextStage, recoveryStage); err != nil {
+func (d *Dispatcher) suggestFeature(ctx context.Context, task core.Task, summary string) {
+	features, _ := d.Store.ListFeatures(ctx)
+	haystack := strings.ToLower(task.Title + " " + task.Body + " " + summary)
+	for _, feature := range features {
+		if strings.Contains(haystack, strings.ToLower(feature.Name)) {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "triage.feature_suggested", Payload: core.JSONPayload(map[string]string{"feature_id": feature.ID, "feature_name": feature.Name})})
+			return
+		}
+	}
+}
+
+func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.TaskState, next, recovery core.Stage) error {
+	if err := d.Store.SetTaskTransition(ctx, taskID, state, next, recovery); err != nil {
 		return err
 	}
 	if state == core.TaskQueued {
@@ -822,25 +363,20 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.T
 	return nil
 }
 
-// HandleIntervention advances a spec gate or redispatches a redirect after the
-// decision itself has been durably recorded by the store.
 func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
 	switch intervention.Action {
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskClosed, "", "")
 	case core.InterventionApprove:
-		if latest.State == core.JobPaused {
-			return d.transition(ctx, task.ID, core.TaskQueued, latest.Stage, "")
-		}
 		if latest.Stage == core.StageSpec {
 			spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("task %s has no spec to approve", task.ID)
+				return fmt.Errorf("task %s has no spec", task.ID)
 			}
-			if err := d.Store.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+			if err = d.Store.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
 				return err
 			}
 			return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
@@ -849,54 +385,36 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	case core.InterventionRedirect:
 		target := task.RecoveryStage
 		if target == "" {
-			if latest.Stage == core.StageReview {
-				target = core.StageImplement
-			} else {
-				target = latest.Stage
-			}
+			target = latest.Stage
 		}
-		if target == "" {
-			return fmt.Errorf("task %s has no recovery stage", task.ID)
+		if latest.Stage == core.StageReview {
+			target = core.StageImplement
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, target, "")
 	case core.InterventionPull:
-		target := task.RecoveryStage
-		if target == "" && latest.Stage == core.StageReview {
-			target = core.StageImplement
-		} else if target == "" {
-			target = latest.Stage
-		}
-		if target == "" {
-			return fmt.Errorf("task %s has no recovery stage for local handoff", task.ID)
-		}
-		return d.transition(ctx, task.ID, task.State, target, target)
+		return nil
 	}
 	return nil
 }
 
-// PollGitHub converts conveyor:ready issues into tasks (spec §9),
-// deduplicating on task provenance.
+// PollGitHub preserves issue intake while execution ownership moves to MCP.
 func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		d.pollOnce(ctx)
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-ticker.C:
 		}
 	}
 }
-
 func (d *Dispatcher) pollOnce(ctx context.Context) {
-	ctx, cfg, err := d.configSnapshot(ctx)
+	cfg, err := d.currentConfig(ctx)
 	if err != nil {
-		log.Printf("poll workspace config: %v", err)
 		return
 	}
-	d.recoverGitHubClaims(ctx)
-	d.pollReviewFeedback(ctx)
 	for _, repo := range cfg.Repos {
 		if repo.GitHub == "" {
 			continue
@@ -906,256 +424,39 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			log.Printf("poll %s: %v", repo.GitHub, err)
 			continue
 		}
-		for _, is := range issues {
-			source := fmt.Sprintf("github:%s#%d", repo.GitHub, is.Number)
-			existing, exists := d.taskBySource(ctx, source)
-			if exists && existing.State != core.TaskQueued && existing.State != core.TaskClaiming {
+		for _, issue := range issues {
+			source := fmt.Sprintf("github:%s#%d", repo.GitHub, issue.Number)
+			tasks, _ := d.Store.ListTasks(ctx)
+			exists := false
+			for _, task := range tasks {
+				if task.Source == source {
+					exists = true
+					break
+				}
+			}
+			if exists {
 				continue
 			}
-
-			id := existing.ID
-			if !exists {
-				id = core.NewTaskID()
-				existing = core.Task{
-					ID:         id,
-					Workspace:  cfg.Workspace,
-					Source:     source,
-					Title:      is.Title,
-					Body:       is.Body,
-					Level:      core.L2,
-					Repo:       repo.Name,
-					BaseBranch: repo.Base,
-					Branch:     gitx.BranchName(id),
-					State:      core.TaskClaiming,
-					NextStage:  core.InitialStage(core.L2),
-					CreatedAt:  time.Now(),
-				}
-				if err := d.Store.CreateTask(ctx, existing); err != nil {
-					log.Printf("poll %s: create task: %v", repo.GitHub, err)
-					continue
-				}
-			}
-			// The durable claiming state bridges Postgres and GitHub. A crash
-			// after the label transition is recovered idempotently on the next
-			// poll before River receives the queued transition.
-			if err := github.MarkIssueDispatched(ctx, repo.GitHub, is.Number, id); err != nil {
-				// Leave the task claiming. The ready label remains, so the next
-				// poll retries the GitHub transition without running the task.
-				log.Printf("poll %s: claim issue #%d: %v", repo.GitHub, is.Number, err)
+			id := core.NewTaskID()
+			task := core.Task{ID: id, Workspace: cfg.Workspace, Source: source, Title: issue.Title, Body: issue.Body, Level: core.L2, Repo: repo.Name, BaseBranch: repo.Base, Branch: gitx.BranchName(id), State: core.TaskClaiming, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}
+			if err = d.Store.CreateTask(ctx, task); err != nil {
 				continue
 			}
-			if existing.State != core.TaskQueued {
-				if err := d.Store.UpdateTaskState(ctx, id, core.TaskQueued); err != nil {
-					log.Printf("poll %s: finalize claim for issue #%d: %v", repo.GitHub, is.Number, err)
-					continue
-				}
+			if err = github.MarkIssueDispatched(ctx, repo.GitHub, issue.Number, id); err != nil {
+				continue
 			}
-			log.Printf("[task %s] created from %s (%q)", id, source, is.Title)
+			_ = d.Store.UpdateTaskState(ctx, id, core.TaskQueued)
 			d.Enqueue(id)
 		}
 	}
 }
 
-func (d *Dispatcher) pollReviewFeedback(ctx context.Context) {
-	tasks, err := d.Store.ListTasks(ctx)
-	if err != nil {
-		log.Printf("poll PR feedback: %v", err)
-		return
-	}
-	for _, task := range tasks {
-		if task.State != core.TaskAwaiting && task.State != core.TaskApproved {
-			continue
-		}
-		repo, ok := configSnapshot(ctx, d.Cfg).Repo(task.Repo)
-		if !ok || repo.GitHub == "" {
-			continue
-		}
-		events, err := d.Store.ListEvents(ctx, task.ID)
-		if err != nil {
-			continue
-		}
-		eligible, cursor, seen := reviewPollState(events)
-		if !eligible {
-			continue
-		}
-		pollStartedAt := time.Now().UTC()
-		page, err := d.reviewFeedback(ctx, repo.GitHub, task.Branch, cursor)
-		if err != nil {
-			log.Printf("[task %s] poll PR feedback: %v", task.ID, err)
-			continue
-		}
-		if page.State != "open" {
-			if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "github.review_poll_stopped", Payload: core.JSONPayload(map[string]any{
-				"pr_number": page.PR, "state": page.State,
-			})}); err != nil {
-				log.Printf("[task %s] stop PR feedback poll: %v", task.ID, err)
-			}
-			continue
-		}
-		unseen := make([]github.ReviewFeedback, 0, len(page.Feedback))
-		for _, item := range page.Feedback {
-			if !seen[item.ID] {
-				unseen = append(unseen, item)
-			}
-		}
-		if len(unseen) > 0 {
-			latest, ok, err := d.Store.GetLatestJob(ctx, task.ID)
-			if err != nil {
-				log.Printf("[task %s] load job for PR feedback: %v", task.ID, err)
-				continue
-			}
-			if !ok {
-				log.Printf("[task %s] ignore PR feedback: task has no job", task.ID)
-				continue
-			}
-			comments := make([]string, 0, len(unseen))
-			for _, item := range unseen {
-				comments = append(comments, fmt.Sprintf("%s: %s", item.Author, strings.TrimSpace(item.Body)))
-			}
-			feedback := strings.Join(comments, "\n\n")
-			actorCtx := store.WithActor(ctx, store.Actor{ID: "github", Role: core.ActorHuman})
-			intervention := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: "github-review", Comment: feedback}
-			if err := d.Store.CreateIntervention(actorCtx, intervention); err != nil {
-				log.Printf("[task %s] ingest PR feedback: %v", task.ID, err)
-				continue
-			}
-			if err := d.bounceToImplement(actorCtx, task.ID, latest.ID, intervention.ReasonCode, feedback, "github"); err != nil {
-				log.Printf("[task %s] route PR feedback: %v", task.ID, err)
-				continue
-			}
-			for _, item := range unseen {
-				if err := d.Store.AppendEvent(actorCtx, core.Event{TaskID: task.ID, JobID: latest.ID, Kind: "github.review_redirected", Payload: core.JSONPayload(map[string]any{
-					"external_id": item.ID, "pr_number": item.PR, "author": item.Author,
-				})}); err != nil {
-					log.Printf("[task %s] mark PR feedback %s: %v", task.ID, item.ID, err)
-					continue
-				}
-			}
-		}
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "github.review_polled", Payload: core.JSONPayload(map[string]any{
-			"pr_number": page.PR, "cursor": pollStartedAt, "review_after": page.Cursor.ReviewAfter,
-		})}); err != nil {
-			log.Printf("[task %s] persist PR feedback cursor: %v", task.ID, err)
-		}
-	}
+func PRBody(task core.Task) string {
+	return fmt.Sprintf("Conveyor task `%s`\n\nSource: %s\n", task.ID, task.Source)
 }
 
-func reviewPollState(events []core.Event) (bool, github.ReviewCursor, map[string]bool) {
-	eligible := false
-	var cursor github.ReviewCursor
-	seen := map[string]bool{}
-	for _, event := range events {
-		switch event.Kind {
-		case "pull_request.opened":
-			eligible = true
-		case "github.review_poll_stopped":
-			eligible = false
-		case "github.review_polled":
-			var payload struct {
-				Cursor      time.Time `json:"cursor"`
-				ReviewAfter string    `json:"review_after"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.Cursor.After(cursor.Since) {
-				cursor = github.ReviewCursor{Since: payload.Cursor, ReviewAfter: payload.ReviewAfter}
-			}
-		case "github.review_redirected":
-			var payload struct {
-				ExternalID string `json:"external_id"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.ExternalID != "" {
-				seen[payload.ExternalID] = true
-			}
-		}
-	}
-	return eligible, cursor, seen
-}
-
-func (d *Dispatcher) recoverGitHubClaims(ctx context.Context) {
-	tasks, err := d.Store.ListTasks(ctx)
-	if err != nil {
-		log.Printf("recover GitHub claims: %v", err)
-		return
-	}
-	for _, task := range tasks {
-		if task.State != core.TaskClaiming {
-			continue
-		}
-		slug, number, ok := githubSource(task.Source)
-		if !ok {
-			log.Printf("[task %s] claiming task has invalid GitHub source %q", task.ID, task.Source)
-			continue
-		}
-		if err := github.MarkIssueDispatched(ctx, slug, number, task.ID); err != nil {
-			log.Printf("[task %s] recover GitHub claim: %v", task.ID, err)
-			continue
-		}
-		if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskQueued); err != nil {
-			log.Printf("[task %s] finalize recovered claim: %v", task.ID, err)
-			continue
-		}
-		d.Enqueue(task.ID)
-	}
-}
-
-func githubSource(source string) (string, int, bool) {
-	rest, ok := strings.CutPrefix(source, "github:")
-	if !ok {
-		return "", 0, false
-	}
-	separator := strings.LastIndexByte(rest, '#')
-	if separator <= 0 {
-		return "", 0, false
-	}
-	number, err := strconv.Atoi(rest[separator+1:])
-	if err != nil || number <= 0 {
-		return "", 0, false
-	}
-	return rest[:separator], number, true
-}
-
-func (d *Dispatcher) taskBySource(ctx context.Context, source string) (core.Task, bool) {
-	tasks, err := d.Store.ListTasks(ctx)
-	if err != nil {
-		return core.Task{}, false
-	}
-	for _, t := range tasks {
-		if t.Source == source {
-			return t, true
-		}
-	}
-	return core.Task{}, false
-}
-
-// buildPrompt preserves the accepted Phase 1 compatibility fixture. Phase 3
-// tasks load pack/roles/implement.md instead (spec §2.2).
-func buildPrompt(t core.Task) string {
-	var b strings.Builder
-	b.WriteString("You are the implementation agent of an automated software factory.\n\n")
-	fmt.Fprintf(&b, "# Task %s: %s\n\n", t.ID, t.Title)
-	if t.Body != "" {
-		b.WriteString(t.Body + "\n\n")
-	}
-	fmt.Fprintf(&b, `Your working directory is a git worktree on branch %s (based on %s).
-
-Instructions:
-- Implement the change described above.
-- Run the project's tests or checks where they are quick enough to be practical.
-- Commit all your work to the current branch with clear, conventional commit messages.
-- Do NOT push, open PRs, or switch branches; the factory handles everything after the commit.
-- Do not touch anything outside this worktree.
-`, t.Branch, t.BaseBranch)
-	return b.String()
-}
-
-func prBody(t core.Task) string {
-	var b strings.Builder
-	if t.Body != "" {
-		b.WriteString(t.Body + "\n\n")
-	}
-	fmt.Fprintf(&b, "---\nConveyor task `%s`", t.ID)
-	if t.Source != "" {
-		fmt.Fprintf(&b, " · source: %s", t.Source)
-	}
-	b.WriteString("\n\n🤖 Generated with [Conveyor](https://github.com/kidus-tiliksew/conveyor)")
-	return b.String()
+// ComposeReviewOutput keeps the §4.1 validator authoritative for MCP input.
+func ComposeReviewOutput(review pipeline.Review) string {
+	data, _ := json.Marshal(review)
+	return "```conveyor:review\n" + string(data) + "\n```"
 }

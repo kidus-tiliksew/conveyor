@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
-	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -43,18 +41,6 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 }
 
 func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs], err error) error {
-	if errors.Is(err, routing.ErrNoCapacity) {
-		payload := core.JSONPayload(map[string]any{
-			"retry_in_seconds": int64(routing.RateLimitCooldown.Seconds()),
-			"reason":           err.Error(),
-		})
-		if eventErr := w.dispatcher.Store.AppendEvent(ctx, core.Event{
-			TaskID: job.Args.TaskID, Kind: "dispatch.capacity_wait", Payload: payload,
-		}); eventErr != nil {
-			return fmt.Errorf("record capacity wait: %w", eventErr)
-		}
-		return river.JobSnooze(routing.RateLimitCooldown)
-	}
 	payload := core.JSONPayload(map[string]any{
 		"attempt":      job.Attempt,
 		"max_attempts": job.MaxAttempts,

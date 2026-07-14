@@ -86,15 +86,11 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
   }
   switch (job.state) {
     case 'pending':
-      return 'Queued, waiting for a sandbox.'
-    case 'booting':
-      return 'Sandbox booting.'
+      return job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.'
     case 'running':
       return 'In progress.'
     case 'paused':
       return 'Paused before completion.'
-    case 'sandbox_boot_failed':
-      return 'The sandbox failed to boot.'
     case 'failed':
       return 'The job failed before producing a summary.'
     default:
@@ -143,6 +139,8 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} approved` }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
+    case 'review.completed':
+      return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: `session ${String(payload.reviewer_session ?? 'unknown')} · model ${String(payload.reviewer_model ?? 'unknown')} · same model ${String(payload.same_model_as_implementer ?? 'unknown')}` }
     case 'dispatch.failed':
       return {
         title: 'Dispatch failed',

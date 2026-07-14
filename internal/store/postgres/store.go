@@ -6,6 +6,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
-	"github.com/kidus-tiliksew/conveyor/internal/routing"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
@@ -106,14 +106,6 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	} else if err != nil {
 		return false, err
 	}
-	previousCredentialIDs, err := q.ListWorkspaceCredentialIDs(ctx, cfg.Workspace)
-	if err != nil {
-		return false, err
-	}
-	previousPolicyRefs, err := q.ListWorkspaceVendorPolicyRefs(ctx, cfg.Workspace)
-	if err != nil {
-		return false, err
-	}
 	if seeded {
 		for _, repo := range cfg.Repos {
 			if err := upsertRepo(ctx, q, cfg.Workspace, repo); err != nil {
@@ -121,81 +113,11 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 			}
 		}
 	}
-	for _, policy := range cfg.VendorPolicies {
-		reviewedAt, err := time.Parse("2006-01-02", policy.ReviewedAt)
-		if err != nil {
-			return false, err
-		}
-		if err := q.UpsertVendorPolicy(ctx, db.UpsertVendorPolicyParams{
-			Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
-			SubscriptionHeadless: policy.SubscriptionHeadless,
-			ReviewedAt:           pgtype.Date{Time: reviewedAt, Valid: true}, SourceUrl: policy.SourceURL,
-		}); err != nil {
-			return false, err
-		}
-	}
-	for _, credential := range cfg.Credentials {
-		if err := q.UpsertCredential(ctx, db.UpsertCredentialParams{
-			ID: credential.ID, OwnerID: credential.OwnerID, OwnerKind: credential.OwnerKind,
-			Kind: credential.Kind, Vendor: credential.Vendor, Harness: credential.Harness, EncRef: credential.Ref,
-		}); err != nil {
-			return false, err
-		}
-	}
-	if err := q.DeleteWorkspaceCredentialRefs(ctx, cfg.Workspace); err != nil {
-		return false, err
-	}
-	configuredCredentialIDs := make(map[string]struct{}, len(cfg.Credentials))
-	for _, credential := range cfg.Credentials {
-		configuredCredentialIDs[credential.ID] = struct{}{}
-		if err := q.InsertWorkspaceCredentialRef(ctx, db.InsertWorkspaceCredentialRefParams{
-			WorkspaceID: cfg.Workspace, CredentialID: credential.ID,
-		}); err != nil {
-			return false, err
-		}
-		if err := q.EnableCredential(ctx, credential.ID); err != nil {
-			return false, err
-		}
-	}
-	for _, id := range previousCredentialIDs {
-		if _, configured := configuredCredentialIDs[id]; configured {
-			continue
-		}
-		if err := q.DisableCredentialIfUnreferenced(ctx, id); err != nil {
-			return false, err
-		}
-	}
-	if err := q.DeleteWorkspaceVendorPolicyRefs(ctx, cfg.Workspace); err != nil {
-		return false, err
-	}
-	configuredPolicyKeys := make(map[string]struct{}, len(cfg.VendorPolicies))
-	for _, policy := range cfg.VendorPolicies {
-		configuredPolicyKeys[capacityPolicyKey(policy.Vendor, policy.Harness, policy.AuthMode)] = struct{}{}
-		if err := q.InsertWorkspaceVendorPolicyRef(ctx, db.InsertWorkspaceVendorPolicyRefParams{
-			WorkspaceID: cfg.Workspace, Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
-		}); err != nil {
-			return false, err
-		}
-	}
-	for _, policy := range previousPolicyRefs {
-		if _, configured := configuredPolicyKeys[capacityPolicyKey(policy.Vendor, policy.Harness, policy.AuthMode)]; configured {
-			continue
-		}
-		if err := q.RestrictVendorPolicyIfUnreferenced(ctx, db.RestrictVendorPolicyIfUnreferencedParams{
-			Vendor: policy.Vendor, Harness: policy.Harness, AuthMode: policy.AuthMode,
-		}); err != nil {
-			return false, err
-		}
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
 	s.workspace = cfg.Workspace
 	return seeded, nil
-}
-
-func capacityPolicyKey(vendor, harness, authMode string) string {
-	return strings.Join([]string{vendor, harness, authMode}, "\x1f")
 }
 
 func upsertRepo(ctx context.Context, q *db.Queries, workspace string, repo config.Repo) error {
@@ -284,7 +206,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 
 func configDiff(before, after config.WorkspaceDocument) []string {
 	sections := make([]string, 0, 3)
-	if before.Workspace != after.Workspace || before.Image != after.Image || before.MaxBounces != after.MaxBounces {
+	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces {
 		sections = append(sections, "workspace")
 	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
@@ -294,55 +216,6 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 		sections = append(sections, "repos")
 	}
 	return sections
-}
-
-func (s *Store) ClaimCredential(ctx context.Context, request routing.ClaimRequest) (routing.Credential, error) {
-	row, err := s.queries.ClaimCredential(ctx, db.ClaimCredentialParams{
-		TaskID: request.TaskID, JobID: request.JobID, LeaseSeconds: request.LeaseSeconds, Harnesses: request.Harnesses,
-		OwnerID: request.OwnerID, AllowRestricted: request.AllowRestricted,
-		ExcludeHarness: request.ExcludeHarness,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return routing.Credential{}, routing.ErrNoCapacity
-	}
-	if err != nil {
-		return routing.Credential{}, err
-	}
-	return routing.Credential{
-		ID: row.ID, OwnerID: row.OwnerID, OwnerKind: row.OwnerKind, Kind: row.Kind,
-		Vendor: row.Vendor, Harness: row.Harness, Ref: row.EncRef,
-	}, nil
-}
-
-func (s *Store) RescueTaskCredentialLeases(ctx context.Context, taskID, currentJobID string) error {
-	_, err := s.queries.RescueTaskCredentialLeases(ctx, db.RescueTaskCredentialLeasesParams{
-		TaskID: taskID, CurrentJobID: currentJobID,
-	})
-	return err
-}
-
-func (s *Store) ReleaseCredential(ctx context.Context, id, jobID, lastError string) error {
-	rows, err := s.queries.ReleaseCredential(ctx, db.ReleaseCredentialParams{ID: id, JobID: jobID, LastError: lastError})
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return fmt.Errorf("credential %s is not leased by job %s", id, jobID)
-	}
-	return nil
-}
-
-func (s *Store) ThrottleCredential(ctx context.Context, id, jobID, lastError string, cooldownSeconds int64) error {
-	rows, err := s.queries.ThrottleCredential(ctx, db.ThrottleCredentialParams{
-		ID: id, JobID: jobID, LastError: lastError, CooldownSeconds: cooldownSeconds,
-	})
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return fmt.Errorf("credential %s is not leased by job %s", id, jobID)
-	}
-	return nil
 }
 
 func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
@@ -787,6 +660,298 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 	return core.Transcript{JobID: row.JobID, URI: row.Uri, RedactionStats: stats, CreatedAt: row.CreatedAt.Time}, nil
 }
 
+const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
+session_id, client_token_hash, agent, model, lease_expires_at, progress,
+cost_usd, tokens_in, tokens_out, self_reported, created_at, updated_at`
+
+func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	if order.CreatedAt.IsZero() {
+		order.CreatedAt = time.Now().UTC()
+	}
+	if order.State == "" {
+		order.State = core.WorkOrderQueued
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
+			id, workspace_id, task_id, job_id, stage, state, claimant_id,
+			session_id, client_token_hash, agent, model, lease_expires_at,
+			progress, cost_usd, tokens_in, tokens_out, self_reported, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)`,
+			order.ID, s.workspace, order.TaskID, order.JobID, order.Stage, order.State,
+			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model,
+			nullableTimeValue(order.LeaseExpiresAt), order.Progress, order.CostUSD,
+			order.TokensIn, order.TokensOut, true, order.CreatedAt)
+		if err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	})
+}
+
+func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	if _, err := s.pool.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='', session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL, updated_at=now()
+		WHERE workspace_id=$1 AND id=$2 AND state='claimed' AND lease_expires_at <= now()`, s.workspace, id); err != nil {
+		return core.WorkOrder{}, err
+	}
+	order, err := scanWorkOrder(s.pool.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", s.workspace, id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	return order, nil
+}
+
+func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	if _, err := s.pool.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='', session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL, updated_at=now()
+		WHERE workspace_id=$1 AND state='claimed' AND lease_expires_at <= now()`, s.workspace); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", s.workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var orders []core.WorkOrder
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
+}
+
+func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", s.workspace, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var orders []core.WorkOrder
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
+}
+
+func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", s.workspace, id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	now := time.Now().UTC()
+	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is already claimed", id)
+	}
+	if order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimable", id)
+	}
+	hash := ""
+	if claim.ClientToken != "" {
+		hash = fmt.Sprintf("%x", sha256.Sum256([]byte(claim.ClientToken)))
+	}
+	if order.Stage == core.StageReview {
+		var blocked bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_orders WHERE task_id=$1 AND stage='implement' AND
+			(($2 <> '' AND session_id=$2) OR ($3 <> '' AND client_token_hash=$3)))`, order.TaskID, claim.SessionID, hash).Scan(&blocked); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if blocked {
+			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: use a fresh agent session")
+		}
+	}
+	lease := claim.Lease
+	if lease <= 0 {
+		lease = 15 * time.Minute
+	}
+	expires := now.Add(lease)
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, lease_expires_at=$6, updated_at=$7 WHERE id=$8 RETURNING "+workOrderColumns,
+		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, expires, now, id)
+	order, err = scanWorkOrder(row)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	q := s.queries.WithTx(tx)
+	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
+			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7, progress=$8,
+			cost_usd=$9, tokens_in=$10, tokens_out=$11, self_reported=$12, updated_at=now()
+			WHERE workspace_id=$13 AND id=$14`, order.State, order.ClaimantID, order.SessionID,
+			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
+			order.Progress, order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, s.workspace, order.ID)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("work order %s not found", order.ID)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
+	})
+}
+
+func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
+	var order core.WorkOrder
+	var stage, state string
+	var lease pgtype.Timestamptz
+	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
+		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &lease, &order.Progress,
+		&order.CostUSD, &order.TokensIn, &order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
+	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
+	if lease.Valid {
+		order.LeaseExpiresAt = lease.Time
+	}
+	return order, err
+}
+
+func (s *Store) CreateFeature(ctx context.Context, feature core.Feature) error {
+	if feature.CreatedAt.IsZero() {
+		feature.CreatedAt = time.Now().UTC()
+	}
+	if feature.ParentID != "" {
+		var belongs bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM features WHERE id=$1 AND workspace_id=$2)`, feature.ParentID, s.workspace).Scan(&belongs); err != nil {
+			return err
+		}
+		if !belongs {
+			return fmt.Errorf("parent feature %s not found in workspace %s", feature.ParentID, s.workspace)
+		}
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO features (id,workspace_id,parent_id,name,description,created_at) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6)`, feature.ID, s.workspace, feature.ParentID, feature.Name, feature.Description, feature.CreatedAt)
+	return err
+}
+
+func (s *Store) ListFeatures(ctx context.Context) ([]core.Feature, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,COALESCE(parent_id,''),name,description,created_at FROM features WHERE workspace_id=$1 ORDER BY name,id`, s.workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.Feature
+	for rows.Next() {
+		var feature core.Feature
+		if err := rows.Scan(&feature.ID, &feature.Workspace, &feature.ParentID, &feature.Name, &feature.Description, &feature.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, feature)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if featureID != "" {
+			var belongs bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM features WHERE id=$1 AND workspace_id=$2)`, featureID, s.workspace).Scan(&belongs); err != nil {
+				return err
+			}
+			if !belongs {
+				return fmt.Errorf("feature %s not found in workspace %s", featureID, s.workspace)
+			}
+		}
+		command, err := tx.Exec(ctx, `UPDATE tasks SET feature_id=NULLIF($1,''),updated_at=now() WHERE id=$2 AND workspace_id=$3`, featureID, taskID, s.workspace)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("task %s not found", taskID)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.feature_assigned", Payload: core.JSONPayload(map[string]string{"feature_id": featureID})})
+	})
+}
+
+func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
+	artifact.SizeBytes = int64(len(content))
+	if artifact.CreatedAt.IsZero() {
+		artifact.CreatedAt = time.Now().UTC()
+	}
+	artifact.Workspace = s.workspace
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_, err = tx.Exec(ctx, `INSERT INTO artifacts (id,workspace_id,name,content_type,size_bytes,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,id) DO NOTHING`, artifact.ID, s.workspace, artifact.Name, artifact.ContentType, artifact.SizeBytes, content, artifact.CreatedAt)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	if artifact.TaskID != "" || artifact.FeatureID != "" {
+		var belongs bool
+		if artifact.TaskID != "" {
+			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id=$1 AND workspace_id=$2)`, artifact.TaskID, s.workspace).Scan(&belongs)
+		} else {
+			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM features WHERE id=$1 AND workspace_id=$2)`, artifact.FeatureID, s.workspace).Scan(&belongs)
+		}
+		if err != nil {
+			return core.Artifact{}, err
+		}
+		if !belongs {
+			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", s.workspace)
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO artifact_links (workspace_id,artifact_id,task_id,feature_id) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,'')) ON CONFLICT DO NOTHING`, s.workspace, artifact.ID, artifact.TaskID, artifact.FeatureID)
+		if err != nil {
+			return core.Artifact{}, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Artifact{}, err
+	}
+	return artifact, nil
+}
+
+func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
+	var artifact core.Artifact
+	var content []byte
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 LIMIT 1`, s.workspace, id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID)
+	if err != nil {
+		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
+	}
+	return artifact, content, nil
+}
+
+func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	rows, err := s.pool.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id`, s.workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.Artifact
+	for rows.Next() {
+		var artifact core.Artifact
+		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID); err != nil {
+			return nil, err
+		}
+		result = append(result, artifact)
+	}
+	return result, rows.Err()
+}
+
+func nullableTimeValue(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
 func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -851,7 +1016,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
-		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, CreatedAt: timestamp(task.CreatedAt),
+		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), CreatedAt: timestamp(task.CreatedAt),
 	}
 }
 
@@ -861,7 +1026,7 @@ func taskFromDB(task db.Task) core.Task {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
-		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID,
+		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: task.FeatureID.String,
 		CreatedAt: task.CreatedAt.Time,
 	}
 }
@@ -878,47 +1043,34 @@ func specFromDB(spec db.TaskSpec) core.SpecVersion {
 func jobInsertParams(job core.Job) db.InsertJobParams {
 	return db.InsertJobParams{
 		ID: job.ID, TaskID: job.TaskID, Stage: string(job.Stage), Harness: job.Harness,
-		ModelTier: job.ModelTier, CredentialID: job.CredentialID, AuthMode: job.AuthMode,
-		Runner: job.Runner, SandboxRef: job.SandboxRef,
+		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
 		BudgetUsd: job.BudgetUSD, CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
-		BootDiagnostics: diagnosticsJSON(job.BootDiagnostics),
-		StartedAt:       timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
+		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 	}
 }
 
 func jobUpdateParams(job core.Job, workspace string) db.UpdateJobParams {
 	return db.UpdateJobParams{
 		ID: job.ID, Stage: string(job.Stage), Harness: job.Harness,
-		ModelTier: job.ModelTier, CredentialID: job.CredentialID, AuthMode: job.AuthMode,
-		Runner: job.Runner, SandboxRef: job.SandboxRef,
+		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
 		BudgetUsd: job.BudgetUSD, CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
-		BootDiagnostics: diagnosticsJSON(job.BootDiagnostics),
-		StartedAt:       timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
+		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 		WorkspaceID: workspace,
 	}
 }
 
 func jobFromDB(job db.Job) core.Job {
-	var diagnostics *core.BootDiagnostics
-	if len(job.BootDiagnostics) != 0 {
-		var decoded core.BootDiagnostics
-		if json.Unmarshal(job.BootDiagnostics, &decoded) == nil {
-			diagnostics = &decoded
-		}
-	}
 	return core.Job{
 		ID: job.ID, TaskID: job.TaskID, Stage: core.Stage(job.Stage), Harness: job.Harness,
-		ModelTier: job.ModelTier, CredentialID: job.CredentialID, AuthMode: job.AuthMode,
-		Runner: job.Runner, SandboxRef: job.SandboxRef,
+		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, Confinement: job.ConfinementTier,
 		BudgetUSD: job.BudgetUsd, CostUSD: job.CostUsd, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: core.JobState(job.State),
-		BootDiagnostics: diagnostics, StartedAt: job.StartedAt.Time,
-		EndedAt: nullableTime(job.EndedAt),
+		StartedAt: job.StartedAt.Time, EndedAt: nullableTime(job.EndedAt),
 	}
 }
 
@@ -968,13 +1120,6 @@ func nullableTime(value pgtype.Timestamptz) time.Time {
 
 func nullableText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: value != ""}
-}
-
-func diagnosticsJSON(diagnostics *core.BootDiagnostics) []byte {
-	if diagnostics == nil {
-		return nil
-	}
-	return core.JSONPayload(diagnostics)
 }
 
 func notFound(err error, format string, args ...any) error {
