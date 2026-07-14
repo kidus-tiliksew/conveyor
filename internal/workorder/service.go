@@ -27,6 +27,8 @@ type Service struct {
 	Dispatcher     *dispatch.Dispatcher
 	Pack           *pack.Bundle
 	ConfigProvider func(context.Context) (*config.Config, error)
+	OpenPR         func(context.Context, string, string, string, string, string) (string, error)
+	ReviewTarget   func(context.Context, string, string) (github.ReviewTarget, error)
 }
 
 type Context struct {
@@ -231,11 +233,25 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	prURL := ""
 	if repo.GitHub != "" {
-		prURL, err = github.OpenPRForBranch(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task))
+		openPR := s.OpenPR
+		if openPR == nil {
+			openPR = github.OpenPRForBranch
+		}
+		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task))
 		if err != nil {
 			return nil, fmt.Errorf("open PR: %w", err)
 		}
-		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"url": prURL})})
+		reviewTarget := s.ReviewTarget
+		if reviewTarget == nil {
+			reviewTarget = github.ReviewTargetForBranch
+		}
+		target, targetErr := reviewTarget(ctx, repo.GitHub, task.Branch)
+		if targetErr != nil {
+			return nil, fmt.Errorf("resolve reviewed PR head: %w", targetErr)
+		}
+		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"url": prURL, "number": target.Number, "head_sha": target.HeadSHA})}); err != nil {
+			return nil, fmt.Errorf("record reviewed PR head: %w", err)
+		}
 	}
 	order.State = core.WorkOrderSubmitted
 	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
@@ -269,7 +285,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 }
 
 func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time.Duration) (map[string]any, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForAwait(ctx, id, session)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +313,28 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if session == "" || order.SessionID != session {
+		return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
+	}
+	if order.State == core.WorkOrderSubmitted {
+		// Submission makes the review wait durable; the implementation claim
+		// lease no longer governs this read-only same-session operation.
+		return order, nil
+	}
+	if order.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not awaiting review", id)
+	}
+	if !order.LeaseExpiresAt.After(time.Now()) {
+		return core.WorkOrder{}, fmt.Errorf("work order lease expired")
+	}
+	return order, nil
 }
 
 func (s *Service) latestReviewResult(ctx context.Context, taskID string, after time.Time) (map[string]any, error) {
@@ -339,6 +377,9 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if err != nil || !ok || job.ID != order.JobID {
 		return nil, fmt.Errorf("review job unavailable")
 	}
+	if err = s.Dispatcher.ApplyExternalReview(ctx, task, job, validated, order.ID, session, order.Model); err != nil {
+		return nil, err
+	}
 	order.State = core.WorkOrderCompleted
 	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
 		return nil, err
@@ -349,9 +390,6 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	job.TokensIn = order.TokensIn
 	job.TokensOut = order.TokensOut
 	if err = s.Store.UpdateJob(ctx, job); err != nil {
-		return nil, err
-	}
-	if err = s.Dispatcher.ApplyExternalReview(ctx, task, job, validated, session, order.Model); err != nil {
 		return nil, err
 	}
 	return map[string]any{"verdict": validated.Verdict, "task_id": task.ID}, nil

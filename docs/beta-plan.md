@@ -179,8 +179,15 @@ branch from its own checkout (spec §21.7). Suggested order:
    promptly), and `submit_review_verdict` (§4.1-validated verdict +
    structured feedback; reviewer identity plus self-reported agent/model
    recorded on the intervention → independence labels:
-   `reviewer_session`, `reviewer_model`, `same_model_as_implementer`).
-   Clock enforcement at the protocol boundary: claims and submits are refused
+   `reviewer_session`, `reviewer_model`, `same_model_as_implementer`). A
+   completed verdict is recorded internally before a durable River job
+   publishes or updates the `Conveyor / Code review` Check Run and the single
+   Conveyor factory PR comment; GitHub retries cannot roll back the verdict or
+   bounce decision. `await_review` remains authorized to the submitting
+   implementation session after submission even when its claim lease expires.
+   On `changes_requested`, that warm session claims the newly queued
+   implementation order before editing and resubmitting the existing branch
+   and PR. Clock enforcement at the protocol boundary: claims and submits are refused
    after the stage timeout. Jobs are recorded `harness: external-mcp,
    confinement: none, auth: byoa`.
 3. **Demolition.** Delete `internal/runner`, `internal/adapter`, the

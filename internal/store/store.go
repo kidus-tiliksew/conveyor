@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -48,6 +49,11 @@ type Store interface {
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
+	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
+	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
+	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
+	ReconcileReviewPublications(ctx context.Context) (int, error)
+	AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -75,6 +81,7 @@ func NewMemory() Store {
 		transcripts:   map[string]core.Transcript{},
 		specs:         map[string][]core.SpecVersion{},
 		workOrders:    map[string]core.WorkOrder{},
+		publications:  map[string]core.ReviewPublication{},
 		features:      map[string]core.Feature{},
 		artifacts:     map[string]memoryArtifact{},
 	}
@@ -94,10 +101,199 @@ type memory struct {
 	transcripts   map[string]core.Transcript
 	specs         map[string][]core.SpecVersion
 	workOrders    map[string]core.WorkOrder
+	publications  map[string]core.ReviewPublication
 	features      map[string]core.Feature
 	artifacts     map[string]memoryArtifact
 	nextEventID   int64
 	nextReviewID  int64
+}
+
+func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.publications[publication.ReviewWorkOrderID]; ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	publication.State, publication.CreatedAt, publication.UpdatedAt = core.ReviewPublicationQueued, now, now
+	m.publications[publication.ReviewWorkOrderID] = publication
+	m.appendEventLocked(ctx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)})
+	return nil
+}
+
+func (m *memory) GetReviewPublication(_ context.Context, id string) (core.ReviewPublication, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	publication, ok := m.publications[id]
+	if !ok {
+		return core.ReviewPublication{}, fmt.Errorf("review publication %s not found", id)
+	}
+	return publication, nil
+}
+
+func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.publications[publication.ReviewWorkOrderID]; !ok {
+		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
+	}
+	publication.UpdatedAt = time.Now().UTC()
+	m.publications[publication.ReviewWorkOrderID] = publication
+	kind := "review.publication_retry"
+	if publication.State == core.ReviewPublicationPublished {
+		kind = "review.publication_published"
+	} else if publication.State == core.ReviewPublicationFailed {
+		kind = "review.publication_failed"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: kind, Payload: core.JSONPayload(publication)})
+	return nil
+}
+
+func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	var missing []core.ReviewPublication
+	seen := map[string]bool{}
+	for taskID, events := range m.events {
+		for _, event := range events {
+			if event.Kind != "review.completed" {
+				continue
+			}
+			publication, ok := reviewPublicationFromEvent(taskID, event.JobID, event.Payload)
+			if ok && !seen[publication.ReviewWorkOrderID] {
+				if _, exists := m.publications[publication.ReviewWorkOrderID]; !exists {
+					missing = append(missing, publication)
+					seen[publication.ReviewWorkOrderID] = true
+				}
+			}
+		}
+	}
+	m.mu.RUnlock()
+	created := 0
+	for _, publication := range missing {
+		if err := m.QueueReviewPublication(ctx, publication); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
+func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[decision.TaskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", decision.TaskID)
+	}
+	job, _, ok := m.findJobLocked(decision.JobID)
+	if !ok || job.TaskID != decision.TaskID {
+		return fmt.Errorf("job %s does not belong to task %s", decision.JobID, decision.TaskID)
+	}
+	completed := false
+	for _, event := range m.events[decision.TaskID] {
+		var prior struct {
+			ReviewWorkOrderID string `json:"review_work_order_id"`
+		}
+		if json.Unmarshal(event.Payload, &prior) != nil || prior.ReviewWorkOrderID != decision.ReviewWorkOrderID {
+			continue
+		}
+		if event.Kind == "review.accepted" {
+			return nil
+		}
+		completed = completed || event.Kind == "review.completed"
+	}
+	if !completed {
+		payload := reviewDecisionPayload(decision)
+		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: payload})
+	}
+	state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
+	if decision.Verdict == "changes_requested" {
+		interventionExists, bounceExists, count := false, false, 0
+		for _, event := range m.events[decision.TaskID] {
+			if event.Kind == "intervention.redirect" && event.JobID == decision.JobID && event.ActorID == decision.InterventionActorID {
+				interventionExists = true
+			}
+			if event.Kind != "pipeline.bounced" {
+				continue
+			}
+			count++
+			var prior struct {
+				ReviewWorkOrderID string `json:"review_work_order_id"`
+			}
+			if event.JobID == decision.JobID || (json.Unmarshal(event.Payload, &prior) == nil && prior.ReviewWorkOrderID == decision.ReviewWorkOrderID) {
+				bounceExists = true
+			}
+		}
+		if !interventionExists {
+			m.nextReviewID++
+			intervention := core.Intervention{ID: m.nextReviewID, TaskID: decision.TaskID, JobID: decision.JobID, ActorID: decision.InterventionActorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: decision.ReasonCode, Comment: decision.Feedback, At: time.Now().UTC()}
+			m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], intervention)
+			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": decision.ReasonCode, "comment": decision.Feedback}), At: intervention.At})
+		}
+		if !bounceExists {
+			count++
+			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": decision.ReasonCode, "feedback": decision.Feedback, "count": count, "source": "mcp-review", "review_work_order_id": decision.ReviewWorkOrderID})})
+		}
+		if count < decision.MaxBounces {
+			state, next, recovery = core.TaskQueued, core.StageImplement, ""
+		}
+	} else if decision.Level == core.L0 {
+		state, recovery = core.TaskApproved, ""
+	}
+	fromState, fromStage := task.State, task.NextStage
+	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
+	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state})})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
+	if decision.PublicationEligible {
+		if _, exists := m.publications[decision.ReviewWorkOrderID]; !exists {
+			now := time.Now().UTC()
+			publication := reviewPublicationFromDecision(decision)
+			publication.State, publication.CreatedAt, publication.UpdatedAt = core.ReviewPublicationQueued, now, now
+			m.publications[publication.ReviewWorkOrderID] = publication
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)})
+		}
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]string{"review_work_order_id": decision.ReviewWorkOrderID})})
+	return nil
+}
+
+func reviewDecisionPayload(decision core.ReviewDecision) []byte {
+	return core.JSONPayload(map[string]any{
+		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
+		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
+		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
+		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"same_model_as_implementer": decision.SameModelAsImplementer,
+		"publication_eligible":      decision.PublicationEligible,
+	})
+}
+
+func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPublication {
+	return core.ReviewPublication{
+		ReviewWorkOrderID: decision.ReviewWorkOrderID, TaskID: decision.TaskID, JobID: decision.JobID,
+		Verdict: decision.Verdict, ReasonCode: decision.ReasonCode, Summary: decision.Summary,
+		Feedback: decision.Feedback, ReviewedCommitSHA: decision.ReviewedCommitSHA,
+		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
+		SameModelAsImplementer: decision.SameModelAsImplementer,
+	}
+}
+
+func reviewPublicationFromEvent(taskID, jobID string, payload []byte) (core.ReviewPublication, bool) {
+	var eligibility struct {
+		PublicationEligible bool `json:"publication_eligible"`
+	}
+	if json.Unmarshal(payload, &eligibility) != nil || !eligibility.PublicationEligible {
+		return core.ReviewPublication{}, false
+	}
+	var publication core.ReviewPublication
+	if json.Unmarshal(payload, &publication) != nil || publication.ReviewWorkOrderID == "" {
+		return core.ReviewPublication{}, false
+	}
+	publication.TaskID = taskID
+	publication.JobID = jobID
+	publication.State = core.ReviewPublicationQueued
+	return publication, true
 }
 
 func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {

@@ -281,21 +281,41 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
-		return d.applyReview(ctx, cfg, task, job, result, reviewer, "", "")
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier)
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
 }
 
-func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, session, model string) error {
+func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string) error {
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", session, model)
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model)
 }
 
-func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, session, model string) error {
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
+	if reviewWorkOrderID == "" {
+		reviewWorkOrderID = job.ID
+	}
+	if model == "" {
+		model = job.ModelTier
+	}
+	reviewedCommitSHA := ""
+	events, _ := d.Store.ListEvents(ctx, task.ID)
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
+		}
+		var pullRequest struct {
+			HeadSHA string `json:"head_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
+			reviewedCommitSHA = pullRequest.HeadSHA
+			break
+		}
+	}
 	implementModel := ""
 	jobs, _ := d.Store.ListJobs(ctx, task.ID)
 	for i := len(jobs) - 1; i >= 0; i-- {
@@ -308,21 +328,26 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if model != "" && implementModel != "" {
 		same = fmt.Sprintf("%t", model == implementModel)
 	}
-	payload := map[string]any{"verdict": result.Verdict, "reason_code": result.ReasonCode, "summary": result.Summary, "feedback": result.Feedback, "reviewer_session": "distinct", "reviewer_model": model, "same_model_as_implementer": same, "reviewer": reviewer}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(payload)}); err != nil {
+	repo, publicationEligible := cfg.Repo(task.Repo)
+	publicationEligible = publicationEligible && repo.GitHub != ""
+	if err := d.Store.AcceptReviewDecision(ctx, core.ReviewDecision{
+		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
+		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
+		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
+		Level: task.Level, MaxBounces: cfg.MaxBounces,
+	}); err != nil {
 		return err
 	}
-	if result.Verdict == "changes_requested" {
-		actorCtx := store.WithActor(ctx, store.Actor{ID: "review:" + session, Role: core.ActorAgent})
-		if err := d.Store.CreateIntervention(actorCtx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
-			return err
-		}
-		return d.bounce(ctx, cfg, task.ID, job.ID, result.ReasonCode, result.Feedback)
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return err
 	}
-	if task.Level == core.L0 {
-		return d.transition(ctx, task.ID, core.TaskApproved, "", "")
+	if current.State == core.TaskQueued {
+		d.Enqueue(task.ID)
 	}
-	return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+	return nil
 }
 
 func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {

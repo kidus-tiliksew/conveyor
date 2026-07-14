@@ -144,3 +144,85 @@ func TestListReviewFeedbackStopsBeforeFetchingMergedPRComments(t *testing.T) {
 		t.Fatalf("calls=%d page=%+v", calls, page)
 	}
 }
+
+func TestPublishReviewCreatesSuccessfulCheckAndFactoryComment(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch len(calls) {
+		case 1:
+			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"abc123"}`), nil
+		case 2:
+			return []byte(`{"check_runs":[]}`), nil
+		case 3:
+			return []byte(`{"id":41}`), nil
+		case 4:
+			return []byte(`[[]]`), nil
+		default:
+			return []byte(`{"id":51}`), nil
+		}
+	}
+	result, err := publishReview(context.Background(), ReviewPublication{
+		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+		ReviewWorkOrderID: "review-1", Verdict: "approve", ReasonCode: "approved",
+		Summary: "All criteria pass.", ReviewerModel: "gpt", ReviewerSession: "distinct",
+		SameModelAsImplementer: "false",
+	}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckRunID != 41 || result.CommentID != 51 || result.ReviewedCommitSHA != "abc123" {
+		t.Fatalf("result = %+v", result)
+	}
+	joined := strings.Join(calls[2], " ")
+	if !strings.Contains(joined, "conclusion=success") || !strings.Contains(joined, "name="+ReviewCheckName) || !strings.Contains(joined, "external_id=review-1") || !strings.Contains(joined, "Reviewed commit: `abc123`") {
+		t.Fatalf("check args = %v", calls[2])
+	}
+	if !strings.Contains(strings.Join(calls[4], " "), "<!-- conveyor:review-publication task=task-1 -->") {
+		t.Fatalf("comment args = %v", calls[4])
+	}
+}
+
+func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch len(calls) {
+		case 1:
+			return []byte(`{"number":7,"headRefOid":"def456"}`), nil
+		case 2:
+			return []byte(`{"check_runs":[{"id":42,"external_id":"review-2"}]}`), nil
+		case 3:
+			return []byte(`{"id":42}`), nil
+		case 4:
+			return []byte(`[[{"id":52,"body":"<!-- conveyor:review-publication task=task-1 --> old"}]]`), nil
+		default:
+			return []byte(`{"id":52}`), nil
+		}
+	}
+	_, err := publishReview(context.Background(), ReviewPublication{
+		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+		ReviewWorkOrderID: "review-2", Verdict: "changes_requested", ReasonCode: "tests",
+		Summary: "Needs work.", Feedback: "Add the missing test.", ReviewedCommitSHA: "def456",
+		ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true",
+		BounceHistory: []string{"bounce 1: tests"},
+	}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls[2], " "); !strings.Contains(got, "PATCH repos/acme/api/check-runs/42") || !strings.Contains(got, "conclusion=action_required") {
+		t.Fatalf("check retry args = %v", calls[2])
+	}
+	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") {
+		t.Fatalf("comment retry args = %v", calls[4])
+	}
+}
+
+func TestFactoryMarkedFeedbackIsNeverHuman(t *testing.T) {
+	if humanFeedback("conveyor-service", "<!-- conveyor:review-publication task=task-1 -->\nresult") {
+		t.Fatal("factory-marked feedback was accepted as human")
+	}
+	if !humanFeedback("alice", "Please address this.") {
+		t.Fatal("human feedback was suppressed")
+	}
+}
