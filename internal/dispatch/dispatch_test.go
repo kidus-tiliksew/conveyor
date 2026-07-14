@@ -15,12 +15,44 @@ import (
 type sequenceAgent struct {
 	outputs []string
 	next    int
+	costUSD float64
 }
 
 func (agent *sequenceAgent) Run(context.Context, string, string) (inprocess.Result, error) {
 	output := agent.outputs[agent.next]
 	agent.next++
-	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10, CostUSD: .01}, nil
+	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10, CostUSD: agent.costUSD}, nil
+}
+
+func TestHighInProcessUsageDoesNotGatePipeline(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "high-usage", Workspace: "demo", Repo: "api", Title: "Small fix", Level: core.L0, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"automatability\":1,\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}, costUSD: 20_000}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Model: "gpt-5.4", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+	}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	job, ok, err := st.GetLatestJob(ctx, task.ID)
+	if err != nil || !ok || job.State != core.JobDone || job.CostUSD != 20_000 {
+		t.Fatalf("job=%+v ok=%t err=%v", job, ok, err)
+	}
 }
 
 func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
@@ -40,10 +72,10 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 		"# Audit export\n\n## Intent\nAdd the export.\n\n## Non-goals\nNo unrelated formats.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Export tests pass\n  verify: test\n  ref: ./...\n```",
 	}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, BudgetUSD: 1, Timeout: time.Minute},
-		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, BudgetUSD: 1, Timeout: time.Minute},
-		"implement": {Model: "operator-owned", Execution: config.ExecutionMCP, BudgetUSD: 5, Timeout: time.Hour},
-		"review":    {Model: "operator-owned", Execution: config.ExecutionMCP, BudgetUSD: 2, Timeout: time.Hour},
+		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+		"implement": {Model: "operator-owned", Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"review":    {Model: "operator-owned", Execution: config.ExecutionMCP, Timeout: time.Hour},
 	}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle

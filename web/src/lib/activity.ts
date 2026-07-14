@@ -54,7 +54,6 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind
     if (kind === 'pipeline.bounce_limit') return 'Bounce limit reached — review loop needs a human'
-    if (kind === 'job.budget_exhausted') return 'Budget breaker paused the job'
     if (kind === 'job.timeout') return 'Job hit its wall-clock timeout'
     if (kind === 'job.created' || kind.startsWith('intervention.')) break
   }
@@ -89,8 +88,6 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
       return job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.'
     case 'running':
       return 'In progress.'
-    case 'paused':
-      return 'Paused before completion.'
     case 'failed':
       return 'The job failed before producing a summary.'
     default:
@@ -118,15 +115,6 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
     }
     case 'pipeline.bounce_limit':
       return { title: 'Bounce limit reached — parked at the human gate', alarm: true }
-    case 'job.budget_exhausted':
-      return {
-        title: 'Budget breaker fired (spec §14.1)',
-        detail:
-          typeof payload.cost_usd === 'number' && typeof payload.budget_usd === 'number'
-            ? `$${payload.cost_usd.toFixed(2)} spent of a $${payload.budget_usd.toFixed(2)} budget`
-            : undefined,
-        alarm: true,
-      }
     case 'job.timeout':
       return {
         title: 'Wall-clock timeout',

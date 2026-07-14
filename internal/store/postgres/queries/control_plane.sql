@@ -70,12 +70,12 @@ RETURNING *;
 -- name: InsertJob :one
 INSERT INTO jobs (
     id, task_id, stage, harness, model_tier, auth_mode, runner,
-    pack_version, confinement_tier, budget_usd, cost_usd, tokens_in,
+    pack_version, confinement_tier, cost_usd, tokens_in,
     tokens_out, state, started_at, ended_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12,
-    $13, $14, $15, $16
+    $8, $9, $10, $11,
+    $12, $13, $14, $15
 )
 RETURNING *;
 
@@ -88,18 +88,17 @@ SET stage = $2,
     runner = $6,
     pack_version = $7,
     confinement_tier = $8,
-    budget_usd = $9,
-    cost_usd = $10,
-    tokens_in = $11,
-    tokens_out = $12,
-    state = $13,
-    started_at = $14,
-    ended_at = $15,
+    cost_usd = $9,
+    tokens_in = $10,
+    tokens_out = $11,
+    state = $12,
+    started_at = $13,
+    ended_at = $14,
     updated_at = now()
 WHERE jobs.id = $1
   AND EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.id = jobs.task_id AND t.workspace_id = $16
+      WHERE t.id = jobs.task_id AND t.workspace_id = $15
   )
 RETURNING jobs.*;
 

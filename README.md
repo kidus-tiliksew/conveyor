@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.5. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.6. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -13,8 +13,8 @@ working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 Phase 4.7's implementation is complete. The code now provides:
 
 - in-process triage and spec stages through the OpenAI Responses API, with
-  existing schema validators, redacted transcripts, usage metering, stage
-  timeouts, and budget gates;
+  existing schema validators, redacted transcripts, observational usage
+  metering, and stage timeouts;
 - an authenticated MCP server with idempotent `create_task` intake plus
   implementation/review work orders, including leases, self-review
   prevention, progress/usage/transcript reporting, synchronous or MCP
@@ -80,6 +80,15 @@ The Phase 4.7 document deliberately has no runner, image, credential pool,
 secret reference, vendor policy, or tool policy fields. Operator agents own
 their execution environment; repository CI is the mechanical verifier until
 managed execution is explicitly activated in Phase 8.
+
+Stage routes contain only model, timeout, and execution mode. Conveyor retains
+token and USD usage as audit telemetry, but it has no allocation, remaining
+balance, or usage-based execution gate (spec §21.6).
+
+When upgrading from v1.5, remove `budget_usd` from the deployment bootstrap
+file before restart. Startup canonicalizes an existing Postgres workspace
+document, and migration 011 removes the obsolete job allocation column while
+preserving cost/token telemetry and append-only audit events.
 
 ## Layout
 

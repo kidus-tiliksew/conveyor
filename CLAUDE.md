@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.5, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.6, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -28,7 +28,8 @@ exactly four phases:
 
 - **Phase 3** *(complete)* — full pipeline: multi-stage orchestration,
   triage/spec/code-review agents, §4.1 spec format, proto-pack role prompts,
-  per-repo images, PR-comment redirects, budget breaker + timeouts.
+  per-repo images, PR-comment redirects, and timeouts. The historical budget
+  breaker was removed by spec §21.6.
 - **Phase 4** *(complete)* — UI rewrite (shadcn/ui, full §13.3): app shell,
   stage-grouped feed, task detail panel, task intake, read-only workspace
   snapshot.

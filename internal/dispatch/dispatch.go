@@ -110,7 +110,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", BudgetUSD: route.BudgetUSD, State: core.JobPending, StartedAt: time.Now().UTC()}
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending, StartedAt: time.Now().UTC()}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
 	now := time.Now().UTC()
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", BudgetUSD: route.BudgetUSD, State: core.JobRunning, StartedAt: now}
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
@@ -173,15 +173,8 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		return d.transition(ctx, task.ID, core.TaskAwaiting, "", task.NextStage)
 	}
 	job.State = core.JobDone
-	if route.BudgetUSD > 0 && result.CostUSD >= route.BudgetUSD {
-		job.State = core.JobPaused
-		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]float64{"budget_usd": route.BudgetUSD, "cost_usd": result.CostUSD})})
-	}
 	if err := d.Store.UpdateJob(ctx, job); err != nil {
 		return err
-	}
-	if job.State == core.JobPaused {
-		return d.transition(ctx, task.ID, core.TaskAwaiting, "", task.NextStage)
 	}
 	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
 }

@@ -87,7 +87,6 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
         className={cn(
           'bg-edge',
           job.state === 'done' && 'bg-positive',
-          job.state === 'paused' && 'bg-attention-dot',
           job.state === 'failed' && 'bg-failure',
           running && 'animate-pulse bg-primary',
         )}

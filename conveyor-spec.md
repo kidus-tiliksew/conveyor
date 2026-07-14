@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.5**
+**Specification — v1.6**
 **Date:** July 14, 2026
-**Status:** Accepted — MCP task-intake amendment applied (§21.5)
+**Status:** Accepted — budget-removal amendment applied (§21.6)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1065,4 +1065,53 @@ decisions remain unchanged:
 
 ---
 
-*End of specification. v1.5 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), and durable MCP task intake added without a parallel triage path (§21.5). Subsequent changes proceed by amendment with version bumps.*
+### 21.6 v1.6 — Remove budget allocation and enforcement (July 14, 2026)
+
+The v1.5 design carried spending allocation through routing, persistence,
+public contracts, operator views, and execution gates. At Conveyor's current
+stage that surface creates configuration and operational complexity without a
+useful user outcome. v1.6 removes it as one coherent capability. This
+amendment supersedes every earlier monetary or token allocation, remaining
+balance, circuit-breaker, anomaly-breaker, budget pause, and budget-policy
+claim in §§1.1, 2–5, 10, 13–14, 16, 19, and §21.2–§21.5. The earlier text is
+retained as the historical record of v1.0–v1.5 rather than silently rewritten.
+Six changes; all other v1.5 decisions remain unchanged:
+
+1. **Stage routing has no budget dimension.** Current deployment and
+   workspace documents define each route as `{model, timeout, execution}`.
+   There are no per-stage or per-job defaults, overrides, limits, or policies,
+   and the workspace API and UI neither accept nor expose them. Existing
+   Postgres workspace documents are canonicalized once on startup to remove
+   the retired v1.5 field; current configuration inputs reject that field.
+2. **Usage never gates execution.** Jobs and work orders are not rejected,
+   paused, stopped, escalated, or otherwise routed because of token or USD
+   values. `job.budget_exhausted`, the budget-exhausted error path, and the
+   budget-specific paused state have no current producer or operator surface.
+   Timeout enforcement, work-order leases, retry behavior, bounce caps,
+   escalation gates, and the normal triage → spec → implement → review
+   pipeline are unchanged.
+3. **Usage telemetry remains observational.** `report_usage` and persisted
+   `cost_usd`, `tokens_in`, and `tokens_out` remain audit facts describing what
+   occurred. In-process usage is provider-reported and MCP usage is marked
+   `self_reported`; neither is an allocation, balance, or enforcement input.
+   Per-stage cost may remain in the event timeline as audit context, but no
+   current UI or API labels it as a budget or computes consumption/remaining.
+4. **Persistence migrates forward.** Migration 011 removes the obsolete
+   `jobs.budget_usd` projection without modifying any applied migration and
+   canonicalizes the budget-only paused projection to failed. Append-only
+   historical events and all cost/token telemetry are preserved. Generated
+   sqlc models and queries describe the post-migration schema.
+5. **The operator surface follows the contract.** The task summary no longer
+   renders allocation, consumption, or remaining balance; the workspace view
+   no longer edits stage allocations; and budget-specific activity messages
+   are retired. Active examples and operating documentation use the v1.6
+   route shape and describe usage solely as audit telemetry.
+6. **No replacement control is introduced.** v1.6 adds no quota, rate limit,
+   billing system, managed-execution facility, or aggregate cost dashboard.
+   Phase 8's demand-triggered aggregate dashboard remains observational scope
+   only if activated later; it does not revive spending enforcement without a
+   new accepted amendment.
+
+---
+
+*End of specification. v1.6 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), and budget allocation/enforcement removed while usage telemetry remains observational (§21.6). Subsequent changes proceed by amendment with version bumps.*

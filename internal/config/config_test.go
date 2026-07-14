@@ -15,10 +15,10 @@ pack_dir: pack
 max_bounces: 2
 routing:
   stages:
-    triage: {model: gpt-5.4, budget_usd: 1, timeout: 20m, execution: in_process}
-    spec: {model: gpt-5.4, budget_usd: 1, timeout: 30m, execution: in_process}
-    implement: {model: operator-owned, budget_usd: 10, timeout: 4h, execution: mcp}
-    review: {model: operator-owned, budget_usd: 3, timeout: 1h, execution: mcp}
+    triage: {model: gpt-5.4, timeout: 20m, execution: in_process}
+    spec: {model: gpt-5.4, timeout: 30m, execution: in_process}
+    implement: {model: operator-owned, timeout: 4h, execution: mcp}
+    review: {model: operator-owned, timeout: 1h, execution: mcp}
 repos:
   - {name: conveyor, url: https://example.test/conveyor, base: main}
 `
@@ -31,6 +31,53 @@ repos:
 	}
 	if cfg.Routing.Stages["implement"].Execution != ExecutionMCP || cfg.Repos[0].Name != "conveyor" {
 		t.Fatalf("config=%+v", cfg)
+	}
+}
+
+func TestLoadRejectsRemovedBudgetConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	data := `workspace: demo
+pack_dir: pack
+routing:
+  stages:
+    triage: {model: gpt, timeout: 20m, execution: in_process}
+    spec: {model: gpt, timeout: 30m, execution: in_process}
+    implement: {model: operator, budget_usd: 10, timeout: 4h, execution: mcp}
+    review: {model: operator, timeout: 1h, execution: mcp}
+repos:
+  - {name: repo, url: https://example.test/repo, base: main}
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "field budget_usd not found") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestParseStoredWorkspaceDocumentRemovesLegacyBudget(t *testing.T) {
+	data := `workspace: demo
+max_bounces: 2
+routing:
+  stages:
+    triage: {model: gpt, timeout: 20m, execution: in_process}
+    spec: {model: gpt, timeout: 30m, execution: in_process}
+    implement: {model: operator, budget_usd: 10, timeout: 4h, execution: mcp}
+    review: {model: operator, timeout: 1h, execution: mcp}
+repos:
+  - {name: repo, url: https://example.test/repo, base: main}
+`
+	cfg, legacy, err := ParseStoredWorkspaceDocument([]byte(data), validConfig(), "stored")
+	if err != nil || !legacy {
+		t.Fatalf("legacy=%t err=%v", legacy, err)
+	}
+	canonical, err := MarshalWorkspaceDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(canonical), "budget") {
+		t.Fatalf("canonical config retained budget: %s", canonical)
 	}
 }
 

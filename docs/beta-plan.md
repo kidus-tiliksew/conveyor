@@ -1,7 +1,7 @@
 # Beta plan: phases 3–4.7
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.5),
-restructured by §21.2 and extended by §21.3–§21.5. This document is the
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.6),
+restructured by §21.2 and extended by §21.3–§21.6. This document is the
 working breakdown: what each pre-Beta phase contains, its dependencies, and
 its exit criterion. Phases 1–2 are complete and validated; nothing here
 reopens them.
@@ -69,9 +69,9 @@ configurations on top of it. Suggested order:
 7. **PR review comments → redirect** (§9): review comments on Conveyor PRs
    convert to redirect interventions, so diff review happens on GitHub
    without losing the feedback loop.
-8. **Safety for unattended runs:** per-job budget circuit breaker (pause at
-   100%, surface to queue — §14.1; the anomaly breaker stays deferred) and
-   job wall-clock timeouts.
+8. **Safety for unattended runs:** job wall-clock timeouts. Phase 3
+   historically included a spending circuit breaker; §21.6 removes that
+   allocation and enforcement surface while preserving timeouts.
 
 **Exit criterion:** one real task traverses triage → spec (approved via
 API/CLI) → implement → code-review bounce → PR on the Conveyor repo, with
@@ -91,8 +91,9 @@ Phase 6) rather than reshape it. Surfaces, per §13.3:
   counts; escalation badges, provenance chips, recency; "Needs attention"
   as the single alarm color on the page.
 - **Costed event timeline:** per-stage entries with agent summary,
-  duration, cost, harness/model/auth-mode; budget consumed vs. allocated;
-  acceptance-criteria badge fed by the §4.1 blocks.
+  duration, observational cost, harness/model/auth-mode, and the
+  acceptance-criteria badge fed by the §4.1 blocks. The task header no longer
+  shows spending allocation or remaining balance (§21.6).
 - **Review in place:** approve / reject / redirect-with-comment /
   pull-to-local on the task detail; spec review card (rendered markdown +
   acceptance criteria checklist); diff summary with a deep link to the PR.
@@ -125,7 +126,7 @@ mutable through the authenticated API and the Workspace UI. Suggested order:
 3. **Hot reload.** Dispatcher/router/trigger read a config snapshot
    refreshed on change; routing and repo changes apply from the next
    dispatched job. In-flight jobs keep their dispatch-time snapshot
-   (budgets/timeouts/tool policy immutable per job, §14.1).
+   (timeouts and tool policy immutable per job).
 4. **CLI round-trip.** `conveyor config export` / `import` against the API,
    for git-versioned backups and recovery.
 5. **UI.** The Workspace page's routing table, workspace basics, and repo
@@ -152,11 +153,11 @@ context files become first-class. Suggested order:
 
 1. **Pipeline agents in-process.** Replace harness-dispatched triage and
    spec jobs with direct API calls inside `conveyord` on
-   `CONVEYOR_API_KEY`: per-stage `{model, budget_usd, timeout, execution}`
+   `CONVEYOR_API_KEY`: per-stage `{model, timeout, execution}`
    from the §21.3 config document (triage/spec fixed `in_process`; review
    defaults `mcp` with `in_process` as fallback), exact token metering
-   feeding the §14.1 breaker, §4.1 output validators unchanged, full
-   transcripts persisted through the §10.3 redaction path. This lands
+   retained as observational audit telemetry, §4.1 output validators
+   unchanged, full transcripts persisted through the §10.3 redaction path. This lands
    *before* the demolition so the pipeline never stops working.
 2. **MCP intake and work-order server (§17.4).** `create_task` accepts
    agent-discovered work with a required workspace-scoped idempotency key,
@@ -176,8 +177,8 @@ context files become first-class. Suggested order:
    structured feedback; reviewer identity plus self-reported agent/model
    recorded on the intervention → independence labels:
    `reviewer_session`, `reviewer_model`, `same_model_as_implementer`).
-   Budget/clock enforcement at the protocol boundary: claims and submits
-   refused once spent. Jobs recorded `harness: external-mcp,
+   Clock enforcement at the protocol boundary: claims and submits are refused
+   after the stage timeout. Jobs are recorded `harness: external-mcp,
    confinement: none, auth: byoa`.
 3. **Demolition.** Delete `internal/runner`, `internal/adapter`, the
    credential pool/router, `cmd/conveyor-runner`, `cmd/conveyor-shim`,
@@ -210,8 +211,8 @@ implementing session cannot claim the review order). Beta entry follows:
 five consecutive such tasks per the §19 criterion.
 
 **Implementation status (July 14, 2026): complete.** The Phase 4.7 code,
-including the v1.5 MCP task-intake amendment, and operator surfaces are
-implemented and repository validation passes. The live
+including the v1.5 MCP task-intake amendment and v1.6 budget removal, and
+operator surfaces are implemented and repository validation passes. The live
 dogfood exit flow and subsequent five-task Beta proof above are still pending;
 they must be recorded from real MCP sessions and are not inferred from tests.
 
@@ -227,8 +228,8 @@ Built through the factory, prioritized by observed operational load:
   command-policy shim + approval cards and environment inference/repair
   retired with the sandbox lane (§21.4).
 - **Phase 6 — memory store** (§15.1): pgvector retrieval, lessons,
-  per-role context budgets; extends the Phase 4.7 requirements tree and
-  artifacts rather than introducing the corpus.
+  per-role retrieval context limits; extends the Phase 4.7 requirements tree
+  and artifacts rather than introducing the corpus.
 - **Phase 7 — flywheel:** transcript mining, self-improvement proposals,
   escalation graduation, pack versioning + eval rig (§2.2, §15.2) — over
   native pipeline-agent transcripts plus self-reported MCP transcripts.
