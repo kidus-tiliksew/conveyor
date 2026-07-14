@@ -48,6 +48,9 @@ type Store interface {
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
+	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
+	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
+	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -75,6 +78,7 @@ func NewMemory() Store {
 		transcripts:   map[string]core.Transcript{},
 		specs:         map[string][]core.SpecVersion{},
 		workOrders:    map[string]core.WorkOrder{},
+		publications:  map[string]core.ReviewPublication{},
 		features:      map[string]core.Feature{},
 		artifacts:     map[string]memoryArtifact{},
 	}
@@ -94,10 +98,52 @@ type memory struct {
 	transcripts   map[string]core.Transcript
 	specs         map[string][]core.SpecVersion
 	workOrders    map[string]core.WorkOrder
+	publications  map[string]core.ReviewPublication
 	features      map[string]core.Feature
 	artifacts     map[string]memoryArtifact
 	nextEventID   int64
 	nextReviewID  int64
+}
+
+func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.publications[publication.ReviewWorkOrderID]; ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	publication.State, publication.CreatedAt, publication.UpdatedAt = core.ReviewPublicationQueued, now, now
+	m.publications[publication.ReviewWorkOrderID] = publication
+	m.appendEventLocked(ctx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)})
+	return nil
+}
+
+func (m *memory) GetReviewPublication(_ context.Context, id string) (core.ReviewPublication, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	publication, ok := m.publications[id]
+	if !ok {
+		return core.ReviewPublication{}, fmt.Errorf("review publication %s not found", id)
+	}
+	return publication, nil
+}
+
+func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.publications[publication.ReviewWorkOrderID]; !ok {
+		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
+	}
+	publication.UpdatedAt = time.Now().UTC()
+	m.publications[publication.ReviewWorkOrderID] = publication
+	kind := "review.publication_retry"
+	if publication.State == core.ReviewPublicationPublished {
+		kind = "review.publication_published"
+	} else if publication.State == core.ReviewPublicationFailed {
+		kind = "review.publication_failed"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: kind, Payload: core.JSONPayload(publication)})
+	return nil
 }
 
 func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {

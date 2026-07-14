@@ -2,8 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,11 +16,94 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type dispatchTaskWorker struct {
 	river.WorkerDefaults[queueargs.DispatchTaskArgs]
 	dispatcher *Dispatcher
+}
+
+type reviewPublicationWorker struct {
+	river.WorkerDefaults[queueargs.ReviewPublicationArgs]
+	dispatcher *Dispatcher
+}
+
+func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.ReviewPublicationArgs]) error {
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%d", job.ID), Role: core.ActorSystem})
+	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, job.Args.ReviewWorkOrderID)
+	if err != nil || publication.State == core.ReviewPublicationPublished {
+		return err
+	}
+	publication.Attempts++
+	publication.State = core.ReviewPublicationRetrying
+	publication.LastError = ""
+	if err = w.dispatcher.Store.UpdateReviewPublication(ctx, publication); err != nil {
+		return err
+	}
+	task, err := w.dispatcher.Store.GetTask(ctx, publication.TaskID)
+	if err != nil {
+		return err
+	}
+	cfg, err := w.dispatcher.currentConfig(ctx)
+	if err != nil {
+		return err
+	}
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok || repo.GitHub == "" {
+		return fmt.Errorf("GitHub repository is not configured for %s", task.Repo)
+	}
+	var bounceHistory []string
+	skipComment := false
+	events, _ := w.dispatcher.Store.ListEvents(ctx, task.ID)
+	for _, event := range events {
+		if event.Kind == "review.completed" && event.At.After(publication.CreatedAt) {
+			skipComment = true
+		}
+		if event.Kind != "pipeline.bounced" {
+			continue
+		}
+		var item struct {
+			Count      int    `json:"count"`
+			ReasonCode string `json:"reason_code"`
+		}
+		if json.Unmarshal(event.Payload, &item) == nil {
+			bounceHistory = append(bounceHistory, fmt.Sprintf("bounce %d: %s", item.Count, item.ReasonCode))
+		}
+	}
+	taskLink := ""
+	if strings.HasPrefix(task.Source, "http://") || strings.HasPrefix(task.Source, "https://") {
+		taskLink = task.Source
+	} else if source, ok := strings.CutPrefix(task.Source, "github:"); ok {
+		if slug, number, found := strings.Cut(source, "#"); found && slug != "" && number != "" {
+			taskLink = "https://github.com/" + slug + "/issues/" + number
+		}
+	}
+	result, publishErr := github.PublishReview(ctx, github.ReviewPublication{
+		Repo: repo.GitHub, Branch: task.Branch, TaskID: task.ID, TaskLink: taskLink,
+		ReviewWorkOrderID: publication.ReviewWorkOrderID, Verdict: publication.Verdict,
+		ReasonCode: publication.ReasonCode, Summary: publication.Summary, Feedback: publication.Feedback,
+		ReviewedCommitSHA: publication.ReviewedCommitSHA, ReviewerModel: publication.ReviewerModel,
+		ReviewerSession: publication.ReviewerSession, SameModelAsImplementer: publication.SameModelAsImplementer,
+		BounceHistory: bounceHistory,
+		SkipComment:   skipComment,
+	})
+	if publishErr != nil {
+		publication.LastError = publishErr.Error()
+		if job.Attempt >= job.MaxAttempts {
+			publication.State = core.ReviewPublicationFailed
+		}
+		if updateErr := w.dispatcher.Store.UpdateReviewPublication(ctx, publication); updateErr != nil {
+			return fmt.Errorf("publish review: %v; record retry: %w", publishErr, updateErr)
+		}
+		return publishErr
+	}
+	publication.State = core.ReviewPublicationPublished
+	publication.CheckRunID = result.CheckRunID
+	publication.CommentID = result.CommentID
+	publication.ReviewedCommitSHA = result.ReviewedCommitSHA
+	publication.LastError = ""
+	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
 }
 
 func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs]) error {
@@ -77,13 +162,15 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher})
+	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
 		// limits. River's one-minute default would cancel long harness runs and
 		// handoff artifact collection before those limits (spec §14).
 		JobTimeout: -1,
 		Queues: map[string]river.QueueConfig{
-			queueargs.DispatchQueue(dispatcher.Cfg.Workspace): {MaxWorkers: 1},
+			queueargs.DispatchQueue(dispatcher.Cfg.Workspace):          {MaxWorkers: 1},
+			queueargs.ReviewPublicationQueue(dispatcher.Cfg.Workspace): {MaxWorkers: 1},
 		},
 		Workers: workers,
 	})

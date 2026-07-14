@@ -79,4 +79,23 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if _, err = st.ClaimWorkOrder(ctx, task.ID+"-review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self review error = %v", err)
 	}
+	publication := core.ReviewPublication{ReviewWorkOrderID: task.ID + "-review", TaskID: task.ID, JobID: task.ID + "-review", Verdict: "approve", ReasonCode: "approved", Summary: "passes", ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true"}
+	if err = st.QueueReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	storedPublication, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || storedPublication.State != core.ReviewPublicationQueued {
+		t.Fatalf("publication=%+v err=%v", storedPublication, err)
+	}
+	storedPublication.State = core.ReviewPublicationPublished
+	storedPublication.Attempts = 1
+	storedPublication.CheckRunID = 41
+	storedPublication.CommentID = 51
+	if err = st.UpdateReviewPublication(ctx, storedPublication); err != nil {
+		t.Fatal(err)
+	}
+	storedPublication, err = st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || storedPublication.State != core.ReviewPublicationPublished || storedPublication.CheckRunID != 41 || storedPublication.CommentID != 51 {
+		t.Fatalf("published=%+v err=%v", storedPublication, err)
+	}
 }

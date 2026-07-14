@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,8 +11,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+type publicationFailStore struct{ store.Store }
+
+func (publicationFailStore) QueueReviewPublication(context.Context, core.ReviewPublication) error {
+	return errors.New("github publication queue unavailable")
+}
 
 type sequenceAgent struct {
 	outputs []string
@@ -107,5 +116,149 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
 	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement || orders[0].State != core.WorkOrderQueued {
 		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+}
+
+func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "bounce-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, Branch: "conveyor/bounce", BaseBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []core.Job{
+		{ID: "implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobDone, ModelTier: "impl", StartedAt: time.Now()},
+		{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: time.Now()},
+	} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP}}}}
+	d := New(st, cfg, nil)
+	d.UseDurableQueue()
+	if err := d.ApplyExternalReview(ctx, task, core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, ModelTier: "review"}, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "missing coverage", Feedback: "add the test"}, "review-1", "review-session", "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	if _, err = st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "warm-implement-session", ClientToken: "warm-token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	if err != nil || len(interventions) != 1 || interventions[0].Comment != "add the test" {
+		t.Fatalf("interventions=%+v err=%v", interventions, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	bounces := 0
+	for _, event := range events {
+		if event.Kind == "pipeline.bounced" {
+			bounces++
+		}
+	}
+	if err != nil || bounces != 1 {
+		t.Fatalf("bounces=%d err=%v", bounces, err)
+	}
+}
+
+func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "cap-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", MaxBounces: 1}, nil)
+	d.UseDurableQueue()
+	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "stop", Feedback: "human help"}, job.ID, "review-session", "review"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetTask(ctx, task.ID)
+	if err != nil || updated.State != core.TaskAwaiting || updated.RecoveryStage != core.StageImplement || updated.NextStage != "" {
+		t.Fatalf("task=%+v err=%v", updated, err)
+	}
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 0 {
+		t.Fatalf("unexpected follow-up orders: %+v", orders)
+	}
+}
+
+func TestPublicationQueueFailurePreservesInternalVerdictAndRouting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := store.NewMemory()
+	task := core.Task{ID: "publication-failure", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: time.Now()}
+	if err := base.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	d := New(publicationFailStore{Store: base}, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	d.UseDurableQueue()
+	err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review")
+	if err == nil || !strings.Contains(err.Error(), "publication queue unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	updated, getErr := base.GetTask(ctx, task.ID)
+	if getErr != nil || updated.State != core.TaskApproved {
+		t.Fatalf("task=%+v err=%v", updated, getErr)
+	}
+	events, _ := base.ListEvents(ctx, task.ID)
+	found := false
+	for _, event := range events {
+		if event.Kind == "review.completed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("review.completed was lost")
+	}
+}
+
+func TestExternalReviewApprovePreservesLevelRouting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		level    core.EscalationLevel
+		state    core.TaskState
+		recovery core.Stage
+	}{
+		{name: "L0 direct approval", level: core.L0, state: core.TaskApproved},
+		{name: "L2 final human gate", level: core.L2, state: core.TaskAwaiting, recovery: core.StageImplement},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := store.NewMemory()
+			task := core.Task{ID: "approve-" + string(test.level), Workspace: "test", Repo: "app", Level: test.level, State: core.TaskRunning, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: time.Now()}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
+			d.UseDurableQueue()
+			if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
+				t.Fatal(err)
+			}
+			updated, err := st.GetTask(ctx, task.ID)
+			if err != nil || updated.State != test.state || updated.RecoveryStage != test.recovery {
+				t.Fatalf("task=%+v err=%v", updated, err)
+			}
+		})
 	}
 }

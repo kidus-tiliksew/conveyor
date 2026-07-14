@@ -281,21 +281,27 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
-		return d.applyReview(ctx, cfg, task, job, result, reviewer, "", "")
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier)
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
 }
 
-func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, session, model string) error {
+func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string) error {
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", session, model)
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model)
 }
 
-func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, session, model string) error {
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
+	if reviewWorkOrderID == "" {
+		reviewWorkOrderID = job.ID
+	}
+	if model == "" {
+		model = job.ModelTier
+	}
 	implementModel := ""
 	jobs, _ := d.Store.ListJobs(ctx, task.ID)
 	for i := len(jobs) - 1; i >= 0; i-- {
@@ -312,17 +318,45 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(payload)}); err != nil {
 		return err
 	}
+	var transitionErr error
 	if result.Verdict == "changes_requested" {
 		actorCtx := store.WithActor(ctx, store.Actor{ID: "review:" + session, Role: core.ActorAgent})
 		if err := d.Store.CreateIntervention(actorCtx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionRedirect, ReasonCode: result.ReasonCode, Comment: result.Feedback}); err != nil {
 			return err
 		}
-		return d.bounce(ctx, cfg, task.ID, job.ID, result.ReasonCode, result.Feedback)
+		transitionErr = d.bounce(ctx, cfg, task.ID, job.ID, result.ReasonCode, result.Feedback)
+	} else if task.Level == core.L0 {
+		transitionErr = d.transition(ctx, task.ID, core.TaskApproved, "", "")
+	} else {
+		transitionErr = d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
 	}
-	if task.Level == core.L0 {
-		return d.transition(ctx, task.ID, core.TaskApproved, "", "")
+	if transitionErr != nil {
+		return transitionErr
 	}
-	return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+	reviewedCommitSHA := ""
+	if events, eventsErr := d.Store.ListEvents(ctx, task.ID); eventsErr == nil {
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Kind != "pull_request.opened" {
+				continue
+			}
+			var pullRequest struct {
+				HeadSHA string `json:"head_sha"`
+			}
+			if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
+				reviewedCommitSHA = pullRequest.HeadSHA
+				break
+			}
+		}
+	}
+	if repo, ok := cfg.Repo(task.Repo); !ok || repo.GitHub == "" {
+		return nil
+	}
+	return d.Store.QueueReviewPublication(ctx, core.ReviewPublication{
+		ReviewWorkOrderID: reviewWorkOrderID, TaskID: task.ID, JobID: job.ID,
+		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, ReviewerModel: model, ReviewerSession: "distinct",
+		SameModelAsImplementer: same, State: core.ReviewPublicationQueued,
+	})
 }
 
 func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {

@@ -253,6 +253,38 @@ type WorkOrderClaim struct {
 	Lease       time.Duration
 }
 
+type ReviewPublicationState string
+
+const (
+	ReviewPublicationQueued    ReviewPublicationState = "queued"
+	ReviewPublicationRetrying  ReviewPublicationState = "retrying"
+	ReviewPublicationPublished ReviewPublicationState = "published"
+	ReviewPublicationFailed    ReviewPublicationState = "failed"
+)
+
+// ReviewPublication is the durable, factory-owned GitHub publication for one
+// completed review work order. The work-order ID is the idempotency key.
+type ReviewPublication struct {
+	ReviewWorkOrderID      string                 `json:"review_work_order_id"`
+	TaskID                 string                 `json:"task_id"`
+	JobID                  string                 `json:"job_id"`
+	Verdict                string                 `json:"verdict"`
+	ReasonCode             string                 `json:"reason_code"`
+	Summary                string                 `json:"summary"`
+	Feedback               string                 `json:"feedback"`
+	ReviewedCommitSHA      string                 `json:"reviewed_commit_sha,omitempty"`
+	ReviewerModel          string                 `json:"reviewer_model,omitempty"`
+	ReviewerSession        string                 `json:"reviewer_session"`
+	SameModelAsImplementer string                 `json:"same_model_as_implementer"`
+	State                  ReviewPublicationState `json:"state"`
+	Attempts               int                    `json:"attempts"`
+	CheckRunID             int64                  `json:"check_run_id,omitempty"`
+	CommentID              int64                  `json:"comment_id,omitempty"`
+	LastError              string                 `json:"last_error,omitempty"`
+	CreatedAt              time.Time              `json:"created_at"`
+	UpdatedAt              time.Time              `json:"updated_at"`
+}
+
 type Feature struct {
 	ID          string    `json:"id"`
 	Workspace   string    `json:"workspace"`

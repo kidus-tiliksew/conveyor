@@ -54,6 +54,11 @@ parallel workflow.
 8. Call `submit_for_review` only after the push and when the user's instruction
    authorizes the review handoff. Use `await_review` when keeping the
    implementation session available for feedback.
+9. If `await_review` returns `changes_requested`, keep the same Codex session,
+   list and claim the newly queued implementation work order before editing.
+   Add commits to the existing assigned task branch, push, resubmit, and reuse
+   the existing PR. Never edit under the already submitted order, and never
+   claim the subsequent review order from the implementation session.
 
 ### Safe assigned-branch setup
 

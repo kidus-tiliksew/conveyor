@@ -153,3 +153,46 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 		t.Fatalf("task = %+v err=%v", updated, err)
 	}
 }
+
+func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "await-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "await-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner", ClientToken: "secret", Lease: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	if _, err = service.AwaitReview(ctx, order.ID, "other", time.Millisecond); err == nil || !strings.Contains(err.Error(), "another session") {
+		t.Fatalf("other session error = %v", err)
+	}
+	result, err := service.AwaitReview(ctx, order.ID, "owner", time.Millisecond)
+	if err != nil || result["status"] != "pending" {
+		t.Fatalf("pending result=%v err=%v", result, err)
+	}
+	if err = st.CreateJob(ctx, core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: "review-1", Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"verdict": "changes_requested", "feedback": "fix it"}), At: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = service.AwaitReview(ctx, order.ID, "owner", time.Millisecond)
+	if err != nil || result["verdict"] != "changes_requested" {
+		t.Fatalf("retry result=%v err=%v", result, err)
+	}
+}

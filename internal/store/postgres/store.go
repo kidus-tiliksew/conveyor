@@ -819,6 +819,97 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	})
 }
 
+const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
+reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
+reviewer_session, same_model_as_implementer, state, attempts, check_run_id,
+comment_id, last_error, created_at, updated_at`
+
+func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if publication.State == "" {
+		publication.State = core.ReviewPublicationQueued
+	}
+	if publication.CreatedAt.IsZero() {
+		publication.CreatedAt = time.Now().UTC()
+	}
+	publication.UpdatedAt = publication.CreatedAt
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		command, err := tx.Exec(ctx, `INSERT INTO review_publications (
+			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
+			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
+			same_model_as_implementer, state
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
+			s.workspace, publication.TaskID, publication.JobID, publication.Verdict,
+			publication.ReasonCode, publication.Summary, publication.Feedback,
+			publication.ReviewedCommitSHA, publication.ReviewerModel,
+			publication.ReviewerSession, publication.SameModelAsImplementer,
+			publication.State)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() == 0 {
+			return nil
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)}); err != nil {
+			return err
+		}
+		_, err = s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{ReviewWorkOrderID: publication.ReviewWorkOrderID}, &river.InsertOpts{
+			MaxAttempts: 5,
+			Queue:       queueargs.ReviewPublicationQueue(s.workspace),
+			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+				rivertype.JobStateRetryable, rivertype.JobStateScheduled,
+			}},
+		})
+		return err
+	})
+}
+
+func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
+	publication, err := scanReviewPublication(s.pool.QueryRow(ctx, "SELECT "+reviewPublicationColumns+" FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2", s.workspace, id))
+	if err != nil {
+		return core.ReviewPublication{}, notFound(err, "review publication %s", id)
+	}
+	return publication, nil
+}
+
+func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
+			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, last_error=$6,
+			updated_at=now() WHERE workspace_id=$7 AND review_work_order_id=$8`,
+			publication.State, publication.Attempts, publication.CheckRunID,
+			publication.CommentID, publication.ReviewedCommitSHA, publication.LastError,
+			s.workspace, publication.ReviewWorkOrderID)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
+		}
+		kind := "review.publication_retry"
+		if publication.State == core.ReviewPublicationPublished {
+			kind = "review.publication_published"
+		} else if publication.State == core.ReviewPublicationFailed {
+			kind = "review.publication_failed"
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: kind, Payload: core.JSONPayload(publication)})
+	})
+}
+
+func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPublication, error) {
+	var publication core.ReviewPublication
+	var state string
+	err := row.Scan(&publication.ReviewWorkOrderID, &publication.TaskID, &publication.JobID,
+		&publication.Verdict, &publication.ReasonCode, &publication.Summary,
+		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
+		&publication.ReviewerSession, &publication.SameModelAsImplementer, &state,
+		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
+		&publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
+	publication.State = core.ReviewPublicationState(state)
+	return publication, err
+}
+
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
 	var order core.WorkOrder
 	var stage, state string
