@@ -43,7 +43,6 @@ const (
 
 type StageRoute struct {
 	Model       string        `yaml:"model" json:"model"`
-	BudgetUSD   float64       `yaml:"budget_usd" json:"budget_usd"`
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
@@ -130,19 +129,75 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 // ParseStoredWorkspaceDocument canonicalizes both the v1.4 document and the
 // superseded Phase 4.5 fields accepted by the compatibility members above.
 func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, bool, error) {
-	var document WorkspaceDocument
-	if err := decodeKnown(data, &document); err != nil {
+	canonicalData, hadBudget, err := stripLegacyBudgetFields(data)
+	if err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := document.LegacyImage != ""
+	var document WorkspaceDocument
+	if err := decodeKnown(canonicalData, &document); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w", source, err)
+	}
+	legacy := hadBudget || document.LegacyImage != ""
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
 	for _, route := range document.Routing.Stages {
 		legacy = legacy || len(route.LegacyHarnesses) != 0 || route.LegacyModelTier != ""
 	}
-	cfg, err := ParseWorkspaceDocument(data, deployment, source)
+	cfg, err := ParseWorkspaceDocument(canonicalData, deployment, source)
 	return cfg, legacy, err
+}
+
+// stripLegacyBudgetFields lets an existing v1.5 Postgres workspace document
+// boot once and be rewritten in the v1.6 shape (spec §21.6). New deployment
+// files and API writes still reject budget_usd as an unknown field.
+func stripLegacyBudgetFields(data []byte) ([]byte, bool, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, false, err
+	}
+	document := &root
+	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
+		document = root.Content[0]
+	}
+	routing := mappingValue(document, "routing")
+	stages := mappingValue(routing, "stages")
+	removed := false
+	if stages != nil {
+		for i := 1; i < len(stages.Content); i += 2 {
+			removed = removeDirectMappingKey(stages.Content[i], "budget_usd") || removed
+		}
+	}
+	if !removed {
+		return data, false, nil
+	}
+	canonical, err := yaml.Marshal(&root)
+	return canonical, true, err
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func removeDirectMappingKey(node *yaml.Node, key string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func decodeKnown(data []byte, target any) error {
@@ -198,9 +253,6 @@ func normalize(c *Config, path string) (*Config, error) {
 		}
 		if route.Model == "" {
 			return nil, fmt.Errorf("routing stage %s: model is required", stage)
-		}
-		if route.BudgetUSD < 0 {
-			return nil, fmt.Errorf("routing stage %s: budget_usd cannot be negative", stage)
 		}
 		if route.TimeoutText == "" {
 			route.Timeout = DefaultStageTimeout

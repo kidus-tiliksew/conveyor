@@ -24,7 +24,6 @@ export type Stage =
 export type JobState =
   | 'pending'
   | 'running'
-  | 'paused'
   | 'done'
   | 'failed'
 
@@ -59,7 +58,6 @@ export interface Job {
   runner: string
   pack_version?: string
   confinement: string
-  budget_usd: number
   cost_usd: number
   tokens_in: number
   tokens_out: number
@@ -139,7 +137,6 @@ export interface WorkspaceRepo {
 export interface WorkspaceRoute {
   stage: string
   model: string
-  budget_usd: number
   timeout: string
   execution: 'in_process' | 'mcp'
 }
@@ -161,7 +158,6 @@ export interface WorkspaceConfigRepo {
 
 export interface WorkspaceConfigRoute {
   model: string
-  budget_usd: number
   timeout: string
   execution: 'in_process' | 'mcp'
 }

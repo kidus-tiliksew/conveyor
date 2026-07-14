@@ -17,7 +17,6 @@ type WorkspaceInfo struct {
 type WorkspaceRoute struct {
 	Stage     string               `json:"stage"`
 	Model     string               `json:"model"`
-	BudgetUSD float64              `json:"budget_usd"`
 	Timeout   string               `json:"timeout"`
 	Execution config.ExecutionMode `json:"execution"`
 }
@@ -31,7 +30,7 @@ func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
 	sort.Strings(stages)
 	for _, stage := range stages {
 		route := cfg.Routing.Stages[stage]
-		info.Routing = append(info.Routing, WorkspaceRoute{Stage: stage, Model: route.Model, BudgetUSD: route.BudgetUSD, Timeout: route.TimeoutText, Execution: route.Execution})
+		info.Routing = append(info.Routing, WorkspaceRoute{Stage: stage, Model: route.Model, Timeout: route.TimeoutText, Execution: route.Execution})
 	}
 	return info
 }

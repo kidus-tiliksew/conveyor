@@ -179,10 +179,6 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 		job.CostUSD = cost
 		_ = s.Store.UpdateJob(ctx, job)
 	}
-	if err = s.enforceOrderBudget(ctx, order); err != nil {
-		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "job.budget_exhausted", Payload: core.JSONPayload(map[string]any{"cost_usd": order.CostUSD, "self_reported": true})})
-		return order, err
-	}
 	return order, nil
 }
 
@@ -379,9 +375,6 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 }
 
 func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
-	if err := s.enforceOrderBudget(ctx, order); err != nil {
-		return err
-	}
 	cfg, err := s.config(ctx)
 	if err != nil {
 		return err
@@ -394,18 +387,6 @@ func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
 	for _, job := range jobs {
 		if job.ID == order.JobID && route.Timeout > 0 && time.Now().After(job.StartedAt.Add(route.Timeout)) {
 			return fmt.Errorf("work order wall clock exhausted")
-		}
-	}
-	return nil
-}
-func (s *Service) enforceOrderBudget(ctx context.Context, order core.WorkOrder) error {
-	jobs, err := s.Store.ListJobs(ctx, order.TaskID)
-	if err != nil {
-		return err
-	}
-	for _, job := range jobs {
-		if job.ID == order.JobID && job.BudgetUSD > 0 && order.CostUSD >= job.BudgetUSD {
-			return fmt.Errorf("work order budget exhausted")
 		}
 	}
 	return nil

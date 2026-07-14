@@ -28,8 +28,8 @@ worktree without manual git operations.
   implementation harness when claiming review capacity.
 - Review `changes_requested` verdicts and human/GitHub review comments become
   structured redirect interventions against the persistent task worktree.
-- Per-repo sandbox image overrides, per-stage wall-clock timeouts, and the
-  100%-budget circuit breaker.
+- Per-repo sandbox image overrides and per-stage wall-clock timeouts. Phase 3
+  historically also shipped a spending circuit breaker; spec §21.6 removed it.
 
 ## Configure and run
 
@@ -44,8 +44,9 @@ make conveyor-dev-image
 Set the Conveyor repository to `image: conveyor-dev:dev`, configure both Codex
 and Claude credentials, and define `triage`, `spec`, `implement`, and `review`
 routes. The `review` route needs capacity on a harness other than the one that
-implemented the task. `conveyor.example.yaml` contains the full shape,
-including budgets and timeouts.
+implemented the task. This is historical configuration guidance; the current
+`conveyor.example.yaml` follows v1.6 and contains timeouts without spending
+allocations.
 
 Start the control and execution planes with GitHub polling enabled:
 

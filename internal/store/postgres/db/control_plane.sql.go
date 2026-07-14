@@ -66,7 +66,7 @@ func (q *Queries) CountEvents(ctx context.Context, arg CountEventsParams) (int64
 }
 
 const getJob = `-- name: GetJob :one
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.id = $1 AND t.workspace_id = $2
 `
@@ -88,7 +88,6 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (Job, error) {
 		&i.Runner,
 		&i.PackVersion,
 		&i.ConfinementTier,
-		&i.BudgetUsd,
 		&i.CostUsd,
 		&i.TokensIn,
 		&i.TokensOut,
@@ -102,7 +101,7 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (Job, error) {
 }
 
 const getLatestJob = `-- name: GetLatestJob :one
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.task_id = $1 AND t.workspace_id = $2
 ORDER BY j.started_at DESC, j.id DESC
@@ -126,7 +125,6 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 		&i.Runner,
 		&i.PackVersion,
 		&i.ConfinementTier,
-		&i.BudgetUsd,
 		&i.CostUsd,
 		&i.TokensIn,
 		&i.TokensOut,
@@ -371,14 +369,14 @@ func (q *Queries) InsertIntervention(ctx context.Context, arg InsertIntervention
 const insertJob = `-- name: InsertJob :one
 INSERT INTO jobs (
     id, task_id, stage, harness, model_tier, auth_mode, runner,
-    pack_version, confinement_tier, budget_usd, cost_usd, tokens_in,
+    pack_version, confinement_tier, cost_usd, tokens_in,
     tokens_out, state, started_at, ended_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12,
-    $13, $14, $15, $16
+    $8, $9, $10, $11,
+    $12, $13, $14, $15
 )
-RETURNING id, task_id, stage, harness, model_tier, runner, pack_version, confinement_tier, budget_usd, cost_usd, tokens_in, tokens_out, state, started_at, ended_at, updated_at, auth_mode
+RETURNING id, task_id, stage, harness, model_tier, runner, pack_version, confinement_tier, cost_usd, tokens_in, tokens_out, state, started_at, ended_at, updated_at, auth_mode
 `
 
 type InsertJobParams struct {
@@ -391,7 +389,6 @@ type InsertJobParams struct {
 	Runner          string             `json:"runner"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
-	BudgetUsd       float64            `json:"budget_usd"`
 	CostUsd         float64            `json:"cost_usd"`
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
@@ -411,7 +408,6 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		arg.Runner,
 		arg.PackVersion,
 		arg.ConfinementTier,
-		arg.BudgetUsd,
 		arg.CostUsd,
 		arg.TokensIn,
 		arg.TokensOut,
@@ -429,7 +425,6 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		&i.Runner,
 		&i.PackVersion,
 		&i.ConfinementTier,
-		&i.BudgetUsd,
 		&i.CostUsd,
 		&i.TokensIn,
 		&i.TokensOut,
@@ -809,7 +804,7 @@ func (q *Queries) ListInterventions(ctx context.Context, arg ListInterventionsPa
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.budget_usd, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
+SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
 WHERE j.task_id = $1 AND t.workspace_id = $2
 ORDER BY j.started_at, j.id
@@ -838,7 +833,6 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 			&i.Runner,
 			&i.PackVersion,
 			&i.ConfinementTier,
-			&i.BudgetUsd,
 			&i.CostUsd,
 			&i.TokensIn,
 			&i.TokensOut,
@@ -910,20 +904,19 @@ SET stage = $2,
     runner = $6,
     pack_version = $7,
     confinement_tier = $8,
-    budget_usd = $9,
-    cost_usd = $10,
-    tokens_in = $11,
-    tokens_out = $12,
-    state = $13,
-    started_at = $14,
-    ended_at = $15,
+    cost_usd = $9,
+    tokens_in = $10,
+    tokens_out = $11,
+    state = $12,
+    started_at = $13,
+    ended_at = $14,
     updated_at = now()
 WHERE jobs.id = $1
   AND EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.id = jobs.task_id AND t.workspace_id = $16
+      WHERE t.id = jobs.task_id AND t.workspace_id = $15
   )
-RETURNING jobs.id, jobs.task_id, jobs.stage, jobs.harness, jobs.model_tier, jobs.runner, jobs.pack_version, jobs.confinement_tier, jobs.budget_usd, jobs.cost_usd, jobs.tokens_in, jobs.tokens_out, jobs.state, jobs.started_at, jobs.ended_at, jobs.updated_at, jobs.auth_mode
+RETURNING jobs.id, jobs.task_id, jobs.stage, jobs.harness, jobs.model_tier, jobs.runner, jobs.pack_version, jobs.confinement_tier, jobs.cost_usd, jobs.tokens_in, jobs.tokens_out, jobs.state, jobs.started_at, jobs.ended_at, jobs.updated_at, jobs.auth_mode
 `
 
 type UpdateJobParams struct {
@@ -935,7 +928,6 @@ type UpdateJobParams struct {
 	Runner          string             `json:"runner"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
-	BudgetUsd       float64            `json:"budget_usd"`
 	CostUsd         float64            `json:"cost_usd"`
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
@@ -955,7 +947,6 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		arg.Runner,
 		arg.PackVersion,
 		arg.ConfinementTier,
-		arg.BudgetUsd,
 		arg.CostUsd,
 		arg.TokensIn,
 		arg.TokensOut,
@@ -974,7 +965,6 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		&i.Runner,
 		&i.PackVersion,
 		&i.ConfinementTier,
-		&i.BudgetUsd,
 		&i.CostUsd,
 		&i.TokensIn,
 		&i.TokensOut,

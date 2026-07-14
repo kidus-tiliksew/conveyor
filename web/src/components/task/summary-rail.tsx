@@ -1,19 +1,14 @@
 import { ExternalLink, GitBranch, GitPullRequest } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
-import { stageLabels } from '../../lib/contracts'
 import type { ActivityItem } from '../../lib/types'
-import { absoluteTime, usd } from '../../lib/utils'
+import { absoluteTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
-import { Progress } from '../ui/progress'
 
-// The task-header facts (spec §13.3): budget consumed vs. allocated, the
-// verification badge fed by the §4.1 acceptance block, the PR deep link,
-// and provenance — everything an operator absorbs passively during review.
+// The task-header facts (spec §13.3, amended by §21.6): the verification
+// badge fed by the §4.1 acceptance block, the PR deep link, and provenance.
 export function SummaryRail({ item }: { item: ActivityItem }) {
-  const totalCost = item.jobs.reduce((sum, job) => sum + job.cost_usd, 0)
-  const totalBudget = item.jobs.reduce((sum, job) => sum + job.budget_usd, 0)
   const prURL = pullRequestURL(item.events)
   const provenance = parseProvenance(item.task.source)
   const criteria = item.spec?.acceptance ?? []
@@ -21,26 +16,6 @@ export function SummaryRail({ item }: { item: ActivityItem }) {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Budget</CardTitle>
-          <span className="font-mono text-xs tabular-nums text-foreground">
-            {usd(totalCost)} <span className="text-faint">/ {usd(totalBudget)}</span>
-          </span>
-        </CardHeader>
-        <CardContent>
-          <Progress value={totalBudget > 0 ? (totalCost / totalBudget) * 100 : 0} />
-          <ul className="mt-3 space-y-1.5">
-            {item.jobs.map((job) => (
-              <li key={job.id} className="flex items-baseline justify-between gap-2 text-xs">
-                <span className="text-muted">{stageLabels[job.stage] ?? job.stage}</span>
-                <span className="font-mono tabular-nums text-faint">{usd(job.cost_usd)}</span>
-              </li>
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader>
           <CardTitle>Verification</CardTitle>

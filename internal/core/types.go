@@ -63,7 +63,6 @@ type JobState string
 const (
 	JobPending JobState = "pending"
 	JobRunning JobState = "running"
-	JobPaused  JobState = "paused"
 	JobDone    JobState = "done"
 	JobFailed  JobState = "failed"
 )
@@ -108,7 +107,6 @@ type Job struct {
 	Runner      string    `json:"runner"`
 	PackVersion string    `json:"pack_version,omitempty"`
 	Confinement string    `json:"confinement"`
-	BudgetUSD   float64   `json:"budget_usd"`
 	CostUSD     float64   `json:"cost_usd"`
 	TokensIn    int64     `json:"tokens_in"`
 	TokensOut   int64     `json:"tokens_out"`

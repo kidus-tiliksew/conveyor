@@ -1056,7 +1056,7 @@ func jobInsertParams(job core.Job) db.InsertJobParams {
 		ID: job.ID, TaskID: job.TaskID, Stage: string(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
-		BudgetUsd: job.BudgetUSD, CostUsd: job.CostUSD, TokensIn: job.TokensIn,
+		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
 		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 	}
@@ -1067,7 +1067,7 @@ func jobUpdateParams(job core.Job, workspace string) db.UpdateJobParams {
 		ID: job.ID, Stage: string(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
-		BudgetUsd: job.BudgetUSD, CostUsd: job.CostUSD, TokensIn: job.TokensIn,
+		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
 		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 		WorkspaceID: workspace,
@@ -1079,7 +1079,7 @@ func jobFromDB(job db.Job) core.Job {
 		ID: job.ID, TaskID: job.TaskID, Stage: core.Stage(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, Confinement: job.ConfinementTier,
-		BudgetUSD: job.BudgetUsd, CostUSD: job.CostUsd, TokensIn: job.TokensIn,
+		CostUSD: job.CostUsd, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: core.JobState(job.State),
 		StartedAt: job.StartedAt.Time, EndedAt: nullableTime(job.EndedAt),
 	}

@@ -24,10 +24,10 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	defer st.Close()
 	workspace := "phase47-" + core.NewTaskID()
 	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute, BudgetUSD: 1},
-		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute, BudgetUSD: 1},
-		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour, BudgetUSD: 5},
-		"review":    {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour, BudgetUSD: 2},
+		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
+		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
+		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
+		"review":    {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
 	}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

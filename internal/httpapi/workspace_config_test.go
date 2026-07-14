@@ -37,10 +37,10 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	document := config.WorkspaceDocument{
 		Workspace: "demo", MaxBounces: 2,
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Model: "gpt", BudgetUSD: 1, TimeoutText: "20m", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt", BudgetUSD: 1, TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: "operator", BudgetUSD: 3, TimeoutText: "2h", Execution: config.ExecutionMCP},
-			"review":    {Model: "operator", BudgetUSD: 1, TimeoutText: "1h", Execution: config.ExecutionMCP},
+			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
+			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
+			"implement": {Model: "operator", TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"review":    {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
 		Repos: []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main"}},
 	}
@@ -65,6 +65,9 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if getResult.Code != http.StatusOK || getResult.Header().Get("ETag") != `"3"` {
 		t.Fatalf("GET status=%d etag=%q body=%s", getResult.Code, getResult.Header().Get("ETag"), getResult.Body)
 	}
+	if strings.Contains(strings.ToLower(getResult.Body.String()), "budget") {
+		t.Fatalf("GET exposed removed budget surface: %s", getResult.Body)
+	}
 
 	invalidDocument := document
 	invalidDocument.MaxBounces = -1
@@ -78,7 +81,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 		t.Fatalf("invalid status=%d updates=%d body=%s", invalidResult.Code, backend.updates, invalidResult.Body)
 	}
 
-	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", BudgetUSD: 2, TimeoutText: "45m", Execution: config.ExecutionMCP}
+	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", TimeoutText: "45m", Execution: config.ExecutionMCP}
 	body, _ := json.Marshal(map[string]any{"document": document})
 	put := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
 	put.Header.Set("Authorization", "Bearer token")

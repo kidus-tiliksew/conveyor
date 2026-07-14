@@ -14,22 +14,18 @@ routing:
   stages:
     triage:
       model: gpt-5.6-luna
-      budget_usd: 0.75
       timeout: 20m
       execution: in_process
     spec:
       model: gpt-5.6-luna
-      budget_usd: 1.00
       timeout: 30m
       execution: in_process
     implement:
       model: operator-owned
-      budget_usd: 10.00
       timeout: 4h
       execution: mcp
     review:
       model: operator-owned
-      budget_usd: 3.00
       timeout: 1h
       execution: mcp
 
