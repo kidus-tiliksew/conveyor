@@ -26,7 +26,7 @@ type Server struct {
 	Repos []string
 	// OnCreate is invoked with each created task's ID (the dispatcher's
 	// Enqueue). Nil means tasks queue without dispatch (tests).
-	OnCreate func(taskID string)
+	OnCreate func(context.Context, string)
 	// OnIntervention advances stage gates after the append-only decision is
 	// committed (spec §4, §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
@@ -40,10 +40,12 @@ type Server struct {
 	WorkspaceInfo *WorkspaceInfo
 	// ConfigProvider resolves current database-backed workspace scope while
 	// preserving file-backed deployment fields (spec §21.3).
-	ConfigProvider func(context.Context) (*config.Config, error)
-	ConfigStore    WorkspaceConfigStore
-	Deployment     *config.Config
-	WorkOrders     *workorder.Service
+	ConfigProvider        func(context.Context) (*config.Config, error)
+	ConfigStore           WorkspaceConfigStore
+	Workspaces            store.WorkspaceControlStore
+	EnsureWorkspaceQueues func(string) error
+	Deployment            *config.Config
+	WorkOrders            *workorder.Service
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -57,29 +59,37 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
-		r.Get("/activity", s.listActivity)
-		r.Get("/tasks", s.listTasks)
-		r.Get("/tasks/{id}", s.getTask)
-		r.Get("/tasks/{id}/jobs", s.listJobs)
-		r.Get("/tasks/{id}/events", s.listEvents)
-		r.Get("/tasks/{id}/events/stream", s.streamEvents)
-		r.Get("/tasks/{id}/activity", s.getTaskActivity)
-		r.Get("/tasks/{id}/interventions", s.listInterventions)
-		r.Get("/tasks/{id}/spec", s.getLatestSpec)
-		r.Get("/reviews", s.listReviews)
-		r.Get("/workspace", s.getWorkspace)
-		r.Get("/work-orders", s.listWorkOrders)
-		r.Get("/requirements", s.listRequirements)
-		r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
-		r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
-		r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
-		r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
-		r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
-		r.With(s.requireMutationAuth).Post("/features", s.createFeature)
-		r.With(s.requireMutationAuth).Put("/tasks/{id}/feature", s.assignTaskFeature)
-		r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
-		r.With(s.requireMutationAuth).Post("/artifacts", s.uploadArtifact)
-		r.With(s.requireMutationAuth).Get("/artifacts/{id}", s.downloadArtifact)
+		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
+		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
+		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
+		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
+		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext)
+			r.Get("/activity", s.listActivity)
+			r.Get("/tasks", s.listTasks)
+			r.Get("/tasks/{id}", s.getTask)
+			r.Get("/tasks/{id}/jobs", s.listJobs)
+			r.Get("/tasks/{id}/events", s.listEvents)
+			r.Get("/tasks/{id}/events/stream", s.streamEvents)
+			r.Get("/tasks/{id}/activity", s.getTaskActivity)
+			r.Get("/tasks/{id}/interventions", s.listInterventions)
+			r.Get("/tasks/{id}/spec", s.getLatestSpec)
+			r.Get("/reviews", s.listReviews)
+			r.Get("/workspace", s.getWorkspace)
+			r.Get("/work-orders", s.listWorkOrders)
+			r.Get("/requirements", s.listRequirements)
+			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
+			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
+			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
+			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
+			r.With(s.requireMutationAuth).Put("/tasks/{id}/feature", s.assignTaskFeature)
+			r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
+			r.With(s.requireMutationAuth).Post("/artifacts", s.uploadArtifact)
+			r.With(s.requireMutationAuth).Get("/artifacts/{id}", s.downloadArtifact)
+		})
 	})
 	r.With(s.requireMCPAuth).Post("/mcp", s.handleMCP)
 	r.Get("/", serveDashboard)
@@ -123,13 +133,22 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		t.State = core.TaskQueued
 	}
 	if s.OnCreate != nil {
-		s.OnCreate(id)
+		s.OnCreate(r.Context(), id)
 	}
 	writeJSON(w, http.StatusAccepted, t)
 }
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
 	return s.requireBearerRole(core.ActorHuman, "local-operator", next)
+}
+
+func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
+	// Unit-test and explicit memory stores have no durable workspace registry;
+	// production multi-workspace reads follow the authenticated operator policy.
+	if s.Workspaces == nil {
+		return next
+	}
+	return s.requireMutationAuth(next)
 }
 
 func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
@@ -216,7 +235,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if request.Action == core.InterventionRedirect && s.OnCreate != nil {
-		s.OnCreate(id)
+		s.OnCreate(r.Context(), id)
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {

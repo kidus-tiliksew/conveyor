@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,7 +64,9 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, "document", err)
 		return
 	}
-	next, err := config.ParseWorkspaceDocument(data, s.Deployment, "workspace config API")
+	base := *s.Deployment
+	base.Workspace, _ = store.WorkspaceFromContext(r.Context())
+	next, err := config.ParseWorkspaceDocument(data, &base, "workspace config API")
 	if err != nil {
 		writeValidationError(w, validationField(err), err)
 		return

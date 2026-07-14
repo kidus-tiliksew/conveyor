@@ -149,6 +149,13 @@ export interface WorkspaceInfo {
   routing: WorkspaceRoute[] | null
 }
 
+export interface WorkspaceRecord {
+  id: string
+  name: string
+  config_version: number
+  created_at: string
+}
+
 export interface WorkspaceConfigRepo {
   name: string
   url: string

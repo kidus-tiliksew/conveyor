@@ -28,17 +28,20 @@ type Dispatcher struct {
 	Pack           *pack.Bundle
 	Agent          inprocess.Agent
 	ConfigProvider func(context.Context) (*config.Config, error)
-	queue          chan string
+	queue          chan queuedTask
 	durableQueue   bool
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
-	return &Dispatcher{Store: st, Cfg: cfg, Agent: agent, queue: make(chan string, 64)}
+	return &Dispatcher{Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64)}
 }
 
-func (d *Dispatcher) Enqueue(taskID string) {
+type queuedTask struct{ Workspace, TaskID string }
+
+func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
 	if !d.durableQueue {
-		d.queue <- taskID
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		d.queue <- queuedTask{Workspace: workspace, TaskID: taskID}
 	}
 }
 
@@ -58,9 +61,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case id := <-d.queue:
-			if err := d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), id); err != nil {
-				log.Printf("[task %s] dispatch failed: %v", id, err)
+		case item := <-d.queue:
+			workCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), item.Workspace)
+			if err := d.runTask(workCtx, item.TaskID); err != nil {
+				log.Printf("[task %s] dispatch failed: %v", item.TaskID, err)
 			}
 		}
 	}
@@ -345,7 +349,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		return err
 	}
 	if current.State == core.TaskQueued {
-		d.Enqueue(task.ID)
+		d.Enqueue(ctx, task.ID)
 	}
 	return nil
 }
@@ -376,7 +380,7 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.T
 		return err
 	}
 	if state == core.TaskQueued {
-		d.Enqueue(taskID)
+		d.Enqueue(ctx, taskID)
 	}
 	return nil
 }
@@ -464,10 +468,13 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 				continue
 			}
 			_ = d.Store.UpdateTaskState(ctx, id, core.TaskQueued)
-			d.Enqueue(id)
+			d.Enqueue(ctx, id)
 		}
 	}
 }
+
+// PollOnce runs one explicit-workspace GitHub intake pass.
+func (d *Dispatcher) PollOnce(ctx context.Context) { d.pollOnce(ctx) }
 
 func PRBody(task core.Task) string {
 	return fmt.Sprintf("Conveyor task `%s`\n\nSource: %s\n", task.ID, task.Source)

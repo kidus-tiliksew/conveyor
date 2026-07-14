@@ -1,25 +1,30 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
-import { useOperatorToken, useWorkspace } from '../components/app-shell'
+import { useOperatorToken, useWorkspace, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
-import { ConfigValidationError, fetchWorkspaceConfig, updateWorkspaceConfig } from '../lib/api'
+import { ConfigValidationError, createWorkspace, fetchWorkspaceConfig, fetchWorkspaces, updateWorkspaceConfig } from '../lib/api'
 import type { WorkspaceConfigDocument, WorkspaceConfigRepo, WorkspaceConfigRoute } from '../lib/types'
 
 const stageOrder = ['triage', 'spec', 'implement', 'review']
 
 export function WorkspacePage() {
-  const token = useOperatorToken(); const queryClient = useQueryClient(); const { data: snapshot } = useWorkspace()
-  const query = useQuery({ queryKey: ['workspace-config', token], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token) })
+  const token = useOperatorToken(); const queryClient = useQueryClient(); const { workspace, setWorkspace } = useWorkspaceSelection(); const { data: snapshot } = useWorkspace()
+  const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: Boolean(token) })
+  const query = useQuery({ queryKey: ['workspace-config', token, workspace], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token && workspace) })
   const [draft, setDraft] = useState<WorkspaceConfigDocument | null>(null); const [saved, setSaved] = useState('')
-  useEffect(() => { if (query.data) setDraft(structuredClone(query.data.document)) }, [query.data])
-  const save = useMutation({ mutationFn: () => updateWorkspaceConfig(token, draft!, query.data!.version), onSuccess: (receipt) => { queryClient.setQueryData(['workspace-config', token], receipt); void queryClient.invalidateQueries({ queryKey: ['workspace'] }); setDraft(structuredClone(receipt.document)); setSaved(`Recorded config.updated event ${receipt.event_id} · version ${receipt.version}`) } })
+  const [newID, setNewID] = useState(''); const [newName, setNewName] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  useEffect(() => { setDraft(query.data ? structuredClone(query.data.document) : null) }, [query.data, workspace])
+  const save = useMutation({ mutationFn: () => updateWorkspaceConfig(token, draft!, query.data!.version), onSuccess: (receipt) => { queryClient.setQueryData(['workspace-config', token, workspace], receipt); void queryClient.invalidateQueries({ queryKey: ['workspace', workspace] }); setDraft(structuredClone(receipt.document)); setSaved(`Recorded config.updated event ${receipt.event_id} · version ${receipt.version}`) } })
+  const create = useMutation({ mutationFn: () => createWorkspace(token, { id: newID.trim(), name: newName.trim() }), onSuccess: async (created) => { await queryClient.invalidateQueries({ queryKey: ['workspaces'] }); setWorkspace(created.id); setNewID(''); setNewName(''); setShowCreate(false) } })
   return <div className="h-full overflow-y-auto"><div className="mx-auto max-w-5xl px-6 py-8">
-    <div className="flex items-start justify-between"><div><h1 className="text-xl font-semibold">Workspace</h1><p className="mt-1 text-sm text-muted">Repositories and per-stage execution routing.</p></div>{draft && <Button disabled={save.isPending} onClick={() => save.mutate()}><Save />Save</Button>}</div>
+    <div className="flex items-start justify-between"><div><h1 className="text-xl font-semibold">Workspace</h1><p className="mt-1 text-sm text-muted">Repositories and per-stage execution routing.</p></div><div className="flex gap-2">{token && workspace && <Button variant="secondary" onClick={() => setShowCreate((visible) => !visible)}><Plus />New workspace</Button>}{draft && <Button disabled={save.isPending} onClick={() => save.mutate()}><Save />Save</Button>}</div></div>
     {!token && <p className="mt-6 rounded-lg border border-border p-3 text-sm text-muted">Set the operator token in Settings to edit workspace configuration.</p>}
+    {token && (!workspace || showCreate) && <Card className="mt-6"><CardHeader><CardTitle>{workspaces?.length ? 'Create another workspace' : 'Create your first workspace'}</CardTitle></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><Field label="Workspace ID"><Input value={newID} placeholder="engineering" onChange={(event) => setNewID(event.target.value.toLowerCase())} /></Field><Field label="Display name"><Input value={newName} placeholder="Engineering" onChange={(event) => setNewName(event.target.value)} /></Field><Button disabled={!newID.trim() || !newName.trim() || create.isPending} onClick={() => create.mutate()}><Plus />{create.isPending ? 'Creating…' : 'Create workspace'}</Button>{create.error && <p className="text-sm text-failure">{String(create.error)}</p>}</CardContent></Card>}
     {saved && <p className="mt-6 flex items-center gap-2 rounded-lg bg-success-soft p-3 text-sm text-success"><CheckCircle2 className="size-4" />{saved}</p>}
     {save.error && <p className="mt-6 rounded-lg bg-failure-soft p-3 text-sm text-failure">{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>}
     {draft ? <Editor draft={draft} setDraft={setDraft} /> : snapshot ? <ReadOnly snapshot={snapshot} /> : null}

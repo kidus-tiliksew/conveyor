@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type taskCreateResult struct {
@@ -74,7 +75,7 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 	}
 
 	repos := s.Repos
-	workspace := s.Workspace
+	workspace, _ := store.WorkspaceFromContext(ctx)
 	var current *config.Config
 	if s.ConfigProvider != nil {
 		var err error
@@ -127,7 +128,7 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}
 	if s.OnCreate != nil {
-		s.OnCreate(id)
+		s.OnCreate(ctx, id)
 	}
 	return taskCreateResult{Task: task, Created: true}, nil
 }

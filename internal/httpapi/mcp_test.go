@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,7 +61,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	server.Workspace = "demo"
 	server.Repos = []string{"api"}
 	enqueued := 0
-	server.OnCreate = func(string) { enqueued++ }
+	server.OnCreate = func(context.Context, string) { enqueued++ }
 	handler := server.Handler()
 
 	call := func(title string) (core.Task, bool, bool) {

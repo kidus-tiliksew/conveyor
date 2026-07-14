@@ -207,9 +207,6 @@ func decodeKnown(data []byte, target any) error {
 }
 
 func normalize(c *Config, path string) (*Config, error) {
-	if c.Workspace == "" {
-		c.Workspace = "default"
-	}
 	if c.PackDir == "" {
 		c.PackDir = "pack"
 	}

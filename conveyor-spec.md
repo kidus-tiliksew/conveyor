@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.8**
+**Specification — v1.9**
 **Date:** July 14, 2026
-**Status:** Accepted — dedicated local task-worktree amendment applied (§21.8)
+**Status:** Accepted — multi-workspace control-plane amendment applied (§21.9)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1245,4 +1245,36 @@ remain unchanged:
 
 ---
 
-*End of specification. v1.8 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), and dedicated local task worktrees made the safe default (§21.8). Subsequent changes proceed by amendment with version bumps.*
+### 21.9 v1.9 — Multi-workspace control plane (July 14, 2026)
+
+1. **Durable identity and lifecycle.** A workspace has an immutable lowercase
+   slug `id` (`[a-z0-9][a-z0-9-]{0,62}`) and an immutable, trimmed display
+   `name`; IDs are unique and names are unique case-insensitively. Authenticated
+   operators may list, retrieve, and create workspaces. Creation validates the
+   initial Phase 4.5 document and atomically commits the workspace, config v1,
+   repositories, and `workspace.created`. Rename and deletion remain out of
+   scope.
+2. **Explicit, fail-closed context.** Canonical routes are
+   `/v1/workspaces[/<id>[/config]]`. Existing singular and workspace-scoped
+   routes accept `workspace_id` or `X-Workspace-ID`. Conflicting context is
+   invalid; omitted context resolves only with exactly one workspace. Zero or
+   multiple candidates fail with `workspace_unavailable` or
+   `workspace_required`; an explicit unknown ID is not found.
+3. **CLI, MCP, and UI use the same identity.** CLI commands accept
+   `--workspace`; MCP workspace-scoped tools accept `workspace_id`. The UI
+   lists, creates, persists, revalidates, and switches one shared workspace
+   selection, cancelling/invalidating prior-workspace requests before refetch.
+4. **Isolation is end to end.** Store calls receive immutable workspace context;
+   HTTP, task intake, idempotency, activity, requirements, artifacts, work
+   orders, dispatch, review publication, and reconciliation constrain reads and
+   writes by it. River payloads and dynamically registered per-workspace queues
+   carry the same ID, and runtime configuration is loaded for that ID.
+5. **Compatibility and scope.** File `workspace: demo` continues to seed that
+   workspace idempotently without rewriting existing data. Singleton clients
+   may omit context; ambiguity never selects an arbitrary workspace. This does
+   not add RBAC/SSO, rename/deletion, aggregate reporting, multi-repo worktree
+   sets, verification, Phase 8 execution, or a parallel task pipeline.
+
+---
+
+*End of specification. v1.9 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), and explicit multi-workspace control-plane isolation added (§21.9). Subsequent changes proceed by amendment with version bumps.*

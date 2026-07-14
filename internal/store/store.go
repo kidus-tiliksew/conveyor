@@ -7,13 +7,28 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+var (
+	ErrWorkspaceRequired = errors.New("workspace context is required")
+	ErrWorkspaceConflict = errors.New("workspace id or name already exists")
+)
+
+// WorkspaceControlStore owns durable workspace resources independently of a
+// workspace-scoped Store operation (spec §21.9).
+type WorkspaceControlStore interface {
+	ListWorkspaces(context.Context) ([]core.Workspace, error)
+	GetWorkspace(context.Context, string) (core.Workspace, error)
+	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
+}
 
 type Store interface {
 	CreateTask(ctx context.Context, t core.Task) error

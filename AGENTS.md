@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.8, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.9, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -34,3 +34,6 @@ after reading a work order, the implementing agent uses `conveyor checkout
 <task-id>` to resolve a dedicated sibling worktree and performs every edit,
 test, commit, and push there (§21.8). Conveyor must not mutate the agent's
 primary checkout or reset task history.
+Workspace-scoped REST, CLI, MCP, dispatch, and reconciliation operations carry
+an explicit immutable workspace ID (§21.9); omitted context is compatible only
+when exactly one workspace exists and ambiguity must fail closed.

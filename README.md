@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.8. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.9. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -21,8 +21,8 @@ Phase 4.7's implementation is complete. The code now provides:
   review, and the in-session `await_review` loop;
 - content-addressed artifacts and a hierarchical requirements tree linking
   features, tasks, approved specs, pull requests, and events;
-- the embedded activity/review UI, requirements UI, slim workspace config,
-  and MCP connection guidance; and
+- the embedded activity/review UI, workspace creation/selection, requirements
+  UI, workspace-scoped config, and MCP connection guidance; and
 - Postgres projections plus River-backed durable dispatch.
 
 The Phase 4.7 live dogfood exit and the five-task Beta criterion remain to be
@@ -50,13 +50,14 @@ credentials or subscriptions.
 Create and inspect work:
 
 ```sh
-export CONVEYOR_URL='http://127.0.0.1:8080'
-bin/conveyor task new 'fix the typo in README' --repo api --level L2
-bin/conveyor task list
-bin/conveyor config export > workspace.yaml
+export CONVEYOR_ADDR='http://127.0.0.1:8080'
+bin/conveyor --workspace demo task new 'fix the typo in README' --repo api --level L2
+bin/conveyor --workspace demo task list
+bin/conveyor --workspace demo config export > workspace.yaml
 ```
 
-MCP clients can submit newly discovered work through `create_task`. Required
+MCP clients can submit newly discovered work through `create_task`. Pass
+`workspace_id` explicitly whenever more than one workspace exists. Required
 arguments are `title`, `repo`, and a caller-stable `idempotency_key`; optional
 arguments are `body`, `source`, `base_branch`, and `level` (default `L2`). The
 tool durably creates and enqueues the normal task, returns immediately, and
@@ -98,11 +99,19 @@ instructions are in [plugins/conveyor/README.md](plugins/conveyor/README.md).
 
 ## Configuration ownership
 
-`conveyor.yaml` bootstraps a workspace on first Postgres start. After that,
-the workspace name, routes, bounce cap, and repositories are versioned in
-Postgres and editable through the UI/API or `conveyor config import`. The
+`conveyor.yaml` bootstraps its named initial workspace on first Postgres start.
+Authenticated operators can create and select additional workspaces in the
+Workspace UI or through `POST /v1/workspaces`; creation atomically stores its
+configuration and `workspace.created` audit event. Each workspace's routes,
+bounce cap, repositories, config version, task intake keys, River queues, and
+pipeline records remain independent. The
 deployment file retains the database connection, prompt-pack path, and bare
 repository cache path.
+
+All workspace-scoped REST calls accept `workspace_id` or `X-Workspace-ID`.
+The CLI accepts `--workspace` (or `CONVEYOR_WORKSPACE`) and MCP tools accept
+`workspace_id`. Omission remains compatible only when exactly one workspace
+exists; zero-workspace and multi-workspace ambiguity fail closed.
 
 The Phase 4.7 document deliberately has no runner, image, credential pool,
 secret reference, vendor policy, or tool policy fields. Operator agents own

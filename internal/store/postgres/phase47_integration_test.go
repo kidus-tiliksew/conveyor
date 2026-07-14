@@ -9,6 +9,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
@@ -23,6 +24,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}
 	defer st.Close()
 	workspace := "phase47-" + core.NewTaskID()
+	ctx = store.WithWorkspace(ctx, workspace)
 	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
 		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},

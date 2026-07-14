@@ -15,8 +15,9 @@ import (
 
 // client is a thin wrapper over the control-plane API (spec §17.3).
 type client struct {
-	base  string
-	token string
+	base      string
+	token     string
+	workspace string
 }
 
 func newClient() *client {
@@ -24,7 +25,7 @@ func newClient() *client {
 	if base == "" {
 		base = "http://localhost:8080"
 	}
-	return &client{base: base, token: os.Getenv("CONVEYOR_API_TOKEN")}
+	return &client{base: base, token: os.Getenv("CONVEYOR_API_TOKEN"), workspace: workspaceFlag}
 }
 
 func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
@@ -134,6 +135,9 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("X-Conveyor-Actor", "cli-operator")
+	}
+	if c.workspace != "" {
+		req.Header.Set("X-Workspace-ID", c.workspace)
 	}
 	for name, value := range headers {
 		req.Header.Set(name, value)

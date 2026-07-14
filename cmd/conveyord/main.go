@@ -59,18 +59,23 @@ func main() {
 		if err != nil {
 			log.Fatalf("open Postgres store: %v", err)
 		}
-		seeded, bootstrapErr := pgStore.BootstrapWorkspaceConfig(ctx, deployment)
-		if bootstrapErr != nil {
-			pgStore.Close()
-			log.Fatalf("bootstrap workspace: %v", bootstrapErr)
-		}
-		if !seeded {
-			log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
-		}
-		cfg, err = pgStore.RuntimeConfig(ctx, deployment)
-		if err != nil {
-			pgStore.Close()
-			log.Fatalf("load database workspace config: %v", err)
+		if deployment.Workspace != "" {
+			bootstrapCtx := store.WithWorkspace(ctx, deployment.Workspace)
+			seeded, bootstrapErr := pgStore.BootstrapWorkspaceConfig(bootstrapCtx, deployment)
+			if bootstrapErr != nil {
+				pgStore.Close()
+				log.Fatalf("bootstrap workspace: %v", bootstrapErr)
+			}
+			if !seeded {
+				log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
+			}
+			cfg, err = pgStore.RuntimeConfig(bootstrapCtx, deployment)
+			if err != nil {
+				pgStore.Close()
+				log.Fatalf("load database workspace config: %v", err)
+			}
+		} else {
+			log.Printf("no bootstrap workspace configured; first-run workspace creation is available")
 		}
 		st = pgStore
 		closeStore = pgStore.Close
@@ -85,18 +90,28 @@ func main() {
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
 	var stopRiver func()
+	var addWorkspaceQueue func(string) error
 	if pgStore != nil {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
 		d.UseDurableQueue()
-		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d)
+		workspaceRecords, listErr := pgStore.ListWorkspaces(ctx)
+		if listErr != nil {
+			log.Fatalf("list workspaces: %v", listErr)
+		}
+		workspaceIDs := make([]string, 0, len(workspaceRecords))
+		for _, item := range workspaceRecords {
+			workspaceIDs = append(workspaceIDs, item.ID)
+		}
+		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d, workspaceIDs)
 		if clientErr != nil {
 			log.Fatalf("create River worker: %v", clientErr)
 		}
 		if clientErr = client.Start(ctx); clientErr != nil {
 			log.Fatalf("start River worker: %v", clientErr)
 		}
+		addWorkspaceQueue = func(workspace string) error { return dispatch.AddWorkspaceQueues(client, workspace) }
 		stopRiver = func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -127,26 +142,36 @@ func main() {
 		return cfg, nil
 	}}
 	if pgStore != nil {
+		srv.Workspaces = pgStore
+		srv.EnsureWorkspaceQueues = addWorkspaceQueue
 		srv.ConfigStore = pgStore
 		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
 		reconcile := func() {
-			repaired, err := pgStore.ReconcileQueuedTasks(ctx)
-			if err != nil {
-				log.Printf("reconcile queued tasks: %v", err)
+			workspaces, listErr := pgStore.ListWorkspaces(ctx)
+			if listErr != nil {
+				log.Printf("list workspaces for reconciliation: %v", listErr)
 				return
 			}
-			if repaired != 0 {
-				log.Printf("reconciled %d queued task(s) missing River jobs", repaired)
-			}
-			publications, publicationErr := pgStore.ReconcileReviewPublications(ctx)
-			if publicationErr != nil {
-				log.Printf("reconcile review publications: %v", publicationErr)
-				return
-			}
-			if publications != 0 {
-				log.Printf("reconciled %d completed review publication(s)", publications)
+			for _, workspace := range workspaces {
+				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
+				repaired, err := pgStore.ReconcileQueuedTasks(workspaceCtx)
+				if err != nil {
+					log.Printf("reconcile queued tasks: %v", err)
+					return
+				}
+				if repaired != 0 {
+					log.Printf("reconciled %d queued task(s) missing River jobs", repaired)
+				}
+				publications, publicationErr := pgStore.ReconcileReviewPublications(workspaceCtx)
+				if publicationErr != nil {
+					log.Printf("reconcile review publications: %v", publicationErr)
+					return
+				}
+				if publications != 0 {
+					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
+				}
 			}
 		}
 		reconcile()
@@ -165,8 +190,28 @@ func main() {
 	}
 
 	if *pollGitHub > 0 {
-		log.Printf("polling GitHub for %s issues every %s", "conveyor:ready", *pollGitHub)
-		go d.PollGitHub(ctx, *pollGitHub)
+		log.Printf("polling GitHub for %s issues in every workspace every %s", "conveyor:ready", *pollGitHub)
+		go func() {
+			ticker := time.NewTicker(*pollGitHub)
+			defer ticker.Stop()
+			for {
+				if pgStore != nil {
+					items, listErr := pgStore.ListWorkspaces(ctx)
+					if listErr == nil {
+						for _, item := range items {
+							d.PollOnce(store.WithWorkspace(ctx, item.ID))
+						}
+					}
+				} else if cfg.Workspace != "" {
+					d.PollOnce(store.WithWorkspace(ctx, cfg.Workspace))
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
 	}
 
 	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}

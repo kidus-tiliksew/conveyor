@@ -19,7 +19,7 @@ export function SettingsPage() {
           <CardContent className="space-y-2.5">
             <p className="text-sm leading-6 text-muted">
               Mutations — creating tasks, review decisions, redispatch — authenticate with the control plane's{' '}
-              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code> (spec §17.3). Reads never require it. The
+              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code> (spec §17.3). Multi-workspace reads and writes both require it. The
               token is kept in session storage and forgotten when the tab closes.
             </p>
             <Input
@@ -31,7 +31,7 @@ export function SettingsPage() {
               className="max-w-sm font-mono"
             />
             <p className="text-xs text-faint">
-              {token ? 'Token set — review actions and task creation are enabled.' : 'No token — the dashboard is read-only.'}
+              {token ? 'Token set — workspace data and operator actions are enabled.' : 'No token — set it to load workspaces.'}
             </p>
           </CardContent>
         </Card>

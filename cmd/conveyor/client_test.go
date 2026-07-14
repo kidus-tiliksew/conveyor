@@ -18,11 +18,14 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
+		if got := r.Header.Get("X-Workspace-ID"); got != "engineering" {
+			t.Fatalf("X-Workspace-ID = %q", got)
+		}
 		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1"})
 	}))
 	defer srv.Close()
 
-	c := &client{base: srv.URL, token: "secret-token"}
+	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
 	if _, err := c.createTask("fix it", "", "api", "main"); err != nil {
 		t.Fatal(err)
 	}

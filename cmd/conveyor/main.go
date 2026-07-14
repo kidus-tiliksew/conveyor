@@ -17,6 +17,7 @@ import (
 )
 
 var version = "dev" // set via -ldflags at build time
+var workspaceFlag string
 
 func main() {
 	root := &cobra.Command{
@@ -33,6 +34,7 @@ func main() {
 		checkoutCmd(),
 		doneCmd(),
 	)
+	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", os.Getenv("CONVEYOR_WORKSPACE"), "workspace id (required when the server has multiple workspaces)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

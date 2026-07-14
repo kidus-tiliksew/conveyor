@@ -8,7 +8,7 @@ import { taskStateLabels } from '../../lib/contracts'
 import { useTaskStream } from '../../lib/use-task-stream'
 import type { ActivityItem } from '../../lib/types'
 import { stageGroups } from '../../lib/contracts'
-import { useActivity, useOperatorToken } from '../app-shell'
+import { useActivity, useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
@@ -20,12 +20,13 @@ import { Timeline } from './timeline'
 // The task detail panel (spec §13.3): the costed event history plus review
 // actions, opened beside the feed so the reviewer never loses list context.
 export function TaskPanel({ taskId }: { taskId: string }) {
-  const navigate = useNavigate()
+	const navigate = useNavigate()
+	const { workspace } = useWorkspaceSelection()
   const { data: item, isLoading, error } = useQuery({
-    queryKey: ['task', taskId],
+		queryKey: ['task', workspace, taskId],
     queryFn: () => fetchTaskActivity(taskId),
   })
-  useTaskStream(taskId)
+	useTaskStream(taskId, workspace)
 
   // Prev/next follow the feed's visual order (stage groups, then recency).
   const { data: activity } = useActivity()
