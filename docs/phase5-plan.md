@@ -1,0 +1,170 @@
+# Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
+
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.12),
+amended by §21.12. This document is the working breakdown: what each phase
+contains, its dependencies, and its exit criterion. All of it is post-Beta
+scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
+criterion met over the Manual MCP pull flow), so this plan is active.
+
+**The milestone:** Auto mode. A GitHub issue becomes a merged PR with no
+human touch except the gates the operator chose to keep — the worker claims
+the work orders, the operator's own harnesses do the work, and the factory
+coordinates everything on GitHub.
+
+**The boundary that does not move:** the worker is not the sandbox plane
+returning. No containers, no adapter interface, no credential pooling. It
+runs the operator's own harness CLIs (`claude -p`, `codex exec`) under the
+operator's own login on the operator's own machine, over the unchanged §17.4
+MCP work-order lifecycle. What is given up is recorded plainly per §21.12
+change 1: unconfined execution on a real machine, mitigated by explicit
+enrollment, Auto-only claiming, dedicated worktrees (§21.8), and
+gates-on-by-default.
+
+---
+
+## Phase 5.1 — Worker & execution modes
+
+*Proves: unattended execution on operator hardware (spec §21.12 changes 1–3).*
+
+Suggested order:
+
+1. **Harness registry** (data-only, unblocks everything after it): workspace
+   config gains `harnesses: [{name, command template, model flag syntax}]`
+   under the standard §21.3 mechanics — validated writes, `config.updated`
+   events, hot reload. Registry editor on the Workspace page. No adapter
+   interface; §5.1 stays retired.
+2. **Execution modes + gate toggles:** task-level `mode: auto | manual`;
+   workspace toggles for spec approval and merge approval with per-task
+   override (Auto + both gates on is the shipped default); legacy L0–L3
+   display mapping (L3 ≈ Manual, L1/L2 ≈ Auto + gates, L0 ≈ Auto + gates
+   off) — existing records keep their levels; mode chip replaces the
+   escalation badge in the feed and task detail; `conveyor task new --mode`
+   replaces `--level`; MCP `create_task`'s optional escalation level becomes
+   an optional mode.
+3. **Worker enrollment + heartbeat:** operator-issued pairing token
+   (UI/CLI), worker identity recorded per workspace, heartbeat API carrying
+   harness probe results (binary present, authenticated, trivial invocation
+   succeeds), worker + per-harness health on the Workspace page.
+4. **Worker claim loop:** `conveyor worker run` long-polls
+   `list_work_orders` / `claim_work_order` for **Auto orders only** (one
+   queue — any authenticated agent may still claim any order manually),
+   spawns the configured harness headless with the Conveyor MCP config
+   attached, and supervises: liveness, exit-status capture, claim release on
+   failure. The spawned session performs the standard flow itself
+   (`conveyor checkout` → §21.7 branch adoption → implement → push →
+   `submit_for_review` → `await_review`). §21.9 clocks and stale recovery
+   govern abandonment — no new recovery machinery.
+5. **Health-gated Auto:** Auto offered only while a worker is live and at
+   least one harness probes healthy; the "default new tasks to Auto" toggle
+   greys out when that fails, and new tasks fall back to Manual explicitly.
+
+**Exit criterion:** a task created in Auto mode is claimed and completed
+end-to-end by the worker — checkout, implement, push, submit, review round,
+merge — with no human touch except the configured gates; killing the worker
+makes Auto unavailable in intake within one heartbeat interval; the Manual
+flow is byte-for-byte unchanged.
+
+## Phase 5.2 — Adversarial review panel
+
+*Proves: reviewer independence, enforced rather than asserted (§21.12
+change 4). Depends on 5.1 for the enforcement path.*
+
+1. **Panel config:** workspace review setting becomes
+   `{seats: [{model, harness?}]}` — operator-chosen count, model pinned per
+   seat.
+2. **Panel dispatch:** `submit_for_review` enqueues one review work order
+   per seat; the self-review guard applies to every seat; seats must be
+   distinct sessions from one another.
+3. **Aggregation:** unanimous-approve. `await_review` returns once all
+   verdicts arrive; any `changes_requested` bounces with all reviewers'
+   feedback merged into one structured round — one bounce against the §21.2
+   cap regardless of panel size.
+4. **Enforcement labels:** independence labels gain
+   `model_enforcement: worker-pinned | self-reported`; worker-executed seats
+   are invoked with their pinned model and labeled enforced; the review card
+   and timeline render the difference honestly.
+
+**Exit criterion:** a two-seat panel with different pinned models produces
+two recorded verdicts with enforced labels; one `changes_requested` verdict
+bounces the task with merged feedback delivered to the waiting implementer;
+unanimous approval advances to merge.
+
+## Phase 5.3 — GitHub coordination
+
+*Proves: the task's trail is legible on GitHub alone (§21.12 change 5).
+Independent of 5.1/5.2 — parallelizable with 5.2.*
+
+1. **Issue on spec approval:** the factory creates a GitHub issue carrying
+   the approved spec (intent + acceptance criteria) and links it to the
+   task; a task that originated from an issue (§9) updates that issue
+   instead of duplicating it; the eventual PR carries `Closes #N`.
+2. **Draft PR on first push:** the factory opens the PR as a draft when the
+   assigned branch is first pushed, and flips it ready at
+   `submit_for_review`. The reaffirmed boundaries hold: no ref creation at
+   intake (§21.7), no PR before the first push, no stub commits.
+3. **Verdict mirroring:** review verdicts and their resolutions post to the
+   PR, extending the existing Check Run + factory-comment machinery into a
+   complete review trail; redirect rounds show as review threads with their
+   resolutions.
+
+**Exit criterion:** a task's full lifecycle is reconstructible from GitHub
+alone — issue with spec → draft PR → ready → review verdicts with
+resolutions → merge that closes the issue.
+
+## Phase 5.4 — Verification evidence
+
+*Proves: reviewers confirm evidence rather than reproduce behavior (§21.12
+change 6). Follows 5.3 for the PR-mirroring path.*
+
+1. **Evidence gate:** workspace toggle; with it on, `submit_for_review` is
+   refused until at least one verification-evidence artifact (screenshots or
+   short recording of the exercised change) is attached via the §21.4
+   artifacts machinery.
+2. **Evidence surfaces:** evidence artifacts listed in review work orders,
+   rendered on the review card, mirrored to the PR.
+
+The independent verification agent (scripted flows + computer-use verdicts
+per acceptance criterion, §12) remains Phase 8; this phase is deliberately
+just the evidence-attachment contract.
+
+**Exit criterion:** with the toggle on, a submit without evidence is refused
+with a clear error; with evidence attached, the reviewer sees it on the
+review card and the PR without leaving either surface.
+
+## Phase 5.5 — Platform agents & policy
+
+*Renumbered from Phase 5 (§21.12 change 8); scope unchanged, deliberately
+sequenced after the worker: monitor-filed tasks plus Auto dispatch is the
+original autonomous loop completed.*
+
+- Monitor agent: CI failures and post-merge signals → tasks; out-of-pipeline
+  reverse sync (§4, §4.2).
+- Repo-resident `.conveyor/` hints (verify commands, triage area hints —
+  advisory only, never capability grants).
+
+---
+
+## Deferred, explicitly
+
+- **Memory (Phase 6):** transport decided — control-plane MCP tools
+  (`get_memories`, `store_memory`) on the §17.4 server, available to any
+  connected session; the worker is uninvolved (§21.12 change 7). Scope
+  otherwise unchanged and not pulled forward.
+- **Independent verification stage (Phase 8):** pull forward only if 5.4's
+  evidence contract proves too gameable.
+- **Graduation (Phase 7):** operates on gate toggles and mode defaults
+  instead of ladder levels when it arrives.
+
+## Standing notes
+
+- **Build it through the factory.** Every 5.x work item that is well-specified
+  should be filed as a Conveyor task and run through the Beta pipeline —
+  the worker should be the factory's own product before it is the factory's
+  own dispatcher.
+- **Parallelization:** 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5.
+- **Honesty labels are load-bearing:** `dispatch: worker`,
+  `model_enforcement`, and `confinement: none` are the operator's view into
+  what the automation actually guarantees. They are not optional polish.
+- **Manual stays first-class:** the worker never becomes a requirement for
+  operating Conveyor; every flow must remain completable by an
+  operator-attached agent over plain MCP.

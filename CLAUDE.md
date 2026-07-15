@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.11, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.12, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -36,7 +36,7 @@ exactly four phases:
 - **Phase 4.5** *(complete)* — dynamic workspace configuration (spec §21.3):
   Postgres-backed workspace config, validated config write API with
   `config.updated` audit events, hot reload, editable Workspace UI.
-- **Phase 4.7** *(implementation complete; live exit pending)* — MCP execution pivot (spec §21.4): retire the
+- **Phase 4.7** *(complete — Beta achieved July 15, 2026)* — MCP execution pivot (spec §21.4): retire the
   sandbox execution plane (runner, adapters, credential pool, shim, images,
   snapshots); triage/spec become in-process API calls on
   `CONVEYOR_API_KEY`; implementation *and code review* delegate to
@@ -55,11 +55,23 @@ checkout or reset task history.
 Workspace context is explicit across REST, CLI, MCP, dispatch, and
 reconciliation (§21.10); omission is compatible only for a singleton workspace.
 
-Do NOT build post-Beta or deferred surfaces:
-monitor agent, `.conveyor/` repo hints (Phase 5); memory store / pgvector
-(Phase 6); transcript mining / self-improvement / eval rig (Phase 7);
-managed-execution reintroduction — verification agent, K8sRunner, multi-repo
-worktree sets, aggregate cost dashboard (Phase 8, demand-triggered);
-enterprise SSO/SCIM/RBAC/HA (Phase 9, demand-triggered). The command-policy
-shim approval cards and environment inference/repair are retired (§21.4),
-not deferred — do not build them at all.
+Beta was achieved July 15, 2026 (§19 exit criterion met). Post-Beta scope is
+accepted by spec §21.12 and now active (working breakdown in
+[docs/phase5-plan.md](docs/phase5-plan.md)): Phase 5.1 worker (`conveyor worker run`) + Auto/Manual
+execution modes replacing L0–L3 + harness registry; Phase 5.2 adversarial
+review panel; Phase 5.3 factory-coordinated GitHub (issue on spec approval,
+draft PR on first push, verdict mirroring); Phase 5.4 evidence-gated
+`submit_for_review`. Sequence 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5. The worker is
+a thin supervisor over the unchanged §17.4 MCP lifecycle — never a second
+protocol, adapter interface, or credential pool.
+
+Do NOT build post-Beta or deferred surfaces beyond that:
+monitor agent, `.conveyor/` repo hints (Phase 5.5, after the worker); memory
+store / pgvector (Phase 6 — transport decided as MCP tools by §21.12, scope
+not pulled forward); transcript mining / self-improvement / eval rig
+(Phase 7); managed-execution reintroduction — independent verification
+agent, K8sRunner, multi-repo worktree sets, aggregate cost dashboard
+(Phase 8, demand-triggered); enterprise SSO/SCIM/RBAC/HA (Phase 9,
+demand-triggered). The command-policy shim approval cards and environment
+inference/repair are retired (§21.4), not deferred — do not build them at
+all.

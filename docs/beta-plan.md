@@ -233,9 +233,13 @@ including the v1.5 MCP task-intake amendment, v1.6 budget removal, v1.7
 operator-owned branch contract, v1.8 dedicated-worktree default, v1.9
 independent work-order clocks and stale recovery, v1.10 multi-workspace
 control plane, repository Codex plugin, and operator
-surfaces are implemented and repository validation passes. The live
-dogfood exit flow and subsequent five-task Beta proof above are still pending;
-they must be recorded from real MCP sessions and are not inferred from tests.
+surfaces are implemented and repository validation passes.
+
+**Live exit (July 15, 2026): complete — Beta achieved.** The operator ran
+the live dogfood exit flow and the five-task §19 sequence from real MCP
+sessions on this repository; the merged `conveyor/task-*` pull requests
+(#3–#7, #9, #10) are the recorded trail. Post-Beta work proceeds per
+[phase5-plan.md](phase5-plan.md).
 
 ### Multi-workspace control plane (spec §21.10)
 
@@ -250,13 +254,19 @@ events, requirements, artifacts, and work orders.
 
 ## Post-Beta sequence (context, not scope)
 
-Built through the factory, prioritized by observed operational load:
+Built through the factory, prioritized by observed operational load. The
+post-Beta phases were restructured by §21.12 (v1.12); the working breakdown
+is [phase5-plan.md](phase5-plan.md):
 
-- **Phase 5 — platform agents & policy:** monitor agent (CI → task,
-  reverse sync §4.2); repo-resident `.conveyor/` hints (verify commands,
-  triage area hints — advisory only, never capability grants). The
-  command-policy shim + approval cards and environment inference/repair
-  retired with the sandbox lane (§21.4).
+- **Phases 5.1–5.4 — worker execution & autonomy (§21.12):** `conveyor
+  worker run` + Auto/Manual execution modes + harness registry; adversarial
+  review panel; factory-coordinated GitHub; evidence-gated
+  `submit_for_review`.
+- **Phase 5.5 — platform agents & policy** *(renumbered from Phase 5)*:
+  monitor agent (CI → task, reverse sync §4.2); repo-resident `.conveyor/`
+  hints (verify commands, triage area hints — advisory only, never
+  capability grants). The command-policy shim + approval cards and
+  environment inference/repair retired with the sandbox lane (§21.4).
 - **Phase 6 — memory store** (§15.1): pgvector retrieval, lessons,
   per-role retrieval context limits; extends the Phase 4.7 requirements tree
   and artifacts rather than introducing the corpus.

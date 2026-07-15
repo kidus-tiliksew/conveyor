@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.11**
+**Specification — v1.12**
 **Date:** July 15, 2026
-**Status:** Accepted — verdict-first human gate amendment applied (§21.11), following the work-order clock and multi-workspace amendments (§21.9–§21.10)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker execution and Auto/Manual execution modes applied (§21.12), following the verdict-first human gate amendment (§21.11)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -525,7 +525,12 @@ The explicit goal is to compress human review time — the true bottleneck — b
 
 ## 13. Human review queue and escalation ladder
 
-### 13.1 Escalation levels
+### 13.1 Escalation levels *(superseded by §21.12)*
+
+*The L0–L3 ladder is replaced by Auto/Manual execution modes with two
+independent human-gate toggles — spec approval and merge approval — per
+§21.12 change 2. The table below remains the v1.0–v1.11 historical record;
+existing task records keep their recorded levels.*
 
 | Level | Meaning | Examples (initially) |
 |---|---|---|
@@ -709,8 +714,12 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **3** | Full pipeline: multi-stage orchestration with per-stage gates and bounded bounces; triage, spec, and code-review agents; spec format machinery (§4.1) with versioned, approved specs as the implementation contract; role prompts and tool policies as versioned files (proto-pack, §2.2); per-repo sandbox images (including a Go-toolchain image so Conveyor can build itself); PR review comments → redirect feedback (§9); per-job budget circuit breaker and job timeouts (§14.1) | The full pipeline runs |
 | **4** *(complete)* | UI rewrite: ground-up, polished implementation of the §13.3 activity view on Tailwind + shadcn/ui (§17.0) — stage-grouped feed, costed event timeline, spec and diff review surfaces, review actions in place; app shell with home/workspace/settings surfaces, task intake, and a read-only workspace snapshot | The factory is operable from one screen |
 | **4.5** *(complete)* | Dynamic workspace configuration (§21.3): workspace config moves to Postgres as source of truth with the deployment file as bootstrap seed; authenticated, validated config read/write API with optimistic concurrency and `config.updated` audit events; hot reload of routing, repos, budgets, and bounce limits without a control-plane restart; Workspace UI becomes editable for stage routing, workspace basics, and repos & environments (tool policy, images, secret *references*) | The factory is steerable from its own control surface |
-| **4.7** | MCP execution pivot (§21.4–§21.5): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; agent-discovered work enters through idempotent MCP task intake; implementation *and code review* delegate to the operator's own agents over the MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
-| **5** *(post-Beta)* | Platform agents & policy: command-policy shim with review-queue approval cards (§11.2); environment inference & repair agents (§6.4); monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2) *(shim approval cards and environment inference retired with the sandbox lane, §21.4; monitor agent stays)* | The factory guards and onboards itself |
+| **4.7** *(complete)* | MCP execution pivot (§21.4–§21.5): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; agent-discovered work enters through idempotent MCP task intake; implementation *and code review* delegate to the operator's own agents over the MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
+| **5.1** *(post-Beta)* | Worker & execution modes (§21.12): `conveyor worker run` — enrollment via pairing token, heartbeat, harness registry with health probes, headless harness dispatch over the unchanged §17.4 lifecycle; Auto/Manual execution modes plus independent gate toggles replacing L0–L3; mode surfaces in UI/CLI/intake | Unattended execution on operator hardware |
+| **5.2** *(post-Beta)* | Adversarial review panel (§21.12): per-seat pinned reviewer models, unanimous-approve aggregation, merged bounce feedback, `model_enforcement` independence labels | Reviewer independence, enforced rather than asserted |
+| **5.3** *(post-Beta, parallelizable with 5.2)* | GitHub coordination (§21.12): issue created or reused on spec approval, draft PR on first push flipped ready at submit, review verdicts and resolutions mirrored to the PR | The task's trail is legible on GitHub alone |
+| **5.4** *(post-Beta)* | Verification evidence (§21.12): evidence-gated `submit_for_review`, evidence artifacts in review work orders, on the review card, and on the PR | Reviewers confirm evidence rather than reproduce behavior |
+| **5.5** *(post-Beta)* | Platform agents & policy *(renumbered from Phase 5 by §21.12)*: monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2); repo-resident `.conveyor/` hints *(shim approval cards and environment inference retired with the sandbox lane, §21.4)* | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
 | **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
 | **8** *(demand-triggered)* | Verification agent (Playwright + computer use, §12), K8sRunner, multi-repo worktree sets + linked-PR gating (§7.1), aggregate cost dashboard and budget policy (§14) *(per §21.4, this phase is the reintroduction of managed execution — until then, repo CI is the mechanical verifier)* | Trust + scale |
@@ -723,7 +732,11 @@ which moves workspace configuration into the control plane. Phase 4.7 is
 inserted by §21.4, which retires the sandbox execution plane in favor of the
 MCP work-order model and re-gates Beta entry on it; §21.4 also amends the
 Phase 5 and Phase 8 rows. §21.5 extends that same MCP surface with durable,
-idempotent task intake without changing the Beta gate.
+idempotent task intake without changing the Beta gate. §21.12 replaces the
+former Phase 5 row with phases 5.1–5.5 — worker execution and Auto/Manual
+modes, adversarial review, GitHub coordination, verification evidence, and
+the renumbered platform-agents phase — all post-Beta; the Beta gate and its
+exit criterion below are unchanged and run first.
 
 **Beta exit criterion (§21.4):** five consecutive real tasks on the Conveyor
 repository shipped through the full pipeline — issue → triage → approved spec
@@ -733,6 +746,11 @@ session → PR → merge — with at least one task completing a
 `changes_requested` round inside the implementing agent's session, zero manual
 git operations outside the agents' own workflows, and all human actions taken
 through the UI or CLI.
+
+**Met July 15, 2026.** The operator ran the live exit flow and the five-task
+sequence from real MCP sessions on this repository; the merged
+`conveyor/task-*` pull requests (#3–#7, #9, #10) are the recorded trail.
+Beta is achieved and the post-Beta phases 5.1–5.5 (§21.12) are unblocked.
 
 ---
 
@@ -1360,4 +1378,131 @@ v1.10 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.11 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), and the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11). Subsequent changes proceed by amendment with version bumps.*
+### 21.12 v1.12 — Worker execution, Auto/Manual modes, adversarial review, factory-coordinated GitHub (July 15, 2026)
+
+Beta testing validated the §21.4 pull model: operator-owned agents claiming
+work orders over MCP. What §21.4 change 5 left as an exercise — unattended
+automation as "a headless agent the operator points at the MCP server" —
+this amendment ships as a product: a worker the operator installs on their
+own machine that polls the work-order queue and drives their own harness
+CLIs, in the tradition of a CI runner. Nothing in the pivot's thesis
+reverses: the control plane keeps the brain, and the hands stay
+operator-owned — the worker is the operator's hands on a timer. No sandbox
+plane, no adapter interface, and no credential pooling returns; the worker
+invokes `claude -p` / `codex exec` under the operator's own login on the
+operator's own hardware. This amendment supersedes §13.1 (the escalation
+ladder), amends §19 (the former Phase 5 row becomes phases 5.1–5.5), and
+reaffirms the §21.7 branch boundary. The Beta gate and its §19 exit
+criterion are untouched: everything here is post-Beta scope. Eight changes;
+all other v1.11 decisions remain unchanged:
+
+1. **The worker is a thin supervisor over the existing lifecycle.**
+   `conveyor worker run` — a subcommand of the existing CLI, not a second
+   binary — enrolls against one workspace with an operator-issued pairing
+   token, heartbeats, and long-polls `list_work_orders` /
+   `claim_work_order`: the §17.4 lifecycle unchanged, no parallel protocol.
+   On claim it resolves the configured harness (change 3) and spawns it
+   headless with the Conveyor MCP configuration attached, so the spawned
+   session performs the standard flow itself — `conveyor checkout` into the
+   dedicated worktree (§21.8), safe branch adoption (§21.7), implement,
+   push, `submit_for_review`, `await_review`. The worker supervises:
+   liveness reporting, exit-status capture, and claim release on failure;
+   §21.9's queue/execution/lease clocks and stale recovery already govern
+   abandonment. Jobs it runs are recorded `harness: <cli>, confinement:
+   none, auth: byoa, dispatch: worker`. What is given up is recorded
+   plainly, in the §21.4 tradition: the worker executes unconfined on a
+   real operator machine, on tasks that may originate from GitHub issues or
+   chat intake. The mitigations are explicit enrollment, the worker
+   claiming only Auto-mode orders (change 2), dedicated worktrees (§21.8),
+   human gates on by default, and the trust labels above.
+
+2. **Auto/Manual execution modes replace the escalation ladder (supersedes
+   §13.1).** A task carries an execution mode: **Auto** — the worker may
+   claim its work orders — or **Manual** — they wait for an
+   operator-attached agent. Human gating, which the L0–L3 ladder conflated
+   with dispatch, becomes two independent workspace toggles — **spec
+   approval** and **merge approval** — each overridable per task; Auto with
+   both gates on is the shipped default. There is one queue: any
+   authenticated agent may claim any order regardless of mode; the worker
+   claims only Auto orders. Legacy mapping for the historical record:
+   L3 ≈ Manual; L1/L2 ≈ Auto with gates; L0 ≈ Auto with gates off. Existing
+   task records keep their recorded levels; the UI replaces the
+   escalation-level badge with a mode chip; `conveyor task new` replaces
+   `--level` with `--mode`, and MCP `create_task`'s optional escalation
+   level becomes an optional mode (§21.5 otherwise unchanged). Phase 7
+   graduation, when it arrives, operates on gate toggles and mode defaults
+   instead of ladder levels.
+
+3. **Harness registry and health-gated Auto.** Workspace configuration
+   gains a declarative harness registry — `{name, command template, model
+   flag syntax}` per entry — under the standard §21.3 mechanics (validated
+   writes, `config.updated` events, hot reload). It is data, not an adapter
+   interface; §5.1 stays retired. The worker probes each configured harness
+   (binary present, authenticated, a trivial invocation succeeds) and
+   reports results with its heartbeat; the workspace surfaces worker and
+   per-harness health. Auto mode is offered only while a worker is
+   enrolled, live, and at least one harness probes healthy, and the
+   "default new tasks to Auto" workspace toggle greys out when that fails —
+   new tasks fall back to Manual explicitly rather than queueing silently
+   against a dead worker.
+
+4. **Adversarial review panel.** The workspace review setting becomes a
+   panel: an operator-chosen reviewer count with a model pinned per seat.
+   `submit_for_review` dispatches one review work order per seat; the
+   self-review guard applies to every seat, and seats must also be distinct
+   sessions from one another. Aggregation is unanimous-approve:
+   `await_review` returns once all verdicts arrive, and any
+   `changes_requested` bounces the task with all reviewers' feedback merged
+   into a single structured round — one bounce against the §21.2 cap
+   regardless of panel size. Independence labels (§21.4 change 3) gain
+   `model_enforcement: worker-pinned | self-reported`: a seat executed by
+   the worker is invoked with its pinned model and labeled enforced; a seat
+   claimed by an arbitrary MCP agent remains self-reported, and the review
+   card renders the difference honestly rather than implying enforcement
+   the platform cannot deliver.
+
+5. **The factory coordinates GitHub; the agent only commits and pushes.**
+   Three additions to the existing §9/§21.4/§21.7 machinery, two reaffirmed
+   boundaries. Added: (a) on spec approval the factory creates a GitHub
+   issue carrying the approved spec (intent and acceptance criteria) and
+   links it to the task — unless the task originated from an issue (§9), in
+   which case that issue is updated rather than duplicated; the eventual PR
+   closes it. (b) On the first push of the assigned branch the factory
+   opens the PR as a draft and marks it ready at `submit_for_review` —
+   earlier visibility, same trust boundary. (c) Review verdicts and their
+   resolutions are mirrored onto the PR, extending the existing Check Run
+   and factory comment into a complete review trail. Reaffirmed: intake
+   assigns branch metadata and never creates refs (§21.7 change 1), and no
+   PR exists before the first push — GitHub cannot represent an empty one,
+   and a stub commit would violate the §21.8 history rules.
+
+6. **Verification evidence at the submit boundary.** A workspace toggle
+   requires evidence before review: with it on, `submit_for_review` is
+   refused until at least one verification-evidence artifact — screenshots
+   or a short recording of the exercised change — is attached via the
+   §21.4 artifacts machinery. Evidence artifacts are listed in review work
+   orders, rendered on the review card, and mirrored to the PR (change 5c).
+   This delivers §12's stated goal — reviewers confirm evidence rather than
+   reproduce behavior — without a new pipeline stage; the independent
+   verification agent remains Phase 8 scope.
+
+7. **Memory stays Phase 6; its transport is decided.** The memory store
+   remains deferred, but its delivery mechanism is fixed as control-plane
+   MCP tools (`get_memories`, `store_memory`) on the §17.4 server,
+   available to any connected session. The worker is deliberately
+   uninvolved: memory is control-plane state, not worker state.
+
+8. **Roadmap re-phase (amends §19).** The new work lands as Phase 5.1
+   (worker & execution modes), 5.2 (adversarial review), 5.3 (GitHub
+   coordination), and 5.4 (verification evidence). 5.2 depends on 5.1; 5.3
+   touches neither the worker nor review dispatch and may run in parallel
+   with 5.2; 5.4 follows 5.3 for the PR-mirroring path. The former Phase 5
+   scope — monitor agent and `.conveyor/` repo hints — moves unchanged to
+   Phase 5.5, deliberately after the worker: monitor-filed tasks plus Auto
+   dispatch is the original autonomous loop completed. Phases 6–9 keep
+   their numbers and scope. None of 5.1–5.5 gates Beta; the §19 exit
+   criterion runs first, on the Manual pull flow already validated.
+
+---
+
+*End of specification. v1.12 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12). Subsequent changes proceed by amendment with version bumps.*
