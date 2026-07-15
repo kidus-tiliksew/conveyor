@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.8, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.9, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -20,7 +20,7 @@ with a version bump (§21), never silent edits.
 ## Phase discipline
 
 Phases 1–2 are complete and validated. The roadmap was re-phased for the
-Beta milestone (spec §19 v1.8, rationale in §21.2–§21.8; working breakdown
+Beta milestone (spec §19 v1.9, rationale in §21.2–§21.9; working breakdown
 in [docs/beta-plan.md](docs/beta-plan.md)). Note §21.4 retires the sandbox
 execution plane — Phase 1–3 execution contracts (runner, adapters,
 credential pool, shim, images) are superseded, not preserved. Pre-Beta is

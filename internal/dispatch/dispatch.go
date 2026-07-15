@@ -110,14 +110,19 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending, StartedAt: time.Now().UTC()}
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
 	if err := d.Store.CreateJob(ctx, job); err != nil {
 		return err
 	}
-	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage, State: core.WorkOrderQueued, SelfReported: true, CreatedAt: time.Now().UTC()}
+	now := time.Now().UTC()
+	queueTimeout := cfg.WorkOrderQueueTimeout
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage, State: core.WorkOrderQueued, Claimable: true, SelfReported: true, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
 	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
 		return err
 	}

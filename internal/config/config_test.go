@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadPhase47Config(t *testing.T) {
@@ -13,6 +14,7 @@ func TestLoadPhase47Config(t *testing.T) {
 	data := `workspace: demo
 pack_dir: pack
 max_bounces: 2
+work_order_queue_timeout: 36h
 routing:
   stages:
     triage: {model: gpt-5.4, timeout: 20m, execution: in_process}
@@ -29,8 +31,29 @@ repos:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Routing.Stages["implement"].Execution != ExecutionMCP || cfg.Repos[0].Name != "conveyor" {
+	if cfg.Routing.Stages["implement"].Execution != ExecutionMCP || cfg.Repos[0].Name != "conveyor" || cfg.WorkOrderQueueTimeout != 36*time.Hour {
 		t.Fatalf("config=%+v", cfg)
+	}
+}
+
+func TestWorkOrderQueueTimeoutDefaultsAndRejectsInvalidDuration(t *testing.T) {
+	deployment := validConfig()
+	data, err := yaml.Marshal(deployment.WorkspaceDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(data, deployment, "test")
+	if err != nil || parsed.WorkOrderQueueTimeout != DefaultWorkOrderQueueTimeout || parsed.WorkOrderQueueTimeoutText != DefaultWorkOrderQueueTimeoutText {
+		t.Fatalf("parsed=%+v err=%v", parsed, err)
+	}
+	document := deployment.WorkspaceDocument()
+	document.WorkOrderQueueTimeoutText = "never"
+	invalid, marshalErr := yaml.Marshal(document)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if _, err = ParseWorkspaceDocument(invalid, deployment, "test"); err == nil || !strings.Contains(err.Error(), "work_order_queue_timeout") {
+		t.Fatalf("invalid timeout error=%v", err)
 	}
 }
 

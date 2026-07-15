@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.8. The
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.9. The
 working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
 
 ## Status
@@ -99,10 +99,10 @@ instructions are in [plugins/conveyor/README.md](plugins/conveyor/README.md).
 ## Configuration ownership
 
 `conveyor.yaml` bootstraps a workspace on first Postgres start. After that,
-the workspace name, routes, bounce cap, and repositories are versioned in
-Postgres and editable through the UI/API or `conveyor config import`. The
-deployment file retains the database connection, prompt-pack path, and bare
-repository cache path.
+the workspace name, routes, bounce cap, work-order queue timeout, and
+repositories are versioned in Postgres and editable through the UI/API or
+`conveyor config import`. The deployment file retains the database connection,
+prompt-pack path, and bare repository cache path.
 
 The Phase 4.7 document deliberately has no runner, image, credential pool,
 secret reference, vendor policy, or tool policy fields. Operator agents own
@@ -112,6 +112,11 @@ managed execution is explicitly activated in Phase 8.
 Stage routes contain only model, timeout, and execution mode. Conveyor retains
 token and USD usage as audit telemetry, but it has no allocation, remaining
 balance, or usage-based execution gate (spec §21.6).
+
+`work_order_queue_timeout` defaults to `24h`. It bounds how long an unclaimed
+MCP work order remains claimable. The per-stage route timeout starts only on a
+successful claim, while `lease_expires_at` governs ownership and never extends
+that fixed execution deadline (spec §21.9).
 
 When upgrading from v1.5, remove `budget_usd` from the deployment bootstrap
 file before restart. Startup canonicalizes an existing Postgres workspace

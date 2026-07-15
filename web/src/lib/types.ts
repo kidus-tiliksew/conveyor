@@ -62,7 +62,7 @@ export interface Job {
   tokens_in: number
   tokens_out: number
   state: JobState
-  started_at: string
+  started_at?: string
   ended_at?: string
 }
 
@@ -165,6 +165,7 @@ export interface WorkspaceConfigRoute {
 export interface WorkspaceConfigDocument {
   workspace: string
   max_bounces: number
+  work_order_queue_timeout: string
   routing: {
     stages: Record<string, WorkspaceConfigRoute>
   }
@@ -200,12 +201,18 @@ export interface WorkOrder {
   task_id: string
   job_id: string
   stage: 'implement' | 'review'
-  state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled'
+  state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
+  claimable: boolean
   claimed_by?: string
   session_id?: string
   agent?: string
   model?: string
   lease_expires_at?: string
+  queue_entered_at: string
+  queue_deadline: string
+  execution_started_at?: string
+  execution_deadline?: string
+  redispatch_count: number
   progress?: string
   cost_usd: number
   tokens_in: number

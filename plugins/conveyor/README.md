@@ -41,6 +41,12 @@ the task ID. The new session lists work orders and claims the queued or expired
 order with fresh session credentials. It never reuses a client token or resets
 the assigned branch.
 
+If an unclaimed order has exceeded the configured queue-retention timeout,
+`list_work_orders` reports it as non-claimable `stale`. Use
+`redispatch_work_order` to reset that queue clock through the audited service
+path; do not edit the database. Redispatch does not revive an execution-timed-
+out or actively claimed order.
+
 The task's branch field is an assigned canonical name, not proof that a Git ref
 already exists. After claiming and reading the work order, the implementation
 agent runs `conveyor checkout <task-id>` and uses the returned dedicated

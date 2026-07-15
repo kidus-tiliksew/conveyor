@@ -122,8 +122,12 @@ func (j Job) MarshalJSON() ([]byte, error) {
 	type jobAlias Job
 	wired := struct {
 		jobAlias
-		EndedAt *time.Time `json:"ended_at,omitempty"`
+		StartedAt *time.Time `json:"started_at,omitempty"`
+		EndedAt   *time.Time `json:"ended_at,omitempty"`
 	}{jobAlias: jobAlias(j)}
+	if !j.StartedAt.IsZero() {
+		wired.StartedAt = &j.StartedAt
+	}
 	if !j.EndedAt.IsZero() {
 		wired.EndedAt = &j.EndedAt
 	}
@@ -219,38 +223,70 @@ const (
 	WorkOrderSubmitted WorkOrderState = "submitted"
 	WorkOrderCompleted WorkOrderState = "completed"
 	WorkOrderCancelled WorkOrderState = "cancelled"
+	WorkOrderStale     WorkOrderState = "stale"
+	WorkOrderTimedOut  WorkOrderState = "timed_out"
 )
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned implementation or review agent (spec §21.4).
 type WorkOrder struct {
-	ID              string         `json:"id"`
-	TaskID          string         `json:"task_id"`
-	JobID           string         `json:"job_id"`
-	Stage           Stage          `json:"stage"`
-	State           WorkOrderState `json:"state"`
-	ClaimantID      string         `json:"claimed_by,omitempty"`
-	SessionID       string         `json:"session_id,omitempty"`
-	ClientTokenHash string         `json:"-"`
-	Agent           string         `json:"agent,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	LeaseExpiresAt  time.Time      `json:"lease_expires_at,omitempty"`
-	Progress        string         `json:"progress,omitempty"`
-	CostUSD         float64        `json:"cost_usd"`
-	TokensIn        int64          `json:"tokens_in"`
-	TokensOut       int64          `json:"tokens_out"`
-	SelfReported    bool           `json:"self_reported"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID                 string         `json:"id"`
+	TaskID             string         `json:"task_id"`
+	JobID              string         `json:"job_id"`
+	Stage              Stage          `json:"stage"`
+	State              WorkOrderState `json:"state"`
+	Claimable          bool           `json:"claimable"`
+	ClaimantID         string         `json:"claimed_by,omitempty"`
+	SessionID          string         `json:"session_id,omitempty"`
+	ClientTokenHash    string         `json:"-"`
+	Agent              string         `json:"agent,omitempty"`
+	Model              string         `json:"model,omitempty"`
+	LeaseExpiresAt     time.Time      `json:"lease_expires_at,omitempty"`
+	QueueEnteredAt     time.Time      `json:"queue_entered_at"`
+	QueueDeadline      time.Time      `json:"queue_deadline"`
+	ExecutionStartedAt time.Time      `json:"execution_started_at,omitempty"`
+	ExecutionDeadline  time.Time      `json:"execution_deadline,omitempty"`
+	RedispatchCount    int            `json:"redispatch_count"`
+	Progress           string         `json:"progress,omitempty"`
+	CostUSD            float64        `json:"cost_usd"`
+	TokensIn           int64          `json:"tokens_in"`
+	TokensOut          int64          `json:"tokens_out"`
+	SelfReported       bool           `json:"self_reported"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+// MarshalJSON keeps the three work-order clocks distinct on the wire and
+// omits clocks that have not started. A queued order must not look as though
+// execution or a claim lease has begun.
+func (w WorkOrder) MarshalJSON() ([]byte, error) {
+	type workOrderAlias WorkOrder
+	wired := struct {
+		workOrderAlias
+		LeaseExpiresAt     *time.Time `json:"lease_expires_at,omitempty"`
+		ExecutionStartedAt *time.Time `json:"execution_started_at,omitempty"`
+		ExecutionDeadline  *time.Time `json:"execution_deadline,omitempty"`
+	}{workOrderAlias: workOrderAlias(w)}
+	if !w.LeaseExpiresAt.IsZero() {
+		wired.LeaseExpiresAt = &w.LeaseExpiresAt
+	}
+	if !w.ExecutionStartedAt.IsZero() {
+		wired.ExecutionStartedAt = &w.ExecutionStartedAt
+	}
+	if !w.ExecutionDeadline.IsZero() {
+		wired.ExecutionDeadline = &w.ExecutionDeadline
+	}
+	return json.Marshal(wired)
 }
 
 type WorkOrderClaim struct {
-	SessionID   string
-	ClientToken string
-	ClaimantID  string
-	Agent       string
-	Model       string
-	Lease       time.Duration
+	SessionID        string
+	ClientToken      string
+	ClaimantID       string
+	Agent            string
+	Model            string
+	Lease            time.Duration
+	ExecutionTimeout time.Duration
 }
 
 type ReviewPublicationState string

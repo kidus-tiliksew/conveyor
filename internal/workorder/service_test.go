@@ -74,7 +74,7 @@ func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	}
 }
 
-func TestWorkOrderTimeoutStillEnforced(t *testing.T) {
+func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := store.NewMemory()
@@ -82,20 +82,135 @@ func TestWorkOrderTimeoutStillEnforced(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	job := core.Job{ID: "timeout-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now().Add(-2 * time.Hour)}
+	job := core.Job{ID: "timeout-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	queuedAt := time.Now().Add(-2 * time.Hour)
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
 	}}
-	_, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
-	if err == nil || !strings.Contains(err.Error(), "wall clock exhausted") {
-		t.Fatalf("timeout error = %v", err)
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if claimed.ExecutionStartedAt.IsZero() || claimed.ExecutionDeadline.Sub(claimed.ExecutionStartedAt) != time.Hour {
+		t.Fatalf("execution clocks = start %v deadline %v", claimed.ExecutionStartedAt, claimed.ExecutionDeadline)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || jobs[0].StartedAt.IsZero() || jobs[0].StartedAt.Before(queuedAt.Add(time.Hour)) {
+		t.Fatalf("jobs = %+v err=%v", jobs, err)
+	}
+}
+
+func TestExecutionDeadlineSurvivesLeaseReclaimAndTimesOut(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "execution")
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixedDeadline := claimed.ExecutionDeadline
+	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
+	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reclaimed.ExecutionDeadline.Equal(fixedDeadline) {
+		t.Fatalf("deadline changed from %v to %v", fixedDeadline, reclaimed.ExecutionDeadline)
+	}
+	reclaimed.ExecutionDeadline = time.Now().Add(-time.Second)
+	if err = st.UpdateWorkOrder(ctx, reclaimed); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := service.List(ctx)
+	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderTimedOut || orders[0].Claimable {
+		t.Fatalf("orders = %+v err=%v", orders, err)
+	}
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderTimedOut) {
+		t.Fatalf("timeout claim error = %v", err)
+	}
+	if _, err = service.Progress(ctx, order.ID, "second", "late progress"); !errors.Is(err, store.ErrWorkOrderTimedOut) {
+		t.Fatalf("timeout progress error = %v", err)
+	}
+}
+
+func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "stale")
+	order.QueueDeadline = time.Now().Add(-time.Second)
+	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := service.List(ctx)
+	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderStale || orders[0].Claimable {
+		t.Fatalf("orders = %+v err=%v", orders, err)
+	}
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderStale) {
+		t.Fatalf("stale claim error = %v", err)
+	}
+}
+
+func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "redispatch")
+	order.QueueDeadline = time.Now().Add(-time.Second)
+	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	redispatched, err := service.Redispatch(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 ||
+		redispatched.QueueDeadline.Sub(redispatched.QueueEnteredAt) != config.DefaultWorkOrderQueueTimeout ||
+		!redispatched.ExecutionStartedAt.IsZero() || !redispatched.ExecutionDeadline.IsZero() {
+		t.Fatalf("redispatched = %+v", redispatched)
+	}
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt"}); err != nil {
+		t.Fatal(err)
+	}
+	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
+	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
+	if staleEvents != 1 || redispatchEvents != 1 {
+		t.Fatalf("audit events stale=%d redispatch=%d", staleEvents, redispatchEvents)
+	}
+}
+
+func newLifecycleService(t *testing.T, id string) (context.Context, store.Store, *Service, core.WorkOrder) {
+	t.Helper()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: id + "-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: id + "-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
+	}}
+	stored, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx, st, service, stored
 }
 
 func TestExpiredLeaseReturnsWorkOrderToQueue(t *testing.T) {

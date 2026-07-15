@@ -103,8 +103,9 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (Job, error) {
 const getLatestJob = `-- name: GetLatestJob :one
 SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
+LEFT JOIN work_orders wo ON wo.job_id = j.id
 WHERE j.task_id = $1 AND t.workspace_id = $2
-ORDER BY j.started_at DESC, j.id DESC
+ORDER BY COALESCE(j.started_at, wo.queue_entered_at) DESC, j.id DESC
 LIMIT 1
 `
 
@@ -806,8 +807,9 @@ func (q *Queries) ListInterventions(ctx context.Context, arg ListInterventionsPa
 const listJobs = `-- name: ListJobs :many
 SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id
+LEFT JOIN work_orders wo ON wo.job_id = j.id
 WHERE j.task_id = $1 AND t.workspace_id = $2
-ORDER BY j.started_at, j.id
+ORDER BY COALESCE(j.started_at, wo.queue_entered_at), j.id
 `
 
 type ListJobsParams struct {

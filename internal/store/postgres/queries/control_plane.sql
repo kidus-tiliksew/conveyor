@@ -110,14 +110,16 @@ WHERE j.id = $1 AND t.workspace_id = $2;
 -- name: ListJobs :many
 SELECT j.* FROM jobs j
 JOIN tasks t ON t.id = j.task_id
+LEFT JOIN work_orders wo ON wo.job_id = j.id
 WHERE j.task_id = $1 AND t.workspace_id = $2
-ORDER BY j.started_at, j.id;
+ORDER BY COALESCE(j.started_at, wo.queue_entered_at), j.id;
 
 -- name: GetLatestJob :one
 SELECT j.* FROM jobs j
 JOIN tasks t ON t.id = j.task_id
+LEFT JOIN work_orders wo ON wo.job_id = j.id
 WHERE j.task_id = $1 AND t.workspace_id = $2
-ORDER BY j.started_at DESC, j.id DESC
+ORDER BY COALESCE(j.started_at, wo.queue_entered_at) DESC, j.id DESC
 LIMIT 1;
 
 -- name: InsertEvent :one
