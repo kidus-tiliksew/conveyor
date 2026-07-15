@@ -149,18 +149,26 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
-	if s.Workspaces == nil {
-		if explicit != "" {
-			return explicit, nil
+	var items []core.Workspace
+	if s.Workspaces != nil {
+		var err error
+		items, err = s.Workspaces.ListWorkspaces(ctx)
+		if err != nil {
+			return "", err
 		}
-		if s.Workspace != "" {
-			return s.Workspace, nil
+	} else {
+		seen := map[string]bool{}
+		fallbacks := []string{s.Workspace}
+		if s.Deployment != nil {
+			fallbacks = append(fallbacks, s.Deployment.Workspace)
 		}
-		return "test", nil
-	}
-	items, err := s.Workspaces.ListWorkspaces(ctx)
-	if err != nil {
-		return "", err
+		for _, id := range fallbacks {
+			id = strings.TrimSpace(id)
+			if id != "" && !seen[id] {
+				items = append(items, core.Workspace{ID: id, Name: id})
+				seen[id] = true
+			}
+		}
 	}
 	if explicit == "" {
 		if len(items) == 0 {

@@ -46,7 +46,13 @@ export async function fetchWorkspaces(token: string) {
   return response.json() as Promise<WorkspaceRecord[]>
 }
 
-export async function createWorkspace(token: string, input: { id: string; name: string }) {
+export interface CreateWorkspaceInput {
+  id: string
+  name: string
+  document?: Partial<WorkspaceConfigDocument>
+}
+
+export async function createWorkspace(token: string, input: CreateWorkspaceInput) {
   const response = await fetch('/v1/workspaces', { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input) })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<WorkspaceRecord>

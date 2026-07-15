@@ -761,6 +761,17 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	}
 	order.Claimable = order.State == core.WorkOrderQueued
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var linked bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM tasks t
+			JOIN jobs j ON j.task_id=t.id
+			WHERE t.workspace_id=$1 AND t.id=$2 AND j.id=$3 AND j.stage=$4
+		)`, workspace(ctx), order.TaskID, order.JobID, order.Stage).Scan(&linked); err != nil {
+			return err
+		}
+		if !linked {
+			return fmt.Errorf("work order task %s and job %s are not linked in workspace %s", order.TaskID, order.JobID, workspace(ctx))
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, lease_expires_at,

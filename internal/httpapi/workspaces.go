@@ -25,10 +25,11 @@ type createWorkspaceRequest struct {
 }
 
 type createWorkspaceDocument struct {
-	Workspace  *string         `json:"workspace,omitempty"`
-	MaxBounces *int            `json:"max_bounces,omitempty"`
-	Routing    *config.Routing `json:"routing,omitempty"`
-	Repos      *[]config.Repo  `json:"repos,omitempty"`
+	Workspace                 *string         `json:"workspace,omitempty"`
+	MaxBounces                *int            `json:"max_bounces,omitempty"`
+	WorkOrderQueueTimeoutText *string         `json:"work_order_queue_timeout,omitempty"`
+	Routing                   *config.Routing `json:"routing,omitempty"`
+	Repos                     *[]config.Repo  `json:"repos,omitempty"`
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +106,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.MaxBounces != nil {
 			document.MaxBounces = *partial.MaxBounces
+		}
+		if partial.WorkOrderQueueTimeoutText != nil {
+			document.WorkOrderQueueTimeoutText = *partial.WorkOrderQueueTimeoutText
 		}
 		if partial.Routing != nil {
 			document.Routing = *partial.Routing

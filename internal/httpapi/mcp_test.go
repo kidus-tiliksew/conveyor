@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -120,5 +121,32 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	events, err := st.ListEvents(t.Context(), first.ID)
 	if err != nil || len(events) != 1 || events[0].ActorID != "issue-triage-agent" || events[0].ActorRole != core.ActorAgent {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestResolveMCPWorkspaceFallbackFailsClosed(t *testing.T) {
+	t.Parallel()
+	server := NewServer(store.NewMemory())
+	if _, err := server.resolveMCPWorkspace(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "workspace_unavailable") {
+		t.Fatalf("zero-workspace omission error = %v", err)
+	}
+	if _, err := server.resolveMCPWorkspace(t.Context(), "unknown"); err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+		t.Fatalf("zero-workspace explicit error = %v", err)
+	}
+
+	server.Workspace = "alpha"
+	if got, err := server.resolveMCPWorkspace(t.Context(), ""); err != nil || got != "alpha" {
+		t.Fatalf("singleton omission = %q, %v", got, err)
+	}
+	if got, err := server.resolveMCPWorkspace(t.Context(), "alpha"); err != nil || got != "alpha" {
+		t.Fatalf("singleton explicit = %q, %v", got, err)
+	}
+	if _, err := server.resolveMCPWorkspace(t.Context(), "beta"); err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+		t.Fatalf("unknown singleton explicit error = %v", err)
+	}
+
+	server.Deployment = &config.Config{Workspace: "beta"}
+	if _, err := server.resolveMCPWorkspace(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "workspace_required") {
+		t.Fatalf("ambiguous omission error = %v", err)
 	}
 }
