@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
@@ -103,6 +105,13 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	clockClaim.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, clockClaim); !errors.Is(err, store.ErrWorkOrderTimedOut) {
+		t.Fatalf("stale timed-out update error=%v", err)
+	}
+	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut {
+		t.Fatalf("timed out after stale update=%+v err=%v", timedOut, getErr)
 	}
 
 	staleTaskID := core.NewTaskID()

@@ -989,7 +989,42 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 }
 
 func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	var lifecycleErr error
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		current, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", s.workspace, order.ID))
+		if err != nil {
+			return notFound(err, "work order %s", order.ID)
+		}
+		now := time.Now().UTC()
+		if (current.State == core.WorkOrderQueued || current.State == core.WorkOrderClaimed) &&
+			!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
+			if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+				return err
+			}
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderTimedOut {
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderStale {
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderStale, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderClaimed && !current.LeaseExpiresAt.After(now) {
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
+				session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+				updated_at=$1 WHERE workspace_id=$2 AND id=$3`, now, s.workspace, order.ID); err != nil {
+				return err
+			}
+			lifecycleErr = fmt.Errorf("work order lease expired")
+			return nil
+		}
+		if updateRequiresClaim(order.State, current.State) &&
+			(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
+			return fmt.Errorf("work order %s is not claimed by this session", order.ID)
+		}
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
 			queue_entered_at=$8, queue_deadline=$9, execution_started_at=$10,
@@ -1008,6 +1043,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
 	})
+	if err != nil {
+		return err
+	}
+	return lifecycleErr
+}
+
+func updateRequiresClaim(next, current core.WorkOrderState) bool {
+	if next == core.WorkOrderClaimed {
+		return true
+	}
+	return current != next && (next == core.WorkOrderSubmitted || next == core.WorkOrderCompleted)
 }
 
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,

@@ -501,13 +501,32 @@ func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]b
 func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.workOrders[order.ID]; !ok {
+	current, ok := m.workOrders[order.ID]
+	if !ok {
 		return fmt.Errorf("work order %s not found", order.ID)
+	}
+	current = m.refreshWorkOrderLocked(ctx, current, time.Now().UTC())
+	if current.State == core.WorkOrderTimedOut {
+		return fmt.Errorf("%w: %s", ErrWorkOrderTimedOut, order.ID)
+	}
+	if current.State == core.WorkOrderStale {
+		return fmt.Errorf("%w: %s", ErrWorkOrderStale, order.ID)
+	}
+	if updateRequiresClaim(order.State, current.State) &&
+		(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
+		return fmt.Errorf("work order %s is not claimed by this session", order.ID)
 	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
 	return nil
+}
+
+func updateRequiresClaim(next, current core.WorkOrderState) bool {
+	if next == core.WorkOrderClaimed {
+		return true
+	}
+	return current != next && (next == core.WorkOrderSubmitted || next == core.WorkOrderCompleted)
 }
 
 func (m *memory) CreateFeature(ctx context.Context, feature core.Feature) error {

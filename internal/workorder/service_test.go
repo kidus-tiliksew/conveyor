@@ -300,11 +300,15 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	order, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner", ClientToken: "secret", Lease: time.Nanosecond})
+	order, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner", ClientToken: "secret", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	order.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	order.LeaseExpiresAt = time.Now().Add(-time.Second)
 	if err = st.UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
