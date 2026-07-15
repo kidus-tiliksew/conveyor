@@ -45,6 +45,10 @@ type Store interface {
 	UpdateJob(ctx context.Context, j core.Job) error
 	ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
 	GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error)
+	// WithTaskLock serializes one workspace-scoped external side effect across
+	// concurrent control-plane instances while its callback rechecks durable
+	// state. Implementations must release the lock when the callback returns.
+	WithTaskLock(ctx context.Context, taskID string, fn func() error) error
 
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
@@ -123,6 +127,16 @@ type memory struct {
 	artifacts     map[string]memoryArtifact
 	nextEventID   int64
 	nextReviewID  int64
+	taskLocks     sync.Map
+}
+
+func (m *memory) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
+	workspace, _ := WorkspaceFromContext(ctx)
+	value, _ := m.taskLocks.LoadOrStore(workspace+"/"+taskID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
 }
 
 func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {

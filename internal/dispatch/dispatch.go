@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -23,17 +24,23 @@ import (
 )
 
 type Dispatcher struct {
-	Store          store.Store
-	Cfg            *config.Config
-	Pack           *pack.Bundle
-	Agent          inprocess.Agent
-	ConfigProvider func(context.Context) (*config.Config, error)
-	queue          chan queuedTask
-	durableQueue   bool
+	Store           store.Store
+	Cfg             *config.Config
+	Pack            *pack.Bundle
+	Agent           inprocess.Agent
+	ConfigProvider  func(context.Context) (*config.Config, error)
+	ViewPullRequest func(context.Context, string, string) (github.PullRequest, error)
+	RequestMerge    func(context.Context, string, int) error
+	queue           chan queuedTask
+	durableQueue    bool
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
-	return &Dispatcher{Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64)}
+	return &Dispatcher{
+		Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64),
+		ViewPullRequest: github.PullRequestForBranch,
+		RequestMerge:    github.MergePullRequest,
+	}
 }
 
 type queuedTask struct{ Workspace, TaskID string }
@@ -422,6 +429,81 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return nil
 	}
 	return nil
+}
+
+// MergeApprovedTask performs the final human-gate transition. A durable-store
+// task lock serializes browser retries across control-plane instances; the
+// authoritative pre-merge read makes retries after a process restart safe by
+// reconciling a PR that GitHub already merged (spec §4, §13.2).
+func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
+	return d.Store.WithTaskLock(ctx, task.ID, func() error {
+		return d.mergeApprovedTaskLocked(ctx, task)
+	})
+}
+
+func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task) error {
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if current.State == core.TaskMerged {
+		return nil
+	}
+	if current.State != core.TaskApproved {
+		return fmt.Errorf("task %s is not approved for merge", task.ID)
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return d.recordMergeFailure(ctx, current, "workspace_config_unavailable", fmt.Errorf("load workspace repository configuration: %w", err))
+	}
+	repo, ok := cfg.Repo(current.Repo)
+	if !ok || strings.TrimSpace(repo.GitHub) == "" {
+		return d.recordMergeFailure(ctx, current, "unsupported_repository", fmt.Errorf("repository %q does not configure GitHub; merge it in its forge and retry reconciliation", current.Repo))
+	}
+
+	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+	if err != nil {
+		if errors.Is(err, github.ErrPullRequestNotFound) {
+			return d.recordMergeFailure(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging", current.Branch))
+		}
+		return d.recordMergeFailure(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err))
+	}
+	if pr.Merged {
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "result": "already_merged"})}); err != nil {
+			return err
+		}
+		return d.transition(ctx, current.ID, core.TaskMerged, "", "")
+	}
+	if pr.State != "open" {
+		return d.recordMergeFailure(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State))
+	}
+	if pr.Mergeable != "MERGEABLE" {
+		return d.recordMergeFailure(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable))
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL})}); err != nil {
+		return err
+	}
+	if err := d.RequestMerge(ctx, repo.GitHub, pr.Number); err != nil {
+		return d.recordMergeFailure(ctx, current, "forge_merge_failed", fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err))
+	}
+	confirmed, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+	if err != nil {
+		return d.recordMergeFailure(ctx, current, "merge_verification_failed", fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err))
+	}
+	if !confirmed.Merged {
+		return d.recordMergeFailure(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number))
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL})}); err != nil {
+		return err
+	}
+	return d.transition(ctx, current.ID, core.TaskMerged, "", "")
+}
+
+func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": reason, "error": mergeErr.Error()})}); err != nil {
+		return fmt.Errorf("%v; record merge failure: %w", mergeErr, err)
+	}
+	return mergeErr
 }
 
 // PollGitHub preserves issue intake while execution ownership moves to MCP.

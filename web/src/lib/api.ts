@@ -154,3 +154,12 @@ export async function reviewTask(taskId: string, token: string, input: ReviewInp
     checkout_guidance: string
   }>
 }
+
+export async function mergeTask(taskId: string, token: string) {
+	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`), {
+		method: 'POST',
+		headers: mutationHeaders(token),
+	})
+	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+	return response.json() as Promise<Task>
+}

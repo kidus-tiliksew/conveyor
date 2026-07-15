@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -376,6 +377,78 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("missing reason status = %d", response.Code)
+	}
+
+	if err := st.UpdateTaskState(context.Background(), "running", core.TaskApproved); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "merge operation") {
+		t.Fatalf("approved review status=%d body=%s", response.Code, response.Body.String())
+	}
+	interventions, err := st.ListInterventions(context.Background(), "running")
+	if err != nil || len(interventions) != 0 {
+		t.Fatalf("interventions=%+v err=%v", interventions, err)
+	}
+}
+
+func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
+	t.Parallel()
+	st := store.NewMemory()
+	ctx := context.Background()
+	if err := st.CreateTask(ctx, core.Task{ID: "approved", State: core.TaskApproved, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.BearerToken = "token"
+	mergeCalls := 0
+	s.OnMerge = func(ctx context.Context, task core.Task) error {
+		mergeCalls++
+		if task.State == core.TaskApproved {
+			return st.SetTaskTransition(ctx, task.ID, core.TaskMerged, "", "")
+		}
+		return nil
+	}
+	h := s.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/tasks/approved/merge", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+	for range 2 {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/approved/merge", nil)
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	current, err := st.GetTask(ctx, "approved")
+	if err != nil || current.State != core.TaskMerged || mergeCalls != 2 {
+		t.Fatalf("task=%+v mergeCalls=%d err=%v", current, mergeCalls, err)
+	}
+}
+
+func TestMergeTaskDoesNotReportUnconfirmedSuccess(t *testing.T) {
+	t.Parallel()
+	st := store.NewMemory()
+	if err := st.CreateTask(context.Background(), core.Task{ID: "approved", State: core.TaskApproved}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.BearerToken = "token"
+	s.OnMerge = func(context.Context, core.Task) error { return nil }
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/approved/merge", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "not confirmed") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

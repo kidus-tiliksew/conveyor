@@ -135,6 +135,7 @@ func main() {
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 	srv.OnIntervention = d.HandleIntervention
+	srv.OnMerge = d.MergeApprovedTask
 	srv.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if pgStore != nil {
 			return pgStore.RuntimeConfig(ctx, deployment)
