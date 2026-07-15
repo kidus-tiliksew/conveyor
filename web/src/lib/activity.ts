@@ -2,12 +2,12 @@ import type { GroupKey } from './contracts'
 import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent } from './types'
 
 // Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
-// Human gates and parked tasks collect under "Awaiting human"; terminal
-// states archive under "Completed".
+// Human gates, approved tasks awaiting merge, and parked tasks collect under
+// "Awaiting human"; only terminal states archive under "Completed".
 export function groupForSummary(item: ActivitySummary): GroupKey {
   const { state } = item.task
-  if (state === 'awaiting_human' || state === 'parked') return 'human'
-  if (state === 'approved' || state === 'merged' || state === 'closed') return 'done'
+  if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
+  if (state === 'merged' || state === 'closed') return 'done'
   const stage = item.task.state === 'queued' ? (item.task.next_stage ?? item.latest_stage) : (item.latest_stage ?? item.task.next_stage)
   switch (stage) {
     case 'spec':
@@ -139,6 +139,14 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       return { title: 'GitHub review comments redirected the task (spec §9)' }
     case 'review.completed':
       return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: `session ${String(payload.reviewer_session ?? 'unknown')} · model ${String(payload.reviewer_model ?? 'unknown')} · same model ${String(payload.same_model_as_implementer ?? 'unknown')}` }
+    case 'merge.requested':
+      return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+    case 'merge.confirmed':
+      return { title: 'Pull request merge confirmed by GitHub', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+    case 'merge.reconciled':
+      return { title: 'Already-merged pull request reconciled', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+    case 'merge.failed':
+      return { title: 'Merge needs operator action', detail: typeof payload.error === 'string' ? payload.error : undefined, alarm: true }
     case 'dispatch.failed':
       return {
         title: 'Dispatch failed',

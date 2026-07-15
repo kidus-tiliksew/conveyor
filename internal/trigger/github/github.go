@@ -10,6 +10,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -29,6 +30,8 @@ const DispatchedLabel = "conveyor:dispatched"
 const ReviewCheckName = "Conveyor / Code review"
 
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
+
+var ErrPullRequestNotFound = errors.New("pull request not found")
 
 type Issue struct {
 	Number int    `json:"number"`
@@ -54,6 +57,61 @@ type ReviewFeedbackPage struct {
 	State    string
 	Feedback []ReviewFeedback
 	Cursor   ReviewCursor
+}
+
+// PullRequest is the authoritative forge view used by the final merge gate.
+// Mergeable mirrors GitHub's MERGEABLE, CONFLICTING, and UNKNOWN values.
+type PullRequest struct {
+	Number    int
+	URL       string
+	State     string
+	Mergeable string
+	Merged    bool
+}
+
+// PullRequestForBranch resolves the pull request attached to one assigned
+// task branch. The merge gate always reads this before and after a merge
+// request; a successful command alone is never treated as merged.
+func PullRequestForBranch(ctx context.Context, repo, branch string) (PullRequest, error) {
+	return pullRequestForBranch(ctx, repo, branch, gh)
+}
+
+func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner) (PullRequest, error) {
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable")
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
+			return PullRequest{}, fmt.Errorf("%w for branch %s", ErrPullRequestNotFound, branch)
+		}
+		return PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, err)
+	}
+	var view struct {
+		Number    int        `json:"number"`
+		URL       string     `json:"url"`
+		State     string     `json:"state"`
+		MergedAt  *time.Time `json:"mergedAt"`
+		Mergeable string     `json:"mergeable"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 {
+		return PullRequest{}, fmt.Errorf("parse pull request for branch %s", branch)
+	}
+	return PullRequest{
+		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
+		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil,
+	}, nil
+}
+
+// MergePullRequest asks GitHub for a normal merge commit. Branch protections
+// remain authoritative; Conveyor never forces or bypasses them.
+func MergePullRequest(ctx context.Context, repo string, number int) error {
+	return mergePullRequest(ctx, repo, number, gh)
+}
+
+func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {
+	_, err := run(ctx, "pr", "merge", strconv.Itoa(number), "--repo", repo, "--merge")
+	if err != nil {
+		return fmt.Errorf("merge pull request %s#%d: %w", repo, number, err)
+	}
+	return nil
 }
 
 // ListReviewFeedback returns human-authored PR review bodies and inline

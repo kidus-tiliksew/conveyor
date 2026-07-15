@@ -30,6 +30,8 @@ type Server struct {
 	// OnIntervention advances stage gates after the append-only decision is
 	// committed (spec §4, §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
+	// OnMerge performs and authoritatively confirms the final forge merge.
+	OnMerge func(context.Context, core.Task) error
 	// Workspace stamps created tasks.
 	Workspace string
 	// BearerToken authenticates mutating requests (spec §17.3). An empty
@@ -84,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/feature", s.assignTaskFeature)
 			r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
@@ -198,6 +201,10 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid review action", http.StatusBadRequest)
 		return
 	}
+	if task.State == core.TaskApproved && request.Action == core.InterventionApprove {
+		http.Error(w, "approved tasks must use the merge operation", http.StatusConflict)
+		return
+	}
 	request.ReasonCode = strings.TrimSpace(request.ReasonCode)
 	if request.ReasonCode == "" || len(request.ReasonCode) > 64 {
 		http.Error(w, "reason_code is required and must be at most 64 characters", http.StatusBadRequest)
@@ -248,6 +255,37 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		"checkout_available": checkoutAvailable,
 		"checkout_guidance":  checkoutGuidance,
 	})
+}
+
+func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	task, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if task.State != core.TaskApproved && task.State != core.TaskMerged {
+		http.Error(w, "task is not approved for merge", http.StatusConflict)
+		return
+	}
+	if s.OnMerge == nil {
+		http.Error(w, "merge operation is not configured", http.StatusNotImplemented)
+		return
+	}
+	if err := s.OnMerge(r.Context(), task); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	updated, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if updated.State != core.TaskMerged {
+		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func reviewable(state core.TaskState) bool {

@@ -107,6 +107,65 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	}
 }
 
+func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
+	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
+	}
+	root := context.Background()
+	st, err := Open(root, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := store.WithWorkspace(root, "lock-workspace")
+	entered, release, done := make(chan int, 2), make(chan struct{}), make(chan error, 2)
+	go func() {
+		done <- st.WithTaskLock(ctx, "same-task", func() error {
+			entered <- 1
+			<-release
+			return nil
+		})
+	}()
+	if first := <-entered; first != 1 {
+		t.Fatalf("first entrant=%d", first)
+	}
+	otherWorkspace := make(chan error, 1)
+	go func() {
+		otherWorkspace <- st.WithTaskLock(store.WithWorkspace(root, "other-workspace"), "same-task", func() error {
+			return nil
+		})
+	}()
+	select {
+	case err := <-otherWorkspace:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("another workspace was blocked by the task lock")
+	}
+	go func() {
+		done <- st.WithTaskLock(ctx, "same-task", func() error {
+			entered <- 2
+			return nil
+		})
+	}()
+	select {
+	case second := <-entered:
+		t.Fatalf("second callback entered before release: %d", second)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if second := <-entered; second != 2 {
+		t.Fatalf("second entrant=%d", second)
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func isolationConfig(workspace string) *config.Config {
 	return &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo.git", Base: "main"}}}
 }

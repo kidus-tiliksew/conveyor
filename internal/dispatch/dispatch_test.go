@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,11 +14,177 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type reviewAcceptanceFlakyStore struct {
 	store.Store
 	failures int
+}
+
+func approvedMergeFixture(t *testing.T, githubRepo string) (context.Context, store.Store, core.Task, *Dispatcher) {
+	t.Helper()
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", Branch: "conveyor/merge-task", State: core.TaskApproved, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: githubRepo}}}, nil)
+	return ctx, st, task, d
+}
+
+func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	views, merges := 0, 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		if views == 1 {
+			return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE"}, nil
+		}
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "closed", Merged: true}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
+
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskMerged || merges != 1 || views != 2 {
+		t.Fatalf("task=%+v merges=%d views=%d err=%v", current, merges, views, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requested, confirmed int
+	for _, event := range events {
+		requested += boolInt(event.Kind == "merge.requested")
+		confirmed += boolInt(event.Kind == "merge.confirmed")
+	}
+	if requested != 1 || confirmed != 1 {
+		t.Fatalf("events=%+v", events)
+	}
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if merges != 1 || views != 2 {
+		t.Fatalf("idempotent retry merges=%d views=%d", merges, views)
+	}
+}
+
+func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true}, nil
+	}
+	mergeCalled := false
+	d.RequestMerge = func(context.Context, string, int) error { mergeCalled = true; return nil }
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	if current.State != core.TaskMerged || mergeCalled {
+		t.Fatalf("task=%+v mergeCalled=%t", current, mergeCalled)
+	}
+	events, _ := st.ListEvents(ctx, task.ID)
+	found := false
+	for _, event := range events {
+		found = found || event.Kind == "merge.reconciled"
+	}
+	if !found {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		githubRepo string
+		view       func(context.Context, string, string) (githubtrigger.PullRequest, error)
+		merge      func(context.Context, string, int) error
+		reason     string
+	}{
+		{name: "non GitHub repository", reason: "unsupported_repository"},
+		{name: "missing pull request", githubRepo: "acme/app", reason: "missing_pull_request", view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{}, githubtrigger.ErrPullRequestNotFound
+		}},
+		{name: "forge merge failure", githubRepo: "acme/app", reason: "forge_merge_failed", view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE"}, nil
+		}, merge: func(context.Context, string, int) error { return errors.New("branch protection") }},
+		{name: "unconfirmed result", githubRepo: "acme/app", reason: "merge_unconfirmed", view: func() func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			calls := 0
+			return func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				calls++
+				return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", Merged: false}, nil
+			}
+		}(), merge: func(context.Context, string, int) error { return nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, task, d := approvedMergeFixture(t, test.githubRepo)
+			if test.view != nil {
+				d.ViewPullRequest = test.view
+			}
+			if test.merge != nil {
+				d.RequestMerge = test.merge
+			}
+			if err := d.MergeApprovedTask(ctx, task); err == nil {
+				t.Fatal("expected merge error")
+			}
+			current, _ := st.GetTask(ctx, task.ID)
+			if current.State != core.TaskApproved {
+				t.Fatalf("state=%s", current.State)
+			}
+			events, _ := st.ListEvents(ctx, task.ID)
+			last := events[len(events)-1]
+			if last.Kind != "merge.failed" || !strings.Contains(string(last.Payload), test.reason) {
+				t.Fatalf("last event=%+v", last)
+			}
+		})
+	}
+}
+
+func TestMergeApprovedTaskSerializesConcurrentRequests(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	merged, mergeCalls := false, 0
+	var forgeMu sync.Mutex
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		forgeMu.Lock()
+		defer forgeMu.Unlock()
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", Merged: merged}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error {
+		forgeMu.Lock()
+		defer forgeMu.Unlock()
+		mergeCalls++
+		merged = true
+		return nil
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			errs <- d.MergeApprovedTask(ctx, task)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	if current.State != core.TaskMerged || mergeCalls != 1 {
+		t.Fatalf("state=%s mergeCalls=%d", current.State, mergeCalls)
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {

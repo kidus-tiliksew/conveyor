@@ -60,6 +60,33 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
+// WithTaskLock holds a workspace-scoped Postgres advisory lock across one
+// external side effect. This keeps duplicate dashboard requests and multiple
+// daemon instances from issuing concurrent forge merge calls.
+func (s *Store) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
+		conn.Release()
+		return err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock(hashtext($1))", key); err != nil {
+			// A session lock survives until its connection closes. Never return a
+			// connection with a possibly-held task lock to the pool.
+			_ = conn.Hijack().Close(unlockCtx)
+			return
+		}
+		conn.Release()
+	}()
+	return fn()
+}
+
 func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 	_, err := s.BootstrapWorkspaceConfig(ctx, cfg)
 	return err

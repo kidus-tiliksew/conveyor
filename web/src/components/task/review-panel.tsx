@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitMerge, ThumbsUp, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
-import { reviewTask } from '../../lib/api'
+import { mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -31,8 +31,8 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
       tone: 'positive',
       icon: GitMerge,
       headline: 'Ready to merge',
-      detail: 'Approved at the gate — one click merges or advances the task.',
-      primaryLabel: 'Merge or advance',
+      detail: 'Approved at the gate — Conveyor will merge the pull request and confirm it with GitHub.',
+      primaryLabel: 'Merge pull request',
     }
   }
   if (task.state === 'parked') {
@@ -85,6 +85,10 @@ const toneStyles: Record<GateTone, { card: string; header: string; title: string
 
 const secondaryActions = interventionActions.filter((entry) => entry.action !== 'approve')
 
+type GateMutation =
+  | { kind: 'merge' }
+  | { kind: 'review'; action: InterventionAction; comment: string }
+
 export function ReviewPanel({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
@@ -96,8 +100,13 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
   const Icon = gate.icon
 
   const mutation = useMutation({
-    mutationFn: (input: { action: InterventionAction; comment: string }) =>
-      reviewTask(item.task.id, token, { ...input, reasonCode: defaultReasonCode[input.action] }),
+    mutationFn: async (input: GateMutation) => {
+      if (input.kind === 'merge') {
+        await mergeTask(item.task.id, token)
+        return
+      }
+      await reviewTask(item.task.id, token, { action: input.action, comment: input.comment, reasonCode: defaultReasonCode[input.action] })
+    },
     onSuccess: () => {
       setExpanded(null)
       setComment('')
@@ -124,10 +133,12 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
         </div>
         <Button
           disabled={!token || mutation.isPending}
-          onClick={() => mutation.mutate({ action: 'approve', comment: '' })}
+          onClick={() => item.task.state === 'approved'
+            ? mutation.mutate({ kind: 'merge' })
+            : mutation.mutate({ kind: 'review', action: 'approve', comment: '' })}
         >
-          <ThumbsUp />
-          {mutation.isPending && !expanded ? 'Recording…' : gate.primaryLabel}
+          {item.task.state === 'approved' ? <GitMerge /> : <ThumbsUp />}
+          {mutation.isPending && !expanded ? (item.task.state === 'approved' ? 'Merging…' : 'Recording…') : gate.primaryLabel}
         </Button>
       </div>
       <div className="px-4 py-2.5">
@@ -172,7 +183,7 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
                 variant={expanded === 'reject' ? 'destructive' : 'secondary'}
                 size="sm"
                 disabled={!token || mutation.isPending || (expanded === 'redirect' && !comment.trim())}
-                onClick={() => mutation.mutate({ action: expanded!, comment })}
+                onClick={() => mutation.mutate({ kind: 'review', action: expanded!, comment })}
               >
                 {mutation.isPending ? 'Recording…' : expandedEntry.confirmLabel}
               </Button>

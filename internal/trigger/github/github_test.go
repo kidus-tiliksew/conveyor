@@ -31,6 +31,44 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	}
 }
 
+func TestPullRequestForBranchReturnsAuthoritativeMergeState(t *testing.T) {
+	pr, err := pullRequestForBranch(context.Background(), "acme/api", "conveyor/task-1", func(_ context.Context, args ...string) ([]byte, error) {
+		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable" {
+			t.Fatalf("args = %s", got)
+		}
+		return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","state":"CLOSED","mergedAt":"2026-07-15T10:00:00Z","mergeable":"UNKNOWN"}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.Number != 12 || !pr.Merged || pr.State != "closed" || pr.Mergeable != "UNKNOWN" {
+		t.Fatalf("pull request = %+v", pr)
+	}
+}
+
+func TestPullRequestForBranchClassifiesMissingPR(t *testing.T) {
+	_, err := pullRequestForBranch(context.Background(), "acme/api", "conveyor/missing", func(context.Context, ...string) ([]byte, error) {
+		return nil, errors.New("no pull requests found for branch conveyor/missing")
+	})
+	if !errors.Is(err, ErrPullRequestNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMergePullRequestUsesNormalGitHubMerge(t *testing.T) {
+	var got string
+	err := mergePullRequest(context.Background(), "acme/api", 12, func(_ context.Context, args ...string) ([]byte, error) {
+		got = strings.Join(args, " ")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "pr merge 12 --repo acme/api --merge" {
+		t.Fatalf("args = %s", got)
+	}
+}
+
 func TestMarkIssueDispatchedDoesNotEditWhenLabelSetupFails(t *testing.T) {
 	calls := 0
 	run := func(_ context.Context, _ ...string) ([]byte, error) {
