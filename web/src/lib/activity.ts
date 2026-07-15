@@ -1,5 +1,5 @@
 import type { GroupKey } from './contracts'
-import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent } from './types'
+import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent, WorkOrder } from './types'
 
 // Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, and parked tasks collect under
@@ -72,8 +72,9 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
 }
 
 export type TimelineEntry =
-  | { type: 'job'; at: string; job: Job; summary: string }
+  | { type: 'job'; at: string; job: Job; summary: string; model: string }
   | { type: 'note'; at: string; key: string; title: string; detail?: string; href?: string; alarm?: boolean }
+  | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
 
 function jobSummary(job: Job, events: TaskEvent[]): string {
@@ -137,8 +138,15 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} approved` }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
-    case 'review.completed':
-      return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: `session ${String(payload.reviewer_session ?? 'unknown')} · model ${String(payload.reviewer_model ?? 'unknown')} · same model ${String(payload.same_model_as_implementer ?? 'unknown')}` }
+    case 'review.completed': {
+      // Session ids and boolean flags are audit payload, not narrative; only
+      // the reviewer model and a same-model caveat matter to a reader.
+      const parts = [
+        typeof payload.reviewer_model === 'string' ? payload.reviewer_model : undefined,
+        payload.same_model_as_implementer === true ? 'same model as the implementer' : undefined,
+      ].filter(Boolean)
+      return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: parts.join(' · ') || undefined }
+    }
     case 'merge.requested':
       return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.confirmed':
@@ -160,14 +168,79 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
   }
 }
 
+// Fallback summaries a work order's self-reported progress may replace.
+const genericSummaries = new Set([
+  'Queued.',
+  'Queued for an operator-owned agent over MCP.',
+  'In progress.',
+  'Completed.',
+  'The job failed before producing a summary.',
+])
+
+// Work orders fold into the timeline (spec §21.4) instead of a separate
+// block: narration and attribution enrich the matching stage entry, and only
+// states a job entry cannot carry — waiting for an agent, stale, timed out —
+// become entries of their own.
+function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
+  const stage = order.stage === 'implement' ? 'Implementation' : 'Review'
+  const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}` }
+  switch (order.state) {
+    case 'queued':
+      return {
+        ...base,
+        tone: 'waiting',
+        title: `${stage} — waiting for an operator agent`,
+        detail: 'Any agent connected over MCP can claim this. The server URL is in Settings.',
+      }
+    case 'claimed':
+      // A claimed order normally has a running job entry carrying the story.
+      if (hasJobEntry) return undefined
+      return {
+        ...base,
+        tone: 'active',
+        title: `${stage} — in progress`,
+        detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
+      }
+    case 'stale':
+      return {
+        ...base,
+        tone: 'alarm',
+        title: `${stage} — went stale in the queue`,
+        detail: 'No agent claimed it before queue retention elapsed. Redispatch to offer it again.',
+      }
+    case 'timed_out':
+      return {
+        ...base,
+        tone: 'alarm',
+        title: `${stage} — timed out`,
+        detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
+      }
+    default:
+      // submitted/completed/cancelled: the job entry and review events tell it.
+      return undefined
+  }
+}
+
 // The costed event timeline (spec §13.3): one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 	const entries: TimelineEntry[] = []
+	const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
+	const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
 	for (const job of item.jobs) {
 		if (!job.started_at) continue
-		entries.push({ type: 'job', at: job.started_at, job, summary: jobSummary(job, item.events) })
+		const order = orderByJob.get(job.id)
+		let summary = jobSummary(job, item.events)
+		if (order?.progress && genericSummaries.has(summary)) summary = order.progress
+		// BYOA jobs carry a placeholder tier; the work order knows the model
+		// the operator's agent actually ran.
+		const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
+		entries.push({ type: 'job', at: job.started_at, job, summary, model })
+  }
+  for (const order of item.work_orders ?? []) {
+    const entry = orderEntry(order, startedJobs.has(order.job_id))
+    if (entry) entries.push(entry)
   }
   for (const event of item.events) {
     const note = noteFor(event)

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@lobehub/icons-static-svg": "^1.93.0",
     "@tanstack/react-query": "5.101.2",
     "@tanstack/react-router": "1.170.17",
     "class-variance-authority": "0.7.1",

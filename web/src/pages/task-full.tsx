@@ -7,7 +7,6 @@ import { SpecCard } from '../components/task/spec-card'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
-import { WorkOrders } from '../components/task/work-orders'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 
@@ -82,7 +81,6 @@ function FullBody({ item }: { item: ActivityItem }) {
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
           {reviewable && <ReviewPanel item={item} />}
-          <WorkOrders orders={item.work_orders ?? []} />
           {canRedispatch(item) && <RedispatchCard item={item} />}
           <Timeline item={item} />
         </section>

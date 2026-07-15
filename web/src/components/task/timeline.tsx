@@ -1,4 +1,7 @@
-import { AlertTriangle, ExternalLink, UserRound } from 'lucide-react'
+import { AlertTriangle, Cpu, ExternalLink, UserRound } from 'lucide-react'
+import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
+import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
+import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Job } from '../../lib/types'
@@ -44,8 +47,28 @@ function keyFor(entry: TimelineEntry) {
   return entry.key
 }
 
+const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], string> = {
+  waiting: 'bg-edge',
+  active: 'animate-pulse bg-primary',
+  alarm: 'bg-attention-dot',
+}
+
 function TimelineRow({ entry }: { entry: TimelineEntry }) {
-  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} />
+  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} />
+  if (entry.type === 'order') {
+    return (
+      <li className="relative pl-7">
+        <TimelineDot className={orderDots[entry.tone]} />
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-1 py-1.5">
+          <span className={cn('text-sm font-medium', entry.tone === 'alarm' ? 'text-attention' : 'text-foreground/90')}>
+            {entry.title}
+          </span>
+          {entry.detail && <span className="text-xs text-muted">{entry.detail}</span>}
+          <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+        </div>
+      </li>
+    )
+  }
   if (entry.type === 'intervention') {
     const { intervention } = entry
     return (
@@ -58,9 +81,6 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
             {intervention.reason_code !== defaultReasonCode[intervention.action] && (
               <Badge variant="mono">{intervention.reason_code}</Badge>
             )}
-            <span className="text-xs text-faint">
-              {intervention.actor_id} · {intervention.actor_role}
-            </span>
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(intervention.at)}</time>
           </div>
           {intervention.comment && <p className="mt-2 text-sm leading-6 text-foreground/85">{intervention.comment}</p>}
@@ -90,7 +110,10 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   )
 }
 
-function JobEntry({ job, summary }: { job: Job; summary: string }) {
+// The job footer keeps the operator-facing facts — duration and model — and
+// tucks the audit numbers (tokens, cost) behind a hover on the model chip.
+// Harness, auth mode, confinement, and actor plumbing stay in the API.
+function JobEntry({ job, summary, model }: { job: Job; summary: string; model: string }) {
 	if (!job.started_at) return null
 	const running = job.state === 'running'
   return (
@@ -108,31 +131,58 @@ function JobEntry({ job, summary }: { job: Job; summary: string }) {
           <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
             {stageLabels[job.stage] ?? job.stage}
           </span>
-          <Badge
-            variant={
-              job.state === 'done' ? 'positive'
-              : job.state === 'failed' ? 'failure'
-              : 'default'
-            }
-          >
-            {job.state.replaceAll('_', ' ')}
-          </Badge>
+          {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
+          {running && <Badge variant="accent">Running</Badge>}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
         </div>
         <p className="whitespace-pre-line px-4 py-3 text-sm leading-6 text-foreground/85">{summary}</p>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-2.5 font-mono text-[11px] tabular-nums text-muted">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <span>{usd(job.cost_usd)}</span>
-          <span>
-            {compactTokens(job.tokens_in)} in / {compactTokens(job.tokens_out)} out
-          </span>
-          <span className="text-faint">
-            {[job.harness, job.model_tier, job.auth_mode].filter(Boolean).join(' / ')}
-          </span>
-          <span className="text-faint">{job.confinement}</span>
+          <ModelChip model={model} costUSD={job.cost_usd} tokensIn={job.tokens_in} tokensOut={job.tokens_out} />
         </div>
       </article>
     </li>
+  )
+}
+
+// Provider logo keyed off the model name (bundled SVGs, no network fetch).
+function providerLogo(model: string): { svg: string; className?: string } | undefined {
+  const name = model.toLowerCase()
+  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai')) return { svg: openaiIcon, className: 'text-[#0a0a0a]' }
+  if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
+  if (/gemini|google/.test(name)) return { svg: geminiIcon }
+  return undefined
+}
+
+function ModelChip({ model, costUSD, tokensIn, tokensOut }: { model: string; costUSD: number; tokensIn: number; tokensOut: number }) {
+  const logo = providerLogo(model)
+  const usage = [
+    tokensIn + tokensOut > 0 ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out` : undefined,
+    costUSD > 0 ? usd(costUSD) : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <span className="group/model relative inline-flex cursor-default items-center gap-1.5">
+      {logo ? (
+        <span
+          aria-hidden
+          className={cn('inline-flex shrink-0 [&_svg]:size-3.5', logo.className)}
+          dangerouslySetInnerHTML={{ __html: logo.svg }}
+        />
+      ) : (
+        <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
+      )}
+      <span>{model}</span>
+      {usage && (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 font-mono text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:right-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/model:opacity-100"
+        >
+          {usage}
+        </span>
+      )}
+    </span>
   )
 }
 

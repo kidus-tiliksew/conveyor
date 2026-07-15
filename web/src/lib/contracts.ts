@@ -46,7 +46,7 @@ export const stageLabels: Record<string, string> = {
   implement: 'Implement',
   review: 'Code review',
   verify: 'Verify',
-  gate: 'Human gate',
+  gate: 'Approval',
   merge: 'Merge',
   monitor: 'Monitor',
 }

@@ -10,7 +10,6 @@ import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
-import { WorkOrders } from './work-orders'
 
 // The task detail sheet (spec §13.3): the costed event history plus review
 // actions, opened over the board so the reviewer never loses list context.
@@ -73,7 +72,6 @@ function SheetBody({ item }: { item: ActivityItem }) {
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {reviewable && <ReviewPanel item={item} />}
-      <WorkOrders orders={item.work_orders ?? []} />
       {canRedispatch(item) && <RedispatchCard item={item} />}
       {item.spec && <SpecCard spec={item.spec} />}
       <Timeline item={item} />
