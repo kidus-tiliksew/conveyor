@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit --pretty false"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "tailwind-merge": "3.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@tailwindcss/vite": "4.3.2",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
