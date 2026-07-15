@@ -14,24 +14,30 @@ export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
   { key: 'done', label: 'Completed' },
 ]
 
+// The decisions the gate offers. Diverges from spec §13.2 pending amendment
+// (operator decision, 2026-07-15): pull-to-local is retired from the UI in
+// the MCP pull model (agents pull work orders; humans use the checkout
+// helper), and "redirect" surfaces as "Request changes" — the wire action is
+// unchanged.
 export const interventionActions: ReadonlyArray<{
   action: InterventionAction
   label: string
   hint: string
+  confirmLabel: string
 }> = [
-  { action: 'approve', label: 'Approve', hint: 'Merge or advance the task' },
-  { action: 'reject', label: 'Reject', hint: 'Close with a reason code' },
-  { action: 'redirect', label: 'Redirect', hint: 'Comment; return the pushed branch to the implementing agent' },
-  { action: 'pull_to_local', label: 'Pull to local', hint: 'Available after the implementation agent pushes the assigned branch' },
+  { action: 'approve', label: 'Approve', hint: 'Merge or advance the task', confirmLabel: 'Approve' },
+  { action: 'redirect', label: 'Request changes', hint: 'Written feedback returns the pushed branch to the implementing agent', confirmLabel: 'Send feedback' },
+  { action: 'reject', label: 'Reject', hint: 'Close the task', confirmLabel: 'Reject task' },
 ]
 
-// Baseline reason-code taxonomy (spec §13.2). The API accepts free-form
-// codes; these are the curated defaults per action.
-export const reasonCodesByAction: Record<InterventionAction, readonly string[]> = {
-  approve: ['approved'],
-  reject: ['spec-wrong', 'scope-creep', 'hallucinated-api', 'broken-pair', 'style', 'needs-human'],
-  redirect: ['style', 'spec-wrong', 'hallucinated-api', 'scope-creep', 'flaky-env', 'broken-pair'],
-  pull_to_local: ['needs-human', 'broken-pair', 'flaky-env'],
+// The API requires a reason code on every decision (§13.2 — the training
+// signal for self-improvement). The operator no longer picks one; it is
+// derived from the action, and the free-text comment carries the nuance.
+export const defaultReasonCode: Record<InterventionAction, string> = {
+  approve: 'approved',
+  redirect: 'changes-requested',
+  reject: 'rejected',
+  pull_to_local: 'needs-human',
 }
 
 export const stageLabels: Record<string, string> = {

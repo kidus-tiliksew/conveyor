@@ -1,118 +1,185 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { GitMerge, ThumbsUp, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
 import { reviewTask } from '../../lib/api'
-import { attentionReason } from '../../lib/activity'
-import { interventionActions, reasonCodesByAction } from '../../lib/contracts'
-import type { ActivityItem, InterventionAction } from '../../lib/types'
+import { defaultReasonCode, interventionActions } from '../../lib/contracts'
+import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
-import { CopyButton } from '../ui/copy-button'
-import { Select, Textarea } from '../ui/input'
+import { Textarea } from '../ui/input'
 
-// Review actions in place (spec §13.3 element 3 / §13.2): the reviewer acts
-// from the timeline context. Every decision records a structured reason
-// code — the primary training signal for self-improvement.
+// The human gate rendered as a verdict, not an alarm (spec §13.3): the card
+// leads with what the pipeline is waiting for and one context-matched primary
+// action. Amber stays reserved for states that are genuinely stuck; a clean
+// approval reads as good news. Reason codes are auto-derived per action
+// (see contracts.ts) — the comment is the operator's signal.
+
+type GateTone = 'positive' | 'neutral' | 'alarm'
+
+interface Gate {
+  tone: GateTone
+  icon: LucideIcon
+  headline: string
+  detail: string
+  primaryLabel: string
+}
+
+function gateFor(task: Task, events: TaskEvent[]): Gate {
+  if (task.state === 'approved') {
+    return {
+      tone: 'positive',
+      icon: GitMerge,
+      headline: 'Ready to merge',
+      detail: 'Approved at the gate — one click merges or advances the task.',
+      primaryLabel: 'Merge or advance',
+    }
+  }
+  if (task.state === 'parked') {
+    return {
+      tone: 'alarm',
+      icon: TriangleAlert,
+      headline: 'Parked — needs a human route',
+      detail: 'Triage could not route this task on its own. Decide where it goes.',
+      primaryLabel: 'Approve',
+    }
+  }
+  // Walk back to the most recent incident, but stop at any human decision or
+  // fresh dispatch — those supersede older incidents.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const kind = events[i].kind
+    if (kind === 'pipeline.bounce_limit') {
+      return {
+        tone: 'alarm',
+        icon: TriangleAlert,
+        headline: 'Bounce limit reached',
+        detail: 'Implement and review went back and forth to the limit. A human closes the loop.',
+        primaryLabel: 'Approve',
+      }
+    }
+    if (kind === 'job.timeout') {
+      return {
+        tone: 'alarm',
+        icon: TriangleAlert,
+        headline: 'Job timed out',
+        detail: 'The last job hit its wall-clock timeout before finishing.',
+        primaryLabel: 'Approve',
+      }
+    }
+    if (kind === 'job.created' || kind.startsWith('intervention.')) break
+  }
+  return {
+    tone: 'neutral',
+    icon: UserRound,
+    headline: 'Your review, please',
+    detail: 'The line is holding at the human gate. Review the work below, then record a decision.',
+    primaryLabel: 'Approve',
+  }
+}
+
+const toneStyles: Record<GateTone, { card: string; header: string; title: string; icon: string }> = {
+  positive: { card: 'border-positive/30', header: 'bg-positive-soft', title: 'text-positive', icon: 'text-positive' },
+  neutral: { card: 'border-primary/25', header: 'bg-primary-soft', title: 'text-primary', icon: 'text-primary' },
+  alarm: { card: 'border-attention-dot/40', header: 'bg-attention-soft', title: 'text-attention', icon: 'text-attention-dot' },
+}
+
+const secondaryActions = interventionActions.filter((entry) => entry.action !== 'approve')
+
 export function ReviewPanel({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
-  const [action, setAction] = useState<InterventionAction>('approve')
-  const [reasonCode, setReasonCode] = useState<string>(reasonCodesByAction.approve[0])
+  const [expanded, setExpanded] = useState<InterventionAction | null>(null)
   const [comment, setComment] = useState('')
 
+  const gate = gateFor(item.task, item.events)
+  const style = toneStyles[gate.tone]
+  const Icon = gate.icon
+
   const mutation = useMutation({
-    mutationFn: () => reviewTask(item.task.id, token, { action, reasonCode, comment }),
+    mutationFn: (input: { action: InterventionAction; comment: string }) =>
+      reviewTask(item.task.id, token, { ...input, reasonCode: defaultReasonCode[input.action] }),
     onSuccess: () => {
+      setExpanded(null)
       setComment('')
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
 
-  const pickAction = (next: InterventionAction) => {
-    setAction(next)
-    setReasonCode(reasonCodesByAction[next][0])
+  const toggle = (action: InterventionAction) => {
+    setExpanded((current) => (current === action ? null : action))
+    setComment('')
     mutation.reset()
   }
 
-  const hint = interventionActions.find((entry) => entry.action === action)?.hint
+  const expandedEntry = secondaryActions.find((entry) => entry.action === expanded)
 
   return (
-    <section className="rounded-lg border border-attention-dot/40 bg-background" aria-label="Human gate">
-      <div className="rounded-t-lg bg-attention-soft px-4 py-3">
-        <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] text-attention">
-          <span className="size-1.5 rounded-full bg-attention-dot" />
-          Needs attention
-        </p>
-        <p className="mt-1 text-sm text-attention/90">{attentionReason(item.task, item.events)}</p>
+    <section className={cn('rounded-lg border bg-background', style.card)} aria-label="Human gate">
+      <div className={cn('flex flex-wrap items-center gap-3 rounded-t-lg px-4 py-3', style.header)}>
+        <Icon className={cn('size-5 shrink-0', style.icon)} />
+        <div className="min-w-48 flex-1">
+          <h3 className={cn('text-sm font-semibold', style.title)}>{gate.headline}</h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted">{gate.detail}</p>
+        </div>
+        <Button
+          disabled={!token || mutation.isPending}
+          onClick={() => mutation.mutate({ action: 'approve', comment: '' })}
+        >
+          <ThumbsUp />
+          {mutation.isPending && !expanded ? 'Recording…' : gate.primaryLabel}
+        </Button>
       </div>
-      <div className="space-y-3 px-4 py-4">
-        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Review action">
-          {interventionActions.map((entry) => (
-            <Button
+      <div className="px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Other decisions">
+          <span className="mr-1 text-xs text-faint">Instead:</span>
+          {secondaryActions.map((entry) => (
+            <button
               key={entry.action}
-              variant={action === entry.action ? 'default' : 'outline'}
-              size="sm"
-              role="radio"
-              aria-checked={action === entry.action}
+              type="button"
+              aria-expanded={expanded === entry.action}
               title={entry.hint}
-              onClick={() => pickAction(entry.action)}
+              onClick={() => toggle(entry.action)}
+              className={cn(
+                'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                expanded === entry.action ? 'bg-raised text-foreground' : 'text-muted hover:bg-surface hover:text-foreground',
+              )}
             >
               {entry.label}
-            </Button>
+            </button>
           ))}
+          {!token && <span className="ml-auto text-xs text-attention">Set the operator token in Settings to act.</span>}
         </div>
-        {action === 'pull_to_local' && item.checkout_available && item.checkout_command ? (
-          <div className="flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5">
-            <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/85">{item.checkout_command}</code>
-            <CopyButton value={item.checkout_command} label="Copy checkout command" />
-          </div>
-        ) : action === 'pull_to_local' ? (
-          <p className="rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 text-muted">
-            {item.checkout_guidance}
-          </p>
-        ) : null}
-        <div className="grid gap-3 md:grid-cols-[200px_minmax(0,1fr)]">
-          <label className="block">
-            <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">Reason code</span>
-            <Select value={reasonCode} onChange={(event) => setReasonCode(event.target.value)}>
-              {reasonCodesByAction[action].map((code) => (
-                <option key={code} value={code}>
-                  {code}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">
-              {action === 'redirect' ? 'Redirect feedback' : 'Comment'}
-              {action === 'redirect' && <span className="ml-1 normal-case text-faint">— written feedback, not code; it returns the existing branch to the implementing agent</span>}
-            </span>
+        {expandedEntry && (
+          <div className="mt-2">
             <Textarea
+              autoFocus
+              className="min-h-16 text-sm"
+              aria-label={expanded === 'redirect' ? 'Redirect feedback' : 'Rejection note'}
               value={comment}
               onChange={(event) => setComment(event.target.value)}
-              placeholder={action === 'redirect' ? 'What should the agent change?' : 'Optional review note'}
+              placeholder={
+                expanded === 'redirect'
+                  ? 'What should the agent change? Feedback, not code.'
+                  : 'Why is this rejected? Optional.'
+              }
             />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className={cn('text-xs', token ? 'text-faint' : 'text-attention')}>
-            {token ? hint : 'Set the operator token in Settings to act.'}
-          </p>
-          <Button
-            disabled={
-              !token ||
-              !reasonCode ||
-              mutation.isPending ||
-              (action === 'redirect' && !comment.trim()) ||
-              (action === 'pull_to_local' && !item.checkout_available)
-            }
-            onClick={() => mutation.mutate()}
-          >
-            {mutation.isPending ? 'Recording…' : `Confirm ${action.replaceAll('_', ' ')}`}
-          </Button>
-        </div>
-        {mutation.error && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+            <div className="mt-1.5 flex items-center justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => toggle(expanded!)}>
+                Cancel
+              </Button>
+              <Button
+                variant={expanded === 'reject' ? 'destructive' : 'secondary'}
+                size="sm"
+                disabled={!token || mutation.isPending || (expanded === 'redirect' && !comment.trim())}
+                onClick={() => mutation.mutate({ action: expanded!, comment })}
+              >
+                {mutation.isPending ? 'Recording…' : expandedEntry.confirmLabel}
+              </Button>
+            </div>
+          </div>
+        )}
+        {mutation.error != null && <p className="mt-2 text-sm text-failure">{String(mutation.error)}</p>}
       </div>
     </section>
   )

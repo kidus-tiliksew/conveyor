@@ -45,6 +45,16 @@ export function pullRequestURL(events: TaskEvent[]): string | undefined {
   return undefined
 }
 
+// Board-card gate chip: says what the gate is waiting for instead of a
+// generic alarm, with tone to match ("Ready to merge" is good news).
+export function gateBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'positive' } | undefined {
+  if (item.task.state === 'approved') return { label: 'Ready to merge', variant: 'positive' }
+  if (!item.needs_attention) return undefined
+  if (item.task.state === 'parked') return { label: 'Needs a route', variant: 'attention' }
+  if (item.task.state === 'awaiting_human') return { label: 'Awaiting review', variant: 'attention' }
+  return { label: 'Needs attention', variant: 'attention' }
+}
+
 // Why a task is at a human gate — the detail the "Needs attention" badge
 // alone doesn't carry.
 export function attentionReason(task: Task, events: TaskEvent[]): string {

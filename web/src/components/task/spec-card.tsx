@@ -21,24 +21,32 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
 // The spec review card (spec §13.3 element 3): rendered markdown plus the
 // acceptance-criteria checklist. Human-verify criteria surface as explicit
 // checkboxes rather than being pretend-verified (§4.1 rule 2).
-export function SpecCard({ spec }: { spec: SpecVersion }) {
-  const [expanded, setExpanded] = useState(true)
+export function SpecCard({ spec, collapsible = true }: { spec: SpecVersion; collapsible?: boolean }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const expanded = !collapsible || !collapsed
   const prose = useMemo(() => spec.content.replace(machineBlock, ''), [spec.content])
   const criteria = spec.acceptance ?? []
 
   return (
     <Card>
       <CardHeader className="items-center">
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          className="flex items-center gap-2 text-left"
-        >
-          <ChevronRight className={cn('size-3.5 text-faint transition-transform', expanded && 'rotate-90')} />
-          <CardTitle>Specification</CardTitle>
-          <Badge variant="mono">v{spec.version}</Badge>
-        </button>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={expanded}
+            className="flex items-center gap-2 text-left"
+          >
+            <ChevronRight className={cn('size-3.5 text-faint transition-transform', expanded && 'rotate-90')} />
+            <CardTitle>Specification</CardTitle>
+            <Badge variant="mono">v{spec.version}</Badge>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <CardTitle>Specification</CardTitle>
+            <Badge variant="mono">v{spec.version}</Badge>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-faint">
             {spec.approved && spec.approved_at ? `approved ${absoluteTime(spec.approved_at)}` : `drafted ${absoluteTime(spec.created_at)}`}

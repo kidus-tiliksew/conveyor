@@ -1,7 +1,7 @@
 import { AlertTriangle, ExternalLink, UserRound } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
-import { stageLabels } from '../../lib/contracts'
-import type { ActivityItem, Job } from '../../lib/types'
+import { defaultReasonCode, stageLabels } from '../../lib/contracts'
+import type { ActivityItem, InterventionAction, Job } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 
@@ -29,6 +29,15 @@ export function Timeline({ item }: { item: ActivityItem }) {
   )
 }
 
+// Audit entries keep the wire action; the display label matches the gate UI
+// ("redirect" surfaces as requesting changes).
+const interventionLabels: Record<InterventionAction, string> = {
+  approve: 'Approved',
+  reject: 'Rejected',
+  redirect: 'Requested changes',
+  pull_to_local: 'Pulled to local',
+}
+
 function keyFor(entry: TimelineEntry) {
   if (entry.type === 'job') return `job-${entry.job.id}`
   if (entry.type === 'intervention') return `intervention-${entry.intervention.id}`
@@ -45,8 +54,10 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         <div className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
-            <strong className="font-semibold capitalize">{intervention.action.replaceAll('_', ' ')}</strong>
-            <Badge variant="mono">{intervention.reason_code}</Badge>
+            <strong className="font-semibold">{interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}</strong>
+            {intervention.reason_code !== defaultReasonCode[intervention.action] && (
+              <Badge variant="mono">{intervention.reason_code}</Badge>
+            )}
             <span className="text-xs text-faint">
               {intervention.actor_id} · {intervention.actor_role}
             </span>

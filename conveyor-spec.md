@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.10**
+**Specification — v1.11**
 **Date:** July 15, 2026
-**Status:** Accepted — independent work-order clocks and multi-workspace control-plane amendments applied (§21.9–§21.10)
+**Status:** Accepted — verdict-first human gate amendment applied (§21.11), following the work-order clock and multi-workspace amendments (§21.9–§21.10)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -148,7 +148,7 @@ The execution plane is a fleet of sandboxes provisioned by runners, each scoped 
 
 **Memory store.** Workspace-scoped knowledge injected into agent contexts: architecture decision records, domain rules, conventions, "lessons" produced by the self-improvement engine, and approved specs. Backed by Postgres + pgvector; retrieval is hybrid keyword/vector with per-role context budgets.
 
-**Review UI.** The human gate (§13). A single inbox of items awaiting human decision, each showing the diff, the spec, verification evidence (screenshots/video), cost so far, and the agent's own summary. Actions: approve, reject, redirect-with-comment (re-dispatches the task rather than requiring the human to fix it), or pull-to-local (creates a worktree in the human's checkout, §8.4).
+**Review UI.** The human gate (§13). A single inbox of items awaiting human decision, each showing the diff, the spec, verification evidence (screenshots/video), cost so far, and the agent's own summary. Actions (amended by §21.11): approve, request changes (wire action `redirect`; re-dispatches the task rather than requiring the human to fix it), or reject. Local work starts from `conveyor checkout` (§8.4), surfaced in the task header; pull-to-local is no longer offered as a gate action.
 
 **Audit log and transcript store.** Append-only record of every job: full harness transcript (post-redaction, §10.3), tool calls, token counts, costs, and every human intervention with a structured reason code. This store is the raw material for the self-improvement engine and the compliance story.
 
@@ -538,14 +538,15 @@ Task classes are assigned a level per workspace; classes **graduate downward** a
 
 ### 13.2 The review inbox
 
-One queue, one card per pending decision. Each card shows: the diff, the governing spec, verification evidence, cost so far vs. budget, the agent's summary and self-assessment, and prior bounce history. Actions:
+One queue, one card per pending decision. Each card shows: the diff, the governing spec, verification evidence, cost so far vs. budget, the agent's summary and self-assessment, and prior bounce history. Actions (amended by §21.11):
 
-- **Approve** (merge or advance),
-- **Reject** (close with reason code),
-- **Redirect** — leave comments; the task re-dispatches into its existing worktree (§8.3); the human writes feedback, not code,
-- **Pull to local** — emits the `conveyor checkout` command / deep link (§8.4).
+- **Approve** (merge or advance) — one click; the reason code is derived,
+- **Request changes** (wire action `redirect`) — the human writes feedback, not code; the task re-dispatches into its existing worktree (§8.3),
+- **Reject** (close).
 
-Every action records a structured **reason code** (spec-wrong, hallucinated-API, style, flaky-env, scope-creep, broken-pair, …). Reason codes are the primary training signal for self-improvement.
+Pull-to-local was retired from the review UI by §21.11: under the MCP pull model (§21.4), local work starts from `conveyor checkout <task-id>` (§8.4, §21.8), which stays surfaced in the task header rather than as a gate decision. The `pull_to_local` wire action and its recorded interventions remain for the historical record.
+
+Every action records a structured **reason code** on the wire. Since v1.11 the dashboard derives it from the action (approve → `approved`, redirect → `changes-requested`, reject → `rejected`) and the operator's free-text comment carries the nuance; agents and integrations may still record curated codes (spec-wrong, hallucinated-API, style, flaky-env, scope-creep, broken-pair, …), which remain the training signal for self-improvement where present (§15.2, §21.11).
 
 ### 13.3 Activity view
 
@@ -553,7 +554,7 @@ The primary UI surface (Phase 2) is an activity view modeled on stage-grouped ta
 
 1. **Stage-grouped feed.** Tasks grouped by pipeline stage — Triage / Spec / Implementing / Reviewing / Verifying / Awaiting human — as collapsible sections with counts. The distribution of work across stages is the factory's health made visible: a pile-up in any stage is immediately apparent. Each row shows the task ID, title, escalation-level badge, provenance chips (source channel, ticket ref, PR number), a "Needs attention" badge where a human gate or circuit breaker has fired, and recency. "Needs attention" is the only alarm color on the page; visual economy is a design requirement, since the product's goal is fewer human touches, and attention states must read as exceptions.
 2. **Costed event timeline.** The task detail panel narrates the task's history as a timeline: one entry per pipeline stage, each showing the agent's summary of what it did, wall-clock duration, cost, and which harness / model tier / auth mode ran it (e.g. "4m 03s · $0.94 · codex / subscription"). This makes per-stage cost something operators absorb passively during normal review rather than a separate dashboard, and it is the audit log (§3.1) rendered as a story. The task header shows budget consumed vs. allocated and a verification badge with pass count against the spec's acceptance criteria.
-3. **Review actions in place.** For tasks at a human gate, the detail panel carries the §13.2 actions directly: approve, reject, redirect-with-comment, and pull-to-local. A reviewer never leaves the timeline context to act on what it shows.
+3. **Review actions in place.** For tasks at a human gate, the detail panel carries the §13.2 actions directly as a verdict-first card (§21.11): a headline and tone matched to the gate state ("Ready to merge" on an approved task; amber reserved for genuinely stuck states), a one-click context-matched approve, and request-changes / reject as secondary decisions. A reviewer never leaves the timeline context to act on what it shows.
 
 The cost dashboard (§14) remains the aggregate view; the activity view is deliberately per-task and narrative.
 
@@ -1315,4 +1316,48 @@ v1.0–v1.8 record. Six changes; all other v1.8 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.10 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), and explicit multi-workspace control-plane isolation added (§21.10). Subsequent changes proceed by amendment with version bumps.*
+### 21.11 v1.11 — Verdict-first human gate: derived reason codes, pull-to-local retired from the review UI (July 15, 2026)
+
+The Phase 4 dashboard rework rebuilt the human gate as a verdict-first card:
+a headline and tone matched to the actual gate state ("Ready to merge" on an
+approved task; amber reserved for parked, bounce-limit, and timeout states),
+one context-matched primary action, and the remaining decisions demoted to
+quiet secondaries. Three operator decisions (July 15, 2026) simplify what the
+gate asks of a human. The wire contract is untouched — `POST
+/v1/tasks/{id}/review` still requires an action and a non-empty reason code
+(≤64 characters, free-form), and the `Intervention` record keeps all four
+§13.2 wire actions — the changes are to the operator surface only. All other
+v1.10 decisions remain unchanged:
+
+1. **Reason codes are derived, not picked.** The review UI no longer offers a
+   reason-code selector. The dashboard derives the code from the action —
+   approve → `approved`, redirect → `changes-requested`, reject → `rejected`
+   — and the operator's free-text comment carries the nuance. API validation
+   is unchanged, so agents, the CLI, and PR review-comment conversion (§9)
+   may still record curated §13.2 codes, and history renders them: the
+   timeline shows a curated code as a badge and suppresses the badge only
+   when the code merely repeats the action-derived default.
+2. **The §15 training signal narrows, knowingly.** Dashboard gate decisions no
+   longer carry operator-picked curated classification; the self-improvement
+   engine (§15.2) must classify those decisions from the free-text comment,
+   transcripts, and bounce history instead of reading a picked code. This
+   trades training-signal fidelity for gate throughput. If Phase 7 needs
+   structured tags back, reintroducing a picker (or post-hoc tagging) requires
+   a new accepted amendment rather than quiet UI creep.
+3. **Pull-to-local is retired from the review UI.** Under the MCP pull model
+   (§21.4) agents pull work orders; a human who wants the work locally runs
+   `conveyor checkout <task-id>` (§8.4, §21.8), which remains surfaced with a
+   copy affordance in the task header of every task, not only gated ones.
+   Pull-to-local is no longer a gate decision. The `pull_to_local` wire
+   action, its recorded interventions, and their timeline rendering remain
+   for the historical record; §8.4 semantics are unchanged for the checkout
+   path.
+4. **"Redirect" surfaces as "Request changes."** Label only: the wire action,
+   the `conveyor task redirect` CLI verb (§17.1), and GitHub
+   review-comment conversion (§9) are unchanged. The gate renders the action
+   as "Request changes" with required written feedback; the timeline renders
+   recorded redirects as "Requested changes."
+
+---
+
+*End of specification. v1.11 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), and the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11). Subsequent changes proceed by amendment with version bumps.*

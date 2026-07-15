@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Activity, FolderGit2, Home, Play, Plus, Settings, Workflow, type LucideIcon } from 'lucide-react'
+import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
+import { FolderGit2, Kanban, Plus, Settings, Workflow, type LucideIcon } from 'lucide-react'
 import { fetchActivity, fetchWorkspace, fetchWorkspaces } from '../lib/api'
+import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
 
 // The operator bearer token authenticates mutations (spec §17.3).
@@ -74,17 +75,49 @@ function WorkspaceProvider({ token, children }: { token: string; children: React
 	return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
 }
 
+// The rail is the workspace switcher (§21.10: workspace context is explicit
+// everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
+  const token = useOperatorToken()
+  const navigate = useNavigate()
+  const { workspace: selected, setWorkspace } = useWorkspaceSelection()
+  const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
+  // Land on the board after a switch so an open task sheet from the previous
+  // workspace can't linger pointing at a task the new context can't resolve.
+  const switchTo = (id: string) => {
+    if (id !== selected) setWorkspace(id)
+    void navigate({ to: '/' })
+  }
   return (
     <div className="flex w-14 shrink-0 flex-col items-center gap-3 bg-rail py-3">
-      <Link to="/" aria-label="Conveyor home" className="grid size-9 place-items-center rounded-lg bg-primary font-mono text-xs font-black text-primary-foreground">
+      <Link to="/" aria-label="Conveyor home" className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary font-mono text-xs font-black text-primary-foreground">
         CV
       </Link>
-      <span className="h-px w-8 bg-rail-raised" />
+      <span className="h-px w-8 shrink-0 bg-rail-raised" />
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto">
+        {(workspaces ?? []).map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            title={item.name}
+            aria-label={`Switch to ${item.name}`}
+            aria-current={item.id === selected ? 'true' : undefined}
+            onClick={() => switchTo(item.id)}
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-lg text-xs font-bold transition-colors',
+              item.id === selected
+                ? 'bg-rail-raised text-white ring-2 ring-primary'
+                : 'text-white/60 hover:bg-rail-raised hover:text-white',
+            )}
+          >
+            {initials(item.name || item.id)}
+          </button>
+        ))}
+      </div>
       <Link
-        to="/new"
-        aria-label="New task"
-        className="grid size-9 place-items-center rounded-lg text-white/60 transition-colors hover:bg-rail-raised hover:text-white"
+        to="/workspaces/new"
+        aria-label="Create workspace"
+        className="grid size-9 shrink-0 place-items-center rounded-lg text-white/60 transition-colors hover:bg-rail-raised hover:text-white"
       >
         <Plus className="size-5" />
       </Link>
@@ -92,28 +125,34 @@ function IconRail() {
   )
 }
 
+function initials(name: string) {
+  const parts = name.split(/[\s_-]+/).filter(Boolean)
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
+  return name.slice(0, 2).toUpperCase()
+}
+
 function NavSidebar() {
 	const token = useOperatorToken()
-	const { workspace: selected, setWorkspace } = useWorkspaceSelection()
+	const { workspace: selected } = useWorkspaceSelection()
 	const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
 	const { data: workspace } = useWorkspace()
   const { data: activity } = useActivity()
   const attention = (activity ?? []).filter((item) => item.needs_attention).length
 
+  const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
+
   return (
     <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-surface/60" aria-label="Primary">
 		<div className="px-4 py-4">
-			{workspaces && workspaces.length > 0 ? <select aria-label="Current workspace" className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm font-semibold" value={selected} onChange={(event) => setWorkspace(event.target.value)}><option value="" disabled>Select workspace</option>{workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select> : <p className="truncate text-sm font-semibold tracking-tight">{workspace?.workspace ?? 'Conveyor'}</p>}
+			<p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
 			<p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
       </div>
       <div className="flex-1 space-y-0.5 px-2">
-        <NavItem to="/" icon={Home} label="Home" exact />
-        <NavItem to="/activity" icon={Activity} label="Activity">
+        <NavItem to="/" icon={Kanban} label="Board">
           {attention > 0 && <Badge variant="attention">{attention}</Badge>}
         </NavItem>
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
-        <NavItem to="/new" icon={Play} label="New task" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
     </nav>
@@ -124,18 +163,16 @@ function NavItem({
   to,
   icon: Icon,
   label,
-  exact,
   children,
 }: {
   to: string
   icon: LucideIcon
   label: string
-  exact?: boolean
   children?: ReactNode
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  // Activity stays highlighted while a task panel is open.
-  const active = exact ? pathname === to : pathname.startsWith(to) || (to === '/activity' && pathname.startsWith('/tasks'))
+  // The board stays highlighted while a task sheet or full page is open.
+  const active = to === '/' ? pathname === '/' || pathname.startsWith('/tasks') : pathname === to || pathname.startsWith(`${to}/`)
   return (
     <Link
       to={to}
