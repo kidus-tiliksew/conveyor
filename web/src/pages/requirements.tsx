@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileUp, GitPullRequest, Plus, Workflow } from 'lucide-react'
-import { useOperatorToken } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -11,10 +11,11 @@ import { assignTaskFeature, createFeature, downloadArtifact, fetchArtifacts, fet
 import type { RequirementNode } from '../lib/types'
 
 export function RequirementsPage() {
-  const token = useOperatorToken(); const client = useQueryClient(); const { data: nodes } = useQuery({ queryKey: ['requirements'], queryFn: fetchRequirements })
-  const { data: tasks } = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks })
-  const { data: artifacts } = useQuery({ queryKey: ['artifacts', token], queryFn: () => fetchArtifacts(token), enabled: Boolean(token) })
-  const [name, setName] = useState(''); const [selected, setSelected] = useState<string>('')
+	const token = useOperatorToken(); const { workspace } = useWorkspaceSelection(); const client = useQueryClient(); const { data: nodes } = useQuery({ queryKey: ['requirements', workspace], queryFn: fetchRequirements, enabled: Boolean(workspace) })
+	const { data: tasks } = useQuery({ queryKey: ['tasks', workspace], queryFn: fetchTasks, enabled: Boolean(workspace) })
+	const { data: artifacts } = useQuery({ queryKey: ['artifacts', token, workspace], queryFn: () => fetchArtifacts(token), enabled: Boolean(token && workspace) })
+	const [name, setName] = useState(''); const [selected, setSelected] = useState<string>('')
+	useEffect(() => { setSelected('') }, [workspace])
   const create = useMutation({ mutationFn: () => createFeature(token, { name, description: '', parent_id: selected || undefined }), onSuccess: () => { setName(''); void client.invalidateQueries({ queryKey: ['requirements'] }) } })
   const upload = useMutation({ mutationFn: (file: File) => uploadArtifact(token, file, undefined, selected || undefined), onSuccess: () => void client.invalidateQueries({ queryKey: ['artifacts'] }) })
   const assign = useMutation({ mutationFn: ({ taskId, featureId }: { taskId: string; featureId: string }) => assignTaskFeature(token, taskId, featureId), onSuccess: () => { void client.invalidateQueries({ queryKey: ['requirements'] }); void client.invalidateQueries({ queryKey: ['tasks'] }) } })

@@ -71,6 +71,37 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkOrderRequiresLinkedTaskJobAndWorkspace(t *testing.T) {
+	t.Parallel()
+	st := NewMemory()
+	ctxA := WithWorkspace(context.Background(), "alpha")
+	ctxB := WithWorkspace(context.Background(), "beta")
+	for _, task := range []core.Task{{ID: "task-a", Workspace: "alpha"}, {ID: "task-b", Workspace: "beta"}} {
+		ctx := ctxA
+		if task.Workspace == "beta" {
+			ctx = ctxB
+		}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: "job-" + task.Workspace, TaskID: task.ID, Stage: core.StageImplement}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.CreateWorkOrder(ctxB, core.WorkOrder{ID: "wrong-workspace", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err == nil {
+		t.Fatal("cross-workspace work order succeeded")
+	}
+	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-task", TaskID: "task-a", JobID: "job-beta", Stage: core.StageImplement}); err == nil {
+		t.Fatal("work order linked a task to another task's job")
+	}
+	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-stage", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageReview}); err == nil {
+		t.Fatal("work order linked a job at the wrong stage")
+	}
+	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "valid", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err != nil {
+		t.Fatalf("valid work order: %v", err)
+	}
+}
+
 func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

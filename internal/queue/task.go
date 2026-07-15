@@ -8,13 +8,17 @@ import (
 	"encoding/hex"
 )
 
+const ControlQueue = "control"
+
 type DispatchTaskArgs struct {
-	TaskID string `json:"task_id" river:"unique"`
+	WorkspaceID string `json:"workspace_id" river:"unique"`
+	TaskID      string `json:"task_id" river:"unique"`
 }
 
 func (DispatchTaskArgs) Kind() string { return "dispatch_task" }
 
 type ReviewPublicationArgs struct {
+	WorkspaceID       string `json:"workspace_id" river:"unique"`
 	ReviewWorkOrderID string `json:"review_work_order_id" river:"unique"`
 }
 

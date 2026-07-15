@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type rpcRequest struct {
@@ -81,13 +83,18 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
 	stringArg := func(key string) string { value, _ := args[key].(string); return value }
+	workspace, err := s.resolveMCPWorkspace(r.Context(), stringArg("workspace_id"))
+	if err != nil {
+		return nil, err
+	}
+	ctx := store.WithWorkspace(r.Context(), workspace)
 	session := stringArg("session_id")
 	switch name {
 	case "create_task":
 		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
 			return nil, fmt.Errorf("idempotency_key is required")
 		}
-		result, err := s.createTaskRecord(r.Context(), createTaskReq{
+		result, err := s.createTaskRecord(ctx, createTaskReq{
 			Title:      stringArg("title"),
 			Body:       stringArg("body"),
 			Repo:       stringArg("repo"),
@@ -105,39 +112,79 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	switch name {
 	case "list_work_orders":
-		return s.WorkOrders.List(r.Context())
+		return s.WorkOrders.List(ctx)
 	case "claim_work_order":
 		lease := 15 * time.Minute
 		if value, ok := numberArg(args["lease_seconds"]); ok && value > 0 && value <= 3600 {
 			lease = time.Duration(value) * time.Second
 		}
-		return s.WorkOrders.Claim(r.Context(), stringArg("work_order_id"), core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease})
+		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease})
 	case "redispatch_work_order":
-		return s.WorkOrders.Redispatch(r.Context(), stringArg("work_order_id"))
+		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
 	case "get_work_order":
-		return s.WorkOrders.Get(r.Context(), stringArg("work_order_id"), session)
+		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 	case "report_progress":
-		return s.WorkOrders.Progress(r.Context(), stringArg("work_order_id"), session, stringArg("message"))
+		return s.WorkOrders.Progress(ctx, stringArg("work_order_id"), session, stringArg("message"))
 	case "report_usage":
 		in, _ := numberArg(args["tokens_in"])
 		out, _ := numberArg(args["tokens_out"])
 		cost, _ := floatArg(args["cost_usd"])
-		return s.WorkOrders.Usage(r.Context(), stringArg("work_order_id"), session, in, out, cost)
+		return s.WorkOrders.Usage(ctx, stringArg("work_order_id"), session, in, out, cost)
 	case "upload_transcript":
-		return s.WorkOrders.UploadTranscript(r.Context(), stringArg("work_order_id"), session, stringArg("transcript"))
+		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_for_review":
-		return s.WorkOrders.SubmitForReview(r.Context(), stringArg("work_order_id"), session)
+		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session)
 	case "await_review":
 		seconds := 300.0
 		if value, ok := floatArg(args["timeout_seconds"]); ok {
 			seconds = value
 		}
-		return s.WorkOrders.AwaitReview(r.Context(), stringArg("work_order_id"), session, time.Duration(seconds*float64(time.Second)))
+		return s.WorkOrders.AwaitReview(ctx, stringArg("work_order_id"), session, time.Duration(seconds*float64(time.Second)))
 	case "submit_review_verdict":
-		return s.WorkOrders.SubmitVerdict(r.Context(), stringArg("work_order_id"), session, pipeline.Review{Verdict: stringArg("verdict"), ReasonCode: stringArg("reason_code"), Summary: stringArg("summary"), Feedback: stringArg("feedback")})
+		return s.WorkOrders.SubmitVerdict(ctx, stringArg("work_order_id"), session, pipeline.Review{Verdict: stringArg("verdict"), ReasonCode: stringArg("reason_code"), Summary: stringArg("summary"), Feedback: stringArg("feedback")})
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	var items []core.Workspace
+	if s.Workspaces != nil {
+		var err error
+		items, err = s.Workspaces.ListWorkspaces(ctx)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		seen := map[string]bool{}
+		fallbacks := []string{s.Workspace}
+		if s.Deployment != nil {
+			fallbacks = append(fallbacks, s.Deployment.Workspace)
+		}
+		for _, id := range fallbacks {
+			id = strings.TrimSpace(id)
+			if id != "" && !seen[id] {
+				items = append(items, core.Workspace{ID: id, Name: id})
+				seen[id] = true
+			}
+		}
+	}
+	if explicit == "" {
+		if len(items) == 0 {
+			return "", fmt.Errorf("workspace_unavailable: create a workspace first")
+		}
+		if len(items) != 1 {
+			return "", fmt.Errorf("workspace_required: workspace_id is required")
+		}
+		return items[0].ID, nil
+	}
+	for _, item := range items {
+		if item.ID == explicit {
+			return explicit, nil
+		}
+	}
+	return "", fmt.Errorf("workspace_not_found: %s", explicit)
 }
 
 func numberArg(value any) (int64, bool) {
@@ -173,18 +220,18 @@ func mcpTools() []map[string]any {
 	}
 	str := map[string]string{"type": "string"}
 	num := map[string]string{"type": "number"}
-	identity := map[string]any{"work_order_id": str, "session_id": str}
+	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
-		{"name": "create_task", "description": "Create one durable task and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"title": str, "body": str, "repo": str, "base_branch": str, "source": str, "level": map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
-		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{})},
-		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
-		{"name": "redispatch_work_order", "description": "Return a stale queued work order to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"work_order_id": str}, "work_order_id")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "title": str, "body": str, "repo": str, "base_branch": str, "source": str, "level": map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
+		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
+		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
+		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
-		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
-		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
-		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
+		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
+		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
+		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},
-		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
-		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict and structured feedback.", "inputSchema": object(map[string]any{"work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str}, "work_order_id", "session_id", "verdict", "reason_code", "summary")},
+		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
+		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict and structured feedback.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str}, "work_order_id", "session_id", "verdict", "reason_code", "summary")},
 	}
 }

@@ -294,7 +294,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		result["await_review"] = false
 		return result, nil
 	}
-	s.Dispatcher.Enqueue(task.ID)
+	s.Dispatcher.Enqueue(ctx, task.ID)
 	return map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true}, nil
 }
 

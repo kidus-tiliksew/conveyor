@@ -13,14 +13,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 var (
+	ErrWorkspaceRequired = errors.New("workspace context is required")
+	ErrWorkspaceConflict = errors.New("workspace id or name already exists")
 	ErrWorkOrderStale    = errors.New("work order is stale and requires redispatch")
 	ErrWorkOrderTimedOut = errors.New("work order execution deadline exceeded")
 )
 
+// WorkspaceControlStore owns durable workspace resources independently of a
+// workspace-scoped Store operation (spec §21.10).
+type WorkspaceControlStore interface {
+	ListWorkspaces(context.Context) ([]core.Workspace, error)
+	GetWorkspace(context.Context, string) (core.Workspace, error)
+	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
+}
 type Store interface {
 	CreateTask(ctx context.Context, t core.Task) error
 	GetTask(ctx context.Context, id string) (core.Task, error)
@@ -306,8 +316,19 @@ func reviewPublicationFromEvent(taskID, jobID string, payload []byte) (core.Revi
 func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.tasks[order.TaskID]; !ok {
+	task, ok := m.tasks[order.TaskID]
+	if !ok {
 		return fmt.Errorf("task %s not found", order.TaskID)
+	}
+	if selected, present := WorkspaceFromContext(ctx); present && task.Workspace != selected {
+		return fmt.Errorf("task %s belongs to workspace %s, not %s", order.TaskID, task.Workspace, selected)
+	}
+	job, _, ok := m.findJobLocked(order.JobID)
+	if !ok {
+		return fmt.Errorf("job %s not found", order.JobID)
+	}
+	if job.TaskID != order.TaskID || job.Stage != order.Stage {
+		return fmt.Errorf("work order job %s is not linked to task %s at stage %s", order.JobID, order.TaskID, order.Stage)
 	}
 	if _, exists := m.workOrders[order.ID]; exists {
 		return fmt.Errorf("work order %s already exists", order.ID)

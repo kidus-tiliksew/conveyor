@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -31,6 +32,7 @@ type reviewPublicationWorker struct {
 
 func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.ReviewPublicationArgs]) error {
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%d", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
 	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, job.Args.ReviewWorkOrderID)
 	if err != nil || publication.State == core.ReviewPublicationPublished {
 		return err
@@ -108,6 +110,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 
 func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs]) error {
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%d", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
 	err := w.dispatcher.runTask(ctx, job.Args.TaskID)
 	if err == nil {
 		task, getErr := w.dispatcher.Store.GetTask(ctx, job.Args.TaskID)
@@ -159,19 +162,34 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 // NewRiverClient binds the durable queue to the dispatcher. The Store owns
 // transactional insertion; this client owns only worker execution (spec
 // §3.1, §17.0).
-func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher) (*river.Client[pgx.Tx], error) {
+func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []string) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
+	queues := map[string]river.QueueConfig{queueargs.ControlQueue: {MaxWorkers: 1}}
+	for _, workspace := range workspaces {
+		queues[queueargs.DispatchQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
+		queues[queueargs.ReviewPublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
+	}
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
 		// limits. River's one-minute default would cancel long harness runs and
 		// handoff artifact collection before those limits (spec §14).
 		JobTimeout: -1,
-		Queues: map[string]river.QueueConfig{
-			queueargs.DispatchQueue(dispatcher.Cfg.Workspace):          {MaxWorkers: 1},
-			queueargs.ReviewPublicationQueue(dispatcher.Cfg.Workspace): {MaxWorkers: 1},
-		},
-		Workers: workers,
+		Queues:     queues,
+		Workers:    workers,
 	})
+}
+
+func AddWorkspaceQueues(client *river.Client[pgx.Tx], workspace string) error {
+	if err := client.Queues().Add(queueargs.DispatchQueue(workspace), river.QueueConfig{MaxWorkers: 1}); err != nil {
+		if !errors.Is(err, &river.QueueAlreadyAddedError{}) {
+			return err
+		}
+	}
+	err := client.Queues().Add(queueargs.ReviewPublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
+	if errors.Is(err, &river.QueueAlreadyAddedError{}) {
+		return nil
+	}
+	return err
 }

@@ -88,6 +88,15 @@ type Task struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
+// Workspace is a durable control-plane boundary. ID and Name are immutable in
+// the v1.9 slice; ConfigVersion advances independently for each workspace.
+type Workspace struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	ConfigVersion int64     `json:"config_version"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 // NewTaskID returns a short, human-typeable ID: date prefix for
 // eyeballing, random suffix so concurrent submissions never collide.
 func NewTaskID() string {

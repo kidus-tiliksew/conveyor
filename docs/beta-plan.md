@@ -1,7 +1,7 @@
 # Beta plan: phases 3–4.7
 
 The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.6),
-restructured by §21.2 and extended by §21.3–§21.6. This document is the
+restructured by §21.2 and extended by §21.3–§21.10. This document is the
 working breakdown: what each pre-Beta phase contains, its dependencies, and
 its exit criterion. Phases 1–2 are complete and validated; nothing here
 reopens them.
@@ -231,11 +231,20 @@ five consecutive such tasks per the §19 criterion.
 **Implementation status (July 14, 2026): complete.** The Phase 4.7 code,
 including the v1.5 MCP task-intake amendment, v1.6 budget removal, v1.7
 operator-owned branch contract, v1.8 dedicated-worktree default, v1.9
-independent work-order clocks and stale recovery, repository
-Codex plugin, and operator
+independent work-order clocks and stale recovery, v1.10 multi-workspace
+control plane, repository Codex plugin, and operator
 surfaces are implemented and repository validation passes. The live
 dogfood exit flow and subsequent five-task Beta proof above are still pending;
 they must be recorded from real MCP sessions and are not inferred from tests.
+
+### Multi-workspace control plane (spec §21.10)
+
+Workspace creation and selection extend the completed Phase 4.5/4.7 surfaces
+without adding a parallel pipeline. REST, CLI, MCP, the dashboard, River jobs,
+and reconciliation carry one explicit workspace ID; singleton omission is a
+compatibility rule only, and ambiguous requests fail closed. Each workspace
+retains independent configuration versions, repositories, intake keys, queues,
+events, requirements, artifacts, and work orders.
 
 ---
 

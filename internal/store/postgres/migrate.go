@@ -36,6 +36,22 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		return fmt.Errorf("migrate River schema: %w", err)
 	}
+	// v1.10 adds workspace identity to River payloads. Backfill jobs inserted by
+	// v1.8 so an in-place upgrade does not strand queued dispatch or review
+	// publication work with an empty context (spec §21.10).
+	if _, err := pool.Exec(ctx, `
+UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(t.workspace_id), true)
+FROM tasks t
+WHERE r.kind = 'dispatch_task'
+  AND r.args->>'task_id' = t.id
+  AND COALESCE(r.args->>'workspace_id','') = '';
+UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(p.workspace_id), true)
+FROM review_publications p
+WHERE r.kind = 'review_publication'
+  AND r.args->>'review_work_order_id' = p.review_work_order_id
+  AND COALESCE(r.args->>'workspace_id','') = ''`); err != nil {
+		return fmt.Errorf("backfill River workspace context: %w", err)
+	}
 	return nil
 }
 

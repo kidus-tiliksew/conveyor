@@ -20,7 +20,7 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	s.Repos = []string{"api"}
 	s.Workspace = "test"
 	s.BearerToken = "secret-token"
-	s.OnCreate = func(id string) { created <- id }
+	s.OnCreate = func(_ context.Context, id string) { created <- id }
 	h := s.Handler()
 	body := []byte(`{"title":"fix it","repo":"api"}`)
 
@@ -74,7 +74,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	dispatched := make(chan string, 1)
 	s := NewServer(st)
 	s.BearerToken = "secret-token"
-	s.OnCreate = func(id string) { dispatched <- id }
+	s.OnCreate = func(_ context.Context, id string) { dispatched <- id }
 	h := s.Handler()
 
 	unauthorized := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	dispatched := make(chan string, 1)
 	s := NewServer(st)
 	s.BearerToken = "token"
-	s.OnCreate = func(id string) { dispatched <- id }
+	s.OnCreate = func(_ context.Context, id string) { dispatched <- id }
 	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/queued-task/redispatch", bytes.NewReader([]byte(`{}`)))
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
