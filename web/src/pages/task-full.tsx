@@ -11,10 +11,9 @@ import { WorkOrders } from '../components/task/work-orders'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 
-// The full task page: the specification and the audit timeline side by side,
-// each with its own scroll, under a facts header strip — the layout for
-// reading a big spec against a long event history without one burying the
-// other.
+// The full task page keeps its route header fixed while the task content uses
+// one native scroll region. That region includes the task description so a
+// long description cannot push the specification and activity out of reach.
 export function TaskFullPage() {
   const { taskId } = useParams({ from: '/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
@@ -64,25 +63,30 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 function FullBody({ item }: { item: ActivityItem }) {
   const reviewable = item.needs_attention || item.task.state === 'approved'
   return (
-    <>
+    <div
+      aria-label="Task content"
+      className="min-h-0 flex-1 overflow-y-auto"
+      role="region"
+      tabIndex={0}
+    >
       <div className="shrink-0 border-b border-border px-6 py-4">
         <TaskHeader item={item} variant="full" />
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-        <section aria-label="Specification" className="min-h-0 overflow-y-auto border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
+      <div className="grid grid-cols-1 lg:grid-cols-2">
+        <section aria-label="Specification" className="border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
           {item.spec ? (
             <SpecCard spec={item.spec} collapsible={false} />
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">No spec yet — the spec stage has not produced a version.</p>
           )}
         </section>
-        <section aria-label="Activity" className="min-h-0 space-y-4 overflow-y-auto px-6 py-4">
+        <section aria-label="Activity" className="space-y-4 px-6 py-4">
           {reviewable && <ReviewPanel item={item} />}
           <WorkOrders orders={item.work_orders ?? []} />
           {canRedispatch(item) && <RedispatchCard item={item} />}
           <Timeline item={item} />
         </section>
       </div>
-    </>
+    </div>
   )
 }
