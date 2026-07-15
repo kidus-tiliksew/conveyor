@@ -22,7 +22,7 @@ export function WorkspacePage() {
     <div className="flex items-start justify-between"><div><h1 className="text-xl font-semibold">Workspace</h1><p className="mt-1 text-sm text-muted">Repositories and per-stage execution routing.</p></div><div className="flex gap-2">{token && <Link to="/workspaces/new"><Button variant="secondary" tabIndex={-1}><Plus />New workspace</Button></Link>}{draft && <Button disabled={save.isPending} onClick={() => save.mutate()}><Save />Save</Button>}</div></div>
     {!token && <p className="mt-6 rounded-lg border border-border p-3 text-sm text-muted">Set the operator token in Settings to edit workspace configuration.</p>}
     {token && !workspace && <Card className="mt-6"><CardHeader><CardTitle>No workspace selected</CardTitle></CardHeader><CardContent><p className="text-sm text-muted">Pick a workspace from the left rail, or <Link to="/workspaces/new" className="text-primary hover:underline">create one</Link> to get started.</p></CardContent></Card>}
-    {saved && <p className="mt-6 flex items-center gap-2 rounded-lg bg-success-soft p-3 text-sm text-success"><CheckCircle2 className="size-4" />{saved}</p>}
+    {saved && <p className="mt-6 flex items-center gap-2 rounded-md bg-positive-soft p-3 text-sm text-positive"><CheckCircle2 className="size-4" />{saved}</p>}
     {save.error && <p className="mt-6 rounded-lg bg-failure-soft p-3 text-sm text-failure">{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>}
     {draft ? <Editor draft={draft} setDraft={setDraft} /> : snapshot ? <ReadOnly snapshot={snapshot} /> : null}
   </div></div>

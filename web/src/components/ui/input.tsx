@@ -3,7 +3,7 @@ import { ChevronDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 const fieldClasses =
-  'w-full rounded-lg border border-edge bg-background px-3 py-2 text-sm text-foreground placeholder:text-faint outline-none transition-colors focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary/40 disabled:opacity-40'
+  'w-full rounded-md border border-edge bg-background px-3 py-2 text-sm text-foreground placeholder:text-faint outline-none transition-colors focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary/40 disabled:opacity-40'
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn(fieldClasses, 'h-9', className)} {...props} />

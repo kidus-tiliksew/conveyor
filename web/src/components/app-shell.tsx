@@ -89,12 +89,8 @@ function IconRail() {
     void navigate({ to: '/' })
   }
   return (
-    <div className="flex w-14 shrink-0 flex-col items-center gap-3 bg-rail py-3">
-      <Link to="/" aria-label="Conveyor home" className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary font-mono text-xs font-black text-primary-foreground">
-        CV
-      </Link>
-      <span className="h-px w-8 shrink-0 bg-rail-raised" />
-      <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto">
+    <div className="flex w-14 shrink-0 flex-col items-center gap-1.5 border-r border-border bg-rail py-3">
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto">
         {(workspaces ?? []).map((item) => (
           <button
             key={item.id}
@@ -104,10 +100,10 @@ function IconRail() {
             aria-current={item.id === selected ? 'true' : undefined}
             onClick={() => switchTo(item.id)}
             className={cn(
-              'grid size-9 shrink-0 place-items-center rounded-lg text-xs font-bold transition-colors',
+              'grid size-10 shrink-0 place-items-center rounded-md text-xs font-semibold transition-colors',
               item.id === selected
-                ? 'bg-rail-raised text-white ring-2 ring-primary'
-                : 'text-white/60 hover:bg-rail-raised hover:text-white',
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted hover:bg-rail-raised hover:text-foreground',
             )}
           >
             {initials(item.name || item.id)}
@@ -117,7 +113,7 @@ function IconRail() {
       <Link
         to="/workspaces/new"
         aria-label="Create workspace"
-        className="grid size-9 shrink-0 place-items-center rounded-lg text-white/60 transition-colors hover:bg-rail-raised hover:text-white"
+        className="grid size-10 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-rail-raised hover:text-foreground"
       >
         <Plus className="size-5" />
       </Link>
@@ -142,7 +138,7 @@ function NavSidebar() {
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
 
   return (
-    <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-surface/60" aria-label="Primary">
+    <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
 		<div className="px-4 py-4">
 			<p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
 			<p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
@@ -171,8 +167,12 @@ function NavItem({
   children?: ReactNode
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  // The board stays highlighted while a task sheet or full page is open.
-  const active = to === '/' ? pathname === '/' || pathname.startsWith('/tasks') : pathname === to || pathname.startsWith(`${to}/`)
+  // The board stays highlighted while any of its overlays (task sheet, full
+  // page, task intake, workspace modal) is open.
+  const active =
+    to === '/'
+      ? pathname === '/' || pathname.startsWith('/tasks') || pathname === '/new' || pathname === '/workspaces/new'
+      : pathname === to || pathname.startsWith(`${to}/`)
   return (
     <Link
       to={to}

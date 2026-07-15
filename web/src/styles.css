@@ -1,40 +1,41 @@
 @import "tailwindcss";
 
 /* Conveyor design tokens: a light, product-grade surface (spec §13.3).
-   Violet is the working accent; amber is reserved exclusively for
-   "Needs attention" — the single alarm color on the page. */
+   Royal blue is the working accent on cool neutrals; amber is reserved
+   exclusively for "Needs attention" — the single alarm color on the page. */
 @theme {
   --color-background: #ffffff;
-  --color-surface: #f7f7f8;
+  --color-surface: #f7f8fa;
   --color-card: #ffffff;
-  --color-raised: #f1f1f3;
-  --color-border: #e8e8eb;
-  --color-edge: #d8d8de;
-  --color-foreground: #1d1d23;
-  --color-muted: #6e6e78;
-  --color-faint: #9b9ba4;
+  --color-raised: #eef0f3;
+  --color-border: #e6e8ec;
+  --color-edge: #d4d7dd;
+  --color-foreground: #16181d;
+  --color-muted: #5c616b;
+  --color-faint: #9aa0aa;
 
-  --color-primary: #6d28d9;
+  --color-primary: #3355f5;
   --color-primary-foreground: #ffffff;
-  --color-primary-soft: #f3eefd;
+  --color-primary-soft: #eef1fe;
 
-  --color-attention: #8a6116;
-  --color-attention-soft: #fbf3dc;
-  --color-attention-dot: #e0a82e;
+  --color-attention: #b45309;
+  --color-attention-soft: #fdf1e2;
+  --color-attention-dot: #f59e0b;
 
   --color-positive: #1a7f37;
   --color-positive-soft: #e9f7ee;
   --color-failure: #b3261e;
   --color-failure-soft: #fdeeed;
 
-  --color-rail: #150f1d;
-  --color-rail-raised: #2a2138;
+  --color-rail: #f7f8fa;
+  --color-rail-raised: #e9ebf0;
 
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
   --animate-sheet-in: sheet-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
   --animate-overlay-in: overlay-in 150ms ease;
+  --animate-dialog-in: dialog-in 160ms cubic-bezier(0.32, 0.72, 0, 1);
 
   @keyframes sheet-in {
     from { transform: translateX(100%); }
@@ -43,6 +44,10 @@
   @keyframes overlay-in {
     from { opacity: 0; }
     to { opacity: 1; }
+  }
+  @keyframes dialog-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
   }
 }
 
@@ -62,13 +67,13 @@ body {
 }
 
 button, input, textarea, select { font: inherit; }
-::selection { background: #ddd1f8; }
+::selection { background: #dbe3fe; }
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
 /* Rendered spec markdown (§4.1). The machine-owned fenced blocks are hidden
    here and rendered structurally by the acceptance checklist instead. */
-.markdown { font-size: 0.875rem; line-height: 1.7; color: #3c3c44; }
+.markdown { font-size: 0.875rem; line-height: 1.7; color: #363a42; }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   color: var(--color-foreground);

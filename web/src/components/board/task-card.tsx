@@ -5,7 +5,7 @@ import { cn, relativeTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 
 // Deterministic repo hue so a repo reads consistently across the board.
-const repoHues = ['#6d28d9', '#1a7f37', '#2563eb', '#c2410c', '#0f766e', '#be185d']
+const repoHues = ['#3355f5', '#0f766e', '#1a7f37', '#b3540e', '#7c3aed', '#be185d']
 
 function repoColor(seed: string) {
   let hash = 0
