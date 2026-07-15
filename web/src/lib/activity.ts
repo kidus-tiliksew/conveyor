@@ -146,9 +146,10 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {
-  const entries: TimelineEntry[] = []
-  for (const job of item.jobs) {
-    entries.push({ type: 'job', at: job.started_at, job, summary: jobSummary(job, item.events) })
+	const entries: TimelineEntry[] = []
+	for (const job of item.jobs) {
+		if (!job.started_at) continue
+		entries.push({ type: 'job', at: job.started_at, job, summary: jobSummary(job, item.events) })
   }
   for (const event of item.events) {
     const note = noteFor(event)

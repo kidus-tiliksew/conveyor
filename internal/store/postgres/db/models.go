@@ -87,6 +87,28 @@ type Repo struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
+type ReviewPublication struct {
+	ReviewWorkOrderID      string             `json:"review_work_order_id"`
+	WorkspaceID            string             `json:"workspace_id"`
+	TaskID                 string             `json:"task_id"`
+	JobID                  string             `json:"job_id"`
+	Verdict                string             `json:"verdict"`
+	ReasonCode             string             `json:"reason_code"`
+	Summary                string             `json:"summary"`
+	Feedback               string             `json:"feedback"`
+	ReviewedCommitSha      string             `json:"reviewed_commit_sha"`
+	ReviewerModel          string             `json:"reviewer_model"`
+	ReviewerSession        string             `json:"reviewer_session"`
+	SameModelAsImplementer string             `json:"same_model_as_implementer"`
+	State                  string             `json:"state"`
+	Attempts               int32              `json:"attempts"`
+	CheckRunID             int64              `json:"check_run_id"`
+	CommentID              int64              `json:"comment_id"`
+	LastError              string             `json:"last_error"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Task struct {
 	ID              string             `json:"id"`
 	WorkspaceID     string             `json:"workspace_id"`
@@ -135,25 +157,30 @@ type User struct {
 }
 
 type WorkOrder struct {
-	ID              string             `json:"id"`
-	WorkspaceID     string             `json:"workspace_id"`
-	TaskID          string             `json:"task_id"`
-	JobID           string             `json:"job_id"`
-	Stage           string             `json:"stage"`
-	State           string             `json:"state"`
-	ClaimantID      string             `json:"claimant_id"`
-	SessionID       string             `json:"session_id"`
-	ClientTokenHash string             `json:"client_token_hash"`
-	Agent           string             `json:"agent"`
-	Model           string             `json:"model"`
-	LeaseExpiresAt  pgtype.Timestamptz `json:"lease_expires_at"`
-	Progress        string             `json:"progress"`
-	CostUsd         float64            `json:"cost_usd"`
-	TokensIn        int64              `json:"tokens_in"`
-	TokensOut       int64              `json:"tokens_out"`
-	SelfReported    bool               `json:"self_reported"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID                 string             `json:"id"`
+	WorkspaceID        string             `json:"workspace_id"`
+	TaskID             string             `json:"task_id"`
+	JobID              string             `json:"job_id"`
+	Stage              string             `json:"stage"`
+	State              string             `json:"state"`
+	ClaimantID         string             `json:"claimant_id"`
+	SessionID          string             `json:"session_id"`
+	ClientTokenHash    string             `json:"client_token_hash"`
+	Agent              string             `json:"agent"`
+	Model              string             `json:"model"`
+	LeaseExpiresAt     pgtype.Timestamptz `json:"lease_expires_at"`
+	Progress           string             `json:"progress"`
+	CostUsd            float64            `json:"cost_usd"`
+	TokensIn           int64              `json:"tokens_in"`
+	TokensOut          int64              `json:"tokens_out"`
+	SelfReported       bool               `json:"self_reported"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	QueueEnteredAt     pgtype.Timestamptz `json:"queue_entered_at"`
+	QueueDeadline      pgtype.Timestamptz `json:"queue_deadline"`
+	ExecutionStartedAt pgtype.Timestamptz `json:"execution_started_at"`
+	ExecutionDeadline  pgtype.Timestamptz `json:"execution_deadline"`
+	RedispatchCount    int32              `json:"redispatch_count"`
 }
 
 type Workspace struct {

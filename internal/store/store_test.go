@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,45 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	claim.ClientToken = "token-b"
 	if _, err := st.ClaimWorkOrder(ctx, "review", claim); err != nil {
 		t.Fatalf("fresh review claim: %v", err)
+	}
+}
+
+func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemory()
+	task := core.Task{ID: "timeout-task", State: core.TaskRunning}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "timeout-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := stale
+	expired.ExecutionDeadline = time.Now().Add(-time.Second)
+	if err = st.UpdateWorkOrder(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.GetWorkOrder(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, stale); !errors.Is(err, ErrWorkOrderTimedOut) {
+		t.Fatalf("stale update error = %v", err)
+	}
+	current, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || current.State != core.WorkOrderTimedOut {
+		t.Fatalf("current = %+v, err = %v", current, err)
 	}
 }
 

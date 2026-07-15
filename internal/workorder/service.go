@@ -56,7 +56,8 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	}
 	out := orders[:0]
 	for _, order := range orders {
-		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed {
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
+			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
 			out = append(out, order)
 		}
 	}
@@ -77,6 +78,15 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	route, ok := cfg.Routing.Stages[string(order.Stage)]
+	if !ok || route.Timeout <= 0 {
+		return core.WorkOrder{}, fmt.Errorf("work-order execution timeout unavailable")
+	}
+	claim.ExecutionTimeout = route.Timeout
 	if err = s.enforce(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -84,15 +94,19 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	job, ok, err := s.Store.GetLatestJob(ctx, order.TaskID)
-	if err == nil && ok && job.ID == order.JobID {
-		job.State = core.JobRunning
-		job.ModelTier = claim.Model
-		if updateErr := s.Store.UpdateJob(ctx, job); updateErr != nil {
-			return core.WorkOrder{}, updateErr
-		}
-	}
 	return order, nil
+}
+
+func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, error) {
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	timeout := cfg.WorkOrderQueueTimeout
+	if timeout <= 0 {
+		timeout = config.DefaultWorkOrderQueueTimeout
+	}
+	return s.Store.RedispatchWorkOrder(ctx, id, timeout)
 }
 
 func (s *Service) Get(ctx context.Context, id, session string) (Context, error) {
@@ -400,6 +414,12 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	if order.State == core.WorkOrderTimedOut {
+		return core.WorkOrder{}, store.ErrWorkOrderTimedOut
+	}
+	if order.State == core.WorkOrderStale {
+		return core.WorkOrder{}, store.ErrWorkOrderStale
+	}
 	if order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimed", id)
 	}
@@ -413,19 +433,15 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 }
 
 func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
-	cfg, err := s.config(ctx)
+	current, err := s.Store.GetWorkOrder(ctx, order.ID)
 	if err != nil {
 		return err
 	}
-	route := cfg.Routing.Stages[string(order.Stage)]
-	jobs, err := s.Store.ListJobs(ctx, order.TaskID)
-	if err != nil {
-		return err
+	if current.State == core.WorkOrderTimedOut {
+		return store.ErrWorkOrderTimedOut
 	}
-	for _, job := range jobs {
-		if job.ID == order.JobID && route.Timeout > 0 && time.Now().After(job.StartedAt.Add(route.Timeout)) {
-			return fmt.Errorf("work order wall clock exhausted")
-		}
+	if current.State == core.WorkOrderStale {
+		return store.ErrWorkOrderStale
 	}
 	return nil
 }

@@ -20,16 +20,17 @@ import (
 var (
 	ErrWorkspaceRequired = errors.New("workspace context is required")
 	ErrWorkspaceConflict = errors.New("workspace id or name already exists")
+	ErrWorkOrderStale    = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut = errors.New("work order execution deadline exceeded")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
-// workspace-scoped Store operation (spec §21.9).
+// workspace-scoped Store operation (spec §21.10).
 type WorkspaceControlStore interface {
 	ListWorkspaces(context.Context) ([]core.Workspace, error)
 	GetWorkspace(context.Context, string) (core.Workspace, error)
 	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
 }
-
 type Store interface {
 	CreateTask(ctx context.Context, t core.Task) error
 	GetTask(ctx context.Context, id string) (core.Task, error)
@@ -63,6 +64,7 @@ type Store interface {
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
@@ -324,28 +326,30 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 	if order.CreatedAt.IsZero() {
 		order.CreatedAt = now
 	}
+	if order.QueueEnteredAt.IsZero() {
+		order.QueueEnteredAt = order.CreatedAt
+	}
+	if order.QueueDeadline.IsZero() {
+		order.QueueDeadline = order.QueueEnteredAt.Add(24 * time.Hour)
+	}
 	order.UpdatedAt = now
 	if order.State == "" {
 		order.State = core.WorkOrderQueued
 	}
+	order.Claimable = order.State == core.WorkOrderQueued
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	return nil
 }
 
-func (m *memory) GetWorkOrder(_ context.Context, id string) (core.WorkOrder, error) {
+func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
-	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(time.Now()) {
-		order.State, order.ClaimantID, order.SessionID, order.Agent, order.Model = core.WorkOrderQueued, "", "", "", ""
-		order.ClientTokenHash = ""
-		order.LeaseExpiresAt = time.Time{}
-		m.workOrders[id] = order
-	}
+	order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
 	return order, nil
 }
 
@@ -354,13 +358,8 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	defer m.mu.Unlock()
 	now := time.Now()
 	orders := make([]core.WorkOrder, 0, len(m.workOrders))
-	for id, order := range m.workOrders {
-		if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
-			order.State, order.ClaimantID, order.SessionID, order.Agent, order.Model = core.WorkOrderQueued, "", "", "", ""
-			order.ClientTokenHash = ""
-			order.LeaseExpiresAt = time.Time{}
-			m.workOrders[id] = order
-		}
+	for _, order := range m.workOrders {
+		order = m.refreshWorkOrderLocked(ctx, order, now)
 		orders = append(orders, order)
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
@@ -386,6 +385,13 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
 	now := time.Now().UTC()
+	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if order.State == core.WorkOrderStale {
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)
+	}
+	if order.State == core.WorkOrderTimedOut {
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderTimedOut, id)
+	}
 	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is already claimed", id)
 	}
@@ -400,6 +406,14 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 			}
 		}
 	}
+	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
+		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
+		m.workOrders[id] = order
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+		if order.State == core.WorkOrderTimedOut {
+			return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderTimedOut, id)
+		}
+	}
 	lease := claim.Lease
 	if lease <= 0 {
 		lease = 15 * time.Minute
@@ -409,9 +423,87 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	if claim.ClientToken != "" {
 		order.ClientTokenHash = tokenHash(claim.ClientToken)
 	}
+	if order.ExecutionStartedAt.IsZero() {
+		order.ExecutionStartedAt = now
+		if claim.ExecutionTimeout > 0 {
+			order.ExecutionDeadline = now.Add(claim.ExecutionTimeout)
+		}
+		if job, index, exists := m.findJobLocked(order.JobID); exists {
+			job.StartedAt = now
+			job.State = core.JobRunning
+			job.ModelTier = claim.Model
+			m.jobs[job.TaskID][index] = job
+		}
+	}
+	order.Claimable = false
 	m.workOrders[id] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)})
 	return order, nil
+}
+
+func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	now := time.Now().UTC()
+	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if order.State != core.WorkOrderStale {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+	}
+	if queueTimeout <= 0 {
+		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
+	}
+	order.State, order.Claimable = core.WorkOrderQueued, true
+	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
+	order.Agent, order.Model, order.Progress = "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
+	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
+	order.RedispatchCount++
+	order.UpdatedAt = now
+	m.workOrders[id] = order
+	if job, index, exists := m.findJobLocked(order.JobID); exists {
+		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
+		m.jobs[job.TaskID][index] = job
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now})
+	return order, nil
+}
+
+func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrder, now time.Time) core.WorkOrder {
+	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
+		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+		order.State, order.Claimable = core.WorkOrderTimedOut, false
+		order.LeaseExpiresAt = time.Time{}
+		order.UpdatedAt = now
+		m.workOrders[order.ID] = order
+		if job, index, exists := m.findJobLocked(order.JobID); exists {
+			job.State, job.EndedAt = core.JobFailed, now
+			m.jobs[job.TaskID][index] = job
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(order), At: now})
+		return order
+	}
+	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
+		order.State, order.Claimable = core.WorkOrderQueued, true
+		order.ClaimantID, order.SessionID, order.Agent, order.Model = "", "", "", ""
+		order.ClientTokenHash = ""
+		order.LeaseExpiresAt = time.Time{}
+		order.UpdatedAt = now
+		m.workOrders[order.ID] = order
+	}
+	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderStale, false, now
+		m.workOrders[order.ID] = order
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: core.JSONPayload(order), At: now})
+		return order
+	}
+	order.Claimable = order.State == core.WorkOrderQueued
+	return order
 }
 
 func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
@@ -419,13 +511,32 @@ func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]b
 func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.workOrders[order.ID]; !ok {
+	current, ok := m.workOrders[order.ID]
+	if !ok {
 		return fmt.Errorf("work order %s not found", order.ID)
+	}
+	current = m.refreshWorkOrderLocked(ctx, current, time.Now().UTC())
+	if current.State == core.WorkOrderTimedOut {
+		return fmt.Errorf("%w: %s", ErrWorkOrderTimedOut, order.ID)
+	}
+	if current.State == core.WorkOrderStale {
+		return fmt.Errorf("%w: %s", ErrWorkOrderStale, order.ID)
+	}
+	if updateRequiresClaim(order.State, current.State) &&
+		(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
+		return fmt.Errorf("work order %s is not claimed by this session", order.ID)
 	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
 	return nil
+}
+
+func updateRequiresClaim(next, current core.WorkOrderState) bool {
+	if next == core.WorkOrderClaimed {
+		return true
+	}
+	return current != next && (next == core.WorkOrderSubmitted || next == core.WorkOrderCompleted)
 }
 
 func (m *memory) CreateFeature(ctx context.Context, feature core.Feature) error {
@@ -679,11 +790,8 @@ func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
 	if _, _, ok := m.findJobLocked(j.ID); ok {
 		return fmt.Errorf("job %s already exists", j.ID)
 	}
-	if j.StartedAt.IsZero() {
-		j.StartedAt = time.Now().UTC()
-	}
 	m.jobs[j.TaskID] = append(m.jobs[j.TaskID], j)
-	m.appendEventLocked(ctx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.created", Payload: core.JSONPayload(j), At: j.StartedAt})
+	m.appendEventLocked(ctx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.created", Payload: core.JSONPayload(j)})
 	return nil
 }
 
@@ -905,7 +1013,13 @@ func (m *memory) findJobLocked(id string) (core.Job, int, bool) {
 }
 
 func sortJobs(jobs []core.Job) {
-	sort.Slice(jobs, func(i, j int) bool {
+	sort.SliceStable(jobs, func(i, j int) bool {
+		if jobs[i].StartedAt.IsZero() != jobs[j].StartedAt.IsZero() {
+			return !jobs[i].StartedAt.IsZero()
+		}
+		if jobs[i].StartedAt.IsZero() {
+			return false
+		}
 		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
 			return jobs[i].ID < jobs[j].ID
 		}

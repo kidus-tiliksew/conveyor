@@ -80,7 +80,8 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
 }
 
 function JobEntry({ job, summary }: { job: Job; summary: string }) {
-  const running = job.state === 'running'
+	if (!job.started_at) return null
+	const running = job.state === 'running'
   return (
     <li className="relative pl-7">
       <TimelineDot

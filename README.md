@@ -103,10 +103,11 @@ instructions are in [plugins/conveyor/README.md](plugins/conveyor/README.md).
 Authenticated operators can create and select additional workspaces in the
 Workspace UI or through `POST /v1/workspaces`; creation atomically stores its
 configuration and `workspace.created` audit event. Each workspace's routes,
-bounce cap, repositories, config version, task intake keys, River queues, and
-pipeline records remain independent. The
-deployment file retains the database connection, prompt-pack path, and bare
-repository cache path.
+bounce cap, work-order queue timeout, repositories, config version, task intake
+keys, River queues, and pipeline records remain independent and versioned in
+Postgres. They are editable through the UI/API or `conveyor config import`.
+The deployment file retains the database connection, prompt-pack path, and
+bare repository cache path.
 
 All workspace-scoped REST calls accept `workspace_id` or `X-Workspace-ID`.
 The CLI accepts `--workspace` (or `CONVEYOR_WORKSPACE`) and MCP tools accept
@@ -121,6 +122,11 @@ managed execution is explicitly activated in Phase 8.
 Stage routes contain only model, timeout, and execution mode. Conveyor retains
 token and USD usage as audit telemetry, but it has no allocation, remaining
 balance, or usage-based execution gate (spec §21.6).
+
+`work_order_queue_timeout` defaults to `24h`. It bounds how long an unclaimed
+MCP work order remains claimable. The per-stage route timeout starts only on a
+successful claim, while `lease_expires_at` governs ownership and never extends
+that fixed execution deadline (spec §21.9).
 
 When upgrading from v1.5, remove `budget_usd` from the deployment bootstrap
 file before restart. Startup canonicalizes an existing Postgres workspace

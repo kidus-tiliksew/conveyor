@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.9**
-**Date:** July 14, 2026
-**Status:** Accepted — multi-workspace control-plane amendment applied (§21.9)
+**Specification — v1.10**
+**Date:** July 15, 2026
+**Status:** Accepted — independent work-order clocks and multi-workspace control-plane amendments applied (§21.9–§21.10)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1245,7 +1245,45 @@ remain unchanged:
 
 ---
 
-### 21.9 v1.9 — Multi-workspace control plane (July 14, 2026)
+### 21.9 v1.9 — Independent work-order clocks and stale recovery (July 15, 2026)
+
+Phase 4.7 created an external job before an operator agent claimed it and used
+that creation timestamp as the stage execution start. Queue residence therefore
+consumed the execution allowance and could leave an order advertised as queued
+after it was no longer claimable. This amendment supersedes §21.4 change 3 and
+the Phase 4.7 timeout language in §19 wherever they conflate queue age,
+execution wall clock, or claim lease expiry. The historical text remains the
+v1.0–v1.8 record. Six changes; all other v1.8 decisions remain unchanged:
+
+1. **Queue and execution use separate clocks.** A newly created external work
+   order records queue entry and queue deadline but leaves its job execution
+   start and deadline unset. Its configured per-stage timeout begins only when
+   the first claim succeeds; queue residence never consumes execution time.
+2. **Execution deadlines are fixed.** The first successful claim atomically
+   records the execution start and deadline and marks the external job running.
+   Lease expiry may return ownership to the queue, but reclaiming or renewing a
+   lease preserves the original execution deadline.
+3. **Queue retention is finite and configurable.** The versioned workspace
+   document exposes `work_order_queue_timeout`, default `24h`. A never-claimed
+   order that passes that deadline transitions to explicit `stale` state and is
+   non-claimable. This timeout is independent of every stage route timeout.
+4. **Expired execution is explicit.** A queued-for-reclaim or claimed order
+   whose fixed execution deadline passes transitions to `timed_out`, marks its
+   job failed, and is non-claimable. Listing and claiming both materialize due
+   transitions transactionally so callers never depend on a prior list call.
+5. **Listing is diagnostic.** `list_work_orders` includes active, `stale`, and
+   `timed_out` orders with `claimable`, queue timing, execution timing, and lease
+   timing fields. A queued order never reports execution as started.
+6. **Stale recovery is audited.** `redispatch_work_order` is the supported
+   recovery for a stale, never-claimed order. It resets queue timing and stale
+   claim metadata, increments the redispatch count, retains the same task/job/
+   work-order linkage and append-only history, and leaves execution unset until
+   a later claim. It rejects active claims and execution-timed-out orders; those
+   continue through existing retry or operator policy.
+
+---
+
+### 21.10 v1.10 — Multi-workspace control plane (July 15, 2026)
 
 1. **Durable identity and lifecycle.** A workspace has an immutable lowercase
    slug `id` (`[a-z0-9][a-z0-9-]{0,62}`) and an immutable, trimmed display
@@ -1277,4 +1315,4 @@ remain unchanged:
 
 ---
 
-*End of specification. v1.9 accepted July 14, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), and explicit multi-workspace control-plane isolation added (§21.9). Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.10 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), and explicit multi-workspace control-plane isolation added (§21.10). Subsequent changes proceed by amendment with version bumps.*

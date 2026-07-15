@@ -36,9 +36,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		return fmt.Errorf("migrate River schema: %w", err)
 	}
-	// v1.9 adds workspace identity to River payloads. Backfill jobs inserted by
+	// v1.10 adds workspace identity to River payloads. Backfill jobs inserted by
 	// v1.8 so an in-place upgrade does not strand queued dispatch or review
-	// publication work with an empty context (spec §21.9).
+	// publication work with an empty context (spec §21.10).
 	if _, err := pool.Exec(ctx, `
 UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(t.workspace_id), true)
 FROM tasks t

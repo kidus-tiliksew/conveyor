@@ -53,17 +53,22 @@ type StageRoute struct {
 	LegacyModelTier string   `yaml:"model_tier,omitempty" json:"-"`
 }
 
-const DefaultStageTimeout = 2 * time.Hour
+const (
+	DefaultStageTimeout              = 2 * time.Hour
+	DefaultWorkOrderQueueTimeout     = 24 * time.Hour
+	DefaultWorkOrderQueueTimeoutText = "24h"
+)
 
 type Routing struct {
 	Stages map[string]StageRoute `yaml:"stages" json:"stages"`
 }
 
 type WorkspaceDocument struct {
-	Workspace  string  `yaml:"workspace" json:"workspace"`
-	MaxBounces int     `yaml:"max_bounces" json:"max_bounces"`
-	Routing    Routing `yaml:"routing" json:"routing"`
-	Repos      []Repo  `yaml:"repos" json:"repos"`
+	Workspace                 string  `yaml:"workspace" json:"workspace"`
+	MaxBounces                int     `yaml:"max_bounces" json:"max_bounces"`
+	WorkOrderQueueTimeoutText string  `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
+	Routing                   Routing `yaml:"routing" json:"routing"`
+	Repos                     []Repo  `yaml:"repos" json:"repos"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -86,13 +91,15 @@ type UpdateReceipt struct {
 // Config combines immutable deployment settings with the current workspace
 // snapshot. CacheDir is retained for the bare-clone cache and checkout flow.
 type Config struct {
-	Workspace  string   `yaml:"workspace"`
-	PackDir    string   `yaml:"pack_dir"`
-	MaxBounces int      `yaml:"max_bounces"`
-	CacheDir   string   `yaml:"cache_dir"`
-	Database   Database `yaml:"database"`
-	Routing    Routing  `yaml:"routing"`
-	Repos      []Repo   `yaml:"repos"`
+	Workspace                 string        `yaml:"workspace"`
+	PackDir                   string        `yaml:"pack_dir"`
+	MaxBounces                int           `yaml:"max_bounces"`
+	WorkOrderQueueTimeout     time.Duration `yaml:"-"`
+	WorkOrderQueueTimeoutText string        `yaml:"work_order_queue_timeout"`
+	CacheDir                  string        `yaml:"cache_dir"`
+	Database                  Database      `yaml:"database"`
+	Routing                   Routing       `yaml:"routing"`
+	Repos                     []Repo        `yaml:"repos"`
 }
 
 func Load(path string) (*Config, error) {
@@ -121,6 +128,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	}
 	next.Workspace = document.Workspace
 	next.MaxBounces = document.MaxBounces
+	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
 	next.Routing = document.Routing
 	next.Repos = document.Repos
 	return normalize(&next, source)
@@ -137,7 +145,7 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != ""
+	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == ""
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -222,6 +230,16 @@ func normalize(c *Config, path string) (*Config, error) {
 	}
 	if c.MaxBounces < 1 {
 		return nil, fmt.Errorf("max_bounces must be at least 1")
+	}
+	if c.WorkOrderQueueTimeoutText == "" {
+		c.WorkOrderQueueTimeout = DefaultWorkOrderQueueTimeout
+		c.WorkOrderQueueTimeoutText = DefaultWorkOrderQueueTimeoutText
+	} else {
+		parsed, parseErr := time.ParseDuration(c.WorkOrderQueueTimeoutText)
+		if parseErr != nil || parsed <= 0 {
+			return nil, fmt.Errorf("work_order_queue_timeout must be a positive duration")
+		}
+		c.WorkOrderQueueTimeout = parsed
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -313,8 +331,9 @@ func normalize(c *Config, path string) (*Config, error) {
 func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
-		Routing: Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
-		Repos:   append([]Repo(nil), c.Repos...),
+		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
+		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
+		Repos:                     append([]Repo(nil), c.Repos...),
 	}
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0

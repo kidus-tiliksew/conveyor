@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -80,6 +81,58 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}
 	if _, err = st.ClaimWorkOrder(ctx, task.ID+"-review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self review error = %v", err)
+	}
+
+	clockTaskID := core.NewTaskID()
+	clockTask := core.Task{ID: clockTaskID, Workspace: workspace, Repo: "api", Title: "Work-order clocks", BaseBranch: "main", Branch: "conveyor/clocks-" + clockTaskID, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err = st.CreateTask(ctx, clockTask); err != nil {
+		t.Fatal(err)
+	}
+	clockJob := core.Job{ID: clockTaskID + "-implement", TaskID: clockTaskID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, clockJob); err != nil {
+		t.Fatal(err)
+	}
+	queuedAt := time.Now().Add(-2 * time.Hour)
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: clockJob.ID, TaskID: clockTaskID, JobID: clockJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	clockClaim, err := st.ClaimWorkOrder(ctx, clockJob.ID, core.WorkOrderClaim{SessionID: "clock-session", ClientToken: "clock-token", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil || clockClaim.ExecutionStartedAt.IsZero() || clockClaim.ExecutionDeadline.Sub(clockClaim.ExecutionStartedAt) != time.Hour {
+		t.Fatalf("clock claim=%+v err=%v", clockClaim, err)
+	}
+	clockClaim.ExecutionDeadline = time.Now().Add(-time.Second)
+	if err = st.UpdateWorkOrder(ctx, clockClaim); err != nil {
+		t.Fatal(err)
+	}
+	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
+		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	clockClaim.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, clockClaim); !errors.Is(err, store.ErrWorkOrderTimedOut) {
+		t.Fatalf("stale timed-out update error=%v", err)
+	}
+	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut {
+		t.Fatalf("timed out after stale update=%+v err=%v", timedOut, getErr)
+	}
+
+	staleTaskID := core.NewTaskID()
+	staleTask := core.Task{ID: staleTaskID, Workspace: workspace, Repo: "api", Title: "Stale work order", BaseBranch: "main", Branch: "conveyor/stale-" + staleTaskID, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err = st.CreateTask(ctx, staleTask); err != nil {
+		t.Fatal(err)
+	}
+	staleJob := core.Job{ID: staleTaskID + "-review", TaskID: staleTaskID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, staleJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: staleJob.ID, TaskID: staleTaskID, JobID: staleJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().Add(-2 * time.Hour), QueueDeadline: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if stale, getErr := st.GetWorkOrder(ctx, staleJob.ID); getErr != nil || stale.State != core.WorkOrderStale || stale.Claimable {
+		t.Fatalf("stale=%+v err=%v", stale, getErr)
+	}
+	redispatched, err := st.RedispatchWorkOrder(ctx, staleJob.ID, 24*time.Hour)
+	if err != nil || redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 || !redispatched.ExecutionStartedAt.IsZero() {
+		t.Fatalf("redispatched=%+v err=%v", redispatched, err)
 	}
 	publication := core.ReviewPublication{ReviewWorkOrderID: task.ID + "-review", TaskID: task.ID, JobID: task.ID + "-review", Verdict: "approve", ReasonCode: "approved", Summary: "passes", ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true"}
 	if err = st.QueueReviewPublication(ctx, publication); err != nil {

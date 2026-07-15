@@ -50,7 +50,11 @@ parallel workflow.
    assigned branch. Implement the approved specification and run the
    repository's required validation there.
 6. Use `report_progress` for meaningful milestones and `report_usage` with
-   cumulative, truthful usage. Respect the lease and stage deadline. Upload a
+   cumulative, truthful usage. Respect the lease and fixed execution deadline;
+   reclaiming an expired lease does not extend execution time. If a never-
+   claimed order is reported `stale`, use `redispatch_work_order` for the
+   supported audited recovery path and then claim it with fresh credentials.
+   Never redispatch an active or execution-timed-out order. Upload a
    transcript only when required and only after confirming it contains no
    secrets.
 7. Commit the completed work in the dedicated worktree, push the assigned

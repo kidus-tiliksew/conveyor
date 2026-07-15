@@ -119,6 +119,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			lease = time.Duration(value) * time.Second
 		}
 		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease})
+	case "redispatch_work_order":
+		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
 	case "get_work_order":
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 	case "report_progress":
@@ -213,8 +215,9 @@ func mcpTools() []map[string]any {
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "title": str, "body": str, "repo": str, "base_branch": str, "source": str, "level": map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
-		{"name": "list_work_orders", "description": "List queued or currently claimed implement and review work orders in one workspace.", "inputSchema": object(map[string]any{"workspace_id": str})},
+		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
+		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},

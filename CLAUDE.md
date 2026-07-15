@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.9, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.10, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -20,7 +20,7 @@ with a version bump (§21), never silent edits.
 ## Phase discipline
 
 Phases 1–2 are complete and validated. The roadmap was re-phased for the
-Beta milestone (spec §19 v1.9, rationale in §21.2–§21.9; working breakdown
+Beta milestone (spec §19 v1.10, rationale in §21.2–§21.10; working breakdown
 in [docs/beta-plan.md](docs/beta-plan.md)). Note §21.4 retires the sandbox
 execution plane — Phase 1–3 execution contracts (runner, adapters,
 credential pool, shim, images) are superseded, not preserved. Pre-Beta is
@@ -53,7 +53,7 @@ after reading a work order, the implementing agent uses `conveyor checkout
 test, commit, and push there (§21.8). Conveyor does not mutate the primary
 checkout or reset task history.
 Workspace context is explicit across REST, CLI, MCP, dispatch, and
-reconciliation (§21.9); omission is compatible only for a singleton workspace.
+reconciliation (§21.10); omission is compatible only for a singleton workspace.
 
 Do NOT build post-Beta or deferred surfaces:
 monitor agent, `.conveyor/` repo hints (Phase 5); memory store / pgvector

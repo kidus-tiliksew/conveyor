@@ -151,7 +151,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 }
 
 // CreateWorkspace commits identity, configuration, repositories, and the
-// workspace.created audit event atomically (spec §21.9).
+// workspace.created audit event atomically (spec §21.10).
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
 	data, err := config.MarshalWorkspaceDocument(cfg)
 	if err != nil {
@@ -277,7 +277,8 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 
 func configDiff(before, after config.WorkspaceDocument) []string {
 	sections := make([]string, 0, 3)
-	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces {
+	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
+		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
@@ -490,9 +491,6 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 }
 
 func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
-	if job.StartedAt.IsZero() {
-		job.StartedAt = time.Now().UTC()
-	}
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspace(ctx)}); err != nil {
 			return notFound(err, "task %s", job.TaskID)
@@ -502,7 +500,7 @@ func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
 		}
 		return insertEvent(ctx, q, core.Event{
 			TaskID: job.TaskID, JobID: job.ID, Kind: "job.created",
-			Payload: core.JSONPayload(job), At: job.StartedAt,
+			Payload: core.JSONPayload(job),
 		})
 	})
 }
@@ -743,26 +741,39 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 }
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
-session_id, client_token_hash, agent, model, lease_expires_at, progress,
-cost_usd, tokens_in, tokens_out, self_reported, created_at, updated_at`
+session_id, client_token_hash, agent, model, lease_expires_at,
+queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
+created_at, updated_at`
 
 func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
 	if order.CreatedAt.IsZero() {
 		order.CreatedAt = time.Now().UTC()
 	}
+	if order.QueueEnteredAt.IsZero() {
+		order.QueueEnteredAt = order.CreatedAt
+	}
+	if order.QueueDeadline.IsZero() {
+		order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+	}
 	if order.State == "" {
 		order.State = core.WorkOrderQueued
 	}
+	order.Claimable = order.State == core.WorkOrderQueued
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, lease_expires_at,
-			progress, cost_usd, tokens_in, tokens_out, self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)`,
+			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
+			self_reported, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model,
-			nullableTimeValue(order.LeaseExpiresAt), order.Progress, order.CostUSD,
-			order.TokensIn, order.TokensOut, true, order.CreatedAt)
+			nullableTimeValue(order.LeaseExpiresAt), order.QueueEnteredAt, order.QueueDeadline,
+			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
+			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
+			order.TokensOut, true, order.CreatedAt)
 		if err != nil {
 			return err
 		}
@@ -771,8 +782,7 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 }
 
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
-	if _, err := s.pool.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='', session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL, updated_at=now()
-		WHERE workspace_id=$1 AND id=$2 AND state='claimed' AND lease_expires_at <= now()`, workspace(ctx), id); err != nil {
+	if err := s.refreshWorkOrders(ctx); err != nil {
 		return core.WorkOrder{}, err
 	}
 	order, err := scanWorkOrder(s.pool.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
@@ -783,8 +793,7 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 }
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
-	if _, err := s.pool.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='', session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL, updated_at=now()
-		WHERE workspace_id=$1 AND state='claimed' AND lease_expires_at <= now()`, workspace(ctx)); err != nil {
+	if err := s.refreshWorkOrders(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
@@ -804,6 +813,9 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 }
 
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	if err := s.refreshWorkOrders(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -831,6 +843,34 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
 	}
 	now := time.Now().UTC()
+	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
+		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now)
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, id)
+	}
+	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now)
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", store.ErrWorkOrderStale, id)
+	}
+	if order.State == core.WorkOrderStale {
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", store.ErrWorkOrderStale, id)
+	}
+	if order.State == core.WorkOrderTimedOut {
+		return core.WorkOrder{}, fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, id)
+	}
 	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is already claimed", id)
 	}
@@ -851,18 +891,46 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: use a fresh agent session")
 		}
 	}
+	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
+		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
+		if !order.ExecutionDeadline.After(now) {
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET execution_deadline=$1 WHERE workspace_id=$2 AND id=$3`, order.ExecutionDeadline, workspace(ctx), id); err != nil {
+				return core.WorkOrder{}, err
+			}
+			order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now)
+			if err != nil {
+				return core.WorkOrder{}, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return core.WorkOrder{}, err
+			}
+			return core.WorkOrder{}, fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, id)
+		}
+	}
 	lease := claim.Lease
 	if lease <= 0 {
 		lease = 15 * time.Minute
 	}
 	expires := now.Add(lease)
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, lease_expires_at=$6, updated_at=$7 WHERE id=$8 RETURNING "+workOrderColumns,
-		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, expires, now, id)
+	executionStarted, executionDeadline := order.ExecutionStartedAt, order.ExecutionDeadline
+	if executionStarted.IsZero() {
+		executionStarted = now
+		if claim.ExecutionTimeout > 0 {
+			executionDeadline = now.Add(claim.ExecutionTimeout)
+		}
+	}
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, lease_expires_at=$6, execution_started_at=$7, execution_deadline=$8, updated_at=$9 WHERE workspace_id=$10 AND id=$11 RETURNING "+workOrderColumns,
+		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, expires,
+		executionStarted, nullableTimeValue(executionDeadline), now, workspace(ctx), id)
 	order, err = scanWorkOrder(row)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
+	if _, err := tx.Exec(ctx, `UPDATE jobs SET state='running', model_tier=$1,
+		started_at=COALESCE(started_at,$2), updated_at=$2 WHERE id=$3`, claim.Model, executionStarted, order.JobID); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)}); err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -872,14 +940,172 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	return order, nil
 }
 
+func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	if queueTimeout <= 0 {
+		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	now := time.Now().UTC()
+	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s has an active claim and cannot be redispatched", id)
+	}
+	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now)
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
+	if order.State != core.WorkOrderStale {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+	}
+	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
+		session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
+		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
+		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
+		now, now.Add(queueTimeout), workspace(ctx), id)
+	order, err = scanWorkOrder(row)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending', started_at=NULL,
+		ended_at=NULL, updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *Store) refreshWorkOrders(ctx context.Context) error {
+	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state IN ('queued','claimed') FOR UPDATE", workspace(ctx))
+		if err != nil {
+			return err
+		}
+		var orders []core.WorkOrder
+		for rows.Next() {
+			order, scanErr := scanWorkOrder(rows)
+			if scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			orders = append(orders, order)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		now := time.Now().UTC()
+		for _, order := range orders {
+			if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+					return err
+				}
+				continue
+			}
+			if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
+				if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
+					session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+					updated_at=$1 WHERE workspace_id=$2 AND id=$3`, now, workspace(ctx), order.ID); err != nil {
+					return err
+				}
+				order.State = core.WorkOrderQueued
+			}
+			if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+				!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, state core.WorkOrderState, kind string, now time.Time) (core.WorkOrder, error) {
+	row := tx.QueryRow(ctx, `UPDATE work_orders SET state=$1, lease_expires_at=NULL,
+		updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
+		state, now, workspace(ctx), order.ID)
+	updated, err := scanWorkOrder(row)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if state == core.WorkOrderTimedOut {
+		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed', ended_at=COALESCE(ended_at,$1),
+			updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: kind, Payload: core.JSONPayload(updated), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return updated, nil
+}
+
 func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	var lifecycleErr error
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		current, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), order.ID))
+		if err != nil {
+			return notFound(err, "work order %s", order.ID)
+		}
+		now := time.Now().UTC()
+		if (current.State == core.WorkOrderQueued || current.State == core.WorkOrderClaimed) &&
+			!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
+			if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+				return err
+			}
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderTimedOut {
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderStale {
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderStale, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderClaimed && !current.LeaseExpiresAt.After(now) {
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
+				session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+				updated_at=$1 WHERE workspace_id=$2 AND id=$3`, now, workspace(ctx), order.ID); err != nil {
+				return err
+			}
+			lifecycleErr = fmt.Errorf("work order lease expired")
+			return nil
+		}
+		if updateRequiresClaim(order.State, current.State) &&
+			(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
+			return fmt.Errorf("work order %s is not claimed by this session", order.ID)
+		}
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
-			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7, progress=$8,
-			cost_usd=$9, tokens_in=$10, tokens_out=$11, self_reported=$12, updated_at=now()
-			WHERE workspace_id=$13 AND id=$14`, order.State, order.ClaimantID, order.SessionID,
+			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
+			queue_entered_at=$8, queue_deadline=$9, execution_started_at=$10,
+			execution_deadline=$11, redispatch_count=$12, progress=$13,
+			cost_usd=$14, tokens_in=$15, tokens_out=$16, self_reported=$17, updated_at=now()
+			WHERE workspace_id=$18 AND id=$19`, order.State, order.ClaimantID, order.SessionID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
-			order.Progress, order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
+			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
+			nullableTimeValue(order.ExecutionDeadline), order.RedispatchCount, order.Progress,
+			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
 		if err != nil {
 			return err
 		}
@@ -888,6 +1114,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
 	})
+	if err != nil {
+		return err
+	}
+	return lifecycleErr
+}
+
+func updateRequiresClaim(next, current core.WorkOrderState) bool {
+	if next == core.WorkOrderClaimed {
+		return true
+	}
+	return current != next && (next == core.WorkOrderSubmitted || next == core.WorkOrderCompleted)
 }
 
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
@@ -1174,13 +1411,28 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
 	var order core.WorkOrder
 	var stage, state string
-	var lease pgtype.Timestamptz
+	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
-		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &lease, &order.Progress,
-		&order.CostUSD, &order.TokensIn, &order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
+		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &lease,
+		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
+		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
+		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
+	order.Claimable = order.State == core.WorkOrderQueued
 	if lease.Valid {
 		order.LeaseExpiresAt = lease.Time
+	}
+	if queueEntered.Valid {
+		order.QueueEnteredAt = queueEntered.Time
+	}
+	if queueDeadline.Valid {
+		order.QueueDeadline = queueDeadline.Time
+	}
+	if executionStarted.Valid {
+		order.ExecutionStartedAt = executionStarted.Time
+	}
+	if executionDeadline.Valid {
+		order.ExecutionDeadline = executionDeadline.Time
 	}
 	return order, err
 }
@@ -1410,7 +1662,7 @@ func jobInsertParams(job core.Job) db.InsertJobParams {
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
 		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
-		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
+		StartedAt: nullableTimestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 	}
 }
 
@@ -1421,7 +1673,7 @@ func jobUpdateParams(job core.Job, workspace string) db.UpdateJobParams {
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
 		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
-		StartedAt: timestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
+		StartedAt: nullableTimestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 		WorkspaceID: workspace,
 	}
 }

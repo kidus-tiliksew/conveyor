@@ -20,12 +20,15 @@ documented long-context multiplier. Unknown models fail closed until their
 rates are added; non-standard service tiers or regional uplifts are not
 represented.
 
-## Work-order leases are claim-bounded
+## Work-order clocks are independent
 
 A claim may request a lease of at most one hour. Expired claims return to the
-queue when work orders are listed or claimed. Phase 4.7 has no heartbeat tool;
-long work should claim again after expiry or choose a lease matching the
-expected operation.
+queue when work orders are listed or claimed, but reclaiming never extends the
+fixed execution deadline that began at the first successful claim. Unclaimed
+orders have a separate configurable queue-retention timeout (default `24h`);
+after that they become explicitly `stale` and require
+`redispatch_work_order`. Phase 4.7 has no heartbeat tool; long work should
+claim again after expiry or choose a lease matching the expected operation.
 
 ## Task worktrees are local operator state
 

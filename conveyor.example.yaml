@@ -4,6 +4,7 @@
 workspace: demo
 pack_dir: pack
 max_bounces: 2
+work_order_queue_timeout: 24h
 # cache_dir: ~/.conveyor/cache     # bare repo cache for checkout/diff flows
 
 database:
