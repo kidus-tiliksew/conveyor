@@ -12,6 +12,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/envfile"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +21,10 @@ var version = "dev" // set via -ldflags at build time
 var workspaceFlag string
 
 func main() {
+	if err := envfile.LoadDefault(); err != nil {
+		fmt.Fprintln(os.Stderr, "error: load local environment:", err)
+		os.Exit(1)
+	}
 	root := &cobra.Command{
 		Use:           "conveyor",
 		Short:         "Conveyor: a software factory platform",

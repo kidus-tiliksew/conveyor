@@ -16,6 +16,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/envfile"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
@@ -25,6 +26,9 @@ import (
 )
 
 func main() {
+	if err := envfile.LoadDefault(); err != nil {
+		log.Fatalf("load local environment: %v", err)
+	}
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	configPath := flag.String("config", "conveyor.yaml", "path to deployment config")
 	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")

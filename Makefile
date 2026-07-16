@@ -1,8 +1,12 @@
 BIN := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+ENV_FILE ?= .env
+CONVEYOR_CONFIG ?= conveyor.yaml
+LISTEN_ADDR ?= 127.0.0.1:8080
+POLL_GITHUB ?= 60s
 
-.PHONY: all build ui test vet plugin-check fmt tidy clean
+.PHONY: all build ui test vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -30,3 +34,18 @@ tidy:
 
 clean:
 	rm -rf $(BIN)
+
+db-up:
+	docker compose --env-file $(ENV_FILE) up -d --wait postgres
+
+db-down:
+	docker compose --env-file $(ENV_FILE) down
+
+run:
+	CONVEYOR_ENV_FILE=$(abspath $(ENV_FILE)) $(BIN)/conveyord -config $(CONVEYOR_CONFIG) -addr $(LISTEN_ADDR) -poll-github $(POLL_GITHUB)
+
+build-run: build
+	$(MAKE) run
+
+dev: db-up
+	$(MAKE) build-run

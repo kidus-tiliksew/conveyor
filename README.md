@@ -30,18 +30,56 @@ run; implementation completion is not recorded as Beta evidence.
 
 ## Run locally
 
-Requirements: Go 1.24, Node/npm, Postgres for durable operation, and an
-authenticated `gh` CLI when GitHub issue intake or PR creation is enabled.
+Requirements: Go 1.24, Node/npm, Docker with Compose, and an authenticated
+`gh` CLI when GitHub issue intake or PR creation is enabled.
 
 ```sh
 cp conveyor.example.yaml conveyor.yaml
-export CONVEYOR_DATABASE_URL='postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable'
-export CONVEYOR_API_TOKEN="$(openssl rand -hex 32)"
-export CONVEYOR_API_KEY='your-deployment-openai-key'
-
-make build
-bin/conveyord -config conveyor.yaml -poll-github 60s
+cp .env.example .env
 ```
+
+Set `CONVEYOR_API_KEY` in `.env` and replace the example operator token with
+the output of `openssl rand -hex 32`. The file is ignored by Git. Then start
+the database and control plane together:
+
+```sh
+make dev
+```
+
+`make dev` starts the health-checked Compose Postgres service on
+`127.0.0.1:5432`, builds Conveyor, loads `.env`, and starts `conveyord`.
+Use `make db-up` or `make db-down` when only the database lifecycle is needed.
+The named `conveyor-postgres-data` volume survives `make db-down`.
+
+To run an already-built daemon without rebuilding or changing the database:
+
+```sh
+make run
+```
+
+To rebuild and then run without changing the database:
+
+```sh
+make build-run
+```
+
+It expands to:
+
+```sh
+bin/conveyord -config conveyor.yaml -addr 127.0.0.1:8080 -poll-github 60s
+```
+
+Override `LISTEN_ADDR`, `POLL_GITHUB`, `ENV_FILE`, or `CONVEYOR_CONFIG` on any
+of the run targets when needed.
+
+Both `bin/conveyord` and `bin/conveyor` automatically load `.env` from their
+working directory, so direct CLI commands in another terminal use the same
+address, token, and workspace. Existing process environment variables win;
+set `CONVEYOR_ENV_FILE` to use a different file.
+
+In Zed, press `Cmd+Shift+R` and select **Conveyor: Run locally**. Project tasks
+for starting/stopping Postgres and running tests are also available; they use
+the same `.env` file, so new Zed terminals do not need repeated exports.
 
 `CONVEYOR_API_KEY` is used only by server-owned in-process stages. MCP clients
 authenticate to Conveyor with `CONVEYOR_API_TOKEN` and bring their own model
@@ -50,7 +88,6 @@ credentials or subscriptions.
 Create and inspect work:
 
 ```sh
-export CONVEYOR_ADDR='http://127.0.0.1:8080'
 bin/conveyor --workspace demo task new 'fix the typo in README' --repo api --level L2
 bin/conveyor --workspace demo task list
 bin/conveyor --workspace demo config export > workspace.yaml

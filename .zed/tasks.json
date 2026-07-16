@@ -1,0 +1,35 @@
+[
+  {
+    "label": "Conveyor: Run locally",
+    "command": "make dev",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "save": "all"
+  },
+  {
+    "label": "Conveyor: Start Postgres",
+    "command": "make db-up",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Conveyor: Build and run",
+    "command": "make build-run",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "save": "all"
+  },
+  {
+    "label": "Conveyor: Stop Postgres",
+    "command": "make db-down",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Conveyor: Test",
+    "command": "make test",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "save": "all"
+  }
+]
