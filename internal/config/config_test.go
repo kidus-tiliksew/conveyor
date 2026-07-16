@@ -130,6 +130,72 @@ func TestReviewMayUseInProcessFallback(t *testing.T) {
 	}
 }
 
+func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Harnesses = []Harness{{Name: "codex", Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}
+	implement := document.Routing.Stages["implement"]
+	implement.Harness = ""
+	document.Routing.Stages["implement"] = implement
+	review := document.Routing.Stages["review"]
+	review.Harness = "codex"
+	document.Routing.Stages["review"] = review
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Routing.Stages["implement"].Harness != "codex" || parsed.Harnesses[0].ProbeTimeout != 5*time.Second {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*WorkspaceDocument)
+		want   string
+	}{
+		{"wrong field", func(d *WorkspaceDocument) { d.Harnesses[0].ProbeCommand = []string{"codex", "{model}"} }, "probe_command"},
+		{"missing prompt", func(d *WorkspaceDocument) { d.Harnesses[0].Command = []string{"codex", "{mcp_config}"} }, "exactly one"},
+		{"embedded placeholder", func(d *WorkspaceDocument) {
+			d.Harnesses[0].Command = []string{"codex", "prefix-{prompt}", "{mcp_config}"}
+		}, "whole argv"},
+		{"non-positive timeout", func(d *WorkspaceDocument) { d.Harnesses[0].ProbeTimeoutText = "0s" }, "positive duration"},
+		{"dangling route", func(d *WorkspaceDocument) {
+			route := d.Routing.Stages["review"]
+			route.Harness = "missing"
+			d.Routing.Stages["review"] = route
+		}, "unknown harness"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := document
+			candidate.Harnesses = append([]Harness(nil), document.Harnesses...)
+			candidate.Routing.Stages = map[string]StageRoute{}
+			for key, value := range document.Routing.Stages {
+				candidate.Routing.Stages[key] = value
+			}
+			test.mutate(&candidate)
+			data, _ := yaml.Marshal(candidate)
+			if _, err := ParseWorkspaceDocument(data, base, "test"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestMultipleHarnessesRequireExplicitWorkerRoute(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Harnesses = []Harness{
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+	}
+	raw, _ := yaml.Marshal(document)
+	if _, err := ParseWorkspaceDocument(raw, base, "test"); err == nil || !strings.Contains(err.Error(), "harness is required") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func validConfig() *Config {
 	return &Config{Workspace: "demo", PackDir: ".", MaxBounces: 2, Database: Database{Backend: "memory"}, Routing: Routing{Stages: map[string]StageRoute{"triage": {Model: "gpt", TimeoutText: "20m", Execution: ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "30m", Execution: ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "4h", Execution: ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: ExecutionMCP}}}, Repos: []Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 }

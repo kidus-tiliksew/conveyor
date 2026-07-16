@@ -43,7 +43,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "get_work_order", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -67,7 +67,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 
 	call := func(title string) (core.Task, bool, bool) {
 		t.Helper()
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"title":` + fmt.Sprintf("%q", title) + `,"body":"from an MCP issue","repo":"api","source":"mcp:test-issue","level":"L2","idempotency_key":"issue-42"}}}`
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"title":` + fmt.Sprintf("%q", title) + `,"body":"from an MCP issue","repo":"api","source":"mcp:test-issue","mode":"manual","spec_approval":true,"merge_approval":true,"idempotency_key":"issue-42"}}}`
 		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer operator-token")
 		request.Header.Set("X-Conveyor-Actor", "issue-triage-agent")

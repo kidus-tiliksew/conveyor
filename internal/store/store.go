@@ -18,10 +18,12 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired = errors.New("workspace context is required")
-	ErrWorkspaceConflict = errors.New("workspace id or name already exists")
-	ErrWorkOrderStale    = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut = errors.New("work order execution deadline exceeded")
+	ErrWorkspaceRequired  = errors.New("workspace context is required")
+	ErrWorkspaceConflict  = errors.New("workspace id or name already exists")
+	ErrWorkOrderStale     = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut  = errors.New("work order execution deadline exceeded")
+	ErrPairingInvalid     = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized = errors.New("worker credential is invalid or revoked")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -75,6 +77,15 @@ type Store interface {
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
 	AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error
+	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
+	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
+	CreateWorker(ctx context.Context, worker core.Worker) error
+	ListWorkers(ctx context.Context) ([]core.Worker, error)
+	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
+	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
+	RevokeWorker(ctx context.Context, id string) error
+	RenewWorkerClaim(ctx context.Context, workOrderID, workerID string, lease time.Duration) (core.WorkOrder, error)
+	ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, reason string) (core.WorkOrder, error)
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -105,6 +116,8 @@ func NewMemory() Store {
 		publications:  map[string]core.ReviewPublication{},
 		features:      map[string]core.Feature{},
 		artifacts:     map[string]memoryArtifact{},
+		pairings:      map[string]core.WorkerPairing{},
+		workers:       map[string]core.Worker{},
 	}
 }
 
@@ -125,9 +138,180 @@ type memory struct {
 	publications  map[string]core.ReviewPublication
 	features      map[string]core.Feature
 	artifacts     map[string]memoryArtifact
+	pairings      map[string]core.WorkerPairing
+	workers       map[string]core.Worker
 	nextEventID   int64
 	nextReviewID  int64
 	taskLocks     sync.Map
+}
+
+func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pairing.Workspace != workspaceOrDefault(ctx, pairing.Workspace) {
+		return fmt.Errorf("pairing workspace mismatch")
+	}
+	if _, exists := m.pairings[pairing.TokenHash]; exists {
+		return fmt.Errorf("pairing already exists")
+	}
+	if pairing.CreatedAt.IsZero() {
+		pairing.CreatedAt = time.Now().UTC()
+	}
+	m.pairings[pairing.TokenHash] = pairing
+	m.appendEventLocked(ctx, core.Event{Kind: "worker.pairing_issued", Payload: core.JSONPayload(map[string]any{"expires_at": pairing.ExpiresAt})})
+	return nil
+}
+
+func workspaceOrDefault(ctx context.Context, fallback string) string {
+	if workspace, ok := WorkspaceFromContext(ctx); ok && workspace != "" {
+		return workspace
+	}
+	return fallback
+}
+
+func (m *memory) ConsumeWorkerPairing(_ context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pairing, ok := m.pairings[tokenHash]
+	if !ok || !pairing.ConsumedAt.IsZero() || !pairing.ExpiresAt.After(now) {
+		return core.WorkerPairing{}, ErrPairingInvalid
+	}
+	pairing.ConsumedAt = now
+	m.pairings[tokenHash] = pairing
+	return pairing, nil
+}
+
+func (m *memory) CreateWorker(ctx context.Context, worker core.Worker) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if worker.Workspace != workspaceOrDefault(ctx, worker.Workspace) {
+		return fmt.Errorf("worker workspace mismatch")
+	}
+	for _, existing := range m.workers {
+		if existing.Workspace == worker.Workspace && existing.Name == worker.Name && existing.RevokedAt.IsZero() {
+			return fmt.Errorf("worker name %q already exists", worker.Name)
+		}
+	}
+	if worker.CreatedAt.IsZero() {
+		worker.CreatedAt = time.Now().UTC()
+	}
+	m.workers[worker.ID] = worker
+	m.appendEventLocked(ctx, core.Event{Kind: "worker.enrolled", ActorRole: core.ActorRunner, ActorID: worker.ID, Payload: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name})})
+	return nil
+}
+
+func (m *memory) ListWorkers(ctx context.Context) ([]core.Worker, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	var result []core.Worker
+	for _, worker := range m.workers {
+		if worker.Workspace == workspace {
+			result = append(result, worker)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (m *memory) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	for _, worker := range m.workers {
+		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() {
+			return worker, nil
+		}
+	}
+	return core.Worker{}, ErrWorkerUnauthorized
+}
+
+func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	worker, ok := m.workers[id]
+	workspace, _ := WorkspaceFromContext(ctx)
+	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() {
+		return core.Worker{}, ErrWorkerUnauthorized
+	}
+	worker.LastSeenAt = time.Now().UTC()
+	worker.LeaseExpiresAt = leaseExpires
+	worker.Probes = append([]core.HarnessProbe(nil), probes...)
+	m.workers[id] = worker
+	m.appendEventLocked(ctx, core.Event{Kind: "worker.heartbeat", ActorRole: core.ActorRunner, ActorID: id, Payload: core.JSONPayload(map[string]any{"worker_id": id, "lease_expires_at": leaseExpires, "probes": probes})})
+	return worker, nil
+}
+
+func (m *memory) RevokeWorker(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	worker, ok := m.workers[id]
+	workspace, _ := WorkspaceFromContext(ctx)
+	if !ok || worker.Workspace != workspace {
+		return fmt.Errorf("worker %s not found", id)
+	}
+	if worker.RevokedAt.IsZero() {
+		worker.RevokedAt = time.Now().UTC()
+		worker.LeaseExpiresAt = time.Time{}
+		m.workers[id] = worker
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: "worker.revoked", Payload: core.JSONPayload(map[string]string{"worker_id": id})})
+	return nil
+}
+
+func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID string, lease time.Duration) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok || order.WorkerID != workerID {
+		return core.WorkOrder{}, ErrWorkerUnauthorized
+	}
+	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
+		return order, nil
+	}
+	if order.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, ErrWorkerUnauthorized
+	}
+	now := time.Now().UTC()
+	expires := now.Add(lease)
+	if !order.ExecutionDeadline.IsZero() && expires.After(order.ExecutionDeadline) {
+		expires = order.ExecutionDeadline
+	}
+	order.LeaseExpiresAt = expires
+	order.UpdatedAt = now
+	m.workOrders[workOrderID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"lease_expires_at": expires})})
+	return order, nil
+}
+
+func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, reason string) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok || order.WorkerID != workerID || order.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, ErrWorkerUnauthorized
+	}
+	order.State = core.WorkOrderQueued
+	order.Claimable = true
+	order.ClaimantID = ""
+	order.SessionID = ""
+	order.ClientTokenHash = ""
+	order.Agent = ""
+	order.Model = ""
+	order.WorkerID = ""
+	order.LeaseExpiresAt = time.Time{}
+	order.UpdatedAt = time.Now().UTC()
+	m.workOrders[workOrderID] = order
+	for taskID, jobs := range m.jobs {
+		for i := range jobs {
+			if jobs[i].ID == order.JobID {
+				jobs[i].State = core.JobPending
+				m.jobs[taskID] = jobs
+			}
+		}
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.released", ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]string{"reason": reason})})
+	return order, nil
 }
 
 func (m *memory) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
@@ -268,7 +452,7 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		if count < decision.MaxBounces {
 			state, next, recovery = core.TaskQueued, core.StageImplement, ""
 		}
-	} else if decision.Level == core.L0 {
+	} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 		state, recovery = core.TaskApproved, ""
 	}
 	fromState, fromStage := task.State, task.NextStage
@@ -444,7 +628,7 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 		lease = 15 * time.Minute
 	}
 	order.State, order.ClaimantID, order.SessionID = core.WorkOrderClaimed, claim.ClaimantID, claim.SessionID
-	order.Agent, order.Model, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, now.Add(lease), now
+	order.Agent, order.Model, order.WorkerID, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, claim.WorkerID, now.Add(lease), now
 	if claim.ClientToken != "" {
 		order.ClientTokenHash = tokenHash(claim.ClientToken)
 	}
@@ -483,7 +667,7 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 	}
 	order.State, order.Claimable = core.WorkOrderQueued, true
 	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
-	order.Agent, order.Model, order.Progress = "", "", ""
+	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
 	order.LeaseExpiresAt = time.Time{}
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
@@ -703,6 +887,12 @@ func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
+	}
+	if !t.Mode.Valid() {
+		t.Mode, t.SpecApproval, t.MergeApproval = core.LegacyPolicy(t.Level)
+	}
+	if t.Level == "" {
+		t.Level = core.LegacyLevel(t.Mode, t.SpecApproval, t.MergeApproval)
 	}
 	if t.NextStage == "" && (t.State == core.TaskQueued || t.State == core.TaskClaiming) {
 		t.NextStage = core.InitialStage(t.Level)

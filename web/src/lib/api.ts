@@ -1,7 +1,6 @@
 import type {
   ActivityItem,
   ActivitySummary,
-  EscalationLevel,
   InterventionAction,
   Task,
   VersionedWorkspaceConfig,
@@ -11,6 +10,8 @@ import type {
   WorkspaceRecord,
   RequirementNode,
   Artifact,
+  TaskMode,
+  WorkerList,
 } from './types'
 
 function workspaceURL(path: string) {
@@ -108,8 +109,14 @@ export interface CreateTaskInput {
   body: string
   repo: string
   base_branch?: string
-  level: EscalationLevel
+  mode?: TaskMode
+  spec_approval?: boolean
+  merge_approval?: boolean
 }
+
+export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<WorkerList> }
+export async function issueWorkerPairing(token: string) { const response = await fetch(workspaceURL('/v1/workers/pairings'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ ttl_seconds: 600 }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<{ pairing_token: string; expires_at: string }> }
+export async function revokeWorker(token: string, id: string) { const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), { method: 'DELETE', headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()) }
 
 export async function createTask(token: string, input: CreateTaskInput) {
 	const response = await fetch(workspaceURL('/v1/tasks'), {

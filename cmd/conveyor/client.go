@@ -29,7 +29,7 @@ func newClient() *client {
 }
 
 func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
-	return c.createTaskWithLevel(title, body, repo, base, core.L2)
+	return c.createTaskWithMode(title, body, repo, base, "", nil, nil)
 }
 
 func (c *client) createTaskWithLevel(title, body, repo, base string, level core.EscalationLevel) (core.Task, error) {
@@ -47,6 +47,26 @@ func (c *client) createTaskWithLevel(title, body, repo, base string, level core.
 	var t core.Task
 	err := c.do(http.MethodPost, "/v1/tasks", payload, &t)
 	return t, err
+}
+
+func (c *client) createTaskWithMode(title, body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
+	}
+	payload := map[string]any{"title": title, "body": body, "repo": repo, "base_branch": base, "source": "cli"}
+	if mode != "" {
+		payload["mode"] = mode
+	}
+	if specApproval != nil {
+		payload["spec_approval"] = *specApproval
+	}
+	if mergeApproval != nil {
+		payload["merge_approval"] = *mergeApproval
+	}
+	data, _ := json.Marshal(payload)
+	var task core.Task
+	err := c.do(http.MethodPost, "/v1/tasks", data, &task)
+	return task, err
 }
 
 func (c *client) listTasks() ([]core.Task, error) {
@@ -150,6 +170,9 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
+	}
+	if resp.StatusCode == http.StatusNoContent || out == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

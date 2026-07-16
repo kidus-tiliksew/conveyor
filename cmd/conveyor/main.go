@@ -36,6 +36,7 @@ func main() {
 	root.AddCommand(
 		taskCmd(),
 		configCmd(),
+		workerCmd(),
 		checkoutCmd(),
 		doneCmd(),
 	)
@@ -103,13 +104,21 @@ func configCmd() *cobra.Command {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, body, level string
+	var repo, base, body, mode, specGate, mergeGate string
 	newCmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			t, err := newClient().createTaskWithLevel(args[0], body, repo, base, core.EscalationLevel(level))
+			specApproval, err := optionalGate(specGate)
+			if err != nil {
+				return err
+			}
+			mergeApproval, err := optionalGate(mergeGate)
+			if err != nil {
+				return err
+			}
+			t, err := newClient().createTaskWithMode(args[0], body, repo, base, core.TaskMode(mode), specApproval, mergeApproval)
 			if err != nil {
 				return err
 			}
@@ -120,7 +129,9 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
-	newCmd.Flags().StringVar(&level, "level", string(core.L2), "escalation level: L0, L1, L2, or L3")
+	newCmd.Flags().StringVar(&mode, "mode", "", "execution mode: auto or manual (defaults to workspace policy)")
+	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
+	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
 
 	listCmd := &cobra.Command{
 		Use: "list", Short: "List tasks",
@@ -166,6 +177,21 @@ func taskCmd() *cobra.Command {
 		reviewTaskCmd(core.InterventionRedirect),
 	)
 	return cmd
+}
+
+func optionalGate(value string) (*bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default":
+		return nil, nil
+	case "on", "true":
+		result := true
+		return &result, nil
+	case "off", "false":
+		result := false
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("gate override must be default, on, or off")
+	}
 }
 
 func reviewTaskCmd(action core.InterventionAction) *cobra.Command {

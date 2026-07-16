@@ -31,7 +31,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         >
           {taskStateLabels[item.task.state] ?? item.task.state}
         </Badge>
-        <Badge variant="mono">{item.task.level || 'L2'}</Badge>
+        <Badge variant="mono" className="capitalize">{item.task.mode || 'manual'}</Badge>
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
       </div>
@@ -65,6 +65,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           }
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
+        <Fact label="Gates" value={`spec ${item.task.spec_approval ? 'human' : 'auto'} · merge ${item.task.merge_approval ? 'human' : 'auto'}`} />
         <Fact
           label="Verification"
           value={

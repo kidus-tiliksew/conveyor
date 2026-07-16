@@ -128,6 +128,10 @@ type Task struct {
 	RecoveryStage   string             `json:"recovery_stage"`
 	FeatureID       pgtype.Text        `json:"feature_id"`
 	IntakeKey       pgtype.Text        `json:"intake_key"`
+	Mode            string             `json:"mode"`
+	SpecApproval    bool               `json:"spec_approval"`
+	MergeApproval   bool               `json:"merge_approval"`
+	PolicyVersion   int32              `json:"policy_version"`
 }
 
 type TaskSpec struct {
@@ -181,6 +185,27 @@ type WorkOrder struct {
 	ExecutionStartedAt pgtype.Timestamptz `json:"execution_started_at"`
 	ExecutionDeadline  pgtype.Timestamptz `json:"execution_deadline"`
 	RedispatchCount    int32              `json:"redispatch_count"`
+	WorkerID           string             `json:"worker_id"`
+}
+
+type Worker struct {
+	ID             string             `json:"id"`
+	WorkspaceID    string             `json:"workspace_id"`
+	Name           string             `json:"name"`
+	CredentialHash string             `json:"credential_hash"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+	ProbeResults   []byte             `json:"probe_results"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkerPairing struct {
+	TokenHash   string             `json:"token_hash"`
+	WorkspaceID string             `json:"workspace_id"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type Workspace struct {

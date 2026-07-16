@@ -43,6 +43,7 @@ const (
 
 type StageRoute struct {
 	Model       string        `yaml:"model" json:"model"`
+	Harness     string        `yaml:"harness,omitempty" json:"harness,omitempty"`
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
@@ -51,6 +52,23 @@ type StageRoute struct {
 	// omitted from the canonical v1.4 document.
 	LegacyHarnesses []string `yaml:"harnesses,omitempty" json:"-"`
 	LegacyModelTier string   `yaml:"model_tier,omitempty" json:"-"`
+}
+
+type Harness struct {
+	Name             string        `yaml:"name" json:"name"`
+	Command          []string      `yaml:"command" json:"command"`
+	ModelArgs        []string      `yaml:"model_args,omitempty" json:"model_args,omitempty"`
+	ProbeCommand     []string      `yaml:"probe_command" json:"probe_command"`
+	ProbeTimeout     time.Duration `yaml:"-" json:"-"`
+	ProbeTimeoutText string        `yaml:"probe_timeout" json:"probe_timeout"`
+}
+
+type ExecutionPolicy struct {
+	DefaultMode          string `yaml:"default_mode" json:"default_mode"`
+	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
+	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
+	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
+	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
 }
 
 const (
@@ -64,11 +82,13 @@ type Routing struct {
 }
 
 type WorkspaceDocument struct {
-	Workspace                 string  `yaml:"workspace" json:"workspace"`
-	MaxBounces                int     `yaml:"max_bounces" json:"max_bounces"`
-	WorkOrderQueueTimeoutText string  `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
-	Routing                   Routing `yaml:"routing" json:"routing"`
-	Repos                     []Repo  `yaml:"repos" json:"repos"`
+	Workspace                 string          `yaml:"workspace" json:"workspace"`
+	MaxBounces                int             `yaml:"max_bounces" json:"max_bounces"`
+	WorkOrderQueueTimeoutText string          `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
+	Routing                   Routing         `yaml:"routing" json:"routing"`
+	Harnesses                 []Harness       `yaml:"harnesses,omitempty" json:"harnesses"`
+	Execution                 ExecutionPolicy `yaml:"execution" json:"execution"`
+	Repos                     []Repo          `yaml:"repos" json:"repos"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -91,15 +111,17 @@ type UpdateReceipt struct {
 // Config combines immutable deployment settings with the current workspace
 // snapshot. CacheDir is retained for the bare-clone cache and checkout flow.
 type Config struct {
-	Workspace                 string        `yaml:"workspace"`
-	PackDir                   string        `yaml:"pack_dir"`
-	MaxBounces                int           `yaml:"max_bounces"`
-	WorkOrderQueueTimeout     time.Duration `yaml:"-"`
-	WorkOrderQueueTimeoutText string        `yaml:"work_order_queue_timeout"`
-	CacheDir                  string        `yaml:"cache_dir"`
-	Database                  Database      `yaml:"database"`
-	Routing                   Routing       `yaml:"routing"`
-	Repos                     []Repo        `yaml:"repos"`
+	Workspace                 string          `yaml:"workspace"`
+	PackDir                   string          `yaml:"pack_dir"`
+	MaxBounces                int             `yaml:"max_bounces"`
+	WorkOrderQueueTimeout     time.Duration   `yaml:"-"`
+	WorkOrderQueueTimeoutText string          `yaml:"work_order_queue_timeout"`
+	CacheDir                  string          `yaml:"cache_dir"`
+	Database                  Database        `yaml:"database"`
+	Routing                   Routing         `yaml:"routing"`
+	Harnesses                 []Harness       `yaml:"harnesses,omitempty"`
+	Execution                 ExecutionPolicy `yaml:"execution"`
+	Repos                     []Repo          `yaml:"repos"`
 }
 
 func Load(path string) (*Config, error) {
@@ -130,6 +152,8 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
 	next.Routing = document.Routing
+	next.Harnesses = document.Harnesses
+	next.Execution = document.Execution
 	next.Repos = document.Repos
 	return normalize(&next, source)
 }
@@ -262,6 +286,42 @@ func normalize(c *Config, path string) (*Config, error) {
 	if c.Database.Backend == "postgres" && c.Database.URL == "" {
 		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for postgres backend")
 	}
+	if c.Execution.DefaultMode == "" {
+		c.Execution.DefaultMode = "auto"
+		c.Execution.SpecApproval = true
+		c.Execution.MergeApproval = true
+	}
+	if c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
+		return nil, fmt.Errorf("execution.default_mode must be auto or manual")
+	}
+	if c.Execution.ImplementConcurrency == 0 {
+		c.Execution.ImplementConcurrency = 1
+	}
+	if c.Execution.ReviewConcurrency == 0 {
+		c.Execution.ReviewConcurrency = 1
+	}
+	if c.Execution.ImplementConcurrency < 1 {
+		return nil, fmt.Errorf("execution.implement_concurrency must be at least 1")
+	}
+	if c.Execution.ReviewConcurrency < 1 {
+		return nil, fmt.Errorf("execution.review_concurrency must be at least 1")
+	}
+	harnesses := make(map[string]struct{}, len(c.Harnesses))
+	for i := range c.Harnesses {
+		harness := &c.Harnesses[i]
+		if strings.TrimSpace(harness.Name) == "" || !safePathSegment(harness.Name) {
+			return nil, fmt.Errorf("harnesses[%d].name must be one path-safe segment", i)
+		}
+		if _, duplicate := harnesses[harness.Name]; duplicate {
+			return nil, fmt.Errorf("duplicate harness name %q", harness.Name)
+		}
+		harnesses[harness.Name] = struct{}{}
+		if err := validateHarness(*harness, i); err != nil {
+			return nil, err
+		}
+		parsed, _ := time.ParseDuration(harness.ProbeTimeoutText)
+		harness.ProbeTimeout = parsed
+	}
 	for stage, route := range c.Routing.Stages {
 		if route.Model == "" {
 			route.Model = route.LegacyModelTier
@@ -295,6 +355,23 @@ func normalize(c *Config, path string) (*Config, error) {
 		}
 		if stage == "implement" && route.Execution != ExecutionMCP {
 			return nil, fmt.Errorf("routing stage implement: execution is fixed to mcp")
+		}
+		if stage == "review" && route.Execution == ExecutionInProcess {
+			if route.Harness != "" {
+				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
+			}
+		} else if stage == "implement" || stage == "review" {
+			if route.Harness == "" && len(c.Harnesses) == 1 {
+				route.Harness = c.Harnesses[0].Name
+			}
+			if route.Harness == "" && len(c.Harnesses) > 1 {
+				return nil, fmt.Errorf("routing stage %s: harness is required when multiple harnesses are registered", stage)
+			}
+			if route.Harness != "" {
+				if _, ok := harnesses[route.Harness]; !ok {
+					return nil, fmt.Errorf("routing stage %s: unknown harness %q", stage, route.Harness)
+				}
+			}
 		}
 		route.LegacyHarnesses = nil
 		route.LegacyModelTier = ""
@@ -333,6 +410,8 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
+		Harnesses:                 append([]Harness(nil), c.Harnesses...),
+		Execution:                 c.Execution,
 		Repos:                     append([]Repo(nil), c.Repos...),
 	}
 	for stage, route := range c.Routing.Stages {
@@ -342,6 +421,46 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		document.Routing.Stages[stage] = route
 	}
 	return document
+}
+
+func validateHarness(h Harness, index int) error {
+	field := func(name string, values []string, allowed map[string]bool) (map[string]int, error) {
+		counts := map[string]int{}
+		for _, value := range values {
+			if !strings.Contains(value, "{") && !strings.Contains(value, "}") {
+				continue
+			}
+			if !allowed[value] {
+				return nil, fmt.Errorf("harnesses[%d].%s: placeholder %q is not allowed as a whole argv element", index, name, value)
+			}
+			counts[value]++
+		}
+		return counts, nil
+	}
+	if len(h.Command) == 0 {
+		return fmt.Errorf("harnesses[%d].command is required", index)
+	}
+	counts, err := field("command", h.Command, map[string]bool{"{prompt}": true, "{mcp_config}": true})
+	if err != nil {
+		return err
+	}
+	if counts["{prompt}"] != 1 || counts["{mcp_config}"] != 1 {
+		return fmt.Errorf("harnesses[%d].command must contain exactly one {prompt} and one {mcp_config}", index)
+	}
+	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
+		return err
+	}
+	if len(h.ProbeCommand) == 0 {
+		return fmt.Errorf("harnesses[%d].probe_command is required", index)
+	}
+	if _, err = field("probe_command", h.ProbeCommand, map[string]bool{}); err != nil {
+		return err
+	}
+	parsed, parseErr := time.ParseDuration(h.ProbeTimeoutText)
+	if parseErr != nil || parsed <= 0 {
+		return fmt.Errorf("harnesses[%d].probe_timeout must be a positive duration", index)
+	}
+	return nil
 }
 
 func MarshalWorkspaceDocument(c *Config) ([]byte, error) {

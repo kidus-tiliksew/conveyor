@@ -25,8 +25,8 @@ parallel workflow.
    Prefer a stable source key such as `github:owner/repo#123`; otherwise use a
    caller-scoped UUID. Reuse a key only for an exact retry.
 3. Include the issue body and source URL when available. Include a base branch
-   only when required. Default to L2 unless the user or issue warrants another
-   supported level.
+   only when required. Omit mode to use the workspace default; request Auto or
+   Manual explicitly only when the caller requires it.
 4. Report the returned task ID. Creation enqueues Conveyor's existing triage
    and specification pipeline; do not run a second triage path in Codex.
 5. If no task-status tool is available, direct the user to Conveyor's dashboard
@@ -142,3 +142,14 @@ Conveyor's review trust boundary.
   checkout, and do not reintroduce a sandbox execution path.
 - Do not implement Phase 8 multi-repository worktree sets through this local
   single-repository helper.
+
+## Phase 5.1 workers
+
+- `conveyor worker pair` creates a short-lived, single-use enrollment token.
+  Never paste that token or the exchanged worker credential into source,
+  transcripts, or chat.
+- `conveyor worker run` may claim only persisted Auto-mode work. Manual work
+  continues through the implementation/review workflow above unchanged.
+- Worker dispatch is labeled `dispatch: worker`, `confinement: none`, and
+  `auth: byoa`. Harness routing is enforced for worker claims and advisory for
+  manually attached agents.

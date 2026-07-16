@@ -1,20 +1,18 @@
 import { useRef, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
-import { createTask, uploadArtifact } from '../../lib/api'
-import type { EscalationLevel, Task } from '../../lib/types'
+import { createTask, fetchWorkers, uploadArtifact } from '../../lib/api'
+import type { Task, TaskMode } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { Sheet } from '../ui/sheet'
 
-const levels: Array<{ level: EscalationLevel; hint: string }> = [
-  { level: 'L0', hint: 'Fully automatic — auto-merge on green verification' },
-  { level: 'L1', hint: 'Automatic with a one-click human approve' },
-  { level: 'L2', hint: 'Human reviews the spec, then the PR' },
-  { level: 'L3', hint: 'Human pairs interactively' },
+const modes: Array<{ mode: TaskMode; hint: string }> = [
+  { mode: 'auto', hint: 'An enrolled healthy worker may claim and run this task.' },
+  { mode: 'manual', hint: 'Only an operator-attached MCP agent claims work.' },
 ]
 
 const descriptionScaffold = `Context — where this lives, links to prior work…
@@ -28,19 +26,23 @@ Acceptance ideas — how we'd know it works…`
 // Task intake (spec §9): the dashboard is one source among github/cli/cron.
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
-// description, base branch, escalation choice, and artifact attachments.
+// description, base branch, execution policy, and artifact attachments.
 export function TaskCreateSheet() {
   const token = useOperatorToken()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
   const repos = workspace?.repos ?? []
+  const workerHealth = useQuery({ queryKey: ['workers', token, workspace?.workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace?.workspace), refetchInterval: 5000 })
+  const autoAvailable = workerHealth.data?.auto_available === true
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
-  const [level, setLevel] = useState<EscalationLevel>('L2')
+  const [mode, setMode] = useState<TaskMode | ''>('')
+  const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
+  const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [files, setFiles] = useState<File[]>([])
   const [uploadFailures, setUploadFailures] = useState<{ task: Task; errors: string[] } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -53,7 +55,9 @@ export function TaskCreateSheet() {
         title: title.trim(),
         body: body.trim(),
         repo: repoName,
-        level,
+        ...(mode ? { mode } : {}),
+        ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
+        ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
         ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
       })
       // Attachments ride the existing artifacts API (§21.4), linked to the
@@ -134,28 +138,37 @@ export function TaskCreateSheet() {
           </Field>
         </div>
 
-        <Field label="Escalation level">
-          <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Escalation level">
-            {levels.map((entry) => (
+        <Field label="Execution mode" hint="Leave Workspace default selected to use the persisted workspace policy.">
+          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Execution mode">
+            <button type="button" role="radio" aria-checked={mode === ''} onClick={() => setMode('')} className={cn('rounded-md border p-3 text-left transition-colors', mode === '' ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge')}><span className="text-sm font-semibold">Workspace default</span><span className="mt-0.5 block text-xs leading-5 text-muted">Falls back to Manual if Auto is unhealthy.</span></button>
+            {modes.map((entry) => (
               <button
-                key={entry.level}
+                key={entry.mode}
                 type="button"
                 role="radio"
-                aria-checked={level === entry.level}
-                onClick={() => setLevel(entry.level)}
+                aria-checked={mode === entry.mode}
+                disabled={entry.mode === 'auto' && !autoAvailable}
+                onClick={() => setMode(entry.mode)}
                 className={cn(
                   'rounded-md border p-3 text-left transition-colors',
-                  level === entry.level ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
+                  entry.mode === 'auto' && !autoAvailable && 'cursor-not-allowed opacity-50',
+                  mode === entry.mode ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
                 )}
               >
-                <span className={cn('font-mono text-sm font-semibold', level === entry.level ? 'text-primary' : 'text-foreground')}>
-                  {entry.level}
+                <span className={cn('font-mono text-sm font-semibold capitalize', mode === entry.mode ? 'text-primary' : 'text-foreground')}>
+                  {entry.mode}
                 </span>
                 <span className="mt-0.5 block text-xs leading-5 text-muted">{entry.hint}</span>
               </button>
             ))}
           </div>
+          {!autoAvailable && <p className="mt-2 text-xs text-muted">Auto is unavailable: {workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}</p>}
         </Field>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Spec approval gate"><Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}><option value="default">Workspace default</option><option value="on">Human approval on</option><option value="off">Auto-approve off</option></Select></Field>
+          <Field label="Merge approval gate"><Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}><option value="default">Workspace default</option><option value="on">Human approval on</option><option value="off">Auto-merge on green</option></Select></Field>
+        </div>
 
         <Field label="Attachments" hint="Designs, specs, logs — uploaded as task artifacts for the triage and spec agents.">
           <input ref={fileInput} type="file" multiple className="hidden" onChange={(event) => { addFiles(event.target.files); event.target.value = '' }} />

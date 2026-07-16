@@ -26,11 +26,11 @@ SET url = EXCLUDED.url,
 
 -- name: InsertTask :one
 INSERT INTO tasks (
-    id, workspace_id, source, title, body, class, escalation_level,
+    id, workspace_id, source, title, body, class, escalation_level, mode, spec_approval, merge_approval, policy_version,
     repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+    $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
 )
 RETURNING *;
 

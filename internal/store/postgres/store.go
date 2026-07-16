@@ -303,7 +303,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 }
 
 func configDiff(before, after config.WorkspaceDocument) []string {
-	sections := make([]string, 0, 3)
+	sections := make([]string, 0, 5)
 	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
@@ -314,6 +314,12 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if !reflect.DeepEqual(before.Repos, after.Repos) {
 		sections = append(sections, "repos")
 	}
+	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
+		sections = append(sections, "harnesses")
+	}
+	if !reflect.DeepEqual(before.Execution, after.Execution) {
+		sections = append(sections, "execution")
+	}
 	return sections
 }
 
@@ -323,6 +329,12 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 	}
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
+	}
+	if !task.Mode.Valid() {
+		task.Mode, task.SpecApproval, task.MergeApproval = core.LegacyPolicy(task.Level)
+	}
+	if task.Level == "" {
+		task.Level = core.LegacyLevel(task.Mode, task.SpecApproval, task.MergeApproval)
 	}
 	if task.NextStage == "" && (task.State == core.TaskQueued || task.State == core.TaskClaiming) {
 		task.NextStage = core.InitialStage(task.Level)
@@ -768,7 +780,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 }
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
-session_id, client_token_hash, agent, model, lease_expires_at,
+session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
@@ -801,13 +813,13 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
-			session_id, client_token_hash, agent, model, lease_expires_at,
+			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$24)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
-			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model,
+			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
@@ -957,8 +969,8 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 			executionDeadline = now.Add(claim.ExecutionTimeout)
 		}
 	}
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, lease_expires_at=$6, execution_started_at=$7, execution_deadline=$8, updated_at=$9 WHERE workspace_id=$10 AND id=$11 RETURNING "+workOrderColumns,
-		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, expires,
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, worker_id=$6, lease_expires_at=$7, execution_started_at=$8, execution_deadline=$9, updated_at=$10 WHERE workspace_id=$11 AND id=$12 RETURNING "+workOrderColumns,
+		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, claim.WorkerID, expires,
 		executionStarted, nullableTimeValue(executionDeadline), now, workspace(ctx), id)
 	order, err = scanWorkOrder(row)
 	if err != nil {
@@ -1006,7 +1018,7 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-		session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL,
 		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
 		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
 		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
@@ -1303,7 +1315,7 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			if int(count) < decision.MaxBounces {
 				state, next, recovery = core.TaskQueued, core.StageImplement, ""
 			}
-		} else if decision.Level == core.L0 {
+		} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 			state, recovery = core.TaskApproved, ""
 		}
 
@@ -1451,7 +1463,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var stage, state string
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
-		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &lease,
+		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
@@ -1668,7 +1680,9 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		ID: task.ID, WorkspaceID: task.Workspace, Source: task.Source,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
-		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
+		Mode: string(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		PolicyVersion: int32(task.PolicyVersion),
+		BaseBranch:    task.BaseBranch, Branch: task.Branch, State: string(task.State),
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
 	}
 }
@@ -1678,7 +1692,9 @@ func taskFromDB(task db.Task) core.Task {
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
-		BaseBranch: task.BaseBranch, Branch: task.Branch,
+		Mode: core.TaskMode(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		PolicyVersion: int(task.PolicyVersion),
+		BaseBranch:    task.BaseBranch, Branch: task.Branch,
 		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: task.FeatureID.String,
 		CreatedAt: task.CreatedAt.Time,
 	}
