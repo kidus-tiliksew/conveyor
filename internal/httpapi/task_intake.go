@@ -53,21 +53,21 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 	if req.Source == "" {
 		req.Source = defaultSource
 	}
-	if req.Level == "" {
-		req.Level = core.L2
-	}
-	if req.Level != core.L0 && req.Level != core.L1 && req.Level != core.L2 && req.Level != core.L3 {
+	if req.Level != "" && req.Level != core.L0 && req.Level != core.L1 && req.Level != core.L2 && req.Level != core.L3 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "level must be L0, L1, L2, or L3"}
+	}
+	if req.Mode != "" && !req.Mode.Valid() {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "mode must be auto or manual"}
 	}
 	if len(intakeKey) > 200 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "idempotency_key must be at most 200 characters"}
 	}
-
+	originalReq := req
 	if intakeKey != "" {
 		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
 			return taskCreateResult{}, err
 		} else if found {
-			if !sameIntake(existing, req) {
+			if !sameIntakeRequest(existing, originalReq) {
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
 			return taskCreateResult{Task: existing}, nil
@@ -86,6 +86,39 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		repos = current.RepoNames()
 		workspace = current.Workspace
 	}
+	explicitMode := req.Mode != ""
+	fellBack := false
+	var specApproval, mergeApproval bool
+	if req.Mode == "" && req.Level != "" {
+		req.Mode, specApproval, mergeApproval = core.LegacyPolicy(req.Level)
+	} else if current != nil {
+		if req.Mode == "" {
+			req.Mode = core.TaskMode(current.Execution.DefaultMode)
+		}
+		specApproval, mergeApproval = current.Execution.SpecApproval, current.Execution.MergeApproval
+	} else {
+		if req.Mode == "" {
+			req.Mode = core.TaskModeAuto
+		}
+		specApproval, mergeApproval = true, true
+	}
+	if req.SpecApproval != nil {
+		specApproval = *req.SpecApproval
+	}
+	if req.MergeApproval != nil {
+		mergeApproval = *req.MergeApproval
+	}
+	if req.Mode == core.TaskModeAuto && s.Workers != nil && current != nil {
+		available, reason := s.Workers.AutoAvailable(ctx, current)
+		if !available && explicitMode {
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "auto mode unavailable: " + reason}
+		}
+		if !available {
+			req.Mode = core.TaskModeManual
+			fellBack = true
+		}
+	}
+	req.Level = core.LegacyLevel(req.Mode, specApproval, mergeApproval)
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
 	}
@@ -100,26 +133,30 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 
 	id := core.NewTaskID()
 	task := core.Task{
-		ID:         id,
-		Workspace:  workspace,
-		Source:     req.Source,
-		IntakeKey:  intakeKey,
-		Title:      req.Title,
-		Body:       req.Body,
-		Level:      req.Level,
-		Repo:       req.Repo,
-		BaseBranch: req.BaseBranch,
-		Branch:     gitx.BranchName(id),
-		State:      core.TaskQueued,
-		NextStage:  core.InitialStage(req.Level),
-		CreatedAt:  time.Now().UTC(),
+		ID:            id,
+		Workspace:     workspace,
+		Source:        req.Source,
+		IntakeKey:     intakeKey,
+		Title:         req.Title,
+		Body:          req.Body,
+		Level:         req.Level,
+		Mode:          req.Mode,
+		SpecApproval:  specApproval,
+		MergeApproval: mergeApproval,
+		PolicyVersion: 1,
+		Repo:          req.Repo,
+		BaseBranch:    req.BaseBranch,
+		Branch:        gitx.BranchName(id),
+		State:         core.TaskQueued,
+		NextStage:     core.InitialStage(req.Level),
+		CreatedAt:     time.Now().UTC(),
 	}
 	if err := s.Store.CreateTask(ctx, task); err != nil {
 		// A concurrent retry may win the unique intake-key race between the
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {
 			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr == nil && found {
-				if sameIntake(existing, req) {
+				if sameIntakeRequest(existing, originalReq) {
 					return taskCreateResult{Task: existing}, nil
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
@@ -127,17 +164,37 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		}
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}
+	if fellBack {
+		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.auto_fallback", Payload: core.JSONPayload(map[string]string{"requested": "workspace-default-auto", "resolved": "manual", "reason": "worker-or-routed-harness-unhealthy"})})
+	}
 	if s.OnCreate != nil {
 		s.OnCreate(ctx, id)
 	}
 	return taskCreateResult{Task: task, Created: true}, nil
 }
 
-func sameIntake(task core.Task, req createTaskReq) bool {
-	return task.Title == req.Title &&
-		task.Body == req.Body &&
-		task.Repo == req.Repo &&
-		task.Source == req.Source &&
-		task.Level == req.Level &&
-		(req.BaseBranch == "" || task.BaseBranch == req.BaseBranch)
+func sameIntakeRequest(task core.Task, req createTaskReq) bool {
+	if task.Title != req.Title || task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
+		return false
+	}
+	if req.Mode == "" && req.Level != "" {
+		mode, specApproval, mergeApproval := core.LegacyPolicy(req.Level)
+		if req.SpecApproval != nil {
+			specApproval = *req.SpecApproval
+		}
+		if req.MergeApproval != nil {
+			mergeApproval = *req.MergeApproval
+		}
+		return task.Mode == mode && task.SpecApproval == specApproval && task.MergeApproval == mergeApproval
+	}
+	if req.Mode != "" && task.Mode != req.Mode {
+		return false
+	}
+	if req.SpecApproval != nil && task.SpecApproval != *req.SpecApproval {
+		return false
+	}
+	if req.MergeApproval != nil && task.MergeApproval != *req.MergeApproval {
+		return false
+	}
+	return true
 }

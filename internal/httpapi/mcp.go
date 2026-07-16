@@ -83,7 +83,12 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
 	stringArg := func(key string) string { value, _ := args[key].(string); return value }
-	workspace, err := s.resolveMCPWorkspace(r.Context(), stringArg("workspace_id"))
+	worker, workerAuth := workerFromContext(r.Context())
+	explicitWorkspace := stringArg("workspace_id")
+	if workerAuth && explicitWorkspace == "" {
+		explicitWorkspace = worker.Workspace
+	}
+	workspace, err := s.resolveMCPWorkspace(r.Context(), explicitWorkspace)
 	if err != nil {
 		return nil, err
 	}
@@ -91,16 +96,22 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	session := stringArg("session_id")
 	switch name {
 	case "create_task":
+		if workerAuth {
+			return nil, fmt.Errorf("worker credentials cannot create tasks")
+		}
 		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
 			return nil, fmt.Errorf("idempotency_key is required")
 		}
 		result, err := s.createTaskRecord(ctx, createTaskReq{
-			Title:      stringArg("title"),
-			Body:       stringArg("body"),
-			Repo:       stringArg("repo"),
-			BaseBranch: stringArg("base_branch"),
-			Source:     stringArg("source"),
-			Level:      core.EscalationLevel(stringArg("level")),
+			Title:         stringArg("title"),
+			Body:          stringArg("body"),
+			Repo:          stringArg("repo"),
+			BaseBranch:    stringArg("base_branch"),
+			Source:        stringArg("source"),
+			Level:         core.EscalationLevel(stringArg("level")),
+			Mode:          core.TaskMode(stringArg("mode")),
+			SpecApproval:  boolArg(args, "spec_approval"),
+			MergeApproval: boolArg(args, "merge_approval"),
 		}, stringArg("idempotency_key"), "mcp")
 		if err != nil {
 			return nil, err
@@ -112,15 +123,43 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	switch name {
 	case "list_work_orders":
+		if workerAuth {
+			items, listErr := s.Workers.ListAuto(ctx, worker)
+			if listErr != nil {
+				return nil, listErr
+			}
+			orders := make([]core.WorkOrder, len(items))
+			for i := range items {
+				orders[i] = items[i].Order
+			}
+			return orders, nil
+		}
 		return s.WorkOrders.List(ctx)
 	case "claim_work_order":
 		lease := 15 * time.Minute
 		if value, ok := numberArg(args["lease_seconds"]); ok && value > 0 && value <= 3600 {
 			lease = time.Duration(value) * time.Second
 		}
-		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease})
+		claim := core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease}
+		if workerAuth {
+			return s.Workers.ClaimAuto(ctx, worker, stringArg("work_order_id"), claim)
+		}
+		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), claim)
 	case "redispatch_work_order":
+		if workerAuth {
+			return nil, fmt.Errorf("worker credentials cannot redispatch work orders")
+		}
 		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
+	case "renew_work_order":
+		if !workerAuth {
+			return nil, fmt.Errorf("renew_work_order requires a worker credential")
+		}
+		return s.Workers.Renew(ctx, worker, stringArg("work_order_id"))
+	case "release_work_order":
+		if !workerAuth {
+			return nil, fmt.Errorf("release_work_order requires a worker credential")
+		}
+		return s.Workers.Release(ctx, worker, stringArg("work_order_id"), stringArg("reason"))
 	case "get_work_order":
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 	case "report_progress":
@@ -214,6 +253,14 @@ func floatArg(value any) (float64, bool) {
 	return 0, false
 }
 
+func boolArg(args map[string]any, key string) *bool {
+	value, ok := args[key].(bool)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
 func mcpTools() []map[string]any {
 	object := func(properties map[string]any, required ...string) map[string]any {
 		return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
@@ -222,10 +269,12 @@ func mcpTools() []map[string]any {
 	num := map[string]string{"type": "number"}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "title": str, "body": str, "repo": str, "base_branch": str, "source": str, "level": map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace and enqueue its existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "title": str, "body": str, "repo": str, "base_branch": str, "source": str, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "title", "repo", "idempotency_key")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
+		{"name": "renew_work_order", "description": "Renew a worker-owned claim lease without extending its fixed execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
+		{"name": "release_work_order", "description": "Immediately release a worker-owned active claim back to the existing queue.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "reason": str}, "work_order_id")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},

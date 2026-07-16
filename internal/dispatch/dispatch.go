@@ -202,7 +202,7 @@ func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, tas
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nEscalation level: %s · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Level, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nExecution mode: %s · Spec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Mode, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
 	events, _ := d.Store.ListEvents(ctx, task.ID)
 	invalidKind := string(stage) + ".output_invalid"
 	for i := len(events) - 1; i >= 0; i-- {
@@ -265,14 +265,14 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
 		d.suggestFeature(ctx, task, result.Summary)
-		if task.Level == core.L3 || result.Route == "human" {
+		if task.PolicyVersion == 0 && (task.Level == core.L3 || result.Route == "human") {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageTriage)
 		}
 		if result.Route == "parked" {
 			return d.transition(ctx, task.ID, core.TaskParked, "", core.StageTriage)
 		}
 		next := core.StageImplement
-		if task.Level == core.L2 || result.Route == "spec" {
+		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) || result.Route == "spec" {
 			next = core.StageSpec
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, next, "")
@@ -285,7 +285,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return err
 		}
-		if task.Level == core.L2 {
+		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
 		}
 		if err = d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
@@ -352,7 +352,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
-		Level: task.Level, MaxBounces: cfg.MaxBounces,
+		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
 	}); err != nil {
 		return err
 	}
@@ -362,6 +362,9 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	}
 	if current.State == core.TaskQueued {
 		d.Enqueue(ctx, task.ID)
+	}
+	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
+		if err := d.MergeApprovedTask(ctx, current); err != nil { return err }
 	}
 	return nil
 }

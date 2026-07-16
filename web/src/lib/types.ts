@@ -28,6 +28,7 @@ export type JobState =
   | 'failed'
 
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
+export type TaskMode = 'auto' | 'manual'
 
 export interface Task {
   id: string
@@ -37,6 +38,10 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
+  mode: TaskMode
+  spec_approval: boolean
+  merge_approval: boolean
+  policy_version: number
   repo: string
   base_branch: string
   branch: string
@@ -167,6 +172,23 @@ export interface WorkspaceConfigRoute {
   model: string
   timeout: string
   execution: 'in_process' | 'mcp'
+  harness?: string
+}
+
+export interface WorkspaceHarness {
+  name: string
+  command: string[]
+  model_args?: string[]
+  probe_command: string[]
+  probe_timeout: string
+}
+
+export interface ExecutionPolicy {
+  default_mode: TaskMode
+  spec_approval: boolean
+  merge_approval: boolean
+  implement_concurrency: number
+  review_concurrency: number
 }
 
 export interface WorkspaceConfigDocument {
@@ -176,8 +198,14 @@ export interface WorkspaceConfigDocument {
   routing: {
     stages: Record<string, WorkspaceConfigRoute>
   }
+  harnesses: WorkspaceHarness[]
+  execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
 }
+
+export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
+export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
+export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string }
 
 export interface VersionedWorkspaceConfig {
   document: WorkspaceConfigDocument

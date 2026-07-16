@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +11,66 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, Now: func() time.Time { return now }}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace, server.ConfigProvider, server.Workers = "token", "demo", provider, workers
+	request := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, req)
+		return response
+	}
+	if response := request(`{"title":"explicit","repo":"api","mode":"auto"}`); response.Code != http.StatusConflict {
+		t.Fatalf("explicit Auto status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := request(`{"title":"default","repo":"api"}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("default status=%d body=%s", response.Code, response.Body.String())
+	}
+	var fallback core.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &fallback); err != nil {
+		t.Fatal(err)
+	}
+	if fallback.Mode != core.TaskModeManual || fallback.PolicyVersion != 1 || !fallback.SpecApproval || !fallback.MergeApproval {
+		t.Fatalf("fallback=%+v", fallback)
+	}
+	events, _ := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), fallback.ID)
+	found := false
+	for _, event := range events {
+		found = found || event.Kind == "task.auto_fallback"
+	}
+	if !found {
+		t.Fatalf("events=%+v", events)
+	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	worker := core.Worker{ID: "worker", Workspace: "demo", Name: "worker", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	response = request(`{"title":"healthy","repo":"api","mode":"auto","spec_approval":false,"merge_approval":false}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("healthy status=%d body=%s", response.Code, response.Body.String())
+	}
+	var auto core.Task
+	_ = json.Unmarshal(response.Body.Bytes(), &auto)
+	if auto.Mode != core.TaskModeAuto || auto.SpecApproval || auto.MergeApproval || auto.Level != core.L0 {
+		t.Fatalf("auto=%+v", auto)
+	}
+}
 
 func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	st := store.NewMemory()

@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
@@ -43,7 +46,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "get_work_order", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -67,7 +70,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 
 	call := func(title string) (core.Task, bool, bool) {
 		t.Helper()
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"title":` + fmt.Sprintf("%q", title) + `,"body":"from an MCP issue","repo":"api","source":"mcp:test-issue","level":"L2","idempotency_key":"issue-42"}}}`
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"title":` + fmt.Sprintf("%q", title) + `,"body":"from an MCP issue","repo":"api","source":"mcp:test-issue","mode":"manual","spec_approval":true,"merge_approval":true,"idempotency_key":"issue-42"}}}`
 		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer operator-token")
 		request.Header.Set("X-Conveyor-Actor", "issue-triage-agent")
@@ -121,6 +124,59 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	events, err := st.ListEvents(t.Context(), first.ID)
 	if err != nil || len(events) != 1 || events[0].ActorID != "issue-triage-agent" || events[0].ActorRole != core.ActorAgent {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	cfg := &config.Config{
+		Workspace: "demo",
+		Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true},
+		Harnesses: []config.Harness{{Name: "codex"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Harness: "codex"},
+			"review":    {Harness: "codex", Execution: config.ExecutionMCP},
+		}},
+		Repos: []config.Repo{{Name: "api", Base: "main"}},
+	}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	workers := &workerservice.Service{Store: st, ConfigProvider: provider, Now: func() time.Time { return now }}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	if err := st.CreateWorker(ctx, core.Worker{ID: "worker", Workspace: "demo", Name: "worker", CredentialHash: "hash", LeaseExpiresAt: now.Add(15 * time.Second), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.ConfigProvider, server.Workers = "demo", provider, workers
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	arguments := map[string]any{"workspace_id": "demo", "title": "Stable retry", "repo": "api", "mode": "auto", "idempotency_key": "stable-policy"}
+	firstResult, err := server.callMCPTool(request, "create_task", arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstResult.(map[string]any)["task"].(core.Task)
+	if first.Mode != core.TaskModeAuto || !first.SpecApproval || !first.MergeApproval {
+		t.Fatalf("first=%+v", first)
+	}
+
+	// Both live availability and omitted workspace gate defaults change after
+	// intake. An exact retry must still return the persisted resolution.
+	now = now.Add(time.Minute)
+	cfg.Execution.SpecApproval = false
+	cfg.Execution.MergeApproval = false
+	secondResult, err := server.callMCPTool(request, "create_task", arguments)
+	if err != nil {
+		t.Fatalf("exact retry after health/default change: %v", err)
+	}
+	second := secondResult.(map[string]any)["task"].(core.Task)
+	if second.ID != first.ID || !second.SpecApproval || !second.MergeApproval {
+		t.Fatalf("second=%+v first=%+v", second, first)
+	}
+
+	conflict := maps.Clone(arguments)
+	conflict["spec_approval"] = false
+	if _, err = server.callMCPTool(request, "create_task", conflict); err == nil || !strings.Contains(err.Error(), "different task") {
+		t.Fatalf("explicit conflicting gate error=%v", err)
 	}
 }
 

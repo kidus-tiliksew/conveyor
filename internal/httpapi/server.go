@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -48,6 +49,7 @@ type Server struct {
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
+	Workers               *workerservice.Service
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -61,6 +63,13 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		r.Post("/worker/enroll", s.enrollWorker)
+		r.With(s.requireWorkerAuth).Post("/worker/heartbeat", s.heartbeatWorker)
+		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
+		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/claim", s.claimWorkerOrder)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
@@ -92,6 +101,9 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
 			r.With(s.requireMutationAuth).Post("/artifacts", s.uploadArtifact)
 			r.With(s.requireMutationAuth).Get("/artifacts/{id}", s.downloadArtifact)
+			r.With(s.requireMutationAuth).Get("/workers", s.listWorkers)
+			r.With(s.requireMutationAuth).Post("/workers/pairings", s.issueWorkerPairing)
+			r.With(s.requireMutationAuth).Delete("/workers/{id}", s.revokeWorker)
 		})
 	})
 	r.With(s.requireMCPAuth).Post("/mcp", s.handleMCP)
@@ -155,7 +167,33 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
-	return s.requireBearerRole(core.ActorAgent, "mcp-agent", next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if s.BearerToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) == 1 {
+			actorID := strings.TrimSpace(r.Header.Get("X-Conveyor-Actor"))
+			if actorID == "" {
+				actorID = "mcp-agent"
+			}
+			ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: core.ActorAgent})
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		if s.Workers != nil {
+			ctx, worker, err := s.Workers.Authenticate(r.Context(), provided, "")
+			if err == nil {
+				ctx = context.WithValue(ctx, workerContextKey{}, worker)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
 }
 
 func (s *Server) requireBearerRole(role core.ActorRole, defaultID string, next http.Handler) http.Handler {
@@ -293,12 +331,15 @@ func reviewable(state core.TaskState) bool {
 }
 
 type createTaskReq struct {
-	Title      string               `json:"title"`
-	Body       string               `json:"body"`
-	Repo       string               `json:"repo"`
-	BaseBranch string               `json:"base_branch"`
-	Source     string               `json:"source"`
-	Level      core.EscalationLevel `json:"level"`
+	Title         string               `json:"title"`
+	Body          string               `json:"body"`
+	Repo          string               `json:"repo"`
+	BaseBranch    string               `json:"base_branch"`
+	Source        string               `json:"source"`
+	Level         core.EscalationLevel `json:"level"`
+	Mode          core.TaskMode        `json:"mode"`
+	SpecApproval  *bool                `json:"spec_approval,omitempty"`
+	MergeApproval *bool                `json:"merge_approval,omitempty"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {

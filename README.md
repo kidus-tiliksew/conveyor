@@ -31,6 +31,11 @@ Phase 5.1 is active under spec §21.12–§21.14: worker execution on operator
 hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
 routing, enrollment, heartbeat health, and supervised Auto work-order claims.
 
+The worker is an unconfined BYOA dispatcher on operator hardware. Workspace
+configuration owns the harness registry, implement/review harness routes,
+default mode, independent gates, and stage-aware capacity. Manual MCP claims
+remain first-class and are never forced through a configured harness.
+
 ## Run locally
 
 Requirements: Go 1.24, Node/npm, Docker with Compose, and an authenticated
@@ -91,7 +96,7 @@ credentials or subscriptions.
 Create and inspect work:
 
 ```sh
-bin/conveyor --workspace demo task new 'fix the typo in README' --repo api --level L2
+bin/conveyor --workspace demo task new 'fix the typo in README' --repo api --mode manual
 bin/conveyor --workspace demo task list
 bin/conveyor --workspace demo config export > workspace.yaml
 ```
@@ -108,6 +113,24 @@ GitHub intake.
 Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
 Each review must use a fresh agent session and client token; Conveyor rejects
 an implementer's attempt to claim the corresponding review work order.
+
+Enroll and start a worker from the operator machine:
+
+```sh
+# Operator-authenticated: prints one short-lived, single-use token.
+bin/conveyor --workspace demo worker pair
+
+# First run exchanges the token for a revocable workspace credential.
+bin/conveyor --workspace demo worker run --pairing-token <token>
+```
+
+`worker run` stores the exchanged credential with owner-only permissions,
+probes every registered harness, heartbeats on a 15-second liveness lease,
+prioritizes reserved review capacity, and claims Auto work only through the
+existing work-order lifecycle. `worker list` reports liveness and per-harness
+health; `worker revoke <worker-id>` revokes an enrollment. Explicit Auto intake
+fails while routed harness health is unavailable; workspace-default Auto
+instead persists Manual and records an audit event.
 
 ### Branch ownership
 

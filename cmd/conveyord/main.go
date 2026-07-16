@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -140,12 +141,14 @@ func main() {
 	srv.OnCreate = d.Enqueue
 	srv.OnIntervention = d.HandleIntervention
 	srv.OnMerge = d.MergeApprovedTask
-	srv.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
+	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if pgStore != nil {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
 		return cfg, nil
 	}}
+	srv.WorkOrders = workOrders
+	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider}
 	if pgStore != nil {
 		srv.Workspaces = pgStore
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue

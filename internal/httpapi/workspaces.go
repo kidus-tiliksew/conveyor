@@ -25,11 +25,13 @@ type createWorkspaceRequest struct {
 }
 
 type createWorkspaceDocument struct {
-	Workspace                 *string         `json:"workspace,omitempty"`
-	MaxBounces                *int            `json:"max_bounces,omitempty"`
-	WorkOrderQueueTimeoutText *string         `json:"work_order_queue_timeout,omitempty"`
-	Routing                   *config.Routing `json:"routing,omitempty"`
-	Repos                     *[]config.Repo  `json:"repos,omitempty"`
+	Workspace                 *string                 `json:"workspace,omitempty"`
+	MaxBounces                *int                    `json:"max_bounces,omitempty"`
+	WorkOrderQueueTimeoutText *string                 `json:"work_order_queue_timeout,omitempty"`
+	Routing                   *config.Routing         `json:"routing,omitempty"`
+	Repos                     *[]config.Repo          `json:"repos,omitempty"`
+	Harnesses                 *[]config.Harness       `json:"harnesses,omitempty"`
+	Execution                 *config.ExecutionPolicy `json:"execution,omitempty"`
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +117,12 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.Repos != nil {
 			document.Repos = *partial.Repos
+		}
+		if partial.Harnesses != nil {
+			document.Harnesses = *partial.Harnesses
+		}
+		if partial.Execution != nil {
+			document.Execution = *partial.Execution
 		}
 		data, marshalErr := yaml.Marshal(document)
 		if marshalErr != nil {

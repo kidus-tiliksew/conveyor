@@ -34,6 +34,45 @@ func InitialStage(level EscalationLevel) Stage {
 	return StageTriage
 }
 
+// TaskMode controls whether an enrolled Conveyor worker may claim a task's
+// work orders. Human-attached MCP agents may claim either mode (spec §21.13).
+type TaskMode string
+
+const (
+	TaskModeAuto   TaskMode = "auto"
+	TaskModeManual TaskMode = "manual"
+)
+
+func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
+
+// LegacyPolicy preserves the accepted L0-L3 meaning for historical callers
+// while new intake persists the three independent Phase 5.1 decisions.
+func LegacyPolicy(level EscalationLevel) (TaskMode, bool, bool) {
+	switch level {
+	case L0:
+		return TaskModeAuto, false, false
+	case L1:
+		return TaskModeAuto, false, true
+	case L2:
+		return TaskModeAuto, true, true
+	default:
+		return TaskModeManual, true, true
+	}
+}
+
+func LegacyLevel(mode TaskMode, specApproval, mergeApproval bool) EscalationLevel {
+	if mode == TaskModeManual {
+		return L3
+	}
+	if specApproval {
+		return L2
+	}
+	if mergeApproval {
+		return L1
+	}
+	return L0
+}
+
 // EscalationLevel is the degree of human involvement (spec §13.1).
 type EscalationLevel string
 
@@ -77,6 +116,10 @@ type Task struct {
 	Body          string          `json:"body"`  // free-form description; becomes part of the prompt
 	Class         string          `json:"class"` // bug | feature | chore
 	Level         EscalationLevel `json:"level"`
+	Mode          TaskMode        `json:"mode"`
+	SpecApproval  bool            `json:"spec_approval"`
+	MergeApproval bool            `json:"merge_approval"`
+	PolicyVersion int             `json:"policy_version"`
 	Repo          string          `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
 	BaseBranch    string          `json:"base_branch"`
 	Branch        string          `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
@@ -250,6 +293,7 @@ type WorkOrder struct {
 	ClientTokenHash    string         `json:"-"`
 	Agent              string         `json:"agent,omitempty"`
 	Model              string         `json:"model,omitempty"`
+	WorkerID           string         `json:"worker_id,omitempty"`
 	LeaseExpiresAt     time.Time      `json:"lease_expires_at,omitempty"`
 	QueueEnteredAt     time.Time      `json:"queue_entered_at"`
 	QueueDeadline      time.Time      `json:"queue_deadline"`
@@ -296,6 +340,38 @@ type WorkOrderClaim struct {
 	Model            string
 	Lease            time.Duration
 	ExecutionTimeout time.Duration
+	WorkerID         string
+}
+
+type HarnessProbe struct {
+	Harness   string    `json:"harness"`
+	Healthy   bool      `json:"healthy"`
+	Message   string    `json:"message,omitempty"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+type WorkerPairing struct {
+	TokenHash  string    `json:"-"`
+	Workspace  string    `json:"workspace"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	ConsumedAt time.Time `json:"consumed_at,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type Worker struct {
+	ID             string         `json:"id"`
+	Workspace      string         `json:"workspace"`
+	Name           string         `json:"name"`
+	CredentialHash string         `json:"-"`
+	LeaseExpiresAt time.Time      `json:"lease_expires_at,omitempty"`
+	LastSeenAt     time.Time      `json:"last_seen_at,omitempty"`
+	RevokedAt      time.Time      `json:"revoked_at,omitempty"`
+	Probes         []HarnessProbe `json:"probes"`
+	CreatedAt      time.Time      `json:"created_at"`
+}
+
+func (w Worker) Live(at time.Time) bool {
+	return w.RevokedAt.IsZero() && w.LeaseExpiresAt.After(at)
 }
 
 type ReviewPublicationState string
@@ -349,6 +425,8 @@ type ReviewDecision struct {
 	InterventionActorID    string
 	PublicationEligible    bool
 	Level                  EscalationLevel
+	PolicyVersion          int
+	MergeApproval          bool
 	MaxBounces             int
 }
 

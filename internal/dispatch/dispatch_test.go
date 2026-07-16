@@ -293,6 +293,37 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	}
 }
 
+func TestResolvedSpecGateIsIndependentFromManualMode(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, Level: core.L3, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.2,\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", "# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Works\n  verify: test\n  ref: ./...\n```"}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+	d := New(st, cfg, agent)
+	d.Pack = bundle
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	if current.NextStage != core.StageSpec || current.State != core.TaskQueued {
+		t.Fatalf("after triage=%+v", current)
+	}
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = st.GetTask(ctx, task.ID)
+	if current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+		t.Fatalf("after spec=%+v", current)
+	}
+}
+
 func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -513,6 +544,41 @@ func TestExternalReviewApprovePreservesLevelRouting(t *testing.T) {
 			updated, err := st.GetTask(ctx, task.ID)
 			if err != nil || updated.State != test.state || updated.RecoveryStage != test.recovery {
 				t.Fatalf("task=%+v err=%v", updated, err)
+			}
+		})
+	}
+}
+
+func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		mergeApproval bool
+		want          core.TaskState
+	}{{"human merge gate", true, core.TaskAwaiting}, {"automatic merge", false, core.TaskMerged}} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/policy", Mode: core.TaskModeAuto, PolicyVersion: 1, SpecApproval: false, MergeApproval: test.mergeApproval, Level: core.LegacyLevel(core.TaskModeAuto, false, test.mergeApproval), State: core.TaskRunning, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning, StartedAt: time.Now()}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+			d.UseDurableQueue()
+			merged := false
+			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil
+			}
+			d.RequestMerge = func(context.Context, string, int) error { merged = true; return nil }
+			if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review-model"); err != nil {
+				t.Fatal(err)
+			}
+			updated, _ := st.GetTask(ctx, task.ID)
+			if updated.State != test.want {
+				t.Fatalf("state=%s want=%s", updated.State, test.want)
 			}
 		})
 	}
