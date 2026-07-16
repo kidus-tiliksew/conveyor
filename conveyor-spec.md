@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.12**
-**Date:** July 15, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker execution and Auto/Manual execution modes applied (§21.12), following the verdict-first human gate amendment (§21.11)
+**Specification — v1.13**
+**Date:** July 16, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker execution contract applied (§21.13), following the worker/modes amendment (§21.12)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1505,4 +1505,88 @@ all other v1.11 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.12 accepted July 15, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12). Subsequent changes proceed by amendment with version bumps.*
+### 21.13 v1.13 — Worker execution contract (July 16, 2026)
+
+Pre-implementation review of the Phase 5.1 working breakdown resolved a set
+of contract details that are normative protocol and pipeline behavior, not
+plan minutiae: they extend the §17.4 surface, define gate semantics
+including auto-merge, and fix task-lifetime invariants. Per §21 they are
+recorded by amendment rather than left in the working plan;
+docs/phase5-plan.md remains the breakdown and this section is authoritative.
+This amendment refines §21.12 changes 2 and 3 (the legacy-level mapping and
+the health-gating rule) where the newer text below is more precise. Seven
+changes; all other v1.12 decisions remain unchanged:
+
+1. **Stage routes select harnesses — implement and review both.** The
+   per-stage routing table (§21.4 change 2, §21.12 change 3) gains a
+   `harness` field on the implement and review routes, referencing a
+   registry entry by name; a review route with `execution: in_process`
+   takes none. Validation enforces referential integrity both ways: a
+   route cannot name an unregistered harness, and a registry entry
+   referenced by a route or panel seat cannot be deleted. With exactly one
+   registered harness the field may be omitted and inherits it; with more
+   than one it is required. The field binds worker dispatch only — a
+   Manual claim cannot be forced through a harness — and is surfaced
+   enforced vs. advisory exactly as `model_enforcement` (§21.12 change 4).
+   Phase 5.2 panel seats override the review route per seat. There is no
+   per-task harness override.
+
+2. **Registry schema and placeholder vocabulary.** A registry entry is
+   `{name, command, model_args, probe_command, probe_timeout}`. `command`,
+   `model_args`, and `probe_command` are argv arrays, never
+   shell-evaluated. Placeholders (`{model}`, `{prompt}`, `{mcp_config}`)
+   are substituted as whole argv elements at invocation; an unknown
+   placeholder is a validation error at write time, not a runtime
+   surprise.
+
+3. **Health gating is route-scoped.** Auto mode is offered only while (a)
+   an enrolled worker holds a live liveness lease — a server-issued lease,
+   default **15 seconds**, refreshed by heartbeat — and (b) every harness
+   referenced by the applicable implement and review routes probes healthy
+   (an `in_process` review route is exempt). "Any healthy harness" is not
+   sufficient: an unrelated healthy harness must not enable Auto while the
+   routed harness is down. While unhealthy, an explicitly requested
+   `mode: auto` is rejected (HTTP 409 / MCP error) and a workspace-default
+   Auto resolves to Manual with a recorded fallback event; nothing queues
+   silently against a dead worker.
+
+4. **Worker-control lease endpoints.** The server gains additive
+   worker-authenticated operations for **lease renewal** and **active
+   claim release**. The agent-facing §17.4 lifecycle is unchanged — no
+   second protocol. Renewal never extends the §21.9 execution deadline;
+   release returns the order to the queue immediately instead of waiting
+   out the lease; §21.9 expiry and stale recovery remain the backstop for
+   a worker that dies outright.
+
+5. **Enrollment is a token exchange.** A short-lived, single-use pairing
+   token (issued by the operator via UI or CLI) is exchanged at enrollment
+   for a revocable, workspace-scoped worker credential stored server-side
+   only as a hash. Revocation is an operator action; heartbeats carry the
+   per-harness probe results of change 3.
+
+6. **Worker capacity is stage-aware.** Session-count minimums do not
+   prevent deadlock: implement sessions blocking in `await_review` could
+   occupy every slot while the review orders that would unblock them sit
+   unclaimed. The worker therefore runs configurable implement concurrency
+   plus **at least one reserved, prioritized review slot**, with each
+   order executed under a fresh identity/token pair so the self-review
+   guard and independence labels hold.
+
+7. **Gate truth table and intake-time resolution (refines §21.12
+   change 2).** Complete gate behavior: spec gate **on** — the spec stage
+   is forced for every task and waits for human approval; spec gate
+   **off** — triage may skip spec, and any generated spec is
+   auto-approved. Merge gate **on** — an approved review waits for human
+   merge approval; merge gate **off** — the control plane invokes the
+   existing merge machinery automatically on an approved review with green
+   checks. The effective mode and gates are resolved and **persisted at
+   intake**; later workspace edits never change an in-flight task (the
+   §21.3 dispatch-time-snapshot rule applied to gating). The faithful
+   legacy mapping, correcting §21.12's coarser one: L0 ≈ Auto with both
+   gates off; L1 ≈ Auto with spec gate off and merge gate on; L2 ≈ Auto
+   with both gates on; L3 ≈ Manual. In-flight legacy tasks finish under
+   their recorded level.
+
+---
+
+*End of specification. v1.13 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13. Subsequent changes proceed by amendment with version bumps.*

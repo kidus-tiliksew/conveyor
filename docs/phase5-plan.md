@@ -1,7 +1,8 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.12),
-amended by §21.12. This document is the working breakdown: what each phase
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.13),
+amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13, which
+is authoritative over this file. This document is the working breakdown: what each phase
 contains, its dependencies, and its exit criterion. All of it is post-Beta
 scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
 criterion met over the Manual MCP pull flow), so this plan is active.
@@ -28,40 +29,80 @@ gates-on-by-default.
 
 Suggested order:
 
-1. **Harness registry** (data-only, unblocks everything after it): workspace
-   config gains `harnesses: [{name, command template, model flag syntax}]`
-   under the standard §21.3 mechanics — validated writes, `config.updated`
-   events, hot reload. Registry editor on the Workspace page. No adapter
-   interface; §5.1 stays retired.
+1. **Harness registry + stage routing** (data-only, unblocks everything
+   after it): workspace config gains `harnesses: [{name, command,
+   model_args, probe_command, probe_timeout}]` — argv arrays, never
+   shell-evaluated, with `{model}` / `{prompt}` / `{mcp_config}`
+   placeholders substituted as whole elements and unknown placeholders
+   rejected at write time (§21.13 change 2) — under the standard §21.3
+   mechanics: validated writes, `config.updated` events, hot reload. The
+   **implement and review** stage routes select a harness by registry name
+   (§21.13 change 1; an `in_process` review route takes none; 5.2 panel
+   seats later override the review route per seat); validation enforces
+   referential integrity both ways. With one registered harness the route
+   field may be omitted and inherits it; with several it is required. A
+   route's harness binds worker dispatch only — a Manual claim cannot be
+   forced through a harness — and is surfaced enforced vs. advisory
+   exactly like `model_enforcement`. No per-task harness override.
+   Registry editor on the Workspace page. No adapter interface; §5.1 stays
+   retired.
 2. **Execution modes + gate toggles:** task-level `mode: auto | manual`;
    workspace toggles for spec approval and merge approval with per-task
    override (Auto + both gates on is the shipped default); legacy L0–L3
-   display mapping (L3 ≈ Manual, L1/L2 ≈ Auto + gates, L0 ≈ Auto + gates
-   off) — existing records keep their levels; mode chip replaces the
+   display mapping per §21.13 change 7 (L3 ≈ Manual; L2 ≈ Auto + both
+   gates; L1 ≈ Auto + merge gate only; L0 ≈ Auto + gates off) — existing
+   records keep their levels and in-flight legacy tasks finish under
+   them; mode chip replaces the
    escalation badge in the feed and task detail; `conveyor task new --mode`
    replaces `--level`; MCP `create_task`'s optional escalation level becomes
-   an optional mode.
-3. **Worker enrollment + heartbeat:** operator-issued pairing token
-   (UI/CLI), worker identity recorded per workspace, heartbeat API carrying
-   harness probe results (binary present, authenticated, trivial invocation
-   succeeds), worker + per-harness health on the Workspace page.
+   an optional mode. Gate behavior follows the §21.13 change 7 truth
+   table: the spec gate forces the spec stage when on and auto-approves
+   generated specs when off; the merge gate holds approved reviews for a
+   human when on and auto-merges on green when off; effective mode and
+   gates are resolved and persisted at intake, so workspace edits never
+   change an in-flight task.
+3. **Worker enrollment + heartbeat:** a short-lived, single-use pairing
+   token (issued via UI/CLI) is exchanged at enrollment for a revocable,
+   workspace-scoped worker credential stored server-side only as a hash;
+   revocation is an operator action on the Workspace page. Liveness is a
+   server-issued lease (default 15s, §21.13 change 3) refreshed by
+   heartbeat;
+   heartbeats carry harness probe results (binary present, authenticated,
+   trivial invocation succeeds); worker and per-harness health render on
+   the Workspace page.
 4. **Worker claim loop:** `conveyor worker run` long-polls
    `list_work_orders` / `claim_work_order` for **Auto orders only** (one
    queue — any authenticated agent may still claim any order manually),
    spawns the configured harness headless with the Conveyor MCP config
-   attached, and supervises: liveness, exit-status capture, claim release on
-   failure. The spawned session performs the standard flow itself
+   attached, and supervises asynchronously with **stage-aware capacity**
+   (§21.13 change 6): configurable implement concurrency plus at least one
+   reserved, prioritized review slot — implementers blocking in
+   `await_review` must never occupy every slot, or the review orders that
+   would unblock them sit unclaimed. Each order runs under a fresh
+   identity/token pair so the self-review guard and independence labels
+   hold. Supervision means lease renewal while a child is alive,
+   exit-status capture, and active claim release on failure — additive
+   worker-control endpoints (§21.13 change 4); the agent-facing §17.4
+   lifecycle is unchanged, and renewal never extends the §21.9 execution
+   deadline. The spawned session performs the standard flow itself
    (`conveyor checkout` → §21.7 branch adoption → implement → push →
    `submit_for_review` → `await_review`). §21.9 clocks and stale recovery
-   govern abandonment — no new recovery machinery.
-5. **Health-gated Auto:** Auto offered only while a worker is live and at
-   least one harness probes healthy; the "default new tasks to Auto" toggle
-   greys out when that fails, and new tasks fall back to Manual explicitly.
+   remain the backstop when a worker dies outright.
+5. **Health-gated Auto:** Auto offered only while a worker holds a live
+   liveness lease and **every harness referenced by the applicable
+   implement/review routes** probes healthy (§21.13 change 3; an
+   `in_process` review route is exempt) — an unrelated healthy harness
+   must not enable Auto while the routed one is down. While unhealthy, an
+   explicitly requested `mode: auto` is rejected (409 / MCP error) and a
+   workspace-default Auto resolves to Manual with a recorded fallback
+   event; the "default new tasks to Auto" toggle greys out. Nothing queues
+   silently against a dead worker.
 
 **Exit criterion:** a task created in Auto mode is claimed and completed
 end-to-end by the worker — checkout, implement, push, submit, review round,
 merge — with no human touch except the configured gates; killing the worker
-makes Auto unavailable in intake within one heartbeat interval; the Manual
+makes Auto unavailable within one liveness lease (explicit Auto refused,
+default Auto falling back to Manual with a recorded event); the Manual
 flow is byte-for-byte unchanged.
 
 ## Phase 5.2 — Adversarial review panel
