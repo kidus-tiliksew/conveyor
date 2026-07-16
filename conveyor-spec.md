@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.13**
+**Specification — v1.14**
 **Date:** July 16, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker execution contract applied (§21.13), following the worker/modes amendment (§21.12)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); harness-template expansion clarified (§21.14), following the worker execution contract (§21.13)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1589,4 +1589,25 @@ changes; all other v1.12 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.13 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13. Subsequent changes proceed by amendment with version bumps.*
+### 21.14 v1.14 — Harness-template expansion contract (July 16, 2026)
+
+Implementation preflight found that §21.13 change 2 named a global
+placeholder vocabulary without defining which registry field could consume
+which runtime value. That allowed configurations which passed validation but
+could not expand during a health probe. This amendment refines §21.13 change
+2; all other v1.13 decisions remain unchanged:
+
+1. **Expansion is field-local and deterministic.** `command` is the base
+   invocation argv and must contain exactly one `{prompt}` element and one
+   `{mcp_config}` element; `{model}` is invalid there. `model_args` is
+   appended to `command` in declared order, may contain only the `{model}`
+   placeholder, and is omitted only when the selected route has no model.
+   `probe_command` is a standalone argv with no placeholders because it runs
+   outside task context. Placeholders always occupy a whole argv element;
+   unknown placeholders, placeholders in the wrong field, missing required
+   command placeholders, and a non-positive `probe_timeout` are workspace
+   configuration validation errors.
+
+---
+
+*End of specification. v1.14 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, and deterministic field-local harness-template expansion fixed by §21.14. Subsequent changes proceed by amendment with version bumps.*

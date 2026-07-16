@@ -5,12 +5,14 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.9. The
-working pre-Beta breakdown is [docs/beta-plan.md](docs/beta-plan.md).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.14.
+[docs/beta-plan.md](docs/beta-plan.md) records the completed Beta path;
+[docs/phase5-plan.md](docs/phase5-plan.md) is the active post-Beta breakdown.
 
 ## Status
 
-Phase 4.7's implementation is complete. The code now provides:
+Phase 4.7 is complete and Beta was achieved July 15, 2026. The code now
+provides:
 
 - in-process triage and spec stages through the OpenAI Responses API, with
   existing schema validators, redacted transcripts, observational usage
@@ -25,8 +27,9 @@ Phase 4.7's implementation is complete. The code now provides:
   UI, workspace-scoped config, and MCP connection guidance; and
 - Postgres projections plus River-backed durable dispatch.
 
-The Phase 4.7 live dogfood exit and the five-task Beta criterion remain to be
-run; implementation completion is not recorded as Beta evidence.
+Phase 5.1 is active under spec §21.12–§21.14: worker execution on operator
+hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
+routing, enrollment, heartbeat health, and supervised Auto work-order claims.
 
 ## Run locally
 

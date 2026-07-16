@@ -1,10 +1,11 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.13),
-amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13, which
-is authoritative over this file. This document is the working breakdown: what each phase
-contains, its dependencies, and its exit criterion. All of it is post-Beta
-scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.14),
+amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
+its harness-template expansion rules are clarified by §21.14, which is
+authoritative over this file. This document is the working breakdown: what
+each phase contains, its dependencies, and its exit criterion. All of it is
+post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
 criterion met over the Manual MCP pull flow), so this plan is active.
 
 **The milestone:** Auto mode. A GitHub issue becomes a merged PR with no
@@ -32,9 +33,11 @@ Suggested order:
 1. **Harness registry + stage routing** (data-only, unblocks everything
    after it): workspace config gains `harnesses: [{name, command,
    model_args, probe_command, probe_timeout}]` — argv arrays, never
-   shell-evaluated, with `{model}` / `{prompt}` / `{mcp_config}`
-   placeholders substituted as whole elements and unknown placeholders
-   rejected at write time (§21.13 change 2) — under the standard §21.3
+   shell-evaluated. Per §21.14, `command` contains exactly one `{prompt}`
+   and one `{mcp_config}`; `model_args` is appended to it and may use only
+   `{model}`; `probe_command` is standalone and accepts no placeholders.
+   Placeholders substitute as whole elements and invalid field/placeholder
+   combinations are rejected at write time — under the standard §21.3
    mechanics: validated writes, `config.updated` events, hot reload. The
    **implement and review** stage routes select a harness by registry name
    (§21.13 change 1; an `in_process` review route takes none; 5.2 panel

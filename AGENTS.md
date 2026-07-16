@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.10, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.14, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -20,12 +20,13 @@ with a version bump (§21), never silent edits.
 
 ## Phase discipline
 
-Phases 1–4.5 are complete. Phase 4.7 implementation is complete; its live
-dogfood exit and five-task Beta proof remain pending. Preserve the full
-multi-stage pipeline described by spec §19 and
-[docs/beta-plan.md](docs/beta-plan.md). Do not build post-Beta work without
-explicit activation. K8sRunner, multi-repo worktree sets, verification, and
-the aggregate cost dashboard remain demand-triggered Phase 8 scope.
+Phases 1–4.7 are complete and Beta was achieved July 15, 2026. Phase 5.1 is
+active under spec §21.12–§21.14 and [docs/phase5-plan.md](docs/phase5-plan.md).
+Preserve the full multi-stage pipeline described by spec §19 and
+[docs/beta-plan.md](docs/beta-plan.md). Do not build later post-Beta work
+without explicit activation. K8sRunner, multi-repo worktree sets,
+verification, and the aggregate cost dashboard remain demand-triggered
+Phase 8 scope.
 MCP task intake is part of the accepted Phase 4.7 surface (§21.5): it must
 create the normal durable task and enqueue existing triage, never bypass the
 pipeline with a second ad hoc triage implementation.
