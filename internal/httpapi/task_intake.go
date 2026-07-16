@@ -62,6 +62,17 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 	if len(intakeKey) > 200 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "idempotency_key must be at most 200 characters"}
 	}
+	originalReq := req
+	if intakeKey != "" {
+		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
+			return taskCreateResult{}, err
+		} else if found {
+			if !sameIntakeRequest(existing, originalReq) {
+				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
+			}
+			return taskCreateResult{Task: existing}, nil
+		}
+	}
 
 	repos := s.Repos
 	workspace, _ := store.WorkspaceFromContext(ctx)
@@ -108,16 +119,6 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		}
 	}
 	req.Level = core.LegacyLevel(req.Mode, specApproval, mergeApproval)
-	if intakeKey != "" {
-		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
-			return taskCreateResult{}, err
-		} else if found {
-			if !sameIntake(existing, req, specApproval, mergeApproval) {
-				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
-			}
-			return taskCreateResult{Task: existing}, nil
-		}
-	}
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
 	}
@@ -155,7 +156,7 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {
 			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr == nil && found {
-				if sameIntake(existing, req, specApproval, mergeApproval) {
+				if sameIntakeRequest(existing, originalReq) {
 					return taskCreateResult{Task: existing}, nil
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
@@ -172,11 +173,28 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 	return taskCreateResult{Task: task, Created: true}, nil
 }
 
-func sameIntake(task core.Task, req createTaskReq, specApproval, mergeApproval bool) bool {
-	return task.Title == req.Title &&
-		task.Body == req.Body &&
-		task.Repo == req.Repo &&
-		task.Source == req.Source &&
-		task.Level == req.Level && task.Mode == req.Mode && task.SpecApproval == specApproval && task.MergeApproval == mergeApproval &&
-		(req.BaseBranch == "" || task.BaseBranch == req.BaseBranch)
+func sameIntakeRequest(task core.Task, req createTaskReq) bool {
+	if task.Title != req.Title || task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
+		return false
+	}
+	if req.Mode == "" && req.Level != "" {
+		mode, specApproval, mergeApproval := core.LegacyPolicy(req.Level)
+		if req.SpecApproval != nil {
+			specApproval = *req.SpecApproval
+		}
+		if req.MergeApproval != nil {
+			mergeApproval = *req.MergeApproval
+		}
+		return task.Mode == mode && task.SpecApproval == specApproval && task.MergeApproval == mergeApproval
+	}
+	if req.Mode != "" && task.Mode != req.Mode {
+		return false
+	}
+	if req.SpecApproval != nil && task.SpecApproval != *req.SpecApproval {
+		return false
+	}
+	if req.MergeApproval != nil && task.MergeApproval != *req.MergeApproval {
+		return false
+	}
+	return true
 }

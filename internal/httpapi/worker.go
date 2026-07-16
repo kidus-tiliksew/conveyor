@@ -137,7 +137,12 @@ func (s *Server) getWorkerConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listWorkerOrders(w http.ResponseWriter, r *http.Request) {
-	orders, err := s.Workers.ListAuto(r.Context())
+	worker, ok := workerFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	orders, err := s.Workers.ListAuto(r.Context(), worker)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

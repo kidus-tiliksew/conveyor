@@ -124,7 +124,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	switch name {
 	case "list_work_orders":
 		if workerAuth {
-			items, listErr := s.Workers.ListAuto(ctx)
+			items, listErr := s.Workers.ListAuto(ctx, worker)
 			if listErr != nil {
 				return nil, listErr
 			}

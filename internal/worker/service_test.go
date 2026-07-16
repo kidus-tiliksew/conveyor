@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 	createOrder("auto-task", core.TaskModeAuto)
 	createOrder("manual-task", core.TaskModeManual)
-	listed, err := service.ListAuto(workerCtx)
+	listed, err := service.ListAuto(workerCtx, worker)
 	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "enforced" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
@@ -111,6 +112,40 @@ func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 	}
 	if available, _ := service.AutoAvailable(ctx, cfg); available {
 		t.Fatal("different workers each reporting one routed harness enabled Auto")
+	}
+}
+
+func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
+	now := time.Now().UTC()
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "reviewer", Command: []string{"reviewer", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"reviewer", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
+	review := cfg.Routing.Stages["review"]
+	review.Harness = "reviewer"
+	cfg.Routing.Stages["review"] = review
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	orders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: orders, ConfigProvider: orders.ConfigProvider, Now: func() time.Time { return now }}
+	worker := core.Worker{ID: "partial-worker", Workspace: "demo", Name: "partial", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "reviewer", Healthy: false}}, CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "route-health", Workspace: "demo", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "route-health-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := service.ListAuto(ctx, worker); err != nil || len(listed) != 0 {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	if _, err := service.ClaimAuto(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token"}); err == nil || !strings.Contains(err.Error(), "reviewer") {
+		t.Fatalf("claim error=%v", err)
 	}
 }
 

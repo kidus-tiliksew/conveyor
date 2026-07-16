@@ -161,6 +161,19 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 	if err != nil {
 		return false, err.Error()
 	}
+	now := s.now()
+	for _, worker := range workers {
+		if healthy, _ := workerHealthyForRoutes(worker, cfg, now); healthy {
+			return true, ""
+		}
+	}
+	return false, "no live worker reports every routed harness healthy"
+}
+
+func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Time) (bool, string) {
+	if !worker.Live(now) {
+		return false, "worker liveness lease expired"
+	}
 	required, err := requiredHarnesses(cfg)
 	if err != nil {
 		return false, err.Error()
@@ -168,27 +181,16 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 	if len(required) == 0 {
 		return false, "no routed worker harness is configured"
 	}
-	now := s.now()
-	for _, worker := range workers {
-		if !worker.Live(now) {
-			continue
-		}
-		health := map[string]bool{}
-		for _, probe := range worker.Probes {
-			health[probe.Harness] = probe.Healthy
-		}
-		all := true
-		for name := range required {
-			if !health[name] {
-				all = false
-				break
-			}
-		}
-		if all {
-			return true, ""
+	health := map[string]bool{}
+	for _, probe := range worker.Probes {
+		health[probe.Harness] = probe.Healthy
+	}
+	for name := range required {
+		if !health[name] {
+			return false, fmt.Sprintf("routed harness %s is unhealthy", name)
 		}
 	}
-	return false, "no live worker reports every routed harness healthy"
+	return true, ""
 }
 
 func requiredHarnesses(cfg *config.Config) (map[string]bool, error) {
@@ -206,10 +208,13 @@ func requiredHarnesses(cfg *config.Config) (map[string]bool, error) {
 	return result, nil
 }
 
-func (s *Service) ListAuto(ctx context.Context) ([]DispatchOrder, error) {
+func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if healthy, _ := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
+		return []DispatchOrder{}, nil
 	}
 	orders, err := s.WorkOrders.List(ctx)
 	if err != nil {
@@ -240,8 +245,12 @@ func (s *Service) ListAuto(ctx context.Context) ([]DispatchOrder, error) {
 }
 
 func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
-	if !worker.Live(s.now()) {
-		return core.WorkOrder{}, fmt.Errorf("worker liveness lease expired")
+	cfg, err := s.ConfigProvider(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if healthy, reason := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
+		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
 	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -254,22 +263,9 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if task.Mode != core.TaskModeAuto {
 		return core.WorkOrder{}, fmt.Errorf("worker may claim Auto tasks only")
 	}
-	cfg, err := s.ConfigProvider(ctx)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
 	harness, ok := harnessFor(cfg, order.Stage)
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("no harness configured for %s", order.Stage)
-	}
-	probeHealthy := false
-	for _, probe := range worker.Probes {
-		if probe.Harness == harness.Name && probe.Healthy {
-			probeHealthy = true
-		}
-	}
-	if !probeHealthy {
-		return core.WorkOrder{}, fmt.Errorf("routed harness %s is unhealthy", harness.Name)
 	}
 	claim.WorkerID = worker.ID
 	claim.ClaimantID = worker.ID

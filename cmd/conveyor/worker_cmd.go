@@ -219,27 +219,39 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 }
 
 func probeHarnesses(ctx context.Context, harnesses []config.Harness) []core.HarnessProbe {
-	result := make([]core.HarnessProbe, 0, len(harnesses))
+	results := make(chan core.HarnessProbe, len(harnesses))
+	var probes sync.WaitGroup
 	for _, harness := range harnesses {
-		timeout := harness.ProbeTimeout
-		if timeout <= 0 {
-			timeout, _ = time.ParseDuration(harness.ProbeTimeoutText)
-		}
-		if timeout <= 0 {
-			timeout = 10 * time.Second
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, timeout)
-		command := exec.CommandContext(probeCtx, harness.ProbeCommand[0], harness.ProbeCommand[1:]...)
-		output, err := command.CombinedOutput()
-		cancel()
-		message := strings.TrimSpace(string(output))
-		if len(message) > 500 {
-			message = message[:500]
-		}
-		if err != nil && message == "" {
-			message = err.Error()
-		}
-		result = append(result, core.HarnessProbe{Harness: harness.Name, Healthy: err == nil, Message: message, CheckedAt: time.Now().UTC()})
+		harness := harness
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			timeout := harness.ProbeTimeout
+			if timeout <= 0 {
+				timeout, _ = time.ParseDuration(harness.ProbeTimeoutText)
+			}
+			if timeout <= 0 {
+				timeout = 10 * time.Second
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			command := exec.CommandContext(probeCtx, harness.ProbeCommand[0], harness.ProbeCommand[1:]...)
+			output, err := command.CombinedOutput()
+			cancel()
+			message := strings.TrimSpace(string(output))
+			if len(message) > 500 {
+				message = message[:500]
+			}
+			if err != nil && message == "" {
+				message = err.Error()
+			}
+			results <- core.HarnessProbe{Harness: harness.Name, Healthy: err == nil, Message: message, CheckedAt: time.Now().UTC()}
+		}()
+	}
+	probes.Wait()
+	close(results)
+	result := make([]core.HarnessProbe, 0, len(harnesses))
+	for probe := range results {
+		result = append(result, probe)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Harness < result[j].Harness })
 	return result
@@ -254,7 +266,8 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	if err != nil {
 		return fmt.Errorf("generate worker client token: %w", err)
 	}
-	if _, err := c.claimWorkerOrder(credential, item.Order.ID, "worker-"+session, clientToken); err != nil {
+	sessionID := "worker-" + session
+	if _, err := c.claimWorkerOrder(credential, item.Order.ID, sessionID, clientToken); err != nil {
 		return err
 	}
 	release := func(reason string) {
@@ -273,7 +286,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		release("write MCP config failed")
 		return err
 	}
-	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s. Use the Conveyor MCP server, call get_work_order for the approved contract, and complete the standard %s lifecycle.", item.Order.ID, c.workspace, item.Order.Stage)
+	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s using session_id %s. Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", item.Order.ID, c.workspace, sessionID, item.Order.Stage)
 	argv := expandHarness(item.Harness, item.Model, prompt, configPath)
 	if len(argv) == 0 {
 		release("empty harness command")
@@ -281,7 +294,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	}
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	command.Env = append(os.Environ(), "CONVEYOR_API_TOKEN="+credential, "CONVEYOR_ADDR="+c.base, "CONVEYOR_WORKSPACE="+c.workspace, "CONVEYOR_WORK_ORDER_ID="+item.Order.ID)
+	command.Env = append(os.Environ(), "CONVEYOR_API_TOKEN="+credential, "CONVEYOR_ADDR="+c.base, "CONVEYOR_WORKSPACE="+c.workspace, "CONVEYOR_WORK_ORDER_ID="+item.Order.ID, "CONVEYOR_SESSION_ID="+sessionID)
 	if err = command.Start(); err != nil {
 		release("harness launch failed")
 		return err
