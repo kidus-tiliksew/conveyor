@@ -170,6 +170,71 @@ func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
 	}
 }
 
+func TestMemoryArtifactsScopeIdenticalContentByWorkspace(t *testing.T) {
+	t.Parallel()
+	st := NewMemory()
+	ctxA := WithWorkspace(context.Background(), "workspace-a")
+	ctxB := WithWorkspace(context.Background(), "workspace-b")
+	if err := st.CreateTask(ctxA, core.Task{ID: "task-a", Workspace: "workspace-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTask(ctxB, core.Task{ID: "task-b", Workspace: "workspace-b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	content := []byte("shared content")
+	artifactA, err := st.CreateArtifact(ctxA, core.Artifact{Name: "a.txt", ContentType: "text/plain", TaskID: "task-a"}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactAAgain, err := st.CreateArtifact(ctxA, core.Artifact{Name: "a.txt", ContentType: "text/plain", TaskID: "task-a"}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactB, err := st.CreateArtifact(ctxB, core.Artifact{Name: "b.txt", ContentType: "text/plain", TaskID: "task-b"}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifactA.ID != artifactAAgain.ID || artifactA.ID != artifactB.ID {
+		t.Fatalf("content-addressed IDs differ: %q, %q, %q", artifactA.ID, artifactAAgain.ID, artifactB.ID)
+	}
+
+	for _, test := range []struct {
+		name      string
+		ctx       context.Context
+		artifact  core.Artifact
+		taskID    string
+		workspace string
+	}{
+		{name: "workspace A", ctx: ctxA, artifact: artifactA, taskID: "task-a", workspace: "workspace-a"},
+		{name: "workspace B", ctx: ctxB, artifact: artifactB, taskID: "task-b", workspace: "workspace-b"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolved, got, err := st.GetArtifactForContext(test.ctx, test.artifact.ID, test.taskID, "")
+			if err != nil || resolved.Workspace != test.workspace || resolved.TaskID != test.taskID || string(got) != string(content) {
+				t.Fatalf("resolved=%+v content=%q err=%v", resolved, got, err)
+			}
+			listed, err := st.ListArtifacts(test.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed) != 1 || listed[0].Workspace != test.workspace || listed[0].TaskID != test.taskID {
+				t.Fatalf("workspace artifact list leaked another workspace: %+v", listed)
+			}
+		})
+	}
+
+	if _, _, err := st.GetArtifactForContext(ctxA, artifactB.ID, "task-b", ""); err == nil {
+		t.Fatal("workspace A resolved workspace B link")
+	}
+	if _, _, err := st.GetArtifactForContext(ctxB, artifactA.ID, "task-a", ""); err == nil {
+		t.Fatal("workspace B resolved workspace A link")
+	}
+	if _, _, err := st.GetArtifact(context.Background(), artifactA.ID); err == nil {
+		t.Fatal("unscoped read of cross-workspace digest was not rejected as ambiguous")
+	}
+}
+
 func TestMemoryCreateSpecVersionAlwaysStartsUnapproved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

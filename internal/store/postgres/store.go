@@ -1822,6 +1822,21 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 	return artifact, content, nil
 }
 
+func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
+	var artifact core.Artifact
+	var content []byte
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'')
+		FROM artifacts a
+		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
+		WHERE a.workspace_id=$1 AND a.id=$2
+		  AND (($3 <> '' AND l.task_id=$3) OR ($4 <> '' AND l.feature_id=$4))
+		LIMIT 1`, workspace(ctx), id, taskID, featureID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID)
+	if err != nil {
+		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
+	}
+	return artifact, content, nil
+}
+
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id`, workspace(ctx))
 	if err != nil {

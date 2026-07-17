@@ -2,8 +2,8 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
-import { createTask, fetchWorkers, uploadArtifact } from '../../lib/api'
-import type { Task, TaskMode } from '../../lib/types'
+import { createTask, fetchWorkers } from '../../lib/api'
+import type { TaskMode } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
@@ -44,8 +44,8 @@ export function TaskCreateSheet() {
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [files, setFiles] = useState<File[]>([])
-  const [uploadFailures, setUploadFailures] = useState<{ task: Task; errors: string[] } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const intakeKey = useRef(crypto.randomUUID())
   const repoName = repo || repos[0]?.name || ''
   const close = () => void navigate({ to: '/' })
 
@@ -59,26 +59,12 @@ export function TaskCreateSheet() {
         ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
         ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
         ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
-      })
-      // Attachments ride the existing artifacts API (§21.4), linked to the
-      // task so triage and spec agents can pull them as context.
-      const errors: string[] = []
-      for (const file of files) {
-        try {
-          await uploadArtifact(token, file, task.id)
-        } catch (error) {
-          errors.push(`${file.name}: ${String(error)}`)
-        }
-      }
-      return { task, errors }
+      }, files, intakeKey.current)
+      return task
     },
-    onSuccess: ({ task, errors }) => {
+    onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      if (errors.length > 0) {
-        setUploadFailures({ task, errors })
-      } else {
-        void navigate({ to: '/tasks/$taskId', params: { taskId: task.id } })
-      }
+      void navigate({ to: '/tasks/$taskId', params: { taskId: task.id } })
     },
   })
 
@@ -198,29 +184,12 @@ export function TaskCreateSheet() {
         </Field>
 
         {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
-        {uploadFailures && (
-          <div className="rounded-md border border-attention-dot/40 bg-attention-soft p-3 text-xs leading-5">
-            <p className="font-semibold text-attention">Task created, but some attachments failed:</p>
-            <ul className="mt-1 list-inside list-disc text-attention/90">
-              {uploadFailures.errors.map((entry) => (
-                <li key={entry}>{entry}</li>
-              ))}
-            </ul>
-            <Link
-              to="/tasks/$taskId"
-              params={{ taskId: uploadFailures.task.id }}
-              className="mt-2 inline-block font-medium text-primary hover:underline"
-            >
-              Continue to the task →
-            </Link>
-          </div>
-        )}
       </div>
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
         <p className="text-xs text-faint">
           {token ? (
-            'Dispatches immediately after creation.'
+            'Dispatches after every attachment is stored.'
           ) : (
             <>
               Requires the operator token — set it in{' '}

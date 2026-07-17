@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -16,6 +17,136 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+type capturingInputAgent struct {
+	input inprocess.Input
+	calls int
+}
+
+func (agent *capturingInputAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
+	agent.calls++
+	agent.input = input
+	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.8,\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
+}
+
+type artifactContextFailureStore struct {
+	store.Store
+	listErr bool
+	readErr bool
+}
+
+func (st *artifactContextFailureStore) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	if st.listErr {
+		return nil, errors.New("artifact list unavailable")
+	}
+	return st.Store.ListArtifacts(ctx)
+}
+
+func (st *artifactContextFailureStore) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
+	if st.readErr {
+		return core.Artifact{}, nil, errors.New("artifact read unavailable")
+	}
+	return st.Store.GetArtifactForContext(ctx, id, taskID, featureID)
+}
+
+func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	largeText := bytes.Repeat([]byte("a"), (1<<20)+17)
+	for _, item := range []struct {
+		name, contentType string
+		content           []byte
+	}{
+		{name: "large.txt", contentType: "text/plain", content: largeText},
+		{name: "design.png", contentType: "image/png", content: []byte("png")},
+		{name: "requirements.pdf", contentType: "application/pdf", content: []byte("pdf")},
+		{name: "interview.mp3", contentType: "audio/mpeg", content: []byte("mp3")},
+	} {
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: item.name, ContentType: item.contentType, TaskID: task.ID}, item.content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 || len(agent.input.Attachments) != 4 {
+		t.Fatalf("calls=%d attachments=%+v", agent.calls, agent.input.Attachments)
+	}
+	kinds := map[inprocess.AttachmentKind]int{}
+	foundLargeText := false
+	for _, attachment := range agent.input.Attachments {
+		kinds[attachment.Kind]++
+		if attachment.Name == "large.txt" {
+			foundLargeText = len(attachment.Content) == len(largeText)
+		}
+	}
+	if !foundLargeText || kinds[inprocess.AttachmentDocument] != 2 || kinds[inprocess.AttachmentImage] != 1 || kinds[inprocess.AttachmentAudio] != 1 {
+		t.Fatalf("kinds=%+v foundLargeText=%t", kinds, foundLargeText)
+	}
+}
+
+func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		contentType string
+		listErr     bool
+		readErr     bool
+		want        string
+	}{
+		{name: "unsupported", contentType: "application/zip", want: "unsupported context artifact"},
+		{name: "list failure", contentType: "text/plain", listErr: true, want: "artifact list unavailable"},
+		{name: "read failure", contentType: "text/plain", readErr: true, want: "artifact read unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(context.Background(), "demo")
+			base := store.NewMemory()
+			task := core.Task{ID: "failure-" + strings.ReplaceAll(test.name, " ", "-"), Workspace: "demo", Repo: "api", Title: "Context failure", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+			if err := base.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := base.CreateArtifact(ctx, core.Artifact{Name: "context.bin", ContentType: test.contentType, TaskID: task.ID}, []byte("content")); err != nil {
+				t.Fatal(err)
+			}
+			wrapped := &artifactContextFailureStore{Store: base, listErr: test.listErr, readErr: test.readErr}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent := &capturingInputAgent{}
+			dispatcher := New(wrapped, &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute}}}}, agent)
+			dispatcher.Pack = bundle
+			err = dispatcher.DispatchNow(ctx, task.ID)
+			if err == nil || !strings.Contains(err.Error(), test.want) || agent.calls != 0 {
+				t.Fatalf("error=%v calls=%d", err, agent.calls)
+			}
+			current, getErr := base.GetTask(ctx, task.ID)
+			events, eventErr := base.ListEvents(ctx, task.ID)
+			contextFailures := 0
+			for _, event := range events {
+				if event.Kind == "artifact.context_failed" {
+					contextFailures++
+				}
+			}
+			if getErr != nil || eventErr != nil || current.State != core.TaskQueued || contextFailures != 1 {
+				t.Fatalf("task=%+v events=%+v errors=%v/%v", current, events, getErr, eventErr)
+			}
+		})
+	}
+}
 
 type reviewAcceptanceFlakyStore struct {
 	store.Store
@@ -201,7 +332,7 @@ type sequenceAgent struct {
 	costUSD float64
 }
 
-func (agent *sequenceAgent) Run(context.Context, string, string) (inprocess.Result, error) {
+func (agent *sequenceAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
 	output := agent.outputs[agent.next]
 	agent.next++
 	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10, CostUSD: agent.costUSD}, nil

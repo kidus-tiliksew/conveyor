@@ -36,6 +36,10 @@ func taskCreateStatus(err error) int {
 // callers provide an idempotency key so transport retries return the original
 // task without enqueueing Luna triage twice (spec §17.4, §21.5).
 func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intakeKey, defaultSource string) (taskCreateResult, error) {
+	return s.createTaskRecordWithState(ctx, req, intakeKey, defaultSource, core.TaskQueued)
+}
+
+func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskReq, intakeKey, defaultSource string, initialState core.TaskState) (taskCreateResult, error) {
 	req.Title = strings.TrimSpace(req.Title)
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
@@ -147,7 +151,7 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 		Repo:          req.Repo,
 		BaseBranch:    req.BaseBranch,
 		Branch:        gitx.BranchName(id),
-		State:         core.TaskQueued,
+		State:         initialState,
 		NextStage:     core.InitialStage(req.Level),
 		CreatedAt:     time.Now().UTC(),
 	}
@@ -167,7 +171,7 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 	if fellBack {
 		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.auto_fallback", Payload: core.JSONPayload(map[string]string{"requested": "workspace-default-auto", "resolved": "manual", "reason": "worker-or-routed-harness-unhealthy"})})
 	}
-	if s.OnCreate != nil {
+	if initialState == core.TaskQueued && s.OnCreate != nil {
 		s.OnCreate(ctx, id)
 	}
 	return taskCreateResult{Task: task, Created: true}, nil
