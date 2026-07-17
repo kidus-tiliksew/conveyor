@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,89 @@ import (
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+type failOnceArtifactStore struct {
+	store.Store
+	calls  int
+	failAt int
+}
+
+func (st *failOnceArtifactStore) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	st.calls++
+	if st.calls == st.failAt {
+		return core.Artifact{}, fmt.Errorf("artifact store unavailable")
+	}
+	return st.Store.CreateArtifact(ctx, artifact, content)
+}
+
+func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("task", `{"title":"Attachment task","body":"Use every file","repo":"api","mode":"manual","spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("idempotency_key", intakeKey); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		part, err := writer.CreateFormFile("attachments", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = part.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", &body)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *testing.T) {
+	t.Parallel()
+	base := store.NewMemory()
+	flaky := &failOnceArtifactStore{Store: base, failAt: 2}
+	server := NewServer(flaky)
+	server.BearerToken, server.Workspace, server.Repos = "token", "demo", []string{"api"}
+	enqueued := 0
+	server.OnCreate = func(ctx context.Context, taskID string) {
+		enqueued++
+		task, err := flaky.GetTask(ctx, taskID)
+		if err != nil || task.State != core.TaskQueued {
+			t.Errorf("task at enqueue=%+v err=%v", task, err)
+		}
+		artifacts, err := flaky.ListArtifacts(ctx)
+		if err != nil || len(artifacts) != 2 {
+			t.Errorf("artifacts at enqueue=%+v err=%v", artifacts, err)
+		}
+	}
+	files := map[string][]byte{"brief.txt": []byte("brief"), "design.png": append([]byte("\x89PNG\r\n\x1a\n"), []byte("design")...)}
+	first := httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, attachmentTaskRequest(t, "attachment-retry", files))
+	if first.Code != http.StatusUnprocessableEntity || !strings.Contains(first.Body.String(), "remains unqueued") || enqueued != 0 {
+		t.Fatalf("first status=%d body=%s enqueued=%d", first.Code, first.Body.String(), enqueued)
+	}
+	tasks, err := flaky.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(tasks) != 1 || tasks[0].State != core.TaskClaiming {
+		t.Fatalf("draft tasks=%+v err=%v", tasks, err)
+	}
+
+	retry := httptest.NewRecorder()
+	server.Handler().ServeHTTP(retry, attachmentTaskRequest(t, "attachment-retry", files))
+	if retry.Code != http.StatusCreated || enqueued != 1 {
+		t.Fatalf("retry status=%d body=%s enqueued=%d", retry.Code, retry.Body.String(), enqueued)
+	}
+	tasks, err = flaky.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	artifacts, artifactErr := flaky.ListArtifacts(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || artifactErr != nil || len(tasks) != 1 || tasks[0].State != core.TaskQueued || len(artifacts) != 2 {
+		t.Fatalf("tasks=%+v artifacts=%+v errors=%v/%v", tasks, artifacts, err, artifactErr)
+	}
+}
 
 func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	st := store.NewMemory()

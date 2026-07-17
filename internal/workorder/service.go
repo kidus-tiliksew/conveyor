@@ -5,6 +5,7 @@ package workorder
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -32,14 +33,26 @@ type Service struct {
 }
 
 type Context struct {
-	Order         core.WorkOrder    `json:"work_order"`
-	Task          core.Task         `json:"task"`
-	ApprovedSpec  *core.SpecVersion `json:"approved_spec,omitempty"`
-	RolePrompt    string            `json:"role_prompt"`
-	BounceHistory []json.RawMessage `json:"bounce_history,omitempty"`
-	PriorFeedback []string          `json:"prior_feedback,omitempty"`
-	Artifacts     []core.Artifact   `json:"artifacts,omitempty"`
-	Diff          string            `json:"diff,omitempty"`
+	Order         core.WorkOrder      `json:"work_order"`
+	Task          core.Task           `json:"task"`
+	ApprovedSpec  *core.SpecVersion   `json:"approved_spec,omitempty"`
+	RolePrompt    string              `json:"role_prompt"`
+	BounceHistory []json.RawMessage   `json:"bounce_history,omitempty"`
+	PriorFeedback []string            `json:"prior_feedback,omitempty"`
+	Artifacts     []ArtifactReference `json:"artifacts,omitempty"`
+	Diff          string              `json:"diff,omitempty"`
+}
+
+type ArtifactReference struct {
+	core.Artifact
+	WorkOrderID string `json:"work_order_id"`
+	ReadTool    string `json:"read_tool"`
+}
+
+type ArtifactContent struct {
+	Artifact core.Artifact `json:"artifact"`
+	Encoding string        `json:"encoding"`
+	Data     string        `json:"data"`
 }
 
 func (s *Service) config(ctx context.Context) (*config.Config, error) {
@@ -140,11 +153,14 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 			result.PriorFeedback = append(result.PriorFeedback, item.Comment)
 		}
 	}
-	artifacts, _ := s.Store.ListArtifacts(ctx)
+	artifacts, err := s.Store.ListArtifacts(ctx)
+	if err != nil {
+		return Context{}, fmt.Errorf("list task artifacts: %w", err)
+	}
 	for _, artifact := range artifacts {
 		if artifact.TaskID == task.ID || (task.FeatureID != "" && artifact.FeatureID == task.FeatureID) {
-			artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
-			result.Artifacts = append(result.Artifacts, artifact)
+			artifact.DownloadURL = ""
+			result.Artifacts = append(result.Artifacts, ArtifactReference{Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact"})
 		}
 	}
 	if order.Stage == core.StageReview {
@@ -154,6 +170,24 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID string) (ArtifactContent, error) {
+	order, err := s.authorized(ctx, id, session)
+	if err != nil {
+		return ArtifactContent{}, err
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil {
+		return ArtifactContent{}, err
+	}
+	artifact, content, err := s.Store.GetArtifactForContext(ctx, artifactID, task.ID, task.FeatureID)
+	if err != nil {
+		// Keep unauthorized ownership mismatches indistinguishable from missing
+		// artifacts; artifact ids alone are never bearer capabilities (spec §21.4).
+		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
+	}
+	return ArtifactContent{Artifact: artifact, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {

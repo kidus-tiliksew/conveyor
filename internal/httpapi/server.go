@@ -7,6 +7,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -343,6 +346,10 @@ type createTaskReq struct {
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		s.createTaskWithAttachments(w, r)
+		return
+	}
 	var req createTaskReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -354,6 +361,63 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, result.Task)
+}
+
+func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(maxArtifactBytes); err != nil {
+		http.Error(w, "invalid attachment task form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	var req createTaskReq
+	if err := json.Unmarshal([]byte(r.FormValue("task")), &req); err != nil {
+		http.Error(w, "invalid task metadata: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.createTaskRecordWithState(r.Context(), req, r.FormValue("idempotency_key"), "api", core.TaskClaiming)
+	if err != nil {
+		http.Error(w, err.Error(), taskCreateStatus(err))
+		return
+	}
+	if !result.Created && result.Task.State != core.TaskClaiming {
+		writeJSON(w, http.StatusOK, result.Task)
+		return
+	}
+	for _, header := range r.MultipartForm.File["attachments"] {
+		if _, err = s.storeTaskAttachment(r, result.Task, header); err != nil {
+			http.Error(w, fmt.Sprintf("task %s remains unqueued because attachment %s failed: %v", result.Task.ID, safeFilename(header), err), http.StatusUnprocessableEntity)
+			return
+		}
+	}
+	if err = s.Store.UpdateTaskState(r.Context(), result.Task.ID, core.TaskQueued); err != nil {
+		http.Error(w, fmt.Sprintf("task %s remains unqueued because finalization failed: %v", result.Task.ID, err), http.StatusInternalServerError)
+		return
+	}
+	result.Task.State = core.TaskQueued
+	if s.OnCreate != nil {
+		s.OnCreate(r.Context(), result.Task.ID)
+	}
+	writeJSON(w, http.StatusCreated, result.Task)
+}
+
+func (s *Server) storeTaskAttachment(r *http.Request, task core.Task, header *multipart.FileHeader) (core.Artifact, error) {
+	file, err := header.Open()
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBytes+1))
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	if len(content) > maxArtifactBytes {
+		return core.Artifact{}, fmt.Errorf("artifact exceeds 25 MiB")
+	}
+	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(content)
+	}
+	return s.Store.CreateArtifact(r.Context(), core.Artifact{Workspace: task.Workspace, Name: safeFilename(header), ContentType: contentType, SizeBytes: int64(len(content)), TaskID: task.ID, CreatedAt: time.Now().UTC()}, content)
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {

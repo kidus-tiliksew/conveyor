@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,7 +16,63 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	for _, task := range []core.Task{
+		{ID: "task-a", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
+		{ID: "task-b", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		order, task, session, worker string
+	}{
+		{order: "order-a", task: "task-a", session: "session-a", worker: "worker-a"},
+		{order: "order-b", task: "task-b", session: "session-b", worker: "worker-b"},
+	} {
+		if err := st.CreateJob(ctx, core.Job{ID: item.order, TaskID: item.task, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: item.order, TaskID: item.task, JobID: item.order, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ClaimWorkOrder(ctx, item.order, core.WorkOrderClaim{SessionID: item.session, ClientToken: "secret", ClaimantID: item.worker, WorkerID: item.worker, Lease: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: "task-a"}, []byte("png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	args := map[string]any{"workspace_id": "demo", "work_order_id": "order-a", "session_id": "session-a", "artifact_id": artifact.ID}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	if _, err = server.callMCPTool(request, "read_artifact", args); err != nil {
+		t.Fatalf("manual read: %v", err)
+	}
+	workerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo"}))
+	if _, err = server.callMCPTool(workerRequest, "read_artifact", args); err != nil {
+		t.Fatalf("owning worker read: %v", err)
+	}
+	otherWorkerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-b", Workspace: "demo"}))
+	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("other worker read error=%v", err)
+	}
+	wrongWorkspace := maps.Clone(args)
+	wrongWorkspace["workspace_id"] = "other"
+	if _, err = server.callMCPTool(request, "read_artifact", wrongWorkspace); err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+		t.Fatalf("wrong workspace read error=%v", err)
+	}
+}
 
 func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	t.Parallel()
@@ -46,7 +103,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "upload_transcript", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}

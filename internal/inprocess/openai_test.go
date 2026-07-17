@@ -2,12 +2,68 @@ package inprocess
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
+	t.Parallel()
+	const key = "sk-test"
+	var responseRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/audio/transcriptions":
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatal(err)
+			}
+			file, _, err := r.FormFile("file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			content, err := io.ReadAll(file)
+			if err != nil || string(content) != "audio-bytes" || r.FormValue("model") != "gpt-4o-mini-transcribe" {
+				t.Fatalf("audio=%q model=%q err=%v", content, r.FormValue("model"), err)
+			}
+			_, _ = io.WriteString(w, `{"text":"spoken context"}`)
+		case "/responses":
+			if err := json.NewDecoder(r.Body).Decode(&responseRequest); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"model":"gpt-5.6-luna","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	input := Input{Prompt: "analyze", Attachments: []Attachment{
+		{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: []byte("image-bytes")},
+		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf", Kind: AttachmentDocument, Content: []byte("pdf-bytes")},
+		{ID: "audio-id", Name: "clip.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio-bytes")},
+	}}
+	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-luna", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(responseRequest)
+	requestText := string(encoded)
+	for _, expected := range []string{`"type":"input_image"`, `"type":"input_file"`, "spoken context"} {
+		if !strings.Contains(requestText, expected) {
+			t.Fatalf("request missing %q: %s", expected, requestText)
+		}
+	}
+	for _, encodedBytes := range []string{base64.StdEncoding.EncodeToString([]byte("image-bytes")), base64.StdEncoding.EncodeToString([]byte("pdf-bytes"))} {
+		if !strings.Contains(requestText, encodedBytes) || strings.Contains(string(result.Transcript), encodedBytes) {
+			t.Fatalf("binary request/transcript contract failed for %q: request=%s transcript=%s", encodedBytes, requestText, result.Transcript)
+		}
+	}
+}
 
 func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 	t.Parallel()
@@ -21,7 +77,7 @@ func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-luna", "work")
+	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +91,7 @@ func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 	if strings.Contains(string(result.Transcript), key) || result.Redactions.Total() == 0 {
 		t.Fatalf("unredacted transcript: %s", result.Transcript)
 	}
-	if !strings.Contains(string(result.Transcript), `"input":"work"`) {
+	if !strings.Contains(string(result.Transcript), `"text":"work"`) {
 		t.Fatalf("request missing from transcript: %s", result.Transcript)
 	}
 }

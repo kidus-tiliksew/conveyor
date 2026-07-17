@@ -99,6 +99,7 @@ type Store interface {
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
+	GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
 
@@ -131,6 +132,7 @@ func NewMemory() Store {
 type memoryArtifact struct {
 	meta    core.Artifact
 	content []byte
+	links   []core.Artifact
 }
 
 type memory struct {
@@ -967,37 +969,70 @@ func (m *memory) AssignTaskFeature(ctx context.Context, taskID, featureID string
 	return nil
 }
 
-func (m *memory) CreateArtifact(_ context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, artifact.Workspace)
+	if artifact.Workspace != "" && artifact.Workspace != workspace {
+		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
+	}
+	artifact.Workspace = workspace
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = time.Now().UTC()
 	}
 	if existing, ok := m.artifacts[artifact.ID]; ok {
-		return existing.meta, nil
+		for _, link := range existing.links {
+			if link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID {
+				return link, nil
+			}
+		}
+		existing.links = append(existing.links, artifact)
+		m.artifacts[artifact.ID] = existing
+		return artifact, nil
 	}
-	m.artifacts[artifact.ID] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...)}
+	m.artifacts[artifact.ID] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...), links: []core.Artifact{artifact}}
 	return artifact, nil
 }
 
-func (m *memory) GetArtifact(_ context.Context, id string) (core.Artifact, []byte, error) {
+func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	artifact, ok := m.artifacts[id]
-	if !ok {
+	workspace, scoped := WorkspaceFromContext(ctx)
+	if !ok || (scoped && workspace != "" && artifact.meta.Workspace != workspace) {
 		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
 	}
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
 }
 
-func (m *memory) ListArtifacts(_ context.Context) ([]core.Artifact, error) {
+func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]core.Artifact, 0, len(m.artifacts))
+	artifact, ok := m.artifacts[id]
+	workspace, scoped := WorkspaceFromContext(ctx)
+	if !ok || (scoped && workspace != "" && artifact.meta.Workspace != workspace) {
+		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+	}
+	for _, link := range artifact.links {
+		if (taskID != "" && link.TaskID == taskID) || (featureID != "" && link.FeatureID == featureID) {
+			return link, append([]byte(nil), artifact.content...), nil
+		}
+	}
+	return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+}
+
+func (m *memory) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []core.Artifact
+	workspace, scoped := WorkspaceFromContext(ctx)
 	for _, artifact := range m.artifacts {
-		out = append(out, artifact.meta)
+		if scoped && workspace != "" && artifact.meta.Workspace != workspace {
+			continue
+		}
+		out = append(out, artifact.links...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil

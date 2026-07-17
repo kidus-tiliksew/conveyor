@@ -41,15 +41,19 @@ parallel workflow.
 3. Call `claim_work_order` with a bounded lease, then call `get_work_order` for
    the approved specification, configured repository, assigned base, exact
    task branch, deadline, feedback, artifacts, and acceptance criteria.
-4. Immediately resolve the dedicated checkout with `conveyor checkout
+4. Resolve every relevant artifact reference with `read_artifact`, passing the
+   same workspace, work order, and session plus the referenced artifact ID.
+   Decode the returned base64 content according to its MIME type. Treat a read
+   failure as missing required context; never continue from filename metadata.
+5. Immediately resolve the dedicated checkout with `conveyor checkout
    <task-id>`. Use its returned path as the working directory. If the current
    checkout is already a clean dedicated clone/worktree for the assigned
    branch, the helper may return it. If the CLI is unavailable, use the safe
    fallback below; never implement in a shared primary checkout.
-5. Work only in the configured repository, returned task worktree, and exact
+6. Work only in the configured repository, returned task worktree, and exact
    assigned branch. Implement the approved specification and run the
    repository's required validation there.
-6. Use `report_progress` for meaningful milestones and `report_usage` with
+7. Use `report_progress` for meaningful milestones and `report_usage` with
    cumulative, truthful usage. Respect the lease and fixed execution deadline;
    reclaiming an expired lease does not extend execution time. If a never-
    claimed order is reported `stale`, use `redispatch_work_order` for the
@@ -57,12 +61,12 @@ parallel workflow.
    Never redispatch an active or execution-timed-out order. Upload a
    transcript only when required and only after confirming it contains no
    secrets.
-7. Commit the completed work in the dedicated worktree, push the assigned
+8. Commit the completed work in the dedicated worktree, push the assigned
    branch with upstream tracking, and verify the remote push succeeded.
-8. Call `submit_for_review` only after the push and when the user's instruction
+9. Call `submit_for_review` only after the push and when the user's instruction
    authorizes the review handoff. Use `await_review` when keeping the
    implementation session available for feedback.
-9. If `await_review` returns `changes_requested`, keep the same Codex session,
+10. If `await_review` returns `changes_requested`, keep the same Codex session,
    list and claim the newly queued implementation order before editing. Return
    to the original worktree path, add commits to its existing branch, push,
    resubmit, and reuse the existing PR. Never edit under the submitted order or
@@ -123,13 +127,16 @@ Conveyor's review trust boundary.
 2. Select and claim the matching review order, then call `get_work_order` for
    its approved specification, acceptance criteria, pushed-branch diff,
    feedback, and artifacts.
-3. Review the pushed PR diff. If surrounding code is required, use a separate
+3. Resolve relevant artifacts with `read_artifact` under the claimed review
+   workspace, work order, and session; a failed read is a review blocker rather
+   than permission to review from metadata alone.
+4. Review the pushed PR diff. If surrounding code is required, use a separate
    read-only or detached checkout; never share or mutate the implementation
    worktree.
-4. Compare the implementation with the specification, Non-goals, diff, and
+5. Compare the implementation with the specification, Non-goals, diff, and
    validation evidence. Submit `approve` or `changes_requested` with a precise
    reason code, concise summary, and actionable feedback.
-5. Do not merge. Conveyor hands off the review verdict; CI and the final human
+6. Do not merge. Conveyor hands off the review verdict; CI and the final human
    merge gate remain outside this skill.
 
 ## Boundaries
