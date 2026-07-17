@@ -1,6 +1,6 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.14),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.15),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion rules are clarified by §21.14, which is
 authoritative over this file. This document is the working breakdown: what
@@ -142,17 +142,21 @@ Independent of 5.1/5.2 — parallelizable with 5.2.*
    the approved spec (intent + acceptance criteria) and links it to the
    task; a task that originated from an issue (§9) updates that issue
    instead of duplicating it; the eventual PR carries `Closes #N`.
-2. **Draft PR on first push:** the factory opens the PR as a draft when the
-   assigned branch is first pushed, and flips it ready at
-   `submit_for_review`. The reaffirmed boundaries hold: no ref creation at
-   intake (§21.7), no PR before the first push, no stub commits.
-3. **Verdict mirroring:** review verdicts and their resolutions post to the
+2. **Verdict mirroring:** review verdicts and their resolutions post to the
    PR, extending the existing Check Run + factory-comment machinery into a
    complete review trail; redirect rounds show as review threads with their
    resolutions.
 
+PR creation is deliberately *not* part of this phase: the factory opens the
+PR at `submit_for_review`, the behavior already specified and implemented
+(§21.4 change 4, §21.7 change 5). Draft-PR-on-first-push was dropped by
+§21.15 — in the push-once-then-submit flow the draft window is seconds and
+its machinery (push-event matching, draft→ready flips, orphan cleanup)
+serves nobody. The reaffirmed boundaries hold: no ref creation at intake
+(§21.7), no PR before the first push, no stub commits.
+
 **Exit criterion:** a task's full lifecycle is reconstructible from GitHub
-alone — issue with spec → draft PR → ready → review verdicts with
+alone — issue with spec → PR at submit → review verdicts with
 resolutions → merge that closes the issue.
 
 ## Phase 5.4 — Verification evidence

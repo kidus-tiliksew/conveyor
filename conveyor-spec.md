@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.14**
+**Specification — v1.15**
 **Date:** July 16, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); harness-template expansion clarified (§21.14), following the worker execution contract (§21.13)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); draft-PR-on-first-push dropped (§21.15), following the harness-template expansion contract (§21.14)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -717,7 +717,7 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **4.7** *(complete)* | MCP execution pivot (§21.4–§21.5): retire the sandbox execution plane; triage and spec become in-process API calls on one deployment key; agent-discovered work enters through idempotent MCP task intake; implementation *and code review* delegate to the operator's own agents over the MCP work-order server (stage-typed work orders, no self-review, in-session review loop via `await_review`); requirements tree as the organizing UI for the spec corpus; artifacts for context files | **Beta: Conveyor develops Conveyor** |
 | **5.1** *(post-Beta)* | Worker & execution modes (§21.12): `conveyor worker run` — enrollment via pairing token, heartbeat, harness registry with health probes, headless harness dispatch over the unchanged §17.4 lifecycle; Auto/Manual execution modes plus independent gate toggles replacing L0–L3; mode surfaces in UI/CLI/intake | Unattended execution on operator hardware |
 | **5.2** *(post-Beta)* | Adversarial review panel (§21.12): per-seat pinned reviewer models, unanimous-approve aggregation, merged bounce feedback, `model_enforcement` independence labels | Reviewer independence, enforced rather than asserted |
-| **5.3** *(post-Beta, parallelizable with 5.2)* | GitHub coordination (§21.12): issue created or reused on spec approval, draft PR on first push flipped ready at submit, review verdicts and resolutions mirrored to the PR | The task's trail is legible on GitHub alone |
+| **5.3** *(post-Beta, parallelizable with 5.2)* | GitHub coordination (§21.12, §21.15): issue created or reused on spec approval, review verdicts and resolutions mirrored to the PR; PR creation stays at `submit_for_review` (§21.15) | The task's trail is legible on GitHub alone |
 | **5.4** *(post-Beta)* | Verification evidence (§21.12): evidence-gated `submit_for_review`, evidence artifacts in review work orders, on the review card, and on the PR | Reviewers confirm evidence rather than reproduce behavior |
 | **5.5** *(post-Beta)* | Platform agents & policy *(renumbered from Phase 5 by §21.12)*: monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2); repo-resident `.conveyor/` hints *(shim approval cards and environment inference retired with the sandbox lane, §21.4)* | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
@@ -1610,4 +1610,34 @@ could not expand during a health probe. This amendment refines §21.13 change
 
 ---
 
-*End of specification. v1.14 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, and deterministic field-local harness-template expansion fixed by §21.14. Subsequent changes proceed by amendment with version bumps.*
+### 21.15 v1.15 — Drop draft-PR-on-first-push (July 16, 2026)
+
+§21.12 change 5(b) directed the factory to open a draft PR on the first
+push of the assigned branch and mark it ready at `submit_for_review`.
+Reviewed against the documented flow before any implementation, the feature
+serves a window that does not exist: under the §21.8 operator skill the
+implementing agent pushes immediately before `submit_for_review`, so the
+draft would live for seconds and flip unobserved. Its theoretical benefits
+do not land — early CI feedback pays off only under incremental pushing,
+which the flow does not do; mid-flight visibility is already provided by
+`report_progress` in the activity view; and the "trail legible on GitHub
+alone" requirement is satisfied by issue → PR → mirrored verdicts → merge
+regardless of when the PR appeared. The machinery, meanwhile, is real:
+push-event branch matching, idempotent draft creation, a draft→ready flip
+with retry semantics, and orphan cleanup for abandoned orders. This
+amendment supersedes §21.12 change 5(b) and amends the §19 Phase 5.3 row.
+One change; all other v1.14 decisions remain unchanged:
+
+1. **The PR is opened at `submit_for_review`, and not before.** This
+   retains the behavior already specified and implemented (§21.4 change 4,
+   §21.7 change 5): the factory opens or reuses the PR when the agent
+   submits the pushed branch for review. No draft PRs are created and no
+   push-event machinery is added. Phase 5.3 accordingly slims to issue
+   creation on spec approval and verdict/resolution mirroring (§21.12
+   changes 5a and 5c, unchanged). If agents later adopt incremental
+   pushing and early CI proves valuable, reintroduction is a new amendment
+   made against demonstrated need.
+
+---
+
+*End of specification. v1.15 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, and draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15). Subsequent changes proceed by amendment with version bumps.*
