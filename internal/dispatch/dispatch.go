@@ -150,18 +150,42 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		if harness == "" {
 			harness = route.Harness
 		}
+		var harnessConfig *core.HarnessSnapshot
+		if harness != "" {
+			var ok bool
+			harnessConfig, ok = reviewHarnessSnapshot(cfg, harness)
+			if !ok {
+				return fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
+			}
+		}
 		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
 			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
-			RequiredHarness: harness, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+			RequiredHarness: harness, RequiredHarnessConfig: harnessConfig,
+			QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
 	}
 	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		return err
 	}
 	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "review_round": round, "seat_count": len(orders)})})
+}
+
+func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {
+	for _, harness := range cfg.Harnesses {
+		if harness.Name != name {
+			continue
+		}
+		return &core.HarnessSnapshot{
+			Name: harness.Name, Command: append([]string(nil), harness.Command...),
+			ModelArgs:        append([]string(nil), harness.ModelArgs...),
+			ProbeCommand:     append([]string(nil), harness.ProbeCommand...),
+			ProbeTimeoutText: harness.ProbeTimeoutText,
+		}, true
+	}
+	return nil, false
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {

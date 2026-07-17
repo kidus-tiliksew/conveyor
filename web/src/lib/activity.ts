@@ -91,7 +91,10 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
     const event = events[i]
     if (event.job_id !== job.id) continue
     if ((event.kind === 'triage.completed' || event.kind === 'review.completed') && typeof event.payload?.summary === 'string' && event.payload.summary) {
-      return event.payload.summary
+      const feedback = event.kind === 'review.completed' && typeof event.payload?.feedback === 'string'
+        ? event.payload.feedback.trim()
+        : ''
+      return [event.payload.summary, feedback ? `Reviewer feedback: ${feedback}` : undefined].filter(Boolean).join('\n\n')
     }
   }
   switch (job.state) {
@@ -146,6 +149,7 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
         typeof payload.reviewer_model === 'string' ? payload.reviewer_model : undefined,
         typeof payload.model_enforcement === 'string' ? payload.model_enforcement : undefined,
         payload.same_model_as_implementer === true ? 'same model as the implementer' : undefined,
+        typeof payload.feedback === 'string' && payload.feedback.trim() ? `feedback: ${payload.feedback.trim()}` : undefined,
       ].filter(Boolean)
       return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: parts.join(' · ') || undefined }
     }

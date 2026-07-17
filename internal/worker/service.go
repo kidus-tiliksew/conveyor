@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -144,6 +145,16 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	for _, harness := range cfg.Harnesses {
 		registered[harness.Name] = true
 	}
+	// An in-flight review round owns its snapshotted harness definition even
+	// after the workspace registry hot reloads. Keep accepting health probes for
+	// those durable seats until they leave the active queue (spec §21.12 change 4).
+	if orders, listErr := s.Store.ListWorkOrders(ctx); listErr == nil {
+		for _, order := range orders {
+			if order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) && order.RequiredHarness != "" {
+				registered[order.RequiredHarness] = true
+			}
+		}
+	}
 	now := s.now()
 	for i := range probes {
 		if !registered[probes[i].Harness] {
@@ -227,9 +238,6 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 	if err != nil {
 		return nil, err
 	}
-	if healthy, _ := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
-		return []DispatchOrder{}, nil
-	}
 	orders, err := s.WorkOrders.List(ctx)
 	if err != nil {
 		return nil, err
@@ -241,6 +249,9 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		}
 		task, getErr := s.Store.GetTask(ctx, order.TaskID)
 		if getErr != nil || task.Mode != core.TaskModeAuto {
+			continue
+		}
+		if healthy, _ := s.workerHealthyForOrder(worker, cfg, order); !healthy {
 			continue
 		}
 		harness, ok := harnessForOrder(cfg, order)
@@ -267,12 +278,12 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if healthy, reason := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
-		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
-	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
+		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
 	}
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -317,6 +328,15 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 }
 
 func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, bool) {
+	if snapshot := order.RequiredHarnessConfig; snapshot != nil && snapshot.Name != "" {
+		probeTimeout, _ := time.ParseDuration(snapshot.ProbeTimeoutText)
+		return config.Harness{
+			Name: snapshot.Name, Command: append([]string(nil), snapshot.Command...),
+			ModelArgs:        append([]string(nil), snapshot.ModelArgs...),
+			ProbeCommand:     append([]string(nil), snapshot.ProbeCommand...),
+			ProbeTimeoutText: snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
+		}, true
+	}
 	route, ok := cfg.Routing.Stages[string(order.Stage)]
 	name := order.RequiredHarness
 	if name == "" {
@@ -331,6 +351,55 @@ func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, 
 		}
 	}
 	return config.Harness{}, false
+}
+
+func (s *Service) workerHealthyForOrder(worker core.Worker, cfg *config.Config, order core.WorkOrder) (bool, string) {
+	if order.Stage != core.StageReview || order.RequiredHarnessConfig == nil || reviewOrderMatchesCurrentConfig(cfg, order) {
+		return workerHealthyForRoutes(worker, cfg, s.now())
+	}
+	if order.RequiredHarnessConfig.Name != order.RequiredHarness {
+		return false, "snapshotted harness identity does not match the review seat"
+	}
+	if !worker.Live(s.now()) {
+		return false, "worker liveness lease expired"
+	}
+	for _, probe := range worker.Probes {
+		if probe.Harness == order.RequiredHarness && probe.Healthy {
+			return true, ""
+		}
+	}
+	return false, fmt.Sprintf("snapshotted harness %s is unhealthy", order.RequiredHarness)
+}
+
+func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
+	route, ok := cfg.Routing.Stages["review"]
+	if !ok {
+		return false
+	}
+	seats := cfg.Review.Seats
+	if len(seats) == 0 {
+		seats = []config.ReviewSeat{{Model: route.Model, Harness: route.Harness}}
+	}
+	if order.ReviewSeat < 1 || order.ReviewSeat > len(seats) {
+		return false
+	}
+	seat := seats[order.ReviewSeat-1]
+	harnessName := seat.Harness
+	if harnessName == "" {
+		harnessName = route.Harness
+	}
+	if seat.Model != order.RequiredModel || harnessName != order.RequiredHarness {
+		return false
+	}
+	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: core.StageReview, RequiredHarness: harnessName})
+	if !found {
+		return false
+	}
+	snapshot := &core.HarnessSnapshot{
+		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+	}
+	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
 
 func (s *Service) Renew(ctx context.Context, worker core.Worker, id string) (core.WorkOrder, error) {

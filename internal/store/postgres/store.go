@@ -791,7 +791,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-review_round, review_seat, required_model, required_harness, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
@@ -825,15 +825,15 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-			review_round, review_seat, required_model, required_harness, model_enforcement,
+			review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$29)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$30)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
-			order.RequiredModel, order.RequiredHarness, order.ModelEnforcement,
+			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
@@ -897,14 +897,14 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-				review_round, review_seat, required_model, required_harness, model_enforcement,
+			review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
 				queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 				self_reported, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,'',$11,$12,NULL,NULL,0,'',0,0,0,true,$13,$13)`,
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,'',$12,$13,NULL,NULL,0,'',0,0,0,true,$14,$14)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, core.WorkOrderQueued,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
-				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+				harnessSnapshotJSON(order.RequiredHarnessConfig), order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
 			if err != nil {
 				return err
 			}
@@ -1638,14 +1638,24 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
 	var order core.WorkOrder
 	var stage, state string
+	var harnessConfig []byte
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
-		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.ModelEnforcement,
+		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ModelEnforcement,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
+	if len(harnessConfig) > 0 && string(harnessConfig) != "{}" {
+		var snapshot core.HarnessSnapshot
+		if err == nil {
+			err = json.Unmarshal(harnessConfig, &snapshot)
+		}
+		if err == nil && snapshot.Name != "" {
+			order.RequiredHarnessConfig = &snapshot
+		}
+	}
 	order.Claimable = order.State == core.WorkOrderQueued
 	if lease.Valid {
 		order.LeaseExpiresAt = lease.Time
@@ -1663,6 +1673,17 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		order.ExecutionDeadline = executionDeadline.Time
 	}
 	return order, err
+}
+
+func harnessSnapshotJSON(snapshot *core.HarnessSnapshot) []byte {
+	if snapshot == nil {
+		return []byte("{}")
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
 }
 
 func (s *Store) CreateFeature(ctx context.Context, feature core.Feature) error {

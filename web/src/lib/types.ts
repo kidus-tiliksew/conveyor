@@ -253,6 +253,7 @@ export interface WorkOrder {
   review_seat?: number
   required_model?: string
   required_harness?: string
+  required_harness_config?: WorkspaceHarness
   model_enforcement?: 'worker-pinned' | 'self-reported'
   lease_expires_at?: string
   queue_entered_at: string

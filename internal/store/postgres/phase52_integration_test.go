@@ -40,8 +40,8 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		{ID: task.ID + "-review-1-seat-2", TaskID: task.ID, Stage: core.StageReview, ModelTier: "claude-review", State: core.JobPending},
 	}
 	orders := []core.WorkOrder{
-		{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
-		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+		{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 	}
 	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
@@ -49,6 +49,15 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatalf("idempotent review round retry: %v", err)
 	}
+	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" {
+		t.Fatalf("restarted harness snapshot=%+v err=%v", persisted, getErr)
+	}
+	st = restarted
 	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "phase52", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: now.Add(time.Minute), CreatedAt: now}
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)

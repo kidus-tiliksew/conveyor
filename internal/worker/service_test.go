@@ -180,6 +180,14 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	}
 	if persisted, _ := st.ListTaskWorkOrders(ctx, task.ID); len(persisted) != 2 {
 		t.Fatalf("dispatch redelivery created duplicate seats: %+v", persisted)
+	} else {
+		bySeat := map[int]core.WorkOrder{}
+		for _, order := range persisted {
+			bySeat[order.ReviewSeat] = order
+		}
+		if bySeat[1].RequiredHarnessConfig == nil || bySeat[1].RequiredHarnessConfig.Command[0] != "codex" || bySeat[2].RequiredHarnessConfig == nil || bySeat[2].RequiredHarnessConfig.Command[0] != "claude" {
+			t.Fatalf("review seats did not snapshot harness execution: %+v", persisted)
+		}
 	}
 	workOrders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
@@ -196,21 +204,37 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
+	// Simulate a restart after hot reload removes one harness, changes the
+	// other's command, and replaces the next round's panel. The existing round
+	// must still accept its old probe and dispatch both original definitions.
+	codex := cfg.Harnesses[0]
+	codex.Command = []string{"codex-next", "{prompt}", "{mcp_config}"}
+	cfg.Harnesses = []config.Harness{codex}
+	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "next-review", Harness: "codex"}}}
+	restarted := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
+	worker, err = restarted.Heartbeat(ctx, worker, []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: true}})
+	if err != nil {
+		t.Fatalf("snapshotted harness probe after hot reload: %v", err)
+	}
+	listed, err = restarted.ListAuto(ctx, worker)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("restarted dispatch after hot reload=%+v err=%v", listed, err)
+	}
 	bySeat := map[int]DispatchOrder{}
 	for _, item := range listed {
 		bySeat[item.Order.ReviewSeat] = item
 	}
-	if bySeat[1].Model != "gpt-review" || bySeat[1].Harness.Name != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Harness.Name != "claude" {
+	if bySeat[1].Model != "gpt-review" || bySeat[1].Harness.Name != "codex" || bySeat[1].Harness.Command[0] != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Harness.Name != "claude" || bySeat[2].Harness.Command[0] != "claude" {
 		t.Fatalf("seat dispatch=%+v", bySeat)
 	}
-	first, err := service.ClaimAuto(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})
+	first, err := restarted.ClaimAuto(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})
 	if err != nil || first.ModelEnforcement != "worker-pinned" || first.Model != "gpt-review" {
 		t.Fatalf("first claim=%+v err=%v", first, err)
 	}
-	if _, err = service.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-2"}); err == nil || !strings.Contains(err.Error(), "session independence") {
+	if _, err = restarted.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-2"}); err == nil || !strings.Contains(err.Error(), "session independence") {
 		t.Fatalf("same-session claim error=%v", err)
 	}
-	second, err := service.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-2", ClientToken: "review-token-2"})
+	second, err := restarted.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-2", ClientToken: "review-token-2"})
 	if err != nil || second.ModelEnforcement != "worker-pinned" || second.Model != "claude-review" {
 		t.Fatalf("second claim=%+v err=%v", second, err)
 	}
