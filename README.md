@@ -36,6 +36,14 @@ configuration owns the harness registry, implement/review harness routes,
 default mode, independent gates, and stage-aware capacity. Manual MCP claims
 remain first-class and are never forced through a configured harness.
 
+The Workspace Implementation section can optionally request provider-neutral
+`low`, `medium`, or `high` reasoning effort. `Harness default` leaves the field
+unset and appends no effort arguments. Explicit values save only when the
+selected harness declares the matching `effort_args` mapping; Conveyor never
+infers effort from a model name. Dispatch snapshots the requested value and
+exact shell-free adapter argv, so later configuration reloads cannot change an
+in-flight implementation. See [conveyor.example.yaml](conveyor.example.yaml).
+
 ## Run locally
 
 Requirements: Go 1.24, Node/npm, Docker with Compose, and an authenticated

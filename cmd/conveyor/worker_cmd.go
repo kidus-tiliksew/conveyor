@@ -326,11 +326,23 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		return err
 	}
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
-	if item.Effort != "" && len(item.Harness.EffortArgs[item.Effort]) == 0 {
-		release("configured effort is unsupported by harness snapshot")
-		return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
+	var effortArgv []string
+	if item.Effort != "" {
+		if item.Order.Stage == core.StageImplement {
+			effortArgv = append([]string(nil), item.EffortArgv...)
+			if len(effortArgv) == 0 {
+				release("configured effort is unsupported by harness snapshot")
+				return fmt.Errorf("implementation harness snapshot %s has no argv for effort %s", item.Harness.Name, item.Effort)
+			}
+		} else {
+			effortArgv = append([]string(nil), item.Harness.EffortArgs[item.Effort]...)
+		}
+		if len(effortArgv) == 0 {
+			release("configured effort is unsupported by harness snapshot")
+			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
+		}
 	}
-	argv := expandHarness(item.Harness, item.Model, item.Effort, prompt, configPath)
+	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, configPath)
 	if len(argv) == 0 {
 		release("empty harness command")
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
@@ -390,6 +402,10 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 }
 
 func expandHarness(harness config.Harness, model, effort, prompt, mcpConfig string) []string {
+	return expandHarnessWithEffortArgv(harness, model, harness.EffortArgs[effort], prompt, mcpConfig)
+}
+
+func expandHarnessWithEffortArgv(harness config.Harness, model string, effortArgv []string, prompt, mcpConfig string) []string {
 	replace := func(values []string) []string {
 		result := make([]string, len(values))
 		for i, value := range values {
@@ -410,8 +426,8 @@ func expandHarness(harness config.Harness, model, effort, prompt, mcpConfig stri
 	if model != "" {
 		argv = append(argv, replace(harness.ModelArgs)...)
 	}
-	if effort != "" {
-		argv = append(argv, harness.EffortArgs[effort]...)
+	if len(effortArgv) != 0 {
+		argv = append(argv, effortArgv...)
 	}
 	return argv
 }
