@@ -10,7 +10,7 @@ function activity(taskId: string, overflowing: boolean) {
 		],
 		events: [
 			{ id: 1, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
-			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
 		],
 		work_orders: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
@@ -136,5 +136,7 @@ test('review cards and activity notes retain approve and changes feedback', asyn
 
 	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Approved guidance remains visible.' })).toBeVisible()
 	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'effort high' })).toBeVisible()
-	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })).toBeVisible()
+	const legacyReviewActivity = page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })
+	await expect(legacyReviewActivity).toBeVisible()
+	await expect(legacyReviewActivity).not.toContainText('effort')
 })
