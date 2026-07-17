@@ -167,6 +167,8 @@ type GitHubLifecycle struct {
 	Outcome           string                 `json:"outcome,omitempty"` // created | reused
 	State             GitHubPublicationState `json:"state"`
 	CreateState       GitHubCreateState      `json:"create_state"`
+	CreateAttempts    int                    `json:"create_attempts"`
+	ReconcileMisses   int                    `json:"reconcile_misses"`
 	Attempts          int                    `json:"attempts"`
 	LastError         string                 `json:"last_error,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`

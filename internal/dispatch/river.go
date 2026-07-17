@@ -35,6 +35,11 @@ type githubIssuePublicationWorker struct {
 	dispatcher *Dispatcher
 }
 
+// A create command failure is ambiguous: GitHub may have accepted the issue
+// before the acknowledgement was lost. Require two durable, exhaustive
+// no-marker passes before authorizing exactly one new create attempt.
+const githubIssueReconciliationMissesBeforeCreate = 2
+
 func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.GitHubIssuePublicationArgs]) error {
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:github-issue-publication:%d", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
@@ -76,7 +81,9 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		}
 	}
 	if publishErr == nil {
-		allowCreate := lifecycle.CreateState == core.GitHubCreateNotStarted
+		allowCreate := lifecycle.CreateState == core.GitHubCreateNotStarted ||
+			(lifecycle.CreateState == core.GitHubCreateReconciling &&
+				lifecycle.ReconcileMisses >= githubIssueReconciliationMissesBeforeCreate)
 		result, publishErr = w.dispatcher.PublishIssue(ctx, github.IssuePublication{
 			Repo: lifecycle.Repository, TaskID: task.ID, Title: task.Title,
 			ApprovedSpec: spec.Content, SpecVersion: spec.Version,
@@ -84,11 +91,16 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 			AllowCreate:       allowCreate,
 			BeforeCreate: func(createCtx context.Context) error {
 				lifecycle.CreateState = core.GitHubCreateReconciling
+				lifecycle.CreateAttempts++
+				lifecycle.ReconcileMisses = 0
 				return w.dispatcher.Store.UpdateGitHubLifecycle(createCtx, lifecycle)
 			},
 		})
 	}
 	if publishErr != nil {
+		if errors.Is(publishErr, github.ErrIssueReconciliationPending) {
+			lifecycle.ReconcileMisses++
+		}
 		lifecycle.LastError = publishErr.Error()
 		if job.Attempt >= job.MaxAttempts {
 			lifecycle.State = core.GitHubPublicationFailed
@@ -100,6 +112,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 	}
 	lifecycle.State = core.GitHubPublicationPublished
 	lifecycle.CreateState = core.GitHubCreateConfirmed
+	lifecycle.ReconcileMisses = 0
 	lifecycle.IssueNumber = result.Number
 	lifecycle.IssueURL = result.URL
 	lifecycle.Outcome = "created"

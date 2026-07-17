@@ -54,15 +54,27 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || !ok || storedLifecycle.State != core.GitHubPublicationQueued || storedLifecycle.CreateState != core.GitHubCreateNotStarted || storedLifecycle.SourceIssueNumber != 42 {
 		t.Fatalf("lifecycle=%+v ok=%t err=%v", storedLifecycle, ok, err)
 	}
-	storedLifecycle.State = core.GitHubPublicationPublished
-	storedLifecycle.CreateState = core.GitHubCreateConfirmed
-	storedLifecycle.IssueNumber = 42
-	storedLifecycle.IssueURL = "https://github.com/acme/api/issues/42"
-	storedLifecycle.Attempts = 1
+	storedLifecycle.State = core.GitHubPublicationRetrying
+	storedLifecycle.CreateState = core.GitHubCreateReconciling
+	storedLifecycle.CreateAttempts = 1
+	storedLifecycle.ReconcileMisses = 2
+	storedLifecycle.Attempts = 3
 	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
 		t.Fatal(err)
 	}
-	if hydrated, getErr := st.GetTask(ctx, task.ID); getErr != nil || hydrated.GitHub == nil || hydrated.GitHub.IssueNumber != 42 || hydrated.GitHub.CreateState != core.GitHubCreateConfirmed {
+	storedLifecycle, ok, err = st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil || !ok || storedLifecycle.CreateAttempts != 1 || storedLifecycle.ReconcileMisses != 2 {
+		t.Fatalf("reconciliation lifecycle=%+v ok=%t err=%v", storedLifecycle, ok, err)
+	}
+	storedLifecycle.State = core.GitHubPublicationPublished
+	storedLifecycle.CreateState = core.GitHubCreateConfirmed
+	storedLifecycle.ReconcileMisses = 0
+	storedLifecycle.IssueNumber = 42
+	storedLifecycle.IssueURL = "https://github.com/acme/api/issues/42"
+	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if hydrated, getErr := st.GetTask(ctx, task.ID); getErr != nil || hydrated.GitHub == nil || hydrated.GitHub.IssueNumber != 42 || hydrated.GitHub.CreateState != core.GitHubCreateConfirmed || hydrated.GitHub.CreateAttempts != 1 || hydrated.GitHub.ReconcileMisses != 0 {
 		t.Fatalf("hydrated task=%+v err=%v", hydrated, getErr)
 	}
 	duplicate := task

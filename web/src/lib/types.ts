@@ -41,6 +41,8 @@ export interface GitHubLifecycle {
   outcome?: 'created' | 'reused'
   state: 'queued' | 'retrying' | 'published' | 'failed'
   create_state: 'not_started' | 'reconciling' | 'confirmed'
+  create_attempts: number
+  reconcile_misses: number
   attempts: number
   last_error?: string
   created_at: string

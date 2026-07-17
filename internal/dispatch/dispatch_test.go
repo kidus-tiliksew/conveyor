@@ -394,7 +394,7 @@ func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *test
 	}
 }
 
-func TestIssuePublisherPersistsCreateAttemptBeforeAmbiguousRemoteCall(t *testing.T) {
+func TestIssuePublisherBoundsAmbiguousRecoveryBeforeOneCreateReauthorization(t *testing.T) {
 	ctx := store.WithWorkspace(context.Background(), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "lost-ack", Workspace: "test", Repo: "app", Title: "Lost ack", CreatedAt: time.Now()}
@@ -413,21 +413,37 @@ func TestIssuePublisherPersistsCreateAttemptBeforeAmbiguousRemoteCall(t *testing
 	}
 	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	publishCalls := 0
+	authorizedCreates := 0
 	d.PublishIssue = func(publishCtx context.Context, publication githubtrigger.IssuePublication) (githubtrigger.IssuePublicationResult, error) {
 		publishCalls++
-		if publishCalls == 1 {
+		switch publishCalls {
+		case 1:
 			if !publication.AllowCreate {
 				t.Fatal("first publication did not permit create")
 			}
 			if err := publication.BeforeCreate(publishCtx); err != nil {
 				t.Fatal(err)
 			}
-			return githubtrigger.IssuePublicationResult{}, errors.New("lost acknowledgement")
+			authorizedCreates++
+			return githubtrigger.IssuePublicationResult{}, errors.New("GitHub rejected create before accepting it")
+		case 2, 3:
+			if publication.AllowCreate {
+				t.Fatalf("recovery miss %d permitted an early create", publishCalls-1)
+			}
+			return githubtrigger.IssuePublicationResult{}, githubtrigger.ErrIssueReconciliationPending
+		case 4:
+			if !publication.AllowCreate {
+				t.Fatal("bounded reconciliation did not reauthorize create")
+			}
+			if err := publication.BeforeCreate(publishCtx); err != nil {
+				t.Fatal(err)
+			}
+			authorizedCreates++
+			return githubtrigger.IssuePublicationResult{Number: 42, URL: "https://github.com/acme/app/issues/42"}, nil
+		default:
+			t.Fatalf("unexpected publication call %d", publishCalls)
+			return githubtrigger.IssuePublicationResult{}, nil
 		}
-		if publication.AllowCreate {
-			t.Fatal("ambiguous retry permitted a second create")
-		}
-		return githubtrigger.IssuePublicationResult{}, githubtrigger.ErrIssueReconciliationPending
 	}
 	worker := &githubIssuePublicationWorker{dispatcher: d}
 	job := func(attempt int) *river.Job[queueargs.GitHubIssuePublicationArgs] {
@@ -440,15 +456,29 @@ func TestIssuePublisherPersistsCreateAttemptBeforeAmbiguousRemoteCall(t *testing
 		t.Fatal("first ambiguous publication succeeded")
 	}
 	lifecycle, _, _ := st.GetGitHubLifecycle(ctx, task.ID)
-	if lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 1 {
-		t.Fatalf("lifecycle after lost acknowledgement=%+v", lifecycle)
+	if lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.CreateAttempts != 1 || lifecycle.ReconcileMisses != 0 || lifecycle.Attempts != 1 {
+		t.Fatalf("lifecycle after failed create=%+v", lifecycle)
 	}
 	if err = worker.Work(ctx, job(2)); !errors.Is(err, githubtrigger.ErrIssueReconciliationPending) {
-		t.Fatalf("retry error=%v", err)
+		t.Fatalf("first reconciliation error=%v", err)
 	}
 	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
-	if lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 2 || publishCalls != 2 {
-		t.Fatalf("lifecycle after reconciliation miss=%+v publishCalls=%d", lifecycle, publishCalls)
+	if lifecycle.CreateAttempts != 1 || lifecycle.ReconcileMisses != 1 || authorizedCreates != 1 {
+		t.Fatalf("lifecycle after first reconciliation miss=%+v authorizedCreates=%d", lifecycle, authorizedCreates)
+	}
+	if err = worker.Work(ctx, job(3)); !errors.Is(err, githubtrigger.ErrIssueReconciliationPending) {
+		t.Fatalf("second reconciliation error=%v", err)
+	}
+	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
+	if lifecycle.CreateAttempts != 1 || lifecycle.ReconcileMisses != githubIssueReconciliationMissesBeforeCreate || authorizedCreates != 1 {
+		t.Fatalf("lifecycle after bounded reconciliation=%+v authorizedCreates=%d", lifecycle, authorizedCreates)
+	}
+	if err = worker.Work(ctx, job(4)); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
+	if lifecycle.State != core.GitHubPublicationPublished || lifecycle.CreateState != core.GitHubCreateConfirmed || lifecycle.CreateAttempts != 2 || lifecycle.ReconcileMisses != 0 || lifecycle.IssueNumber != 42 || authorizedCreates != 2 {
+		t.Fatalf("lifecycle after reauthorized create=%+v authorizedCreates=%d", lifecycle, authorizedCreates)
 	}
 }
 

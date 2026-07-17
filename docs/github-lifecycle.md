@@ -19,12 +19,18 @@ Other tasks create a new issue. Before creating, the publisher exhaustively
 pages the repository's issues in stable creation order and looks for the exact
 task marker; it does not rely on GitHub's eventually indexed or capped search.
 Immediately before the external create call, Conveyor durably advances the
-create state from `not_started` to `reconciling`. If GitHub accepts creation but
-Conveyor loses the acknowledgement, every later attempt is reconciliation-only:
-an initial lookup miss remains retryable and can never authorize a second
-create. Finding the marker advances the state to `confirmed`. River's bounded
-attempts expose a durable failure if the remote issue does not converge in
-time, and startup reconciliation can retry that same lookup safely.
+create state from `not_started` to `reconciling`, increments the durable create
+attempt count, and clears the reconciliation-miss count. If GitHub accepts
+creation but Conveyor loses the acknowledgement, retries are initially
+reconciliation-only: each one exhaustively checks every issue for the exact
+marker. The first two no-marker passes cannot authorize another create. After
+those two durable misses establish a bounded no-marker window, exactly one new
+create attempt is authorized and the miss counter resets. This also recovers when
+the original command genuinely failed before GitHub created anything, without
+turning every retry into a possible duplicate. Finding the marker advances the
+state to `confirmed` and clears the misses. River's bounded attempts expose a
+durable failure if the remote issue does not converge in time, and startup
+reconciliation resumes the same durable state machine safely.
 
 Publication failures are visible as `github_issue.publication_retry` or
 `github_issue.publication_failed` events. Startup reconciliation recreates a
