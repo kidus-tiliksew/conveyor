@@ -37,7 +37,7 @@ Suggested order:
    and one `{mcp_config}`; `model_args` is appended to it and may use only
    `{model}`; `effort_args` maps `low`, `medium`, and `high` to literal,
    placeholder-free adapter argv appended only when a seat requests that
-   exact effort (§21.18); `probe_command` is standalone and accepts no placeholders.
+   exact effort (§21.19); `probe_command` is standalone and accepts no placeholders.
    Placeholders substitute as whole elements and invalid field/placeholder
    combinations are rejected at write time — under the standard §21.3
    mechanics: validated writes, `config.updated` events, hot reload. The

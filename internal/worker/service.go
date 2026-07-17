@@ -68,16 +68,17 @@ type WorkerConfig struct {
 
 func HarnessFingerprint(harness config.Harness) string {
 	data, _ := json.Marshal(struct {
-		Name         string              `json:"name"`
-		Command      []string            `json:"command"`
-		ModelArgs    []string            `json:"model_args"`
-		EffortArgs   map[string][]string `json:"effort_args"`
-		ProbeCommand []string            `json:"probe_command"`
-		ProbeTimeout string              `json:"probe_timeout"`
+		Name                  string              `json:"name"`
+		Command               []string            `json:"command"`
+		ModelArgs             []string            `json:"model_args"`
+		DefaultModelSentinels []string            `json:"default_model_sentinels"`
+		EffortArgs            map[string][]string `json:"effort_args"`
+		ProbeCommand          []string            `json:"probe_command"`
+		ProbeTimeout          string              `json:"probe_timeout"`
 	}{
 		Name: harness.Name, Command: canonicalArgs(harness.Command),
-		ModelArgs: canonicalArgs(harness.ModelArgs), EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand),
-		ProbeTimeout: harness.ProbeTimeoutText,
+		ModelArgs: canonicalArgs(harness.ModelArgs), DefaultModelSentinels: canonicalArgs(harness.DefaultModelSentinels),
+		EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand), ProbeTimeout: harness.ProbeTimeoutText,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -186,9 +187,10 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	for _, harness := range cfg.Harnesses {
 		registeredHarness(registered, harness)
 	}
-	// An in-flight review round owns its snapshotted harness definition even
-	// after the workspace registry hot reloads. Keep accepting health probes for
-	// those durable seats until they leave the active queue (spec §21.12 change 4).
+	// An active worker-dispatched order owns its snapshotted harness definition
+	// even after the workspace registry hot reloads. Keep accepting health probes
+	// for durable implementation and review snapshots until they leave the active
+	// queue (spec §21.18 change 5).
 	active, err := s.ActiveHarnesses(ctx)
 	if err != nil {
 		return core.Worker{}, err
@@ -226,7 +228,8 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 	}
 	byFingerprint := map[string]HarnessProbeTarget{}
 	for _, order := range orders {
-		if order.Stage != core.StageReview || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
+		workerDispatched := order.Stage == core.StageImplement || order.Stage == core.StageReview
+		if !workerDispatched || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
 			continue
 		}
 		harness := harnessFromSnapshot(order.RequiredHarnessConfig)
@@ -345,7 +348,7 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if !ok {
 			continue
 		}
-		model := cfg.Routing.Stages[string(order.Stage)].Model
+		model := cfg.EffectiveModel(string(order.Stage))
 		if order.RequiredModel != "" {
 			model = order.RequiredModel
 		}
@@ -386,7 +389,7 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	claim.WorkerID = worker.ID
 	claim.ClaimantID = worker.ID
 	claim.Agent = harness.Name
-	claim.Model = cfg.Routing.Stages[string(order.Stage)].Model
+	claim.Model = cfg.EffectiveModel(string(order.Stage))
 	if order.RequiredModel != "" {
 		claim.Model = order.RequiredModel
 	}
@@ -438,19 +441,20 @@ func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 	probeTimeout, _ := time.ParseDuration(snapshot.ProbeTimeoutText)
 	return config.Harness{
 		Name: snapshot.Name, Command: append([]string(nil), snapshot.Command...),
-		ModelArgs:        append([]string(nil), snapshot.ModelArgs...),
-		EffortArgs:       cloneEffortArgs(snapshot.EffortArgs),
-		ProbeCommand:     append([]string(nil), snapshot.ProbeCommand...),
-		ProbeTimeoutText: snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
+		ModelArgs:             append([]string(nil), snapshot.ModelArgs...),
+		DefaultModelSentinels: append([]string(nil), snapshot.DefaultModelSentinels...),
+		EffortArgs:            cloneEffortArgs(snapshot.EffortArgs),
+		ProbeCommand:          append([]string(nil), snapshot.ProbeCommand...),
+		ProbeTimeoutText:      snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
 	}
 }
 
 func (s *Service) workerHealthyForOrder(worker core.Worker, cfg *config.Config, order core.WorkOrder) (bool, string) {
-	if order.Stage != core.StageReview || order.RequiredHarnessConfig == nil || reviewOrderMatchesCurrentConfig(cfg, order) {
+	if order.RequiredHarnessConfig == nil || orderMatchesCurrentConfig(cfg, order) {
 		return workerHealthyForRoutes(worker, cfg, s.now())
 	}
 	if order.RequiredHarnessConfig.Name != order.RequiredHarness {
-		return false, "snapshotted harness identity does not match the review seat"
+		return false, "snapshotted harness identity does not match the work order"
 	}
 	if !worker.Live(s.now()) {
 		return false, "worker liveness lease expired"
@@ -460,6 +464,27 @@ func (s *Service) workerHealthyForOrder(worker core.Worker, cfg *config.Config, 
 		return true, ""
 	}
 	return false, fmt.Sprintf("snapshotted harness %s is unhealthy", order.RequiredHarness)
+}
+
+func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
+	if order.Stage == core.StageReview {
+		return reviewOrderMatchesCurrentConfig(cfg, order)
+	}
+	route, ok := cfg.Routing.Stages[string(order.Stage)]
+	if !ok || route.Harness != order.RequiredHarness || cfg.EffectiveModel(string(order.Stage)) != order.RequiredModel {
+		return false
+	}
+	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: order.Stage, RequiredHarness: route.Harness})
+	if !found {
+		return false
+	}
+	snapshot := &core.HarnessSnapshot{
+		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		DefaultModelSentinels: harness.DefaultModelSentinels,
+		EffortArgs:            harness.EffortArgs,
+		ProbeCommand:          harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+	}
+	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
 
 func probeHealthy(probes []core.HarnessProbe, name, fingerprint string, allowLegacy bool) bool {
@@ -504,7 +529,8 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 	}
 	snapshot := &core.HarnessSnapshot{
 		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
-		EffortArgs: harness.EffortArgs, Effort: seat.Effort,
+		DefaultModelSentinels: harness.DefaultModelSentinels,
+		EffortArgs:            harness.EffortArgs, Effort: seat.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
 	}
 	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)

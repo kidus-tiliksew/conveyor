@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.18**
+**Specification — v1.19**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); per-seat reasoning effort added to adversarial review (§21.18)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18) and adversarial review has per-seat reasoning effort (§21.19)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1715,14 +1715,76 @@ too. Three changes; all other v1.16 decisions remain unchanged:
 
 ---
 
-### 21.18 v1.18 — Per-seat reasoning effort (July 17, 2026)
+### 21.18 v1.18 — Contextual execution settings (July 17, 2026)
+
+The generic per-stage routing table from §21.4/§21.13 no longer matches the
+execution boundary established by the worker and adversarial review panel.
+Triage and spec are fixed control-plane stages, implementation is the only
+worker route with a workspace-owned model policy, and review seats own their
+models and optional harnesses. This amendment changes the configuration
+surface and normalization rules without breaking stored documents or durable
+dispatch snapshots. Six changes; all other v1.17 decisions remain unchanged:
+
+1. **Execution settings are contextual.** The canonical workspace document
+   exposes `execution_settings.control_plane.{triage,spec}` model/timeout
+   settings, `execution_settings.implementation` harness/model-policy/timeout
+   settings, and `execution_settings.review` execution/timeout plus optional
+   fallback model/harness. The Workspace UI presents those contexts rather
+   than a generic Stage Routing table. Triage and spec expose no harness or
+   execution selector; implementation is fixed to MCP and requires a harness;
+   review execution and timeout are co-located with the adversarial panel.
+
+2. **Legacy routing is compatibility-only.** `routing.stages` remains readable
+   and is still emitted during the v1.18 deprecation period for older REST/CLI
+   consumers and stored snapshots. A single normalization step maps a legacy
+   document into contextual settings. When both shapes are present, contextual
+   settings are authoritative and legacy fields cannot override them. Existing
+   values are preserved when the mapping is unambiguous; old triage/spec
+   harness values are ignored because those stages are fixed in-process.
+
+3. **Implementation owns a model policy, not an accidental model string.** Its
+   policy is either `explicit`, which requires and forwards the configured
+   provider model, or `harness_default`, which omits model arguments unless the
+   selected harness declares a supported default sentinel. Symbolic policy
+   labels such as `subscription` are never forwarded as provider model IDs
+   merely because they occupied the historical route `model` field. An
+   unresolved explicit model or undeclared sentinel is an actionable config or
+   dispatch error.
+
+4. **Review seats own review routing.** Each enabled seat owns its pinned model,
+   optional harness override, and first-class effort (§21.19 coordinates the
+   effort addition with the same panel contract). The route-level review model
+   and harness are fallback data only. When every seat names a harness, neither
+   fallback is required, validated, health-gated, nor dispatched. If any seat
+   omits its harness, only the fallback needed by that seat is validated.
+   Review execution mode and timeout remain route-level and always apply.
+
+5. **Snapshots contain the effective decision once.** New implementation and
+   review work orders snapshot the normalized harness definition, effective
+   model (including an intentionally omitted harness-default model), timeout,
+   execution mode, and per-seat effort. Compatibility fields may remain on the
+   wire, but workers and health checks consume the normalized snapshot and do
+   not make a second routing decision from legacy fields. Existing snapshots
+   without the additive fields remain readable and use their historical path.
+
+6. **Health follows actual requirements.** Control-plane stages never require
+   a worker harness. Implementation requires its normalized harness and model
+   policy. MCP review requires each effective seat harness, using the route
+   fallback only for seats without an override; a fully explicit panel does
+   not require a review-route harness. In-process review remains exempt. The
+   disabled “Inherit single harness” UI and equivalent misleading controls are
+   removed; validation explains when review fallback is unnecessary.
+
+---
+
+### 21.19 v1.19 — Per-seat reasoning effort (July 17, 2026)
 
 The Phase 5.2 review-seat contract pins a model and optional harness, but
 cannot independently express the reasoning effort expected from each seat.
 Smuggling provider flags through `model_args` would violate §21.14 and tie
 the workspace review contract to one vendor. This amendment refines §21.12
 change 4, §21.13 change 2, and §21.14; all other v1.17 decisions remain
-unchanged:
+unchanged from v1.18:
 
 1. **The review-seat contract is additive and vendor-neutral.** A seat is
    `{model, harness?, effort?}`. `model` remains required; `harness` and
@@ -1760,4 +1822,4 @@ unchanged:
 
 ---
 
-*End of specification. v1.18 accepted July 17, 2026; all prior amendments remain in force, and per-seat vendor-neutral reasoning effort with explicit harness adapter argv, fail-closed validation, durable snapshots, and operator UI is added by §21.18. Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.19 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, and per-seat vendor-neutral reasoning effort with explicit harness adapter argv, fail-closed validation, durable snapshots, and operator UI is added by §21.19. Subsequent changes proceed by amendment with version bumps.*
