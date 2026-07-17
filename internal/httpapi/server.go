@@ -109,7 +109,10 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Delete("/workers/{id}", s.revokeWorker)
 		})
 	})
-	r.With(s.requireMCPAuth).Post("/mcp", s.handleMCP)
+	// All methods route to the handler so non-POST gets a spec-correct 405
+	// (streamable-HTTP clients probe GET for an SSE stream); registering
+	// only Post would let GET fall through to the SPA catch-all as 200 HTML.
+	r.With(s.requireMCPAuth).HandleFunc("/mcp", s.handleMCP)
 	r.Get("/", serveDashboard)
 	// The SPA router owns all non-API paths; adding a client route no longer
 	// requires duplicating it in the Go server.

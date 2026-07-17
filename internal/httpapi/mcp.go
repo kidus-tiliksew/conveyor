@@ -282,7 +282,13 @@ func boolArg(args map[string]any, key string) *bool {
 
 func mcpTools() []map[string]any {
 	object := func(properties map[string]any, required ...string) map[string]any {
-		return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+		schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+		// A nil variadic slice marshals as `"required": null`, which strict
+		// MCP clients reject wholesale at tools/list — omit the key instead.
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		return schema
 	}
 	str := map[string]string{"type": "string"}
 	num := map[string]string{"type": "number"}

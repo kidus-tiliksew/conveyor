@@ -114,6 +114,45 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	}
 }
 
+// A nil Go slice marshals to `"required": null`, which the official MCP
+// SDK's validation rejects — taking every tool down with it as a
+// "tools fetch failed" at connection time.
+func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
+	t.Parallel()
+	for _, tool := range mcpTools() {
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), `"required":null`) {
+			t.Fatalf("tool %v emits required:null", tool["name"])
+		}
+	}
+}
+
+// Streamable-HTTP clients probe GET /mcp for an SSE stream after initialize;
+// a server without one must answer 405, not fall through to the SPA catch-all
+// as 200 HTML — that response wedges the client at "connecting".
+func TestMCPNonPostReturnsMethodNotAllowedNotSPA(t *testing.T) {
+	t.Parallel()
+	server := NewServer(store.NewMemory())
+	server.BearerToken = "operator-token"
+	handler := server.Handler()
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		request := httptest.NewRequest(method, "/mcp", nil)
+		request.Header.Set("Authorization", "Bearer operator-token")
+		request.Header.Set("Accept", "text/event-stream")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /mcp status = %d body=%s", method, response.Code, response.Body.String())
+		}
+		if allow := response.Header().Get("Allow"); allow != "POST" {
+			t.Fatalf("%s /mcp Allow = %q", method, allow)
+		}
+	}
+}
+
 func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
