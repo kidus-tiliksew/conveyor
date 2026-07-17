@@ -153,7 +153,7 @@ func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testin
 }
 
 func workerTestConfig() *config.Config {
-	harness := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
+	harness := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
 	return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "gpt", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP}, "review": {Model: "gpt", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP}}}}
 }
 
@@ -177,8 +177,8 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	st := store.NewMemory()
 	cfg := workerTestConfig()
 	cfg.MaxBounces = 2
-	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
-	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Harness: "claude"}}}
+	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
+	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Effort: "high"}, {Model: "claude-review", Harness: "claude", Effort: "high"}}}
 	cfg.Repos = []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main"}}
 	task := core.Task{ID: "panel-task", Workspace: "demo", Repo: "app", Mode: core.TaskModeAuto, PolicyVersion: 1, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -199,7 +199,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 		for _, order := range persisted {
 			bySeat[order.ReviewSeat] = order
 		}
-		if bySeat[1].RequiredHarnessConfig == nil || bySeat[1].RequiredHarnessConfig.Command[0] != "codex" || bySeat[2].RequiredHarnessConfig == nil || bySeat[2].RequiredHarnessConfig.Command[0] != "claude" {
+		if bySeat[1].RequiredHarnessConfig == nil || bySeat[1].RequiredHarnessConfig.Command[0] != "codex" || bySeat[1].RequiredEffort != "high" || bySeat[2].RequiredHarnessConfig == nil || bySeat[2].RequiredHarnessConfig.Command[0] != "claude" || bySeat[2].RequiredEffort != "high" {
 			t.Fatalf("review seats did not snapshot harness execution: %+v", persisted)
 		}
 	}
@@ -246,7 +246,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	for _, item := range listed {
 		bySeat[item.Order.ReviewSeat] = item
 	}
-	if bySeat[1].Model != "gpt-review" || bySeat[1].Harness.Name != "codex" || bySeat[1].Harness.Command[0] != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Harness.Name != "claude" || bySeat[2].Harness.Command[0] != "claude" {
+	if bySeat[1].Model != "gpt-review" || bySeat[1].Effort != "high" || bySeat[1].Harness.Name != "codex" || bySeat[1].Harness.Command[0] != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Effort != "high" || bySeat[2].Harness.Name != "claude" || bySeat[2].Harness.Command[0] != "claude" {
 		t.Fatalf("seat dispatch=%+v", bySeat)
 	}
 	first, err := restarted.ClaimAuto(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})

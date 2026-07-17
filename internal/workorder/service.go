@@ -470,6 +470,9 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 		return nil, err
 	}
 	result := map[string]any{"verdict": validated.Verdict, "task_id": task.ID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "model_enforcement": order.ModelEnforcement}
+	if order.RequiredEffort != "" {
+		result["required_effort"] = order.RequiredEffort
+	}
 	if aggregate, aggregateErr := s.reviewRoundResult(ctx, task.ID, order.ReviewRound); aggregateErr == nil {
 		result["round_status"] = "completed"
 		result["aggregate"] = aggregate

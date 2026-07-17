@@ -27,12 +27,26 @@ import (
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
 	harness := config.Harness{Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
 	want := []string{"codex", "exec", "do work", "--config", "/tmp/mcp.json", "--model", "gpt"}
-	if got := expandHarness(harness, "gpt", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
+	if got := expandHarness(harness, "gpt", "", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv=%q want=%q", got, want)
 	}
 	want = want[:5]
-	if got := expandHarness(harness, "", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
+	if got := expandHarness(harness, "", "", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("without model argv=%q want=%q", got, want)
+	}
+}
+
+func TestExpandHarnessAppendsExplicitAdapterEffortArgs(t *testing.T) {
+	codex := config.Harness{Command: []string{"codex", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}}
+	claude := config.Harness{Command: []string{"claude", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}}
+	if got, want := expandHarness(codex, "", "high", "review", "/tmp/mcp.json"), []string{"codex", "review", "/tmp/mcp.json", "--config", `model_reasoning_effort="high"`}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("codex argv=%q want=%q", got, want)
+	}
+	if got, want := expandHarness(claude, "", "high", "review", "/tmp/mcp.json"), []string{"claude", "review", "/tmp/mcp.json", "--effort", "high"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claude argv=%q want=%q", got, want)
+	}
+	if got := expandHarness(codex, "", "", "review", "/tmp/mcp.json"); len(got) != 3 {
+		t.Fatalf("legacy seat received effort override: %q", got)
 	}
 }
 

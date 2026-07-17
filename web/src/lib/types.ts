@@ -199,6 +199,7 @@ export interface WorkspaceHarness {
   name: string
   command: string[]
   model_args?: string[]
+  effort_args?: Partial<Record<'low' | 'medium' | 'high', string[]>>
   probe_command: string[]
   probe_timeout: string
 }
@@ -206,6 +207,7 @@ export interface WorkspaceHarness {
 export interface WorkspaceReviewSeat {
   model: string
   harness?: string
+  effort?: 'low' | 'medium' | 'high'
 }
 
 export interface ExecutionPolicy {

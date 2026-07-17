@@ -44,6 +44,7 @@ type DispatchOrder struct {
 	Task             core.Task      `json:"task"`
 	Harness          config.Harness `json:"harness"`
 	Model            string         `json:"model"`
+	Effort           string         `json:"effort,omitempty"`
 	HarnessSelection string         `json:"harness_selection"`
 	Dispatch         string         `json:"dispatch"`
 	Confinement      string         `json:"confinement"`
@@ -67,14 +68,15 @@ type WorkerConfig struct {
 
 func HarnessFingerprint(harness config.Harness) string {
 	data, _ := json.Marshal(struct {
-		Name         string   `json:"name"`
-		Command      []string `json:"command"`
-		ModelArgs    []string `json:"model_args"`
-		ProbeCommand []string `json:"probe_command"`
-		ProbeTimeout string   `json:"probe_timeout"`
+		Name         string              `json:"name"`
+		Command      []string            `json:"command"`
+		ModelArgs    []string            `json:"model_args"`
+		EffortArgs   map[string][]string `json:"effort_args"`
+		ProbeCommand []string            `json:"probe_command"`
+		ProbeTimeout string              `json:"probe_timeout"`
 	}{
 		Name: harness.Name, Command: canonicalArgs(harness.Command),
-		ModelArgs: canonicalArgs(harness.ModelArgs), ProbeCommand: canonicalArgs(harness.ProbeCommand),
+		ModelArgs: canonicalArgs(harness.ModelArgs), EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand),
 		ProbeTimeout: harness.ProbeTimeoutText,
 	})
 	sum := sha256.Sum256(data)
@@ -347,7 +349,7 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if order.RequiredModel != "" {
 			model = order.RequiredModel
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
@@ -437,6 +439,7 @@ func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 	return config.Harness{
 		Name: snapshot.Name, Command: append([]string(nil), snapshot.Command...),
 		ModelArgs:        append([]string(nil), snapshot.ModelArgs...),
+		EffortArgs:       cloneEffortArgs(snapshot.EffortArgs),
 		ProbeCommand:     append([]string(nil), snapshot.ProbeCommand...),
 		ProbeTimeoutText: snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
 	}
@@ -492,7 +495,7 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 	if harnessName == "" {
 		harnessName = route.Harness
 	}
-	if seat.Model != order.RequiredModel || harnessName != order.RequiredHarness {
+	if seat.Model != order.RequiredModel || harnessName != order.RequiredHarness || seat.Effort != order.RequiredEffort {
 		return false
 	}
 	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: core.StageReview, RequiredHarness: harnessName})
@@ -501,9 +504,21 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 	}
 	snapshot := &core.HarnessSnapshot{
 		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		EffortArgs: harness.EffortArgs, Effort: seat.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
 	}
 	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
+}
+
+func cloneEffortArgs(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for effort, args := range source {
+		result[effort] = append([]string(nil), args...)
+	}
+	return result
 }
 
 func (s *Service) Renew(ctx context.Context, worker core.Worker, id string) (core.WorkOrder, error) {

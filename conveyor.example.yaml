@@ -25,12 +25,12 @@ routing:
       execution: in_process
     implement:
       model: operator-owned
-      harness: local-agent
+      harness: codex
       timeout: 4h
       execution: mcp
     review:
       model: operator-owned
-      harness: local-agent
+      harness: codex
       timeout: 1h
       execution: mcp
 
@@ -44,19 +44,32 @@ execution:
 # Argv arrays are executed directly, never through a shell. Replace
 # agent-cli with the authenticated headless harness installed on the worker.
 harnesses:
-  - name: local-agent
-    command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]
+  - name: codex
+    command: [codex, exec, "{prompt}", --config, "{mcp_config}"]
     model_args: [--model, "{model}"]
-    probe_command: [agent-cli, --version]
+    effort_args:
+      high: [--config, 'model_reasoning_effort="high"']
+    probe_command: [codex, --version]
+    probe_timeout: 10s
+  - name: claude
+    command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}"]
+    model_args: [--model, "{model}"]
+    effort_args:
+      high: [--effort, high]
+    probe_command: [claude, --version]
     probe_timeout: 10s
 
 # One durable review order is created per ordered seat. A seat-level harness
-# is optional and otherwise inherits routing.stages.review.harness.
+# is optional and otherwise inherits routing.stages.review.harness. Effort is
+# optional; when absent, the selected harness keeps its own default.
 review:
   seats:
-    - model: gpt-5.6
-    - model: claude-opus-4.1
-      harness: local-agent
+    - model: gpt-5.6-sol
+      harness: codex
+      effort: high
+    - model: claude-opus-4-8
+      harness: claude
+      effort: high
 
 repos:
   - name: api

@@ -11,10 +11,10 @@ const baseDocument = {
     review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
   } },
   harnesses: [
-    { name: 'codex', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['codex', '--version'], probe_timeout: '5s' },
-    { name: 'claude', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['claude', '--version'], probe_timeout: '5s' },
+    { name: 'codex', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s' },
+    { name: 'claude', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s' },
   ],
-  review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude' }] },
+  review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude', effort: 'high' }] },
   execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
   repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }],
 }
@@ -83,4 +83,16 @@ test('review panel keeps rejected values and reflects a saved panel after reload
   await expect(page.getByText('2 configured seats')).toBeVisible()
   await expect(page.getByLabel('Pinned model').nth(1)).toHaveValue('claude-review-v2')
   await expect(page.getByLabel('Harness override').nth(1)).toHaveValue('claude')
+  await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('')
+  await expect(page.getByLabel('Reasoning effort').nth(1)).toHaveValue('high')
+
+  await page.getByLabel('Reasoning effort').nth(0).selectOption('high')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.reload()
+  await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('high')
+
+  await page.getByLabel('Reasoning effort').nth(0).selectOption('')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.reload()
+  await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('')
 })

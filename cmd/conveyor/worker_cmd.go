@@ -326,7 +326,11 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		return err
 	}
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
-	argv := expandHarness(item.Harness, item.Model, prompt, configPath)
+	if item.Effort != "" && len(item.Harness.EffortArgs[item.Effort]) == 0 {
+		release("configured effort is unsupported by harness snapshot")
+		return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
+	}
+	argv := expandHarness(item.Harness, item.Model, item.Effort, prompt, configPath)
 	if len(argv) == 0 {
 		release("empty harness command")
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
@@ -385,7 +389,7 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 	return prompt + " Use the Conveyor MCP server. First call get_work_order with that exact session_id for the approved contract. Immediately after get_work_order returns, announce a concise, plain-language summary of what the work order is about and what you will do next. Make this announcement before running checkout, inspecting files, or starting implementation. The announcement is informational: continue automatically without asking for confirmation, waiting for a user response, or pausing. Then complete the standard implement lifecycle."
 }
 
-func expandHarness(harness config.Harness, model, prompt, mcpConfig string) []string {
+func expandHarness(harness config.Harness, model, effort, prompt, mcpConfig string) []string {
 	replace := func(values []string) []string {
 		result := make([]string, len(values))
 		for i, value := range values {
@@ -405,6 +409,9 @@ func expandHarness(harness config.Harness, model, prompt, mcpConfig string) []st
 	argv := replace(harness.Command)
 	if model != "" {
 		argv = append(argv, replace(harness.ModelArgs)...)
+	}
+	if effort != "" {
+		argv = append(argv, harness.EffortArgs[effort]...)
 	}
 	return argv
 }

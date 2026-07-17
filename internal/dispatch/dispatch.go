@@ -169,12 +169,15 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 				return fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
 			}
 		}
+		if harnessConfig != nil {
+			harnessConfig.Effort = seat.Effort
+		}
 		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
 			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
-			RequiredHarness: harness, RequiredHarnessConfig: harnessConfig,
+			RequiredHarness: harness, RequiredEffort: seat.Effort, RequiredHarnessConfig: harnessConfig,
 			QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
 	}
@@ -192,11 +195,23 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 		return &core.HarnessSnapshot{
 			Name: harness.Name, Command: append([]string(nil), harness.Command...),
 			ModelArgs:        append([]string(nil), harness.ModelArgs...),
+			EffortArgs:       cloneEffortArgs(harness.EffortArgs),
 			ProbeCommand:     append([]string(nil), harness.ProbeCommand...),
 			ProbeTimeoutText: harness.ProbeTimeoutText,
 		}, true
 	}
 	return nil, false
+}
+
+func cloneEffortArgs(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for effort, args := range source {
+		result[effort] = append([]string(nil), args...)
+	}
+	return result
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
@@ -497,10 +512,10 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	repo, publicationEligible := cfg.Repo(task.Repo)
 	publicationEligible = publicationEligible && repo.GitHub != ""
 	round, seat := 0, 0
-	requiredModel, requiredHarness, enforcement := model, "", "self-reported"
+	requiredModel, requiredHarness, requiredEffort, enforcement := model, "", "", "self-reported"
 	if order, orderErr := d.Store.GetWorkOrder(ctx, reviewWorkOrderID); orderErr == nil {
 		round, seat = order.ReviewRound, order.ReviewSeat
-		requiredModel, requiredHarness = order.RequiredModel, order.RequiredHarness
+		requiredModel, requiredHarness, requiredEffort = order.RequiredModel, order.RequiredHarness, order.RequiredEffort
 		if order.ModelEnforcement != "" {
 			enforcement = order.ModelEnforcement
 		}
@@ -511,7 +526,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
-		RequiredHarness: requiredHarness, ModelEnforcement: enforcement,
+		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
 	}); err != nil {
