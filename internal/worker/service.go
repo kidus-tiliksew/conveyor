@@ -187,9 +187,10 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	for _, harness := range cfg.Harnesses {
 		registeredHarness(registered, harness)
 	}
-	// An in-flight review round owns its snapshotted harness definition even
-	// after the workspace registry hot reloads. Keep accepting health probes for
-	// those durable seats until they leave the active queue (spec §21.12 change 4).
+	// An active worker-dispatched order owns its snapshotted harness definition
+	// even after the workspace registry hot reloads. Keep accepting health probes
+	// for durable implementation and review snapshots until they leave the active
+	// queue (spec §21.18 change 5).
 	active, err := s.ActiveHarnesses(ctx)
 	if err != nil {
 		return core.Worker{}, err
@@ -227,7 +228,8 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 	}
 	byFingerprint := map[string]HarnessProbeTarget{}
 	for _, order := range orders {
-		if order.Stage != core.StageReview || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
+		workerDispatched := order.Stage == core.StageImplement || order.Stage == core.StageReview
+		if !workerDispatched || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
 			continue
 		}
 		harness := harnessFromSnapshot(order.RequiredHarnessConfig)

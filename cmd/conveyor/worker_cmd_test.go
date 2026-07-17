@@ -184,6 +184,88 @@ func TestWorkerAPILoopProbesActiveSnapshotsAfterHotReload(t *testing.T) {
 	}
 }
 
+func TestWorkerAPILoopProbesImplementationSnapshotAfterHotReload(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	probeCommand := func(label string) []string {
+		return []string{os.Args[0], "-test.run=TestWorkerVersionedProbeHelper", "--", label}
+	}
+	oldCodex := config.Harness{Name: "codex", Command: []string{"codex-old", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: probeCommand("old-implement-codex"), ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
+	cfg := &config.Config{
+		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeout: time.Hour,
+		Harnesses: []config.Harness{oldCodex},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Model: "gpt-implement", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP},
+		}},
+		Execution: config.ExecutionPolicy{DefaultMode: "auto", ImplementConcurrency: 1, ReviewConcurrency: 1},
+		Repos:     []config.Repo{{Name: "app", Base: "main"}},
+	}
+	task := core.Task{ID: "worker-implement-hot-reload", Workspace: "demo", Repo: "app", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.UseDurableQueue()
+	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The queued implementation order must keep its original harness snapshot
+	// probeable and claimable after a same-name registry hot reload.
+	newCodex := oldCodex
+	newCodex.Command = []string{"codex-new", "{prompt}", "{mcp_config}"}
+	newCodex.ProbeCommand = probeCommand("new-implement-codex")
+	cfg.Harnesses = []config.Harness{newCodex}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, Now: func() time.Time { return now }}
+	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "implementation-hot-reload-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.ConfigProvider, server.WorkOrders, server.Workers = "demo", provider, orders, workers
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := &client{base: httpServer.URL, workspace: "demo"}
+
+	document, err := client.workerConfig(enrollment.Credential)
+	if err != nil || len(document.ActiveHarnesses) != 1 || document.ActiveHarnesses[0].Harness.Command[0] != "codex-old" {
+		t.Fatalf("worker config implementation snapshot=%+v err=%v", document.ActiveHarnesses, err)
+	}
+	probeLog := t.TempDir()
+	t.Setenv("CONVEYOR_VERSIONED_PROBE_LOG", probeLog)
+	probes := probeWorkerConfig(t.Context(), document)
+	if len(probes) != 2 {
+		t.Fatalf("implementation versioned probes=%+v", probes)
+	}
+	for _, label := range []string{"old-implement-codex", "new-implement-codex"} {
+		if _, err := os.Stat(filepath.Join(probeLog, label)); err != nil {
+			t.Fatalf("probe %s did not execute: %v", label, err)
+		}
+	}
+	if _, err = client.heartbeatWorker(enrollment.Credential, probes); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := client.listWorkerOrders(enrollment.Credential)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("implementation orders after hot reload=%+v err=%v", listed, err)
+	}
+	item := listed[0]
+	if item.Order.Stage != core.StageImplement || item.Model != "gpt-implement" || item.Harness.Command[0] != "codex-old" || item.Harness.ProbeCommand[len(item.Harness.ProbeCommand)-1] != "old-implement-codex" {
+		t.Fatalf("snapshotted implementation dispatch=%+v", item)
+	}
+	claimed, err := client.claimWorkerOrder(enrollment.Credential, item.Order.ID, "worker-implement-hot-reload", "worker-implement-token")
+	if err != nil || claimed.Model != "gpt-implement" || claimed.Agent != "codex" || claimed.RequiredModel != "gpt-implement" || claimed.RequiredHarnessConfig == nil || claimed.RequiredHarnessConfig.Command[0] != "codex-old" {
+		t.Fatalf("snapshotted implementation claim=%+v err=%v", claimed, err)
+	}
+}
+
 func TestWorkerVersionedProbeHelper(t *testing.T) {
 	directory := os.Getenv("CONVEYOR_VERSIONED_PROBE_LOG")
 	if directory == "" {
