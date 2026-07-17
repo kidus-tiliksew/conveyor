@@ -7,7 +7,7 @@ import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 
 function recoveryOrder(item: ActivityItem) {
-  return [...item.work_orders]
+  return [...(item.work_orders ?? [])]
     .reverse()
     .find((order) => order.state === 'queued' && (order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
 }

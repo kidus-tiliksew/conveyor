@@ -22,6 +22,9 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	if orders == nil {
+		orders = []core.WorkOrder{}
+	}
 	writeJSON(w, 200, orders)
 }
 

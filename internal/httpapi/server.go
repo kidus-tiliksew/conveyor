@@ -623,6 +623,9 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if workOrders == nil {
+		workOrders = []core.WorkOrder{}
+	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,

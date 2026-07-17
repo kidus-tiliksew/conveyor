@@ -20,7 +20,7 @@ function activity(taskId: string, overflowing: boolean) {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
 		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
-	} : { jobs: [], events: [], work_orders: [] }
+	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
 		{ status: 'expired_without_verdict', work_order_id: 'diagnostics-review-1-seat-2', review_round: 1, review_seat: 2, claimed_at: '2026-07-15T11:30:00Z', lease_expires_at: '2026-07-15T11:45:00Z', reason: 'review claim lease expired without terminal verdict submission' },
@@ -88,6 +88,12 @@ async function mockTaskAPIs(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockTaskAPIs(page)
+})
+
+test('new task detail tolerates a null work-order list from the API', async ({ page }) => {
+	await page.goto('/tasks/no-orders/full')
+	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
+	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
 test('suppressed worker order exposes failure state and audited recovery action', async ({ page }) => {

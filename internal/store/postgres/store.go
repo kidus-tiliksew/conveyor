@@ -1133,7 +1133,7 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var orders []core.WorkOrder
+	orders := make([]core.WorkOrder, 0)
 	for rows.Next() {
 		order, scanErr := scanWorkOrder(rows)
 		if scanErr != nil {
@@ -1153,7 +1153,7 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 		return nil, err
 	}
 	defer rows.Close()
-	var orders []core.WorkOrder
+	orders := make([]core.WorkOrder, 0)
 	for rows.Next() {
 		order, scanErr := scanWorkOrder(rows)
 		if scanErr != nil {

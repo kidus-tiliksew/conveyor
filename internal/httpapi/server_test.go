@@ -515,6 +515,7 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 	}
 	for _, expected := range [][]byte{
 		[]byte(`"needs_attention":true`),
+		[]byte(`"work_orders":[]`),
 		[]byte(`"checkout_available":true`),
 		[]byte(`"checkout_command":"conveyor checkout spec-gate"`),
 		[]byte(`"checkout_guidance":"Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."`),
