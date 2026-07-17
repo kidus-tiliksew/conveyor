@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -113,14 +114,14 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID string, lease time.Duration) (core.WorkOrder, error) {
+func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
 	now := time.Now().UTC()
 	expires := now.Add(lease)
-	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND state='claimed' AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID)
+	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND session_id=$6 AND state='claimed' AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID, sessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
-		if getErr == nil && current.WorkerID == workerID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
+		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
 		return core.WorkOrder{}, store.ErrWorkerUnauthorized
@@ -132,33 +133,87 @@ func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID stri
 	return order, nil
 }
 
-func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, reason string) (core.WorkOrder, error) {
+func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	now := time.Now().UTC()
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND worker_id=$4 AND state='claimed' RETURNING `+workOrderColumns, now, workspace(ctx), workOrderID, workerID))
+	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, store.ErrWorkerUnauthorized
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+	}
+	retryCount := current.AutomaticRetryCount
+	nextRetry := time.Time{}
+	suppressed := true
+	lastFailureMessage := current.LastFailureMessage
+	lastFailureExitStatus := current.LastFailureExitStatus
+	lastFailureAt := current.LastFailureAt
+	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		lastFailureMessage = strings.TrimSpace(release.Reason)
+		lastFailureExitStatus = release.ExitStatus
+		lastFailureAt = now
+		limit := release.AutomaticRetryLimit
+		if limit <= 0 {
+			limit = 3
+		}
+		if retryCount < limit {
+			retryCount++
+			nextRetry = now.Add(postgresRetryDelay(release, retryCount))
+			suppressed = false
+		}
+	}
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_exit_status=$3,last_failure_at=$4,automatic_retry_count=$5,next_retry_at=$6,retry_suppressed=$7,updated_at=$8 WHERE workspace_id=$9 AND id=$10 AND worker_id=$11 AND session_id=$12 AND state='claimed' RETURNING `+workOrderColumns,
+		release.Outcome, lastFailureMessage, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, now, workspace(ctx), workOrderID, workerID, release.SessionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+	}
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
 	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]string{"reason": reason})}); err != nil {
+	kind := "work_order.released"
+	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		kind = "work_order.child_failed"
+	}
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.WorkOrder{}, err
 	}
-	order.Claimable = true
+	order.Claimable = order.ClaimableAt(now)
 	return order, nil
+}
+
+func postgresRetryDelay(release core.WorkOrderRelease, retry int) time.Duration {
+	initial := release.InitialRetryDelay
+	if initial <= 0 {
+		initial = time.Second
+	}
+	maximum := release.MaximumRetryDelay
+	if maximum < initial {
+		maximum = initial
+	}
+	delay := initial
+	for attempt := 1; attempt < retry && delay < maximum; attempt++ {
+		delay *= 2
+		if delay > maximum {
+			delay = maximum
+		}
+	}
+	return delay
 }
 
 func scanWorker(row interface{ Scan(...any) error }) (core.Worker, error) {

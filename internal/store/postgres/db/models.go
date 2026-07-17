@@ -46,6 +46,26 @@ type Feature struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type GithubLifecycle struct {
+	WorkspaceID       string             `json:"workspace_id"`
+	TaskID            string             `json:"task_id"`
+	Repository        string             `json:"repository"`
+	SpecVersion       int32              `json:"spec_version"`
+	Source            string             `json:"source"`
+	SourceIssueNumber int32              `json:"source_issue_number"`
+	IssueNumber       int32              `json:"issue_number"`
+	IssueUrl          string             `json:"issue_url"`
+	Outcome           string             `json:"outcome"`
+	State             string             `json:"state"`
+	Attempts          int32              `json:"attempts"`
+	LastError         string             `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CreateState       string             `json:"create_state"`
+	CreateAttempts    int32              `json:"create_attempts"`
+	ReconcileMisses   int32              `json:"reconcile_misses"`
+}
+
 type Intervention struct {
 	ID         int64              `json:"id"`
 	TaskID     string             `json:"task_id"`
@@ -112,6 +132,7 @@ type ReviewPublication struct {
 	RequiredModel          string             `json:"required_model"`
 	RequiredHarness        string             `json:"required_harness"`
 	ModelEnforcement       string             `json:"model_enforcement"`
+	RequiredEffort         string             `json:"required_effort"`
 }
 
 type Task struct {
@@ -197,6 +218,21 @@ type WorkOrder struct {
 	RequiredHarness       string             `json:"required_harness"`
 	ModelEnforcement      string             `json:"model_enforcement"`
 	RequiredHarnessConfig []byte             `json:"required_harness_config"`
+	ExecutionTimeout      string             `json:"execution_timeout"`
+	LastAttemptOutcome    string             `json:"last_attempt_outcome"`
+	LastFailureMessage    string             `json:"last_failure_message"`
+	LastFailureExitStatus pgtype.Int4        `json:"last_failure_exit_status"`
+	LastFailureAt         pgtype.Timestamptz `json:"last_failure_at"`
+	AutomaticRetryCount   int32              `json:"automatic_retry_count"`
+	NextRetryAt           pgtype.Timestamptz `json:"next_retry_at"`
+	RetrySuppressed       bool               `json:"retry_suppressed"`
+}
+
+type WorkOrderRecovery struct {
+	WorkspaceID string             `json:"workspace_id"`
+	WorkOrderID string             `json:"work_order_id"`
+	RequestID   string             `json:"request_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type Worker struct {

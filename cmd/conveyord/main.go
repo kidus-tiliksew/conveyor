@@ -33,7 +33,12 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	configPath := flag.String("config", "conveyor.yaml", "path to deployment config")
 	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")
+	workerRetryDelay := flag.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay")
+	workerRetryMaximum := flag.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay")
 	flag.Parse()
+	if *workerRetryDelay <= 0 || *workerRetryMaximum < *workerRetryDelay {
+		log.Fatal("worker retry delay must be positive and worker retry max must be at least the initial delay")
+	}
 
 	deployment, err := config.Load(*configPath)
 	if err != nil {
@@ -148,7 +153,7 @@ func main() {
 		return cfg, nil
 	}}
 	srv.WorkOrders = workOrders
-	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider}
+	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
 	if pgStore != nil {
 		srv.Workspaces = pgStore
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue

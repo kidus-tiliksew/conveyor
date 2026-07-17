@@ -82,6 +82,7 @@ type Store interface {
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
+	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
@@ -95,8 +96,8 @@ type Store interface {
 	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
 	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
 	RevokeWorker(ctx context.Context, id string) error
-	RenewWorkerClaim(ctx context.Context, workOrderID, workerID string, lease time.Duration) (core.WorkOrder, error)
-	ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, reason string) (core.WorkOrder, error)
+	RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
+	ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -230,6 +231,7 @@ func NewMemory() Store {
 		artifacts:     map[memoryArtifactKey]memoryArtifact{},
 		pairings:      map[string]core.WorkerPairing{},
 		workers:       map[string]core.Worker{},
+		recoveries:    map[string]struct{}{},
 	}
 }
 
@@ -259,6 +261,7 @@ type memory struct {
 	artifacts     map[memoryArtifactKey]memoryArtifact
 	pairings      map[string]core.WorkerPairing
 	workers       map[string]core.Worker
+	recoveries    map[string]struct{}
 	nextEventID   int64
 	nextReviewID  int64
 	taskLocks     sync.Map
@@ -378,11 +381,11 @@ func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID string, lease time.Duration) (core.WorkOrder, error) {
+func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
-	if !ok || order.WorkerID != workerID {
+	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
 		return core.WorkOrder{}, ErrWorkerUnauthorized
 	}
 	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
@@ -403,35 +406,81 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID str
 	return order, nil
 }
 
-func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, reason string) (core.WorkOrder, error) {
+func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
-	if !ok || order.WorkerID != workerID || order.State != core.WorkOrderClaimed {
+	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, ErrWorkerUnauthorized
 	}
+	now := time.Now().UTC()
+	clearActiveAttempt(&order)
 	order.State = core.WorkOrderQueued
-	order.Claimable = true
-	order.ClaimantID = ""
-	order.SessionID = ""
-	order.ClientTokenHash = ""
-	order.Agent = ""
-	order.Model = ""
-	order.WorkerID = ""
-	order.ModelEnforcement = ""
-	order.LeaseExpiresAt = time.Time{}
-	order.UpdatedAt = time.Now().UTC()
+	order.LastAttemptOutcome = release.Outcome
+	order.NextRetryAt = time.Time{}
+	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		order.LastFailureMessage = strings.TrimSpace(release.Reason)
+		order.LastFailureExitStatus = release.ExitStatus
+		order.LastFailureAt = now
+		limit := release.AutomaticRetryLimit
+		if limit <= 0 {
+			limit = 3
+		}
+		if order.AutomaticRetryCount < limit {
+			order.AutomaticRetryCount++
+			order.NextRetryAt = now.Add(workOrderRetryDelay(release, order.AutomaticRetryCount))
+			order.RetrySuppressed = false
+		} else {
+			order.RetrySuppressed = true
+		}
+	} else {
+		order.RetrySuppressed = true
+	}
+	order.UpdatedAt = now
+	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[workOrderID] = order
 	for taskID, jobs := range m.jobs {
 		for i := range jobs {
 			if jobs[i].ID == order.JobID {
 				jobs[i].State = core.JobPending
+				jobs[i].StartedAt = time.Time{}
+				jobs[i].EndedAt = time.Time{}
 				m.jobs[taskID] = jobs
 			}
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.released", ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]string{"reason": reason})})
+	kind := "work_order.released"
+	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		kind = "work_order.child_failed"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed}), At: now})
 	return order, nil
+}
+
+func clearActiveAttempt(order *core.WorkOrder) {
+	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
+	order.Agent, order.Model, order.WorkerID, order.ModelEnforcement = "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
+}
+
+func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration {
+	initial := release.InitialRetryDelay
+	if initial <= 0 {
+		initial = time.Second
+	}
+	maximum := release.MaximumRetryDelay
+	if maximum < initial {
+		maximum = initial
+	}
+	delay := initial
+	for attempt := 1; attempt < retry && delay < maximum; attempt++ {
+		delay *= 2
+		if delay > maximum {
+			delay = maximum
+		}
+	}
+	return delay
 }
 
 func (m *memory) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
@@ -750,7 +799,7 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 	if order.State == "" {
 		order.State = core.WorkOrderQueued
 	}
-	order.Claimable = order.State == core.WorkOrderQueued
+	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	return nil
@@ -822,6 +871,9 @@ func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, e
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[order.TaskID].Workspace != selected {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
 	order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
 	return order, nil
 }
@@ -870,6 +922,12 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	}
 	if order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimable", id)
+	}
+	if !order.ClaimableAt(now) {
+		if order.RetrySuppressed {
+			return core.WorkOrder{}, fmt.Errorf("work order %s automatic retry is suppressed; operator recovery is required", id)
+		}
+		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
 	}
 	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {
@@ -967,6 +1025,56 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 	return order, nil
 }
 
+func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.TrimSpace(requestID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+	}
+	if queueTimeout <= 0 {
+		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	key := workspace + "/" + id + "/" + requestID
+	if _, exists := m.recoveries[key]; exists {
+		order, ok := m.workOrders[id]
+		if !ok {
+			return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		}
+		if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
+			return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		}
+		return order, nil
+	}
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if order.State != core.WorkOrderQueued || order.SessionID != "" || order.WorkerID != "" || !order.LeaseExpiresAt.IsZero() {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not an unclaimed queued order", id)
+	}
+	if order.LastAttemptOutcome == "" && !order.RetrySuppressed && order.NextRetryAt.IsZero() {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+	}
+	now := time.Now().UTC()
+	prior := order.LastAttemptOutcome
+	order.LastAttemptOutcome = ""
+	order.RetrySuppressed = false
+	order.AutomaticRetryCount = 0
+	order.NextRetryAt = time.Time{}
+	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
+	order.RedispatchCount++
+	order.UpdatedAt = now
+	order.Claimable = true
+	m.workOrders[id] = order
+	m.recoveries[key] = struct{}{}
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": core.WorkOrderQueued, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now})
+	return order, nil
+}
+
 func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrder, now time.Time) core.WorkOrder {
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
@@ -982,13 +1090,18 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		return order
 	}
 	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
-		order.State, order.Claimable = core.WorkOrderQueued, true
-		order.ClaimantID, order.SessionID, order.Agent, order.Model = "", "", "", ""
-		order.ClientTokenHash = ""
-		order.ModelEnforcement = ""
-		order.LeaseExpiresAt = time.Time{}
+		clearActiveAttempt(&order)
+		order.State, order.Claimable = core.WorkOrderQueued, false
+		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+		order.NextRetryAt = time.Time{}
+		order.RetrySuppressed = true
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
+		if job, index, exists := m.findJobLocked(order.JobID); exists {
+			job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
+			m.jobs[job.TaskID][index] = job
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"outcome": order.LastAttemptOutcome, "retry_suppressed": true}), At: now})
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
@@ -997,7 +1110,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: core.JSONPayload(order), At: now})
 		return order
 	}
-	order.Claimable = order.State == core.WorkOrderQueued
+	order.Claimable = order.ClaimableAt(now)
 	return order
 }
 

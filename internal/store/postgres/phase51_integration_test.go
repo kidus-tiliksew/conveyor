@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,13 +63,86 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := claimed.ExecutionDeadline
-	renewed, err := st.RenewWorkerClaim(ctx, job.ID, worker.ID, time.Minute)
+	renewed, err := st.RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute)
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, "integration")
-	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.Equal(deadline) {
+	released, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
+	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {
+		t.Fatalf("released jobs=%+v err=%v", jobs, err)
+	}
+	recovered, err := st.RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
+	if err != nil || !recovered.Claimable || recovered.RetrySuppressed {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	duplicate, err := st.RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
+	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
+		t.Fatalf("duplicate recovery=%+v err=%v", duplicate, err)
+	}
+	secondClaim, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-2", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) {
+		t.Fatalf("second claim=%+v err=%v", secondClaim, err)
+	}
+	if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute); staleErr == nil {
+		t.Fatal("stale session renewed newer claim")
+	}
+	if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Outcome: core.WorkOrderOutcomeCancelled}); staleErr == nil {
+		t.Fatal("stale session released newer claim")
+	}
+	exit := 1
+	failed, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Reason: "harness exited: status 1", Outcome: core.WorkOrderOutcomeChildFailure, ExitStatus: &exit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3})
+	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second {
+		t.Fatalf("failed=%+v err=%v", failed, err)
+	}
+	var recoveries sync.WaitGroup
+	recoveryErrors := make(chan error, 4)
+	for range 4 {
+		recoveries.Add(1)
+		go func() {
+			defer recoveries.Done()
+			_, recoverErr := st.RecoverWorkOrder(ctx, job.ID, "concurrent-recovery", time.Hour)
+			recoveryErrors <- recoverErr
+		}()
+	}
+	recoveries.Wait()
+	close(recoveryErrors)
+	for recoverErr := range recoveryErrors {
+		if recoverErr != nil {
+			t.Fatalf("concurrent recovery: %v", recoverErr)
+		}
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.recovered"); countErr != nil || count != 2 {
+		t.Fatalf("recovery events=%d err=%v", count, countErr)
+	}
+
+	expiredTask := task
+	expiredTask.ID = core.NewTaskID()
+	expiredTask.Branch = "conveyor/task-" + expiredTask.ID
+	if err = st.CreateTask(ctx, expiredTask); err != nil {
+		t.Fatal(err)
+	}
+	expiredJob := core.Job{ID: expiredTask.ID + "-review", TaskID: expiredTask.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, expiredJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: expiredJob.ID, TaskID: expiredTask.ID, JobID: expiredJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ClaimWorkOrder(ctx, expiredJob.ID, core.WorkOrderClaim{SessionID: "expiring-session", ClientToken: "expiring-token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	expired, err := st.GetWorkOrder(ctx, expiredJob.ID)
+	if err != nil || expired.State != core.WorkOrderQueued || !expired.RetrySuppressed || expired.LastAttemptOutcome != core.WorkOrderOutcomeExpired || expired.WorkerID != "" || expired.SessionID != "" || !expired.ExecutionStartedAt.IsZero() || !expired.ExecutionDeadline.IsZero() {
+		t.Fatalf("expired=%+v err=%v", expired, err)
+	}
+	expiredJobs, err := st.ListJobs(ctx, expiredTask.ID)
+	if err != nil || len(expiredJobs) != 1 || expiredJobs[0].State != core.JobPending || !expiredJobs[0].StartedAt.IsZero() {
+		t.Fatalf("expired jobs=%+v err=%v", expiredJobs, err)
 	}
 
 	submittedTask := task
@@ -92,7 +166,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err = st.UpdateWorkOrder(ctx, submittedClaim); err != nil {
 		t.Fatal(err)
 	}
-	if submitted, renewErr := st.RenewWorkerClaim(ctx, submittedJob.ID, worker.ID, time.Minute); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
+	if submitted, renewErr := st.RenewWorkerClaim(ctx, submittedJob.ID, worker.ID, "submitted-session", time.Minute); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
 	}
 }

@@ -123,6 +123,18 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
 function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
+    case 'work_order.child_failed':
+      return {
+        title: payload.retry_suppressed === true ? 'Worker child failed — automatic retry suppressed' : 'Worker child failed — retry scheduled',
+        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+        alarm: true,
+      }
+    case 'work_order.expired':
+      return { title: 'Worker claim expired — operator recovery required', alarm: true }
+    case 'work_order.released':
+      return { title: 'Worker attempt released', detail: typeof payload.reason === 'string' ? payload.reason : undefined, alarm: true }
+    case 'work_order.recovered':
+      return { title: 'Work order recovered by operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
     case 'pull_request.opened':
       return {
         title: 'Pull request opened',

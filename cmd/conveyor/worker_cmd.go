@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -309,20 +310,18 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	if _, err := c.claimWorkerOrder(credential, item.Order.ID, sessionID, clientToken); err != nil {
 		return err
 	}
-	release := func(reason string) error {
-		return c.releaseWorkerOrder(credential, item.Order.ID, reason)
+	release := func(outcome, reason string, exitStatus *int) error {
+		return c.releaseWorkerOrder(credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus})
 	}
 	directory, err := os.MkdirTemp("", "conveyor-worker-")
 	if err != nil {
-		_ = release("create worker temp directory failed")
+		_ = release(core.WorkOrderOutcomeReleased, "create worker temp directory failed", nil)
 		return err
 	}
 	defer os.RemoveAll(directory)
-	configPath := filepath.Join(directory, "mcp.json")
-	mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": strings.TrimRight(c.base, "/") + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
-	data, _ := json.Marshal(mcp)
-	if err = os.WriteFile(configPath, data, 0o600); err != nil {
-		_ = release("write MCP config failed")
+	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
+	if err != nil {
+		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
 		return err
 	}
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
@@ -331,27 +330,31 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		if item.Order.Stage == core.StageImplement {
 			effortArgv = append([]string(nil), item.EffortArgv...)
 			if len(effortArgv) == 0 {
-				_ = release("configured effort is unsupported by harness snapshot")
+				_ = release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
 				return fmt.Errorf("implementation harness snapshot %s has no argv for effort %s", item.Harness.Name, item.Effort)
 			}
 		} else {
 			effortArgv = append([]string(nil), item.Harness.EffortArgs[item.Effort]...)
 		}
 		if len(effortArgv) == 0 {
-			_ = release("configured effort is unsupported by harness snapshot")
+			_ = release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
 			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
 		}
 	}
-	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, configPath)
+	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
 	if len(argv) == 0 {
-		_ = release("empty harness command")
+		_ = release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	command.Env = append(os.Environ(), "CONVEYOR_API_TOKEN="+credential, "CONVEYOR_ADDR="+c.base, "CONVEYOR_WORKSPACE="+c.workspace, "CONVEYOR_WORK_ORDER_ID="+item.Order.ID, "CONVEYOR_SESSION_ID="+sessionID)
 	if err = command.Start(); err != nil {
-		_ = release("harness launch failed")
+		if ctx.Err() != nil {
+			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			return ctx.Err()
+		}
+		_ = release(core.WorkOrderOutcomeChildFailure, "harness launch failed: "+err.Error(), nil)
 		return err
 	}
 	done := make(chan error, 1)
@@ -361,15 +364,28 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	for {
 		select {
 		case waitErr := <-done:
-			// Generic implementation failure cleanup is owned separately; keep
-			// its existing behavior while review exits reconcile terminal state.
+			if ctx.Err() != nil {
+				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+				return ctx.Err()
+			}
+			var exitStatus *int
+			if waitErr != nil {
+				var exitErr *exec.ExitError
+				if errors.As(waitErr, &exitErr) {
+					status := exitErr.ExitCode()
+					exitStatus = &status
+				}
+			}
+			// Preserve the generic implementation failure path. Review children
+			// reconcile terminal state because a verdict can commit before a
+			// harness reports a later non-zero exit.
 			if item.Order.Stage != core.StageReview && waitErr != nil {
-				_ = release("harness exited: " + waitErr.Error())
+				_ = release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
 				return waitErr
 			}
-			renewed, renewErr := c.renewWorkerOrder(credential, item.Order.ID)
+			renewed, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID)
 			if renewErr != nil {
-				_ = release("could not confirm work-order completion")
+				_ = release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
 				return fmt.Errorf("confirm work-order completion: %w", renewErr)
 			}
 			if renewed.State == core.WorkOrderClaimed {
@@ -377,7 +393,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 				if item.Order.Stage == core.StageReview {
 					reason = "harness exited without terminal verdict submission"
 				}
-				if releaseErr := release(reason); releaseErr != nil {
+				if releaseErr := release(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
 					return fmt.Errorf("%s: release claim: %w", reason, releaseErr)
 				}
 				if waitErr != nil {
@@ -392,17 +408,41 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			// the review child subsequently reports a non-zero exit.
 			return nil
 		case <-ticker.C:
-			if _, renewErr := c.renewWorkerOrder(credential, item.Order.ID); renewErr != nil {
+			if _, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID); renewErr != nil {
 				_ = command.Process.Kill()
 				<-done
+				release(core.WorkOrderOutcomeReleased, "claim renewal failed: "+renewErr.Error(), nil)
 				return renewErr
 			}
 		case <-ctx.Done():
-			_ = release("worker shutting down")
 			_ = command.Process.Kill()
 			<-done
+			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
 		}
+	}
+}
+
+// prepareMCPConfig preserves the JSON-file transport for existing harnesses
+// while keeping scoped credentials out of TOML override argv (spec §21.20).
+func prepareMCPConfig(directory, base, credential, transport string) (string, error) {
+	endpoint := strings.TrimRight(base, "/") + "/mcp"
+	switch transport {
+	case "", config.MCPTransportJSONFile:
+		configPath := filepath.Join(directory, "mcp.json")
+		mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": endpoint, "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
+		data, err := json.Marshal(mcp)
+		if err != nil {
+			return "", fmt.Errorf("marshal MCP config: %w", err)
+		}
+		if err = os.WriteFile(configPath, data, 0o600); err != nil {
+			return "", fmt.Errorf("write MCP config: %w", err)
+		}
+		return configPath, nil
+	case config.MCPTransportTOMLOverride:
+		return "mcp_servers.conveyor={url=" + strconv.Quote(endpoint) + ", bearer_token_env_var=\"CONVEYOR_API_TOKEN\"}", nil
+	default:
+		return "", fmt.Errorf("unsupported MCP transport %q", transport)
 	}
 }
 

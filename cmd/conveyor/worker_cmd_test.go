@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -25,14 +26,65 @@ import (
 )
 
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
-	harness := config.Harness{Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
-	want := []string{"codex", "exec", "do work", "--config", "/tmp/mcp.json", "--model", "gpt"}
-	if got := expandHarness(harness, "gpt", "", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
+	harness := config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
+	override := `mcp_servers.conveyor={url="http://127.0.0.1:8080/mcp", bearer_token_env_var="CONVEYOR_API_TOKEN"}`
+	want := []string{"codex", "exec", "do work", "--config", override, "--model", "gpt"}
+	if got := expandHarness(harness, "gpt", "", "do work", override); !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv=%q want=%q", got, want)
 	}
 	want = want[:5]
-	if got := expandHarness(harness, "", "", "do work", "/tmp/mcp.json"); !reflect.DeepEqual(got, want) {
+	if got := expandHarness(harness, "", "", "do work", override); !reflect.DeepEqual(got, want) {
 		t.Fatalf("without model argv=%q want=%q", got, want)
+	}
+}
+
+func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *testing.T) {
+	directory := t.TempDir()
+	jsonPath, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportJSONFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("MCP config permissions=%o want=600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("Bearer worker-secret")) {
+		t.Fatalf("JSON transport did not write the scoped credential: %s", data)
+	}
+
+	override, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportTOMLOverride)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(override, "worker-secret") || !strings.Contains(override, `bearer_token_env_var="CONVEYOR_API_TOKEN"`) || !strings.Contains(override, `url="http://127.0.0.1:8080/mcp"`) {
+		t.Fatalf("unsafe or invalid TOML override: %s", override)
+	}
+}
+
+func TestCodexParsesGeneratedMCPOverride(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	override, err := prepareMCPConfig(t.TempDir(), "http://127.0.0.1:8080", "must-not-appear", config.MCPTransportTOMLOverride)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(codex, "mcp", "get", "conveyor", "--config", override)
+	command.Env = append(os.Environ(), "CODEX_HOME="+t.TempDir(), "CONVEYOR_API_TOKEN=parser-test")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Codex rejected generated MCP override: %v\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte("bearer_token_env_var: CONVEYOR_API_TOKEN")) {
+		t.Fatalf("Codex parsed an unexpected MCP definition:\n%s", output)
 	}
 }
 
@@ -592,6 +644,79 @@ func TestRunHarnessChildReviewCanRetryAfterExitRelease(t *testing.T) {
 	defer mu.Unlock()
 	if state != core.WorkOrderCompleted || releases != 1 || submits != 1 {
 		t.Fatalf("state=%s releases=%d submits=%d", state, releases, submits)
+	}
+}
+
+func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
+	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
+		t.Helper()
+		claimed := make(chan struct{}, 1)
+		released := make(chan core.WorkOrderRelease, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+				http.NotFound(w, r)
+				return
+			}
+			switch parts[4] {
+			case "claim":
+				claimed <- struct{}{}
+				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed})
+			case "release":
+				var request core.WorkOrderRelease
+				var wire struct {
+					Reason     string `json:"reason"`
+					Outcome    string `json:"outcome"`
+					ExitStatus *int   `json:"exit_status"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&wire)
+				request.Reason, request.Outcome, request.ExitStatus = wire.Reason, wire.Outcome, wire.ExitStatus
+				released <- request
+				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "classified-" + mode, Stage: core.StageReview}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}}}
+		done := make(chan error, 1)
+		go func() {
+			done <- runHarnessChild(ctx, &client{base: server.URL, workspace: "demo"}, "worker-credential", item)
+		}()
+		<-claimed
+		if mode == "cancel" {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}
+		if err := <-done; err == nil {
+			t.Fatal("child unexpectedly succeeded")
+		}
+		select {
+		case release := <-released:
+			if release.Outcome != wantOutcome || !reflect.DeepEqual(release.ExitStatus, wantExit) {
+				t.Fatalf("release=%+v want outcome=%s exit=%v", release, wantOutcome, wantExit)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("release was not reported")
+		}
+	}
+	exit := 7
+	t.Run("immediate exit", func(t *testing.T) { test(t, "exit", core.WorkOrderOutcomeChildFailure, &exit) })
+	t.Run("cancellation", func(t *testing.T) { test(t, "cancel", core.WorkOrderOutcomeCancelled, nil) })
+}
+
+func TestWorkerLifecycleHelper(t *testing.T) {
+	if len(os.Args) < 2 {
+		return
+	}
+	mode := os.Args[len(os.Args)-1]
+	switch mode {
+	case "exit":
+		os.Exit(7)
+	case "cancel":
+		time.Sleep(30 * time.Second)
 	}
 }
 
