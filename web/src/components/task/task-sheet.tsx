@@ -9,6 +9,7 @@ import { RedispatchCard, canRedispatch } from './redispatch-card'
 import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
+import { WorkOrderRecoveryCard } from './work-order-recovery-card'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // The task detail sheet (spec §13.3): the costed event history plus review
@@ -72,6 +73,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {reviewable && <ReviewPanel item={item} />}
+      <WorkOrderRecoveryCard item={item} />
       {canRedispatch(item) && <RedispatchCard item={item} />}
       {item.spec && <SpecCard spec={item.spec} />}
       <Timeline item={item} />

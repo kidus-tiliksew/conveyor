@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.14.
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.22.
 [docs/beta-plan.md](docs/beta-plan.md) records the completed Beta path;
 [docs/phase5-plan.md](docs/phase5-plan.md) is the active post-Beta breakdown.
 
@@ -27,7 +27,7 @@ provides:
   UI, workspace-scoped config, and MCP connection guidance; and
 - Postgres projections plus River-backed durable dispatch.
 
-Phase 5.1 is active under spec §21.12–§21.14: worker execution on operator
+Phase 5.1 is active under spec §21.12–§21.14 and §§21.20–21.21: worker execution on operator
 hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
 routing, enrollment, heartbeat health, and supervised Auto work-order claims.
 
@@ -35,6 +35,14 @@ The worker is an unconfined BYOA dispatcher on operator hardware. Workspace
 configuration owns the harness registry, implement/review harness routes,
 default mode, independent gates, and stage-aware capacity. Manual MCP claims
 remain first-class and are never forced through a configured harness.
+
+The Workspace Implementation section can optionally request provider-neutral
+`low`, `medium`, or `high` reasoning effort. `Harness default` leaves the field
+unset and appends no effort arguments. Explicit values save only when the
+selected harness declares the matching `effort_args` mapping; Conveyor never
+infers effort from a model name. Dispatch snapshots the requested value and
+exact shell-free adapter argv, so later configuration reloads cannot change an
+in-flight implementation. See [conveyor.example.yaml](conveyor.example.yaml).
 
 ## Run locally
 
@@ -201,6 +209,14 @@ The Phase 4.7 document deliberately has no runner, image, credential pool,
 secret reference, vendor policy, or tool policy fields. Operator agents own
 their execution environment; repository CI is the mechanical verifier until
 managed execution is explicitly activated in Phase 8.
+
+Harnesses declare how their `{mcp_config}` argv element is represented. Use
+`mcp_transport: json_file` for CLIs such as Claude Code that accept a JSON MCP
+file. Use `mcp_transport: toml_override` with Codex's
+`--config {mcp_config}` form; Conveyor emits a TOML override that references
+the child-only `CONVEYOR_API_TOKEN` environment variable and never places the
+credential value in argv (spec §21.20). Existing documents without the field
+normalize to `json_file`.
 
 Stage routes contain only model, timeout, and execution mode. Conveyor retains
 token and USD usage as audit telemetry, but it has no allocation, remaining

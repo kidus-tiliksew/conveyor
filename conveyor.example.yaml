@@ -22,6 +22,9 @@ execution_settings:
   implementation:
     harness: local-agent
     model_policy: harness_default
+    # Omit effort for the harness default; an explicit low, medium, or high
+    # value is valid only when local-agent declares that effort_args mapping.
+    effort: high
     timeout: 4h
   review:
     execution: mcp
@@ -41,6 +44,7 @@ routing:
     implement:
       model: operator-owned
       harness: local-agent
+      effort: high
       timeout: 4h
       execution: mcp
     review:
@@ -60,8 +64,14 @@ execution:
 # agent-cli with the authenticated headless harness installed on the worker.
 harnesses:
   - name: local-agent
+    # JSON-file transport is for harnesses such as Claude Code or an operator
+    # wrapper with a real --mcp-config file option (spec §21.20).
+    mcp_transport: json_file
     command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]
     model_args: [--model, "{model}"]
+    # Provider-specific flags stay inside this shell-free adapter mapping.
+    effort_args:
+      high: [--effort, high]
     probe_command: [agent-cli, --version]
     probe_timeout: 10s
 
@@ -76,15 +86,27 @@ review:
     - model: claude-opus-4.1
       harness: local-agent
 
-# Adapter-level effort excerpt (spec §21.19). Merge these fields into the
+# Adapter-level review effort excerpt (spec §21.19). Implementation effort uses
+# the same harness mappings through execution_settings.implementation (spec
+# §21.19 v1.20 extension). Merge these fields into the
 # corresponding full harness entries after their authenticated wrapper defines
 # the {mcp_config} transport; these are adapter argv, not complete launch
 # commands:
 # harnesses:
 #   - name: codex
+#     mcp_transport: toml_override
+#     command: [codex, exec, "{prompt}", --config, "{mcp_config}"]
+#     model_args: [--model, "{model}"]
+#     probe_command: [codex, --version]
+#     probe_timeout: 10s
 #     effort_args:
 #       high: [--config, 'model_reasoning_effort="high"']
 #   - name: claude
+#     mcp_transport: json_file
+#     command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}"]
+#     model_args: [--model, "{model}"]
+#     probe_command: [claude, --version]
+#     probe_timeout: 10s
 #     effort_args:
 #       high: [--effort, high]
 # review:

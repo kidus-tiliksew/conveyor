@@ -177,7 +177,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Routing.Stages["implement"].Harness != "codex" || parsed.Harnesses[0].ProbeTimeout != 5*time.Second {
+	if parsed.Routing.Stages["implement"].Harness != "codex" || parsed.Harnesses[0].ProbeTimeout != 5*time.Second || parsed.Harnesses[0].MCPTransport != MCPTransportJSONFile {
 		t.Fatalf("parsed=%+v", parsed)
 	}
 
@@ -192,6 +192,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 			d.Harnesses[0].Command = []string{"codex", "prefix-{prompt}", "{mcp_config}"}
 		}, "whole argv"},
 		{"non-positive timeout", func(d *WorkspaceDocument) { d.Harnesses[0].ProbeTimeoutText = "0s" }, "positive duration"},
+		{"unknown MCP transport", func(d *WorkspaceDocument) { d.Harnesses[0].MCPTransport = "provider_magic" }, "mcp_transport"},
 		{"dangling route", func(d *WorkspaceDocument) {
 			route := d.Routing.Stages["review"]
 			route.Harness = "missing"
@@ -336,6 +337,54 @@ func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T)
 	encoded, _ = json.Marshal(legacy)
 	if strings.Contains(string(encoded), "effort") {
 		t.Fatalf("legacy seat gained effort: %s", encoded)
+	}
+}
+
+func TestImplementationEffortValidatesSelectedHarnessAndPreservesUnset(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{{
+		Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"},
+		ModelArgs:    []string{"--model", "{model}"},
+		EffortArgs:   map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}},
+		ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+	}}
+	base.Routing.Stages["implement"] = StageRoute{Model: "gpt", ModelPolicy: ModelPolicyExplicit, Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	document := base.WorkspaceDocument()
+	document.ExecutionSettings.Implementation.Effort = "high"
+	document.Routing.Stages["implement"] = StageRoute{Model: "stale", Harness: "stale", Effort: "low", TimeoutText: "1m", Execution: ExecutionMCP}
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "implementation effort test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ExecutionSettings.Implementation.Effort != "high" || parsed.Routing.Stages["implement"].Effort != "high" {
+		t.Fatalf("implementation effort did not round trip: settings=%+v route=%+v", parsed.ExecutionSettings.Implementation, parsed.Routing.Stages["implement"])
+	}
+	encoded, _ := json.Marshal(parsed.WorkspaceDocument())
+	if !strings.Contains(string(encoded), `"effort":"high"`) {
+		t.Fatalf("implementation effort omitted: %s", encoded)
+	}
+
+	document.ExecutionSettings.Implementation.Effort = "medium"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "implementation effort test"); err == nil || !strings.Contains(err.Error(), `execution_settings.implementation.effort "medium" is not supported by harness "codex"`) {
+		t.Fatalf("unsupported effort error=%v", err)
+	}
+	document.ExecutionSettings.Implementation.Effort = "ultrathink"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "implementation effort test"); err == nil || !strings.Contains(err.Error(), "execution_settings.implementation.effort must be low, medium, or high") {
+		t.Fatalf("invalid effort error=%v", err)
+	}
+
+	document = base.WorkspaceDocument()
+	raw, _ = yaml.Marshal(document)
+	parsed, err = ParseWorkspaceDocument(raw, base, "implementation effort unset test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(parsed.WorkspaceDocument().ExecutionSettings.Implementation)
+	if strings.Contains(string(encoded), "effort") {
+		t.Fatalf("unset implementation effort changed legacy serialization: %s", encoded)
 	}
 }
 

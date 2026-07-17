@@ -140,8 +140,11 @@ Conveyor's review trust boundary.
    read-only or detached checkout; never share or mutate the implementation
    worktree.
 5. Compare the implementation with the specification, Non-goals, diff, and
-   validation evidence. Submit `approve` or `changes_requested` with a precise
-   reason code, concise summary, and actionable feedback.
+   validation evidence. Call `submit_review_verdict` with `approve` or
+   `changes_requested`, a precise reason code, concise summary, and actionable
+   feedback, then wait for and observe a successful tool response. Printing,
+   returning, or describing verdict JSON is not completion; a missing or failed
+   tool response is not terminal success.
 6. Do not merge. Conveyor hands off the review verdict; CI and the final human
    merge gate remain outside this skill.
 

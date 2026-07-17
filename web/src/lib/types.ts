@@ -148,6 +148,17 @@ export interface ActivitySummary {
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
+  review_diagnostics?: ReviewVerdictDiagnostic[]
+}
+
+export interface ReviewVerdictDiagnostic {
+  status: 'claimed_without_verdict' | 'expired_without_verdict'
+  work_order_id: string
+  review_round?: number
+  review_seat?: number
+  claimed_at?: string
+  lease_expires_at?: string
+  reason: string
 }
 
 // Unauthenticated display snapshot (GET /v1/workspace). The authenticated
@@ -191,6 +202,7 @@ export interface WorkspaceConfigRepo {
 export interface WorkspaceConfigRoute {
   model: string
   model_policy?: 'explicit' | 'harness_default'
+  effort?: 'low' | 'medium' | 'high'
   timeout: string
   execution: 'in_process' | 'mcp'
   harness?: string
@@ -198,6 +210,7 @@ export interface WorkspaceConfigRoute {
 
 export interface WorkspaceHarness {
   name: string
+  mcp_transport: 'json_file' | 'toml_override'
   command: string[]
   model_args?: string[]
   default_model_sentinels?: string[]
@@ -233,6 +246,7 @@ export interface WorkspaceConfigDocument {
       harness: string
       model?: string
       model_policy: 'explicit' | 'harness_default'
+	  effort?: 'low' | 'medium' | 'high'
       timeout: string
     }
     review: {
@@ -277,6 +291,7 @@ export interface ActivityItem {
   needs_attention: boolean
   spec?: SpecVersion
   work_orders: WorkOrder[]
+  review_diagnostics?: ReviewVerdictDiagnostic[]
 }
 
 export interface WorkOrder {
@@ -304,6 +319,13 @@ export interface WorkOrder {
   queue_deadline: string
   execution_started_at?: string
   execution_deadline?: string
+  last_attempt_outcome?: 'child_failure' | 'released' | 'cancelled' | 'expired'
+  last_failure_message?: string
+  last_failure_exit_status?: number
+  last_failure_at?: string
+  automatic_retry_count?: number
+  next_retry_at?: string
+  retry_suppressed?: boolean
   redispatch_count: number
   progress?: string
   cost_usd: number

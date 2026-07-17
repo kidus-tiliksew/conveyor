@@ -3,7 +3,9 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -631,9 +633,9 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	harness := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
+	harness := config.Harness{Name: "codex", MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Model: "gpt-5", ModelPolicy: config.ModelPolicyExplicit, EffectiveModel: "gpt-5", Harness: "codex", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP},
+		"implement": {Model: "gpt-5", ModelPolicy: config.ModelPolicyExplicit, EffectiveModel: "gpt-5", Harness: "codex", Effort: "high", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP},
 	}}}
 	dispatcher := New(st, cfg, nil)
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
@@ -644,8 +646,23 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
 	order := orders[0]
-	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" {
+	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredEffort != "high" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" || order.RequiredHarnessConfig.MCPTransport != config.MCPTransportTOMLOverride || !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
 		t.Fatalf("snapshotted order=%+v", order)
+	}
+	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
+	if !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
+		t.Fatalf("hot reload mutated in-flight effort argv: %+v", order.RequiredHarnessConfig)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	var audit map[string]any
+	if err = json.Unmarshal(events[len(events)-1].Payload, &audit); err != nil || audit["required_effort"] != "high" {
+		t.Fatalf("implementation effort audit=%+v err=%v", audit, err)
+	}
+	if argv, ok := audit["effort_argv"].([]any); !ok || len(argv) != 2 || argv[1] != `model_reasoning_effort="high"` {
+		t.Fatalf("implementation effort argv audit=%+v", audit)
 	}
 }
 

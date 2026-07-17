@@ -109,6 +109,18 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 		t.Fatalf("invalid status=%d updates=%d body=%s", invalidResult.Code, backend.updates, invalidResult.Body)
 	}
 
+	document.ExecutionSettings.Implementation.Effort = "medium"
+	unsupportedBody, _ := json.Marshal(map[string]any{"document": document})
+	unsupported := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(unsupportedBody)))
+	unsupported.Header.Set("Authorization", "Bearer token")
+	unsupported.Header.Set("If-Match", `"3"`)
+	unsupportedResult := httptest.NewRecorder()
+	h.ServeHTTP(unsupportedResult, unsupported)
+	if unsupportedResult.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(unsupportedResult.Body.String(), `"field":"execution_settings.implementation.effort"`) || !strings.Contains(unsupportedResult.Body.String(), `effort \"medium\" is not supported by harness \"codex\"`) {
+		t.Fatalf("unsupported effort status=%d updates=%d body=%s", unsupportedResult.Code, backend.updates, unsupportedResult.Body)
+	}
+	document.ExecutionSettings.Implementation.Effort = ""
+
 	document.ExecutionSettings.Implementation.TimeoutText = "45m"
 	document.Routing.Stages["implement"] = config.StageRoute{Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "45m", Execution: config.ExecutionMCP}
 	body, _ := json.Marshal(map[string]any{"document": document})

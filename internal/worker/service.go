@@ -25,6 +25,9 @@ const (
 	DefaultPairingTTL    = 10 * time.Minute
 	DefaultLivenessLease = 15 * time.Second
 	DefaultClaimLease    = 30 * time.Second
+	DefaultRetryDelay    = time.Second
+	DefaultRetryMaximum  = 4 * time.Second
+	DefaultRetryLimit    = 3
 )
 
 type Service struct {
@@ -32,6 +35,9 @@ type Service struct {
 	WorkOrders     *workorder.Service
 	ConfigProvider func(context.Context) (*config.Config, error)
 	Now            func() time.Time
+	RetryDelay     time.Duration
+	RetryMaximum   time.Duration
+	RetryLimit     int
 }
 
 type Enrollment struct {
@@ -45,6 +51,7 @@ type DispatchOrder struct {
 	Harness          config.Harness `json:"harness"`
 	Model            string         `json:"model"`
 	Effort           string         `json:"effort,omitempty"`
+	EffortArgv       []string       `json:"effort_argv,omitempty"`
 	HarnessSelection string         `json:"harness_selection"`
 	Dispatch         string         `json:"dispatch"`
 	Confinement      string         `json:"confinement"`
@@ -69,6 +76,7 @@ type WorkerConfig struct {
 func HarnessFingerprint(harness config.Harness) string {
 	data, _ := json.Marshal(struct {
 		Name                  string              `json:"name"`
+		MCPTransport          string              `json:"mcp_transport"`
 		Command               []string            `json:"command"`
 		ModelArgs             []string            `json:"model_args"`
 		DefaultModelSentinels []string            `json:"default_model_sentinels"`
@@ -76,7 +84,7 @@ func HarnessFingerprint(harness config.Harness) string {
 		ProbeCommand          []string            `json:"probe_command"`
 		ProbeTimeout          string              `json:"probe_timeout"`
 	}{
-		Name: harness.Name, Command: canonicalArgs(harness.Command),
+		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: canonicalArgs(harness.Command),
 		ModelArgs: canonicalArgs(harness.ModelArgs), DefaultModelSentinels: canonicalArgs(harness.DefaultModelSentinels),
 		EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand), ProbeTimeout: harness.ProbeTimeoutText,
 	})
@@ -352,7 +360,11 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if order.RequiredModel != "" {
 			model = order.RequiredModel
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		var effortArgv []string
+		if order.RequiredEffort != "" && order.RequiredHarnessConfig != nil {
+			effortArgv = append([]string(nil), order.RequiredHarnessConfig.EffortArgv...)
+		}
+		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
@@ -439,8 +451,12 @@ func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, 
 
 func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 	probeTimeout, _ := time.ParseDuration(snapshot.ProbeTimeoutText)
+	transport := snapshot.MCPTransport
+	if transport == "" {
+		transport = config.MCPTransportJSONFile
+	}
 	return config.Harness{
-		Name: snapshot.Name, Command: append([]string(nil), snapshot.Command...),
+		Name: snapshot.Name, MCPTransport: transport, Command: append([]string(nil), snapshot.Command...),
 		ModelArgs:             append([]string(nil), snapshot.ModelArgs...),
 		DefaultModelSentinels: append([]string(nil), snapshot.DefaultModelSentinels...),
 		EffortArgs:            cloneEffortArgs(snapshot.EffortArgs),
@@ -479,10 +495,13 @@ func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
 		return false
 	}
 	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: harness.Command, ModelArgs: harness.ModelArgs,
 		DefaultModelSentinels: harness.DefaultModelSentinels,
-		EffortArgs:            harness.EffortArgs,
-		ProbeCommand:          harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+		EffortArgs:            harness.EffortArgs, Effort: route.Effort,
+		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+	}
+	if route.Effort != "" {
+		snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[route.Effort]...)
 	}
 	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
@@ -528,7 +547,7 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 		return false
 	}
 	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: harness.Command, ModelArgs: harness.ModelArgs,
 		DefaultModelSentinels: harness.DefaultModelSentinels,
 		EffortArgs:            harness.EffortArgs, Effort: seat.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
@@ -547,9 +566,37 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 	return result
 }
 
-func (s *Service) Renew(ctx context.Context, worker core.Worker, id string) (core.WorkOrder, error) {
-	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, DefaultClaimLease)
+func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID string) (core.WorkOrder, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("session_id is required")
+	}
+	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, sessionID, DefaultClaimLease)
 }
-func (s *Service) Release(ctx context.Context, worker core.Worker, id, reason string) (core.WorkOrder, error) {
-	return s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, strings.TrimSpace(reason))
+func (s *Service) Release(ctx context.Context, worker core.Worker, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	if strings.TrimSpace(release.SessionID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("session_id is required")
+	}
+	release.Reason = strings.TrimSpace(release.Reason)
+	if release.Outcome == "" {
+		release.Outcome = core.WorkOrderOutcomeReleased
+	}
+	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
+		return core.WorkOrder{}, fmt.Errorf("invalid worker release outcome %q", release.Outcome)
+	}
+	release.InitialRetryDelay = s.RetryDelay
+	if release.InitialRetryDelay <= 0 {
+		release.InitialRetryDelay = DefaultRetryDelay
+	}
+	release.MaximumRetryDelay = s.RetryMaximum
+	if release.MaximumRetryDelay <= 0 {
+		release.MaximumRetryDelay = DefaultRetryMaximum
+	}
+	if release.MaximumRetryDelay < release.InitialRetryDelay {
+		release.MaximumRetryDelay = release.InitialRetryDelay
+	}
+	release.AutomaticRetryLimit = s.RetryLimit
+	if release.AutomaticRetryLimit <= 0 {
+		release.AutomaticRetryLimit = DefaultRetryLimit
+	}
+	return s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, release)
 }

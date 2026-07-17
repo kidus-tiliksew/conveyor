@@ -102,6 +102,66 @@ func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *te
 	}
 }
 
+func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "recover-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "recover-order", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "child", Outcome: core.WorkOrderOutcomeCancelled, Reason: "worker shutting down"}); err != nil {
+		t.Fatal(err)
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	server.ConfigProvider = provider
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	call := func(token, requestID string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+job.ID+"/recover?workspace_id=demo", strings.NewReader(`{"request_id":"`+requestID+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("", "recover-1"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("token", ""); response.Code != http.StatusConflict {
+		t.Fatalf("missing id status=%d body=%s", response.Code, response.Body.String())
+	}
+	first := call("token", "recover-1")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"claimable":true`) {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := call("token", "recover-1")
+	if second.Code != http.StatusOK {
+		t.Fatalf("duplicate status=%d body=%s", second.Code, second.Body.String())
+	}
+	if response := call("token", "recover-2"); response.Code != http.StatusConflict {
+		t.Fatalf("new request after recovery status=%d body=%s", response.Code, response.Body.String())
+	}
+	count, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	if count != 1 {
+		t.Fatalf("recovery events=%d", count)
+	}
+}
+
 func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()
@@ -365,6 +425,63 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 	handler.ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews", nil))
 	if reviews.Code != http.StatusOK || bytes.Contains(reviews.Body.Bytes(), []byte(`"id":"running"`)) {
 		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+}
+
+func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "missing-verdicts", State: core.TaskRunning, CreatedAt: now.Add(-time.Hour)}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []core.Job{
+		{ID: "review-current-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning},
+		{ID: "review-expired-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning},
+	} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := core.WorkOrder{
+		ID: "review-current", TaskID: task.ID, JobID: "review-current-job", Stage: core.StageReview,
+		State: core.WorkOrderClaimed, ReviewRound: 1, ReviewSeat: 1,
+		ExecutionStartedAt: now.Add(-2 * time.Minute), LeaseExpiresAt: now.Add(5 * time.Minute),
+	}
+	expiredClaim := core.WorkOrder{
+		ID: "review-expired", TaskID: task.ID, JobID: "review-expired-job", Stage: core.StageReview,
+		State: core.WorkOrderClaimed, ReviewRound: 1, ReviewSeat: 2,
+		ExecutionStartedAt: now.Add(-10 * time.Minute), LeaseExpiresAt: now.Add(-5 * time.Minute),
+	}
+	expired := expiredClaim
+	expired.State, expired.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
+	for _, order := range []core.WorkOrder{current, expired} {
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, JobID: expired.JobID, Kind: "work_order.claimed",
+		Payload: core.JSONPayload(expiredClaim), At: now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(st).Handler()
+	for _, path := range []string{"/v1/activity", "/v1/tasks/missing-verdicts/activity"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		for _, expected := range []string{
+			`"status":"claimed_without_verdict"`, `"work_order_id":"review-current"`, `"review_seat":1`,
+			`"status":"expired_without_verdict"`, `"work_order_id":"review-expired"`, `"review_seat":2`,
+		} {
+			if !strings.Contains(response.Body.String(), expected) {
+				t.Fatalf("%s missing %s: %s", path, expected, response.Body.String())
+			}
+		}
 	}
 }
 

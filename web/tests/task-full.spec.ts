@@ -16,7 +16,15 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'recovery' ? {
+		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
+		events: [],
+		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : { jobs: [], events: [], work_orders: [] }
+	const reviewDiagnostics = taskId === 'diagnostics' ? [
+		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
+		{ status: 'expired_without_verdict', work_order_id: 'diagnostics-review-1-seat-2', review_round: 1, review_seat: 2, claimed_at: '2026-07-15T11:30:00Z', lease_expires_at: '2026-07-15T11:45:00Z', reason: 'review claim lease expired without terminal verdict submission' },
+	] : []
   return {
     task: {
       id: taskId,
@@ -51,6 +59,7 @@ function activity(taskId: string, overflowing: boolean) {
       approved_at: createdAt,
     },
 		work_orders: reviewActivity.work_orders,
+		review_diagnostics: reviewDiagnostics,
   }
 }
 
@@ -64,6 +73,11 @@ async function mockTaskAPIs(page: Page) {
       await route.fulfill({ json: activity(taskId, taskId === 'overflowing') })
       return
     }
+		if (url.pathname === '/v1/activity') {
+			const item = activity('diagnostics', false)
+			await route.fulfill({ json: [{ task: item.task, latest_stage: 'review', last_event_at: createdAt, needs_attention: false, review_diagnostics: item.review_diagnostics }] })
+			return
+		}
     if (url.pathname.endsWith('/events/stream')) {
       await route.fulfill({ status: 204 })
       return
@@ -74,6 +88,20 @@ async function mockTaskAPIs(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockTaskAPIs(page)
+})
+
+test('suppressed worker order exposes failure state and audited recovery action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let recoveryRequest = ''
+	await page.route('**/v1/work-orders/*/recover*', async (route) => {
+		recoveryRequest = route.request().postData() ?? ''
+		await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
+	})
+	await page.goto('/tasks/recovery/full')
+	await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
+	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
+	await page.getByRole('button', { name: 'Recover work order' }).click()
+	await expect.poll(() => recoveryRequest).toContain('request_id')
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
@@ -139,4 +167,18 @@ test('review cards and activity notes retain approve and changes feedback', asyn
 	const legacyReviewActivity = page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })
 	await expect(legacyReviewActivity).toBeVisible()
 	await expect(legacyReviewActivity).not.toContainText('effort')
+})
+
+test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
+	await page.goto('/tasks/diagnostics/full')
+
+	await expect(page.getByText('Review claimed without terminal verdict submission')).toBeVisible()
+	await expect(page.getByText(/seat 1 · diagnostics-review-1-seat-1 · review claim is active/)).toBeVisible()
+	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
+	await expect(page.getByText(/seat 2 · diagnostics-review-1-seat-2 · review claim lease expired/)).toBeVisible()
+})
+
+test('board activity surfaces expired-without-verdict state', async ({ page }) => {
+	await page.goto('/')
+	await expect(page.getByText('Verdict claim expired')).toBeVisible()
 })

@@ -55,6 +55,17 @@ export function gateBadge(item: ActivitySummary): { label: string; variant: 'att
   return { label: 'Needs attention', variant: 'attention' }
 }
 
+export function reviewDiagnosticBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'accent' } | undefined {
+	const diagnostics = item.review_diagnostics ?? []
+	if (diagnostics.some((diagnostic) => diagnostic.status === 'expired_without_verdict')) {
+		return { label: 'Verdict claim expired', variant: 'attention' }
+	}
+	if (diagnostics.some((diagnostic) => diagnostic.status === 'claimed_without_verdict')) {
+		return { label: 'Awaiting verdict submission', variant: 'accent' }
+	}
+	return undefined
+}
+
 // Why a task is at a human gate — the detail the "Needs attention" badge
 // alone doesn't carry.
 export function attentionReason(task: Task, events: TaskEvent[]): string {
@@ -112,6 +123,18 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
 function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
+    case 'work_order.child_failed':
+      return {
+        title: payload.retry_suppressed === true ? 'Worker child failed — automatic retry suppressed' : 'Worker child failed — retry scheduled',
+        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+        alarm: true,
+      }
+    case 'work_order.expired':
+      return { title: 'Worker claim expired — operator recovery required', alarm: true }
+    case 'work_order.released':
+      return { title: 'Worker attempt released', detail: typeof payload.reason === 'string' ? payload.reason : undefined, alarm: true }
+    case 'work_order.recovered':
+      return { title: 'Work order recovered by operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
     case 'pull_request.opened':
       return {
         title: 'Pull request opened',
@@ -167,6 +190,12 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
     }
     case 'review.round_completed':
       return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
+	case 'work_order.released':
+		return {
+			title: 'Work-order claim released',
+			detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+			alarm: payload.reason === 'harness exited without terminal verdict submission',
+		}
     case 'merge.requested':
       return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.confirmed':
@@ -266,6 +295,21 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
     const note = noteFor(event)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
+	for (const diagnostic of item.review_diagnostics ?? []) {
+		const seat = diagnostic.review_seat ? `seat ${diagnostic.review_seat}` : 'review seat'
+		entries.push({
+			type: 'note',
+			at: diagnostic.status === 'expired_without_verdict'
+				? (diagnostic.lease_expires_at ?? diagnostic.claimed_at ?? item.task.created_at)
+				: (diagnostic.claimed_at ?? item.task.created_at),
+			key: `review-diagnostic-${diagnostic.status}-${diagnostic.work_order_id}`,
+			title: diagnostic.status === 'expired_without_verdict'
+				? 'Review claim expired without verdict submission'
+				: 'Review claimed without terminal verdict submission',
+			detail: `${seat} · ${diagnostic.work_order_id} · ${diagnostic.reason}`,
+			alarm: diagnostic.status === 'expired_without_verdict',
+		})
+	}
   for (const intervention of item.interventions) {
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
