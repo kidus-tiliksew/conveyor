@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,12 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 }
 
 type queuedTask struct{ Workspace, TaskID string }
+
+const (
+	maxModelAttachmentBytes = 25 << 20
+	maxModelImageBytes      = 20 << 20
+	maxModelFileBytes       = 50 << 20
+)
 
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
 	if !d.durableQueue {
@@ -243,19 +250,20 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	}
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
+	input, err := d.buildStageInput(ctx, task.NextStage, task)
+	if err != nil {
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "artifact.context_failed", Payload: core.JSONPayload(map[string]string{"stage": string(task.NextStage), "error": err.Error()})})
+		return err
+	}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
 	if err := d.Store.CreateJob(ctx, job); err != nil {
 		return err
 	}
-	prompt, err := d.buildStagePrompt(ctx, task.NextStage, task)
-	if err != nil {
-		return err
-	}
 	stageCtx, cancel := context.WithTimeout(ctx, route.Timeout)
 	defer cancel()
-	result, runErr := d.Agent.Run(stageCtx, route.Model, prompt)
+	result, runErr := d.Agent.Run(stageCtx, route.Model, input)
 	job.EndedAt = time.Now().UTC()
 	job.TokensIn = result.TokensIn
 	job.TokensOut = result.TokensOut
@@ -281,10 +289,10 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
 }
 
-func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, task core.Task) (string, error) {
+func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task core.Task) (inprocess.Input, error) {
 	role, err := d.Pack.Role(stage)
 	if err != nil {
-		return "", err
+		return inprocess.Input{}, err
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
@@ -306,26 +314,78 @@ func (d *Dispatcher) buildStagePrompt(ctx context.Context, stage core.Stage, tas
 	if stage == core.StageImplement || stage == core.StageReview {
 		spec, exists, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
 		if getErr != nil {
-			return "", getErr
+			return inprocess.Input{}, getErr
 		}
 		if exists && spec.Approved {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
 		}
 	}
-	artifacts, _ := d.Store.ListArtifacts(ctx)
+	artifacts, err := d.Store.ListArtifacts(ctx)
+	if err != nil {
+		return inprocess.Input{}, fmt.Errorf("list context artifacts for task %s: %w", task.ID, err)
+	}
+	input := inprocess.Input{}
+	seen := map[string]bool{}
+	totalBytes := 0
 	for _, artifact := range artifacts {
 		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
 			continue
 		}
-		fmt.Fprintf(&prompt, "\nContext artifact: %s (%s, %d bytes, id %s)", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID)
-		if strings.HasPrefix(artifact.ContentType, "text/") || artifact.ContentType == "application/json" {
-			_, content, getErr := d.Store.GetArtifact(ctx, artifact.ID)
-			if getErr == nil && len(content) <= 1<<20 {
-				prompt.WriteString("\n\n" + string(content) + "\n")
-			}
+		if seen[artifact.ID] {
+			continue
 		}
+		seen[artifact.ID] = true
+		resolved, content, getErr := d.Store.GetArtifactForContext(ctx, artifact.ID, task.ID, task.FeatureID)
+		if getErr != nil {
+			return inprocess.Input{}, fmt.Errorf("read context artifact %s for task %s: %w", artifact.ID, task.ID, getErr)
+		}
+		if len(content) > maxModelAttachmentBytes {
+			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", resolved.ID, resolved.Name, maxModelAttachmentBytes)
+		}
+		kind, kindErr := modelAttachmentKind(resolved)
+		if kindErr != nil {
+			return inprocess.Input{}, kindErr
+		}
+		if kind == inprocess.AttachmentImage && len(content) > maxModelImageBytes {
+			return inprocess.Input{}, fmt.Errorf("image artifact %s (%s) exceeds the %d-byte image input limit", resolved.ID, resolved.Name, maxModelImageBytes)
+		}
+		totalBytes += len(content)
+		if totalBytes > maxModelFileBytes {
+			return inprocess.Input{}, fmt.Errorf("context artifacts for task %s exceed the %d-byte combined model input limit", task.ID, maxModelFileBytes)
+		}
+		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, resolved.Name, resolved.ContentType, len(content), resolved.ID)
+		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: resolved.ID, Name: resolved.Name, ContentType: resolved.ContentType, Kind: kind, Content: content})
 	}
-	return prompt.String(), nil
+	input.Prompt = prompt.String()
+	return input, nil
+}
+
+// modelAttachmentKind is the provider boundary for in-process pipeline context:
+// text/documents use Responses input_file, images use input_image, and audio is
+// transcribed before the stage request. Anything outside that documented set
+// fails before model execution instead of degrading to metadata (spec §21.4).
+func modelAttachmentKind(artifact core.Artifact) (inprocess.AttachmentKind, error) {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(artifact.ContentType, ";")[0]))
+	ext := strings.ToLower(filepath.Ext(artifact.Name))
+	switch contentType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return inprocess.AttachmentImage, nil
+	}
+	if strings.HasPrefix(contentType, "audio/") || contentType == "application/ogg" {
+		switch ext {
+		case ".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm":
+			return inprocess.AttachmentAudio, nil
+		}
+		return "", fmt.Errorf("unsupported audio attachment %s (%s): extension %s is not transcribable", artifact.ID, artifact.Name, ext)
+	}
+	if strings.HasPrefix(contentType, "text/") || contentType == "application/json" || contentType == "application/xml" || contentType == "application/pdf" {
+		return inprocess.AttachmentDocument, nil
+	}
+	switch ext {
+	case ".txt", ".md", ".json", ".html", ".xml", ".csv", ".tsv", ".pdf", ".doc", ".docx", ".rtf", ".odt", ".ppt", ".pptx", ".xls", ".xlsx":
+		return inprocess.AttachmentDocument, nil
+	}
+	return "", fmt.Errorf("unsupported context artifact %s (%s, %s); pipeline context was not prepared", artifact.ID, artifact.Name, artifact.ContentType)
 }
 
 func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, output, reviewer string) error {

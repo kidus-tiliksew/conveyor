@@ -2,6 +2,7 @@ package workorder
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +17,67 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	if err := st.CreateFeature(ctx, core.Feature{ID: "feature-a", Name: "Feature A", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []core.Task{
+		{ID: "task-a", Workspace: "demo", FeatureID: "feature-a", State: core.TaskRunning, CreatedAt: time.Now()},
+		{ID: "task-b", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, order := range []core.WorkOrder{
+		{ID: "order-a", TaskID: "task-a", JobID: "job-a", Stage: core.StageImplement, State: core.WorkOrderQueued},
+		{ID: "order-b", TaskID: "task-b", JobID: "job-b", Stage: core.StageImplement, State: core.WorkOrderQueued},
+	} {
+		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifactA, err := st.CreateArtifact(ctx, core.Artifact{Name: "a.pdf", ContentType: "application/pdf", TaskID: "task-a"}, []byte("pdf-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactB, err := st.CreateArtifact(ctx, core.Artifact{Name: "b.pdf", ContentType: "application/pdf", TaskID: "task-b"}, []byte("pdf-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	read, err := service.ReadArtifact(ctx, "order-a", "order-a-session", artifactA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(read.Data)
+	if err != nil || string(decoded) != "pdf-a" || read.Artifact.TaskID != "task-a" {
+		t.Fatalf("read=%+v decoded=%q err=%v", read, decoded, err)
+	}
+	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", artifactB.ID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("cross-task read error=%v", err)
+	}
+	featureArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "feature.md", ContentType: "text/markdown", FeatureID: "feature-a"}, []byte("feature context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", featureArtifact.ID); err != nil {
+		t.Fatalf("assigned feature read: %v", err)
+	}
+	if _, err = service.ReadArtifact(ctx, "order-a", "wrong-session", artifactA.ID); err == nil || !strings.Contains(err.Error(), "another session") {
+		t.Fatalf("wrong-session read error=%v", err)
+	}
+}
 
 type staticAgent struct{ output string }
 
@@ -32,7 +94,7 @@ func (st *flakyReviewAcceptanceStore) AcceptReviewDecision(ctx context.Context, 
 	return st.Store.AcceptReviewDecision(ctx, decision)
 }
 
-func (agent staticAgent) Run(context.Context, string, string) (inprocess.Result, error) {
+func (agent staticAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
 	return inprocess.Result{Output: agent.output, TokensIn: 10, TokensOut: 4}, nil
 }
 

@@ -5,10 +5,13 @@ package inprocess
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -26,8 +29,29 @@ type Result struct {
 	Redactions core.RedactionStats
 }
 
+type AttachmentKind string
+
+const (
+	AttachmentImage    AttachmentKind = "image"
+	AttachmentDocument AttachmentKind = "document"
+	AttachmentAudio    AttachmentKind = "audio"
+)
+
+type Attachment struct {
+	ID          string
+	Name        string
+	ContentType string
+	Kind        AttachmentKind
+	Content     []byte
+}
+
+type Input struct {
+	Prompt      string
+	Attachments []Attachment
+}
+
 type Agent interface {
-	Run(context.Context, string, string) (Result, error)
+	Run(context.Context, string, Input) (Result, error)
 }
 
 type OpenAI struct {
@@ -36,7 +60,7 @@ type OpenAI struct {
 	Client  *http.Client
 }
 
-func (client *OpenAI) Run(ctx context.Context, model, prompt string) (Result, error) {
+func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Result, error) {
 	if strings.TrimSpace(client.APIKey) == "" {
 		return Result{}, fmt.Errorf("CONVEYOR_API_KEY is required for in-process stages")
 	}
@@ -44,7 +68,33 @@ func (client *OpenAI) Run(ctx context.Context, model, prompt string) (Result, er
 	if endpoint == "" {
 		endpoint = "https://api.openai.com/v1"
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "store": false})
+	content := []map[string]any{{"type": "input_text", "text": input.Prompt}}
+	auditContent := []map[string]any{{"type": "input_text", "text": input.Prompt}}
+	for _, attachment := range input.Attachments {
+		dataURL := "data:" + attachment.ContentType + ";base64," + base64.StdEncoding.EncodeToString(attachment.Content)
+		metadata := fmt.Sprintf("[binary omitted: artifact %s, %s, %d bytes]", attachment.ID, attachment.ContentType, len(attachment.Content))
+		switch attachment.Kind {
+		case AttachmentImage:
+			content = append(content, map[string]any{"type": "input_image", "image_url": dataURL, "detail": "auto"})
+			auditContent = append(auditContent, map[string]any{"type": "input_image", "image_url": metadata})
+		case AttachmentDocument:
+			content = append(content, map[string]any{"type": "input_file", "filename": attachment.Name, "file_data": dataURL})
+			auditContent = append(auditContent, map[string]any{"type": "input_file", "filename": attachment.Name, "file_data": metadata})
+		case AttachmentAudio:
+			transcript, err := client.transcribe(ctx, endpoint, attachment)
+			if err != nil {
+				return Result{}, fmt.Errorf("transcribe artifact %s (%s): %w", attachment.ID, attachment.Name, err)
+			}
+			text := fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n%s", attachment.Name, attachment.ID, transcript)
+			content = append(content, map[string]any{"type": "input_text", "text": text})
+			auditContent = append(auditContent, map[string]any{"type": "input_text", "text": fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n[transcript supplied to model; %d characters]", attachment.Name, attachment.ID, len(transcript))})
+		default:
+			return Result{}, fmt.Errorf("unsupported attachment kind %q for artifact %s", attachment.Kind, attachment.ID)
+		}
+	}
+	requestInput := []map[string]any{{"role": "user", "content": content}}
+	auditInput := []map[string]any{{"role": "user", "content": auditContent}}
+	body, _ := json.Marshal(map[string]any{"model": model, "input": requestInput, "store": false})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/responses", bytes.NewReader(body))
 	if err != nil {
 		return Result{}, err
@@ -69,8 +119,7 @@ func (client *OpenAI) Run(ctx context.Context, model, prompt string) (Result, er
 	if json.Unmarshal(raw, &responseValue) != nil {
 		responseValue = string(raw)
 	}
-	var requestValue any
-	_ = json.Unmarshal(body, &requestValue)
+	requestValue := map[string]any{"model": model, "input": auditInput, "store": false}
 	envelope, _ := json.Marshal(map[string]any{"request": requestValue, "response": responseValue})
 	transcript, stats, redactErr := redactor.RedactJSON(envelope)
 	if redactErr != nil {
@@ -115,6 +164,59 @@ func (client *OpenAI) Run(ctx context.Context, model, prompt string) (Result, er
 		return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats}, err
 	}
 	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, CostUSD: cost, Transcript: transcript, Redactions: stats}, nil
+}
+
+func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachment Attachment) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, attachment.Name))
+	header.Set("Content-Type", attachment.ContentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err = part.Write(attachment.Content); err != nil {
+		return "", err
+	}
+	if err = writer.WriteField("model", "gpt-4o-mini-transcribe"); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/audio/transcriptions", &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+client.APIKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	httpClient := client.Client
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 2 * time.Hour}
+	}
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("OpenAI transcription API returned %s", response.Status)
+	}
+	var decoded struct {
+		Text string `json:"text"`
+	}
+	if err = json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode transcription result: %w", err)
+	}
+	if strings.TrimSpace(decoded.Text) == "" {
+		return "", fmt.Errorf("transcription returned no text")
+	}
+	return decoded.Text, nil
 }
 
 type tokenPrice struct{ input, cached, output float64 }

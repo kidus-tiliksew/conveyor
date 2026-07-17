@@ -127,11 +127,15 @@ export async function fetchWorkers(token: string) { const response = await fetch
 export async function issueWorkerPairing(token: string) { const response = await fetch(workspaceURL('/v1/workers/pairings'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ ttl_seconds: 600 }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<{ pairing_token: string; expires_at: string }> }
 export async function revokeWorker(token: string, id: string) { const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), { method: 'DELETE', headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()) }
 
-export async function createTask(token: string, input: CreateTaskInput) {
-	const response = await fetch(workspaceURL('/v1/tasks'), {
+export async function createTask(token: string, input: CreateTaskInput, attachments: File[] = [], idempotencyKey = '') {
+  const body = new FormData()
+  body.set('task', JSON.stringify({ ...input, source: 'dashboard' }))
+  if (idempotencyKey) body.set('idempotency_key', idempotencyKey)
+  for (const file of attachments) body.append('attachments', file)
+  const response = await fetch(workspaceURL('/v1/tasks'), {
     method: 'POST',
-    headers: mutationHeaders(token),
-    body: JSON.stringify({ ...input, source: 'dashboard' }),
+    headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' },
+    body,
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<Task>

@@ -161,7 +161,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.Workers.Release(ctx, worker, stringArg("work_order_id"), stringArg("reason"))
 	case "get_work_order":
+		if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, stringArg("work_order_id")); err != nil {
+			return nil, err
+		}
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
+	case "read_artifact":
+		if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, stringArg("work_order_id")); err != nil {
+			return nil, err
+		}
+		return s.WorkOrders.ReadArtifact(ctx, stringArg("work_order_id"), session, stringArg("artifact_id"))
 	case "report_progress":
 		return s.WorkOrders.Progress(ctx, stringArg("work_order_id"), session, stringArg("message"))
 	case "report_usage":
@@ -184,6 +192,17 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID string) error {
+	if !workerAuth {
+		return nil
+	}
+	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil || order.WorkerID != worker.ID {
+		return store.ErrWorkerUnauthorized
+	}
+	return nil
 }
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
@@ -276,6 +295,7 @@ func mcpTools() []map[string]any {
 		{"name": "renew_work_order", "description": "Renew a worker-owned claim lease without extending its fixed execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "release_work_order", "description": "Immediately release a worker-owned active claim back to the existing queue.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "reason": str}, "work_order_id")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
+		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
