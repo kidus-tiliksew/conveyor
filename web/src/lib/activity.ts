@@ -141,15 +141,12 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
         detail: typeof payload.url === 'string' ? payload.url : undefined,
         href: typeof payload.url === 'string' ? payload.url : undefined,
       }
-    case 'pipeline.bounced': {
-      const count = typeof payload.count === 'number' ? ` (bounce ${payload.count})` : ''
-      const reason = typeof payload.reason_code === 'string' ? payload.reason_code : ''
-      const feedback = typeof payload.feedback === 'string' ? payload.feedback : ''
-      return {
-        title: `Bounced back to implement${count}`,
-        detail: [reason, feedback].filter(Boolean).join(' — '),
-      }
-    }
+    // Review jobs already render the outcome and feedback in their Code review
+    // cards. Keep the underlying audit events, but do not duplicate these two
+    // review-transition records as standalone timeline notes.
+    case 'pipeline.bounced':
+    case 'review.completed':
+      return undefined
     case 'pipeline.bounce_limit':
       return { title: 'Review check-in — paused after the configured rounds', alarm: true }
     case 'job.timeout':
@@ -173,21 +170,6 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       return { title: 'GitHub issue publication failed', detail: typeof payload.last_error === 'string' ? payload.last_error : undefined, alarm: true }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
-    case 'review.completed': {
-      // Session ids and boolean flags are audit payload, not narrative; only
-      // the reviewer model and a same-model caveat matter to a reader.
-      const parts = [
-        typeof payload.review_seat === 'number' && payload.review_seat > 0 ? `seat ${payload.review_seat}` : undefined,
-        typeof payload.reviewer_model === 'string' ? payload.reviewer_model : undefined,
-        typeof payload.required_effort === 'string' && payload.required_effort.trim()
-          ? `effort ${payload.required_effort.trim()}`
-          : undefined,
-        typeof payload.model_enforcement === 'string' ? payload.model_enforcement : undefined,
-        payload.same_model_as_implementer === true ? 'same model as the implementer' : undefined,
-        typeof payload.feedback === 'string' && payload.feedback.trim() ? `feedback: ${payload.feedback.trim()}` : undefined,
-      ].filter(Boolean)
-      return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: parts.join(' · ') || undefined }
-    }
     case 'review.round_completed':
       return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
 	case 'work_order.released':

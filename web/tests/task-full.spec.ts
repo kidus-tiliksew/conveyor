@@ -9,8 +9,11 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:02:00Z', ended_at: '2026-07-15T12:03:00Z' },
 		],
 		events: [
-			{ id: 1, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
-			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 1, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human', payload: { version: 1 }, at: '2026-07-15T11:59:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 3, task_id: taskId, kind: 'pull_request.opened', actor_id: 'system', actor_role: 'system', payload: { url: 'https://example.test/pull/1' }, at: '2026-07-15T12:01:30Z' },
+			{ id: 4, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 5, task_id: taskId, kind: 'pipeline.bounced', actor_id: 'system', actor_role: 'system', payload: { count: 1, reason_code: 'changes_requested', feedback: 'Changes guidance remains visible.' }, at: '2026-07-15T12:04:00Z' },
 		],
 		work_orders: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
@@ -154,7 +157,7 @@ test('short full-screen task content does not create a nested vertical scrollbar
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
 })
 
-test('review cards and activity notes retain approve and changes feedback', async ({ page }) => {
+test('review cards replace duplicate review and bounce activity notes', async ({ page }) => {
 	await page.goto('/tasks/reviews/full')
 
 	const approvedCard = page.locator('article').filter({ hasText: 'Seat one approved' })
@@ -167,12 +170,18 @@ test('review cards and activity notes retain approve and changes feedback', asyn
 	await expect(changesCard.getByText('Reviewer feedback: Changes guidance remains visible.')).toBeVisible()
 	await expect(changesCard.getByText('Seat 2')).toBeVisible()
 	await expect(changesCard.getByText('worker-pinned')).toBeVisible()
+	await expect(changesCard.getByText(/^Effort /)).toHaveCount(0)
+	await expect(page.getByText('Code review', { exact: true })).toHaveCount(2)
 
-	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Approved guidance remains visible.' })).toBeVisible()
-	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'effort high' })).toBeVisible()
-	const legacyReviewActivity = page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })
-	await expect(legacyReviewActivity).toBeVisible()
-	await expect(legacyReviewActivity).not.toContainText('effort')
+	await expect(page.getByText(/^Independent review:/)).toHaveCount(0)
+	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
+
+	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	await expect(timelineRows).toHaveCount(4)
+	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
+	await expect(timelineRows.nth(1)).toContainText('Seat one approved')
+	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
+	await expect(timelineRows.nth(3)).toContainText('Seat two requested changes')
 })
 
 test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
