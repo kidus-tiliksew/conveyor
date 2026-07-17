@@ -325,7 +325,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		release("write MCP config failed")
 		return err
 	}
-	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s using session_id %s. Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", item.Order.ID, c.workspace, sessionID, item.Order.Stage)
+	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
 	argv := expandHarness(item.Harness, item.Model, prompt, configPath)
 	if len(argv) == 0 {
 		release("empty harness command")
@@ -375,6 +375,14 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			return ctx.Err()
 		}
 	}
+}
+
+func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) string {
+	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s using session_id %s.", order.ID, workspace, sessionID)
+	if order.Stage != core.StageImplement {
+		return fmt.Sprintf("%s Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", prompt, order.Stage)
+	}
+	return prompt + " Use the Conveyor MCP server. First call get_work_order with that exact session_id for the approved contract. Immediately after get_work_order returns, announce a concise, plain-language summary of what the work order is about and what you will do next. Make this announcement before running checkout, inspecting files, or starting implementation. The announcement is informational: continue automatically without asking for confirmation, waiting for a user response, or pausing. Then complete the standard implement lifecycle."
 }
 
 func expandHarness(harness config.Harness, model, prompt, mcpConfig string) []string {

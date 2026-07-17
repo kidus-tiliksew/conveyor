@@ -14,6 +14,7 @@ PLUGIN = ROOT / "plugins" / "conveyor"
 MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
 SKILL = PLUGIN / "skills" / "conveyor-operator" / "SKILL.md"
 SKILL_METADATA = PLUGIN / "skills" / "conveyor-operator" / "agents" / "openai.yaml"
+WORKER_COMMAND = ROOT / "cmd" / "conveyor" / "worker_cmd.go"
 
 
 def load_json(path: Path) -> object:
@@ -26,6 +27,15 @@ def load_json(path: Path) -> object:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def require_ordered(text: str, label: str, fragments: tuple[str, ...]) -> None:
+    position = -1
+    for fragment in fragments:
+        next_position = text.find(fragment)
+        require(next_position >= 0, f"{label} is missing announcement guidance: {fragment}")
+        require(next_position > position, f"{label} announcement guidance is out of order: {fragment}")
+        position = next_position
 
 
 def main() -> int:
@@ -109,6 +119,35 @@ def main() -> int:
         "submit_for_review",
     ):
         require(required in skill_text, f"skill is missing required worktree guidance: {required}")
+
+    implement_section = skill_text.split("## Implement a work order", 1)[1].split(
+        "### Safe task-worktree setup", 1
+    )[0]
+    require_ordered(
+        implement_section,
+        "operator skill",
+        (
+            "call `get_work_order`",
+            "Immediately after `get_work_order` returns",
+            "plain-language summary of what the work order is about and what you will do",
+            "before resolving the checkout, inspecting\n   files, or starting implementation",
+            "continue\n   automatically without asking for confirmation, waiting for a user response,\n   or pausing",
+            "Resolve the dedicated checkout",
+        ),
+    )
+
+    worker_source = WORKER_COMMAND.read_text(encoding="utf-8")
+    require_ordered(
+        worker_source,
+        "Auto-mode worker launch prompt",
+        (
+            "First call get_work_order",
+            "Immediately after get_work_order returns",
+            "plain-language summary of what the work order is about and what you will do next",
+            "before running checkout, inspecting files, or starting implementation",
+            "continue automatically without asking for confirmation, waiting for a user response, or pausing",
+        ),
+    )
 
     metadata_text = SKILL_METADATA.read_text(encoding="utf-8")
     for required in (

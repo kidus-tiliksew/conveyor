@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { FolderGit2, Kanban, Plus, Settings, Workflow, type LucideIcon } from 'lucide-react'
+import { FolderGit2, Kanban, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
 import { fetchActivity, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
+import { ThemeProvider, useTheme } from './theme-provider'
 
 // The operator bearer token authenticates mutations (spec §17.3).
 // Session-scoped on purpose: closing the tab forgets it.
@@ -43,17 +44,19 @@ export function AppShell() {
   }
 
 	return (
-		<TokenContext.Provider value={{ token, setToken: saveToken }}>
-			<WorkspaceProvider token={token}>
-			<div className="flex h-screen overflow-hidden">
-        <IconRail />
-        <NavSidebar />
-        <main className="min-w-0 flex-1 overflow-hidden bg-background">
-          <Outlet />
-        </main>
-			</div>
-			</WorkspaceProvider>
-		</TokenContext.Provider>
+		<ThemeProvider>
+			<TokenContext.Provider value={{ token, setToken: saveToken }}>
+				<WorkspaceProvider token={token}>
+					<div className="flex h-screen overflow-hidden">
+						<IconRail />
+						<NavSidebar />
+						<main className="min-w-0 flex-1 overflow-hidden bg-background">
+							<Outlet />
+						</main>
+					</div>
+				</WorkspaceProvider>
+			</TokenContext.Provider>
+		</ThemeProvider>
 	)
 }
 
@@ -151,8 +154,29 @@ function NavSidebar() {
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
+			<ThemeSwitcher />
     </nav>
   )
+}
+
+function ThemeSwitcher() {
+	const { choice, setChoice } = useTheme()
+	return (
+		<label className="m-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-muted">
+			<SunMoon className="size-4 shrink-0" aria-hidden="true" />
+			<span className="shrink-0">Theme</span>
+			<select
+				aria-label="Theme"
+				value={choice}
+				onChange={(event) => setChoice(event.target.value as typeof choice)}
+				className="min-w-0 flex-1 cursor-pointer rounded border border-border bg-card px-1.5 py-1 text-xs text-foreground outline-none hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+			>
+				<option value="light">Light</option>
+				<option value="dark">Dark</option>
+				<option value="system">System</option>
+			</select>
+		</label>
+	)
 }
 
 function NavItem({
