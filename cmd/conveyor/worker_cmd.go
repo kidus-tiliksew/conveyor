@@ -151,7 +151,7 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 		if err != nil {
 			return err
 		}
-		probes := probeHarnesses(ctx, document.Harnesses)
+		probes := probeWorkerConfig(ctx, document)
 		if _, err = c.heartbeatWorker(credential, probes); err != nil {
 			return err
 		}
@@ -219,13 +219,47 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 }
 
 func probeHarnesses(ctx context.Context, harnesses []config.Harness) []core.HarnessProbe {
-	results := make(chan core.HarnessProbe, len(harnesses))
-	var probes sync.WaitGroup
+	targets := make([]workerservice.HarnessProbeTarget, 0, len(harnesses))
 	for _, harness := range harnesses {
-		harness := harness
+		targets = append(targets, workerservice.HarnessProbeTarget{Harness: harness, Fingerprint: workerservice.HarnessFingerprint(harness)})
+	}
+	return probeHarnessTargets(ctx, targets)
+}
+
+func probeWorkerConfig(ctx context.Context, document workerservice.WorkerConfig) []core.HarnessProbe {
+	byFingerprint := map[string]workerservice.HarnessProbeTarget{}
+	for _, harness := range document.Harnesses {
+		fingerprint := workerservice.HarnessFingerprint(harness)
+		byFingerprint[fingerprint] = workerservice.HarnessProbeTarget{Harness: harness, Fingerprint: fingerprint}
+	}
+	for _, target := range document.ActiveHarnesses {
+		if target.Fingerprint == "" {
+			target.Fingerprint = workerservice.HarnessFingerprint(target.Harness)
+		}
+		byFingerprint[target.Fingerprint] = target
+	}
+	targets := make([]workerservice.HarnessProbeTarget, 0, len(byFingerprint))
+	for _, target := range byFingerprint {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Harness.Name != targets[j].Harness.Name {
+			return targets[i].Harness.Name < targets[j].Harness.Name
+		}
+		return targets[i].Fingerprint < targets[j].Fingerprint
+	})
+	return probeHarnessTargets(ctx, targets)
+}
+
+func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessProbeTarget) []core.HarnessProbe {
+	results := make(chan core.HarnessProbe, len(targets))
+	var probes sync.WaitGroup
+	for _, target := range targets {
+		target := target
 		probes.Add(1)
 		go func() {
 			defer probes.Done()
+			harness := target.Harness
 			timeout := harness.ProbeTimeout
 			if timeout <= 0 {
 				timeout, _ = time.ParseDuration(harness.ProbeTimeoutText)
@@ -244,16 +278,21 @@ func probeHarnesses(ctx context.Context, harnesses []config.Harness) []core.Harn
 			if err != nil && message == "" {
 				message = err.Error()
 			}
-			results <- core.HarnessProbe{Harness: harness.Name, Healthy: err == nil, Message: message, CheckedAt: time.Now().UTC()}
+			results <- core.HarnessProbe{Harness: harness.Name, Fingerprint: target.Fingerprint, Healthy: err == nil, Message: message, CheckedAt: time.Now().UTC()}
 		}()
 	}
 	probes.Wait()
 	close(results)
-	result := make([]core.HarnessProbe, 0, len(harnesses))
+	result := make([]core.HarnessProbe, 0, len(targets))
 	for probe := range results {
 		result = append(result, probe)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Harness < result[j].Harness })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Harness != result[j].Harness {
+			return result[i].Harness < result[j].Harness
+		}
+		return result[i].Fingerprint < result[j].Fingerprint
+	})
 	return result
 }
 

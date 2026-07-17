@@ -65,6 +65,10 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, "document", err)
 		return
 	}
+	if request.Document.Review.Seats != nil && len(request.Document.Review.Seats) == 0 {
+		writeValidationError(w, "review", errors.New("review.seats must contain at least one seat"))
+		return
+	}
 	data, err := yaml.Marshal(request.Document)
 	if err != nil {
 		writeValidationError(w, "document", err)
@@ -115,7 +119,7 @@ func writeValidationError(w http.ResponseWriter, field string, err error) {
 
 func validationField(err error) string {
 	message := err.Error()
-	for _, field := range []string{"max_bounces", "work_order_queue_timeout", "routing", "repo", "workspace"} {
+	for _, field := range []string{"max_bounces", "work_order_queue_timeout", "routing", "review", "repo", "workspace"} {
 		if strings.Contains(message, field) {
 			if field == "repo" {
 				return "repos"

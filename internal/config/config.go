@@ -63,6 +63,18 @@ type Harness struct {
 	ProbeTimeoutText string        `yaml:"probe_timeout" json:"probe_timeout"`
 }
 
+// ReviewSeat is one immutable assignment in a submitted review round. The
+// model is always pinned; Harness optionally overrides the workspace review
+// route for worker dispatch (spec §21.12 change 4).
+type ReviewSeat struct {
+	Model   string `yaml:"model" json:"model"`
+	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
+}
+
+type ReviewPanel struct {
+	Seats []ReviewSeat `yaml:"seats,omitempty" json:"seats"`
+}
+
 type ExecutionPolicy struct {
 	DefaultMode          string `yaml:"default_mode" json:"default_mode"`
 	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
@@ -87,6 +99,7 @@ type WorkspaceDocument struct {
 	WorkOrderQueueTimeoutText string          `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
 	Routing                   Routing         `yaml:"routing" json:"routing"`
 	Harnesses                 []Harness       `yaml:"harnesses,omitempty" json:"harnesses"`
+	Review                    ReviewPanel     `yaml:"review" json:"review"`
 	Execution                 ExecutionPolicy `yaml:"execution" json:"execution"`
 	Repos                     []Repo          `yaml:"repos" json:"repos"`
 
@@ -120,6 +133,7 @@ type Config struct {
 	Database                  Database        `yaml:"database"`
 	Routing                   Routing         `yaml:"routing"`
 	Harnesses                 []Harness       `yaml:"harnesses,omitempty"`
+	Review                    ReviewPanel     `yaml:"review"`
 	Execution                 ExecutionPolicy `yaml:"execution"`
 	Repos                     []Repo          `yaml:"repos"`
 }
@@ -153,6 +167,14 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
 	next.Routing = document.Routing
 	next.Harnesses = document.Harnesses
+	if document.Review.Seats == nil {
+		if route, ok := document.Routing.Stages["review"]; ok && route.Model != "" {
+			document.Review.Seats = []ReviewSeat{{Model: route.Model, Harness: route.Harness}}
+		} else {
+			document.Review = deployment.Review
+		}
+	}
+	next.Review = document.Review
 	next.Execution = document.Execution
 	next.Repos = document.Repos
 	return normalize(&next, source)
@@ -169,7 +191,7 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == ""
+	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -382,6 +404,33 @@ func normalize(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("routing stage %s is required", required)
 		}
 	}
+	reviewRoute := c.Routing.Stages["review"]
+	if c.Review.Seats == nil {
+		// Upgrade the pre-5.2 single review route without changing its behavior.
+		c.Review.Seats = []ReviewSeat{{Model: reviewRoute.Model, Harness: reviewRoute.Harness}}
+	}
+	if len(c.Review.Seats) == 0 {
+		return nil, fmt.Errorf("review.seats must contain at least one seat")
+	}
+	if reviewRoute.Execution == ExecutionInProcess && len(c.Review.Seats) != 1 {
+		return nil, fmt.Errorf("review.seats must contain exactly one seat for in_process review execution")
+	}
+	for i, seat := range c.Review.Seats {
+		seat.Model = strings.TrimSpace(seat.Model)
+		seat.Harness = strings.TrimSpace(seat.Harness)
+		if seat.Model == "" {
+			return nil, fmt.Errorf("review.seats[%d].model is required", i)
+		}
+		if reviewRoute.Execution == ExecutionInProcess && seat.Harness != "" {
+			return nil, fmt.Errorf("review.seats[%d].harness cannot override an in_process review route", i)
+		}
+		if seat.Harness != "" {
+			if _, ok := harnesses[seat.Harness]; !ok {
+				return nil, fmt.Errorf("review.seats[%d].harness references unknown harness %q", i, seat.Harness)
+			}
+		}
+		c.Review.Seats[i] = seat
+	}
 	repoNames := make(map[string]struct{}, len(c.Repos))
 	for i := range c.Repos {
 		repo := &c.Repos[i]
@@ -406,11 +455,18 @@ func normalize(c *Config, path string) (*Config, error) {
 }
 
 func (c *Config) WorkspaceDocument() WorkspaceDocument {
+	reviewSeats := append(make([]ReviewSeat, 0, len(c.Review.Seats)), c.Review.Seats...)
+	if len(reviewSeats) == 0 {
+		if route, ok := c.Routing.Stages["review"]; ok && route.Model != "" {
+			reviewSeats = append(reviewSeats, ReviewSeat{Model: route.Model, Harness: route.Harness})
+		}
+	}
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
+		Review:                    ReviewPanel{Seats: reviewSeats},
 		Execution:                 c.Execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 	}

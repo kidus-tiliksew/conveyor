@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +48,44 @@ type DispatchOrder struct {
 	Dispatch         string         `json:"dispatch"`
 	Confinement      string         `json:"confinement"`
 	Auth             string         `json:"auth"`
+}
+
+// HarnessProbeTarget is one exact harness definition the worker must probe.
+// Fingerprint distinguishes an active round's immutable snapshot from a newer
+// same-name workspace definition (spec §21.12 change 4).
+type HarnessProbeTarget struct {
+	Harness     config.Harness `json:"harness"`
+	Fingerprint string         `json:"fingerprint"`
+}
+
+// WorkerConfig preserves the existing top-level workspace document contract
+// while additively exposing active review-seat snapshots to worker loops.
+type WorkerConfig struct {
+	config.WorkspaceDocument
+	ActiveHarnesses []HarnessProbeTarget `json:"active_harnesses"`
+}
+
+func HarnessFingerprint(harness config.Harness) string {
+	data, _ := json.Marshal(struct {
+		Name         string   `json:"name"`
+		Command      []string `json:"command"`
+		ModelArgs    []string `json:"model_args"`
+		ProbeCommand []string `json:"probe_command"`
+		ProbeTimeout string   `json:"probe_timeout"`
+	}{
+		Name: harness.Name, Command: canonicalArgs(harness.Command),
+		ModelArgs: canonicalArgs(harness.ModelArgs), ProbeCommand: canonicalArgs(harness.ProbeCommand),
+		ProbeTimeout: harness.ProbeTimeoutText,
+	})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func canonicalArgs(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return values
 }
 
 func (s *Service) now() time.Time {
@@ -140,20 +180,68 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	if err != nil {
 		return core.Worker{}, err
 	}
-	registered := map[string]bool{}
+	registered := map[string]map[string]bool{}
 	for _, harness := range cfg.Harnesses {
-		registered[harness.Name] = true
+		registeredHarness(registered, harness)
+	}
+	// An in-flight review round owns its snapshotted harness definition even
+	// after the workspace registry hot reloads. Keep accepting health probes for
+	// those durable seats until they leave the active queue (spec §21.12 change 4).
+	active, err := s.ActiveHarnesses(ctx)
+	if err != nil {
+		return core.Worker{}, err
+	}
+	for _, target := range active {
+		registeredHarness(registered, target.Harness)
 	}
 	now := s.now()
 	for i := range probes {
-		if !registered[probes[i].Harness] {
+		fingerprints, ok := registered[probes[i].Harness]
+		if !ok {
 			return core.Worker{}, fmt.Errorf("unknown harness probe %q", probes[i].Harness)
+		}
+		if probes[i].Fingerprint != "" && !fingerprints[probes[i].Fingerprint] {
+			return core.Worker{}, fmt.Errorf("unknown harness probe fingerprint for %q", probes[i].Harness)
 		}
 		if probes[i].CheckedAt.IsZero() {
 			probes[i].CheckedAt = now
 		}
 	}
 	return s.Store.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), probes)
+}
+
+func registeredHarness(registered map[string]map[string]bool, harness config.Harness) {
+	if registered[harness.Name] == nil {
+		registered[harness.Name] = map[string]bool{}
+	}
+	registered[harness.Name][HarnessFingerprint(harness)] = true
+}
+
+func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, error) {
+	orders, err := s.Store.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byFingerprint := map[string]HarnessProbeTarget{}
+	for _, order := range orders {
+		if order.Stage != core.StageReview || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
+			continue
+		}
+		harness := harnessFromSnapshot(order.RequiredHarnessConfig)
+		fingerprint := HarnessFingerprint(harness)
+		byFingerprint[fingerprint] = HarnessProbeTarget{Harness: harness, Fingerprint: fingerprint}
+	}
+	result := make([]HarnessProbeTarget, 0, len(byFingerprint))
+	for _, target := range byFingerprint {
+		result = append(result, target)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Harness.Name != result[j].Harness.Name {
+			return result[i].Harness.Name < result[j].Harness.Name
+		}
+		return result[i].Fingerprint < result[j].Fingerprint
+	})
+	return result, nil
 }
 
 func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, string) {
@@ -181,29 +269,51 @@ func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Tim
 	if len(required) == 0 {
 		return false, "no routed worker harness is configured"
 	}
-	health := map[string]bool{}
-	for _, probe := range worker.Probes {
-		health[probe.Harness] = probe.Healthy
-	}
-	for name := range required {
-		if !health[name] {
+	for name, harness := range required {
+		if !probeHealthy(worker.Probes, name, HarnessFingerprint(harness), true) {
 			return false, fmt.Sprintf("routed harness %s is unhealthy", name)
 		}
 	}
 	return true, ""
 }
 
-func requiredHarnesses(cfg *config.Config) (map[string]bool, error) {
-	result := map[string]bool{}
-	for _, stage := range []string{"implement", "review"} {
+func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
+	result := map[string]config.Harness{}
+	byName := map[string]config.Harness{}
+	for _, harness := range cfg.Harnesses {
+		byName[harness.Name] = harness
+	}
+	for _, stage := range []string{"implement"} {
 		route := cfg.Routing.Stages[stage]
-		if stage == "review" && route.Execution == config.ExecutionInProcess {
-			continue
-		}
 		if route.Harness == "" {
 			return nil, fmt.Errorf("%s route has no harness", stage)
 		}
-		result[route.Harness] = true
+		harness, ok := byName[route.Harness]
+		if !ok {
+			return nil, fmt.Errorf("%s route harness %s is unavailable", stage, route.Harness)
+		}
+		result[route.Harness] = harness
+	}
+	reviewRoute := cfg.Routing.Stages["review"]
+	if reviewRoute.Execution != config.ExecutionInProcess {
+		seats := cfg.Review.Seats
+		if len(seats) == 0 {
+			seats = []config.ReviewSeat{{Model: reviewRoute.Model, Harness: reviewRoute.Harness}}
+		}
+		for i, seat := range seats {
+			harness := seat.Harness
+			if harness == "" {
+				harness = reviewRoute.Harness
+			}
+			if harness == "" {
+				return nil, fmt.Errorf("review seat %d has no harness", i+1)
+			}
+			definition, ok := byName[harness]
+			if !ok {
+				return nil, fmt.Errorf("review seat %d harness %s is unavailable", i+1, harness)
+			}
+			result[harness] = definition
+		}
 	}
 	return result, nil
 }
@@ -212,9 +322,6 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if healthy, _ := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
-		return []DispatchOrder{}, nil
 	}
 	orders, err := s.WorkOrders.List(ctx)
 	if err != nil {
@@ -229,11 +336,18 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if getErr != nil || task.Mode != core.TaskModeAuto {
 			continue
 		}
-		harness, ok := harnessFor(cfg, order.Stage)
+		if healthy, _ := s.workerHealthyForOrder(worker, cfg, order); !healthy {
+			continue
+		}
+		harness, ok := harnessForOrder(cfg, order)
 		if !ok {
 			continue
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: cfg.Routing.Stages[string(order.Stage)].Model, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		model := cfg.Routing.Stages[string(order.Stage)].Model
+		if order.RequiredModel != "" {
+			model = order.RequiredModel
+		}
+		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
@@ -249,12 +363,12 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if healthy, reason := workerHealthyForRoutes(worker, cfg, s.now()); !healthy {
-		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
-	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
+		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
 	}
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -263,7 +377,7 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if task.Mode != core.TaskModeAuto {
 		return core.WorkOrder{}, fmt.Errorf("worker may claim Auto tasks only")
 	}
-	harness, ok := harnessFor(cfg, order.Stage)
+	harness, ok := harnessForOrder(cfg, order)
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("no harness configured for %s", order.Stage)
 	}
@@ -271,6 +385,9 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	claim.ClaimantID = worker.ID
 	claim.Agent = harness.Name
 	claim.Model = cfg.Routing.Stages[string(order.Stage)].Model
+	if order.RequiredModel != "" {
+		claim.Model = order.RequiredModel
+	}
 	if claim.Lease <= 0 {
 		claim.Lease = DefaultClaimLease
 	}
@@ -278,28 +395,115 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if job, exists, getErr := s.Store.GetLatestJob(ctx, task.ID); getErr == nil && exists && job.ID == claimed.JobID {
-		job.Harness = harness.Name
-		job.ModelTier = claim.Model
-		job.AuthMode = "byoa"
-		job.Runner = "worker"
-		job.Confinement = "none"
-		_ = s.Store.UpdateJob(ctx, job)
+	if jobs, getErr := s.Store.ListJobs(ctx, task.ID); getErr == nil {
+		for _, job := range jobs {
+			if job.ID != claimed.JobID {
+				continue
+			}
+			job.Harness = harness.Name
+			job.ModelTier = claim.Model
+			job.AuthMode = "byoa"
+			job.Runner = "worker"
+			job.Confinement = "none"
+			_ = s.Store.UpdateJob(ctx, job)
+			break
+		}
 	}
 	return claimed, nil
 }
 
-func harnessFor(cfg *config.Config, stage core.Stage) (config.Harness, bool) {
-	route, ok := cfg.Routing.Stages[string(stage)]
-	if !ok || route.Harness == "" {
+func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, bool) {
+	if snapshot := order.RequiredHarnessConfig; snapshot != nil && snapshot.Name != "" {
+		return harnessFromSnapshot(snapshot), true
+	}
+	route, ok := cfg.Routing.Stages[string(order.Stage)]
+	name := order.RequiredHarness
+	if name == "" {
+		name = route.Harness
+	}
+	if !ok || name == "" {
 		return config.Harness{}, false
 	}
 	for _, harness := range cfg.Harnesses {
-		if harness.Name == route.Harness {
+		if harness.Name == name {
 			return harness, true
 		}
 	}
 	return config.Harness{}, false
+}
+
+func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
+	probeTimeout, _ := time.ParseDuration(snapshot.ProbeTimeoutText)
+	return config.Harness{
+		Name: snapshot.Name, Command: append([]string(nil), snapshot.Command...),
+		ModelArgs:        append([]string(nil), snapshot.ModelArgs...),
+		ProbeCommand:     append([]string(nil), snapshot.ProbeCommand...),
+		ProbeTimeoutText: snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
+	}
+}
+
+func (s *Service) workerHealthyForOrder(worker core.Worker, cfg *config.Config, order core.WorkOrder) (bool, string) {
+	if order.Stage != core.StageReview || order.RequiredHarnessConfig == nil || reviewOrderMatchesCurrentConfig(cfg, order) {
+		return workerHealthyForRoutes(worker, cfg, s.now())
+	}
+	if order.RequiredHarnessConfig.Name != order.RequiredHarness {
+		return false, "snapshotted harness identity does not match the review seat"
+	}
+	if !worker.Live(s.now()) {
+		return false, "worker liveness lease expired"
+	}
+	fingerprint := HarnessFingerprint(harnessFromSnapshot(order.RequiredHarnessConfig))
+	if probeHealthy(worker.Probes, order.RequiredHarness, fingerprint, false) {
+		return true, ""
+	}
+	return false, fmt.Sprintf("snapshotted harness %s is unhealthy", order.RequiredHarness)
+}
+
+func probeHealthy(probes []core.HarnessProbe, name, fingerprint string, allowLegacy bool) bool {
+	legacyHealthy := false
+	for _, probe := range probes {
+		if probe.Harness != name {
+			continue
+		}
+		if probe.Fingerprint == fingerprint {
+			return probe.Healthy
+		}
+		if probe.Fingerprint == "" {
+			legacyHealthy = legacyHealthy || probe.Healthy
+		}
+	}
+	return allowLegacy && legacyHealthy
+}
+
+func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
+	route, ok := cfg.Routing.Stages["review"]
+	if !ok {
+		return false
+	}
+	seats := cfg.Review.Seats
+	if len(seats) == 0 {
+		seats = []config.ReviewSeat{{Model: route.Model, Harness: route.Harness}}
+	}
+	if order.ReviewSeat < 1 || order.ReviewSeat > len(seats) {
+		return false
+	}
+	seat := seats[order.ReviewSeat-1]
+	harnessName := seat.Harness
+	if harnessName == "" {
+		harnessName = route.Harness
+	}
+	if seat.Model != order.RequiredModel || harnessName != order.RequiredHarness {
+		return false
+	}
+	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: core.StageReview, RequiredHarness: harnessName})
+	if !found {
+		return false
+	}
+	snapshot := &core.HarnessSnapshot{
+		Name: harness.Name, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+	}
+	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
 
 func (s *Service) Renew(ctx context.Context, worker core.Worker, id string) (core.WorkOrder, error) {

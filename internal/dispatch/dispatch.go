@@ -103,10 +103,89 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if !ok {
 		return fmt.Errorf("no route for stage %s", task.NextStage)
 	}
-	if task.NextStage == core.StageImplement || (task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP) {
+	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
+		return d.createReviewRound(ctx, cfg, task, route)
+	}
+	if task.NextStage == core.StageImplement {
 		return d.createWorkOrder(ctx, cfg, task, route)
 	}
 	return d.runInProcess(ctx, cfg, task, route)
+}
+
+func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+	prior, err := d.Store.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	round := 1
+	latestRound := 0
+	for _, order := range prior {
+		if order.Stage == core.StageReview && order.ReviewRound >= round {
+			round = order.ReviewRound + 1
+		}
+		if order.Stage == core.StageReview && order.ReviewRound > latestRound {
+			latestRound = order.ReviewRound
+		}
+	}
+	// Durable queue redelivery while the task is already inside the current
+	// round must reuse the snapshotted seats rather than creating a new round.
+	if task.State == core.TaskRunning && latestRound > 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	queueTimeout := cfg.WorkOrderQueueTimeout
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	seats := cfg.Review.Seats
+	if len(seats) == 0 {
+		seats = []config.ReviewSeat{{Model: route.Model, Harness: route.Harness}}
+	}
+	jobs := make([]core.Job, 0, len(seats))
+	orders := make([]core.WorkOrder, 0, len(seats))
+	for i, seat := range seats {
+		seatNumber := i + 1
+		jobID := fmt.Sprintf("%s-review-%d-seat-%d", task.ID, round, seatNumber)
+		harness := seat.Harness
+		if harness == "" {
+			harness = route.Harness
+		}
+		var harnessConfig *core.HarnessSnapshot
+		if harness != "" {
+			var ok bool
+			harnessConfig, ok = reviewHarnessSnapshot(cfg, harness)
+			if !ok {
+				return fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
+			}
+		}
+		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
+		orders = append(orders, core.WorkOrder{
+			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
+			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
+			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
+			RequiredHarness: harness, RequiredHarnessConfig: harnessConfig,
+			QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+		})
+	}
+	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+		return err
+	}
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "review_round": round, "seat_count": len(orders)})})
+}
+
+func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {
+	for _, harness := range cfg.Harnesses {
+		if harness.Name != name {
+			continue
+		}
+		return &core.HarnessSnapshot{
+			Name: harness.Name, Command: append([]string(nil), harness.Command...),
+			ModelArgs:        append([]string(nil), harness.ModelArgs...),
+			ProbeCommand:     append([]string(nil), harness.ProbeCommand...),
+			ProbeTimeoutText: harness.ProbeTimeoutText,
+		}, true
+	}
+	return nil, false
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
@@ -155,6 +234,9 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
+	if task.NextStage == core.StageReview && len(cfg.Review.Seats) == 1 {
+		route.Model = cfg.Review.Seats[0].Model
+	}
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
@@ -346,11 +428,22 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	}
 	repo, publicationEligible := cfg.Repo(task.Repo)
 	publicationEligible = publicationEligible && repo.GitHub != ""
+	round, seat := 0, 0
+	requiredModel, requiredHarness, enforcement := model, "", "self-reported"
+	if order, orderErr := d.Store.GetWorkOrder(ctx, reviewWorkOrderID); orderErr == nil {
+		round, seat = order.ReviewRound, order.ReviewSeat
+		requiredModel, requiredHarness = order.RequiredModel, order.RequiredHarness
+		if order.ModelEnforcement != "" {
+			enforcement = order.ModelEnforcement
+		}
+	}
 	if err := d.Store.AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
+		RequiredHarness: requiredHarness, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
 	}); err != nil {
@@ -364,7 +457,9 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		d.Enqueue(ctx, task.ID)
 	}
 	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
-		if err := d.MergeApprovedTask(ctx, current); err != nil { return err }
+		if err := d.MergeApprovedTask(ctx, current); err != nil {
+			return err
+		}
 	}
 	return nil
 }

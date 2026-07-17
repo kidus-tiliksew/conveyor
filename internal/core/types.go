@@ -279,34 +279,52 @@ const (
 	WorkOrderTimedOut  WorkOrderState = "timed_out"
 )
 
+// HarnessSnapshot is the immutable worker execution contract captured for a
+// review seat when its round is created. Workspace hot reloads must not alter
+// an in-flight seat's command, model arguments, or health probe (spec §21.12
+// change 4).
+type HarnessSnapshot struct {
+	Name             string   `json:"name"`
+	Command          []string `json:"command"`
+	ModelArgs        []string `json:"model_args,omitempty"`
+	ProbeCommand     []string `json:"probe_command"`
+	ProbeTimeoutText string   `json:"probe_timeout"`
+}
+
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned implementation or review agent (spec §21.4).
 type WorkOrder struct {
-	ID                 string         `json:"id"`
-	TaskID             string         `json:"task_id"`
-	JobID              string         `json:"job_id"`
-	Stage              Stage          `json:"stage"`
-	State              WorkOrderState `json:"state"`
-	Claimable          bool           `json:"claimable"`
-	ClaimantID         string         `json:"claimed_by,omitempty"`
-	SessionID          string         `json:"session_id,omitempty"`
-	ClientTokenHash    string         `json:"-"`
-	Agent              string         `json:"agent,omitempty"`
-	Model              string         `json:"model,omitempty"`
-	WorkerID           string         `json:"worker_id,omitempty"`
-	LeaseExpiresAt     time.Time      `json:"lease_expires_at,omitempty"`
-	QueueEnteredAt     time.Time      `json:"queue_entered_at"`
-	QueueDeadline      time.Time      `json:"queue_deadline"`
-	ExecutionStartedAt time.Time      `json:"execution_started_at,omitempty"`
-	ExecutionDeadline  time.Time      `json:"execution_deadline,omitempty"`
-	RedispatchCount    int            `json:"redispatch_count"`
-	Progress           string         `json:"progress,omitempty"`
-	CostUSD            float64        `json:"cost_usd"`
-	TokensIn           int64          `json:"tokens_in"`
-	TokensOut          int64          `json:"tokens_out"`
-	SelfReported       bool           `json:"self_reported"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
+	ID                    string           `json:"id"`
+	TaskID                string           `json:"task_id"`
+	JobID                 string           `json:"job_id"`
+	Stage                 Stage            `json:"stage"`
+	State                 WorkOrderState   `json:"state"`
+	Claimable             bool             `json:"claimable"`
+	ClaimantID            string           `json:"claimed_by,omitempty"`
+	SessionID             string           `json:"session_id,omitempty"`
+	ClientTokenHash       string           `json:"-"`
+	Agent                 string           `json:"agent,omitempty"`
+	Model                 string           `json:"model,omitempty"`
+	WorkerID              string           `json:"worker_id,omitempty"`
+	ReviewRound           int              `json:"review_round,omitempty"`
+	ReviewSeat            int              `json:"review_seat,omitempty"`
+	RequiredModel         string           `json:"required_model,omitempty"`
+	RequiredHarness       string           `json:"required_harness,omitempty"`
+	RequiredHarnessConfig *HarnessSnapshot `json:"required_harness_config,omitempty"`
+	ModelEnforcement      string           `json:"model_enforcement,omitempty"`
+	LeaseExpiresAt        time.Time        `json:"lease_expires_at,omitempty"`
+	QueueEnteredAt        time.Time        `json:"queue_entered_at"`
+	QueueDeadline         time.Time        `json:"queue_deadline"`
+	ExecutionStartedAt    time.Time        `json:"execution_started_at,omitempty"`
+	ExecutionDeadline     time.Time        `json:"execution_deadline,omitempty"`
+	RedispatchCount       int              `json:"redispatch_count"`
+	Progress              string           `json:"progress,omitempty"`
+	CostUSD               float64          `json:"cost_usd"`
+	TokensIn              int64            `json:"tokens_in"`
+	TokensOut             int64            `json:"tokens_out"`
+	SelfReported          bool             `json:"self_reported"`
+	CreatedAt             time.Time        `json:"created_at"`
+	UpdatedAt             time.Time        `json:"updated_at"`
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and
@@ -344,10 +362,11 @@ type WorkOrderClaim struct {
 }
 
 type HarnessProbe struct {
-	Harness   string    `json:"harness"`
-	Healthy   bool      `json:"healthy"`
-	Message   string    `json:"message,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Harness     string    `json:"harness"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Healthy     bool      `json:"healthy"`
+	Message     string    `json:"message,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
 }
 
 type WorkerPairing struct {
@@ -397,6 +416,11 @@ type ReviewPublication struct {
 	ReviewerModel          string                 `json:"reviewer_model,omitempty"`
 	ReviewerSession        string                 `json:"reviewer_session"`
 	SameModelAsImplementer string                 `json:"same_model_as_implementer"`
+	ReviewRound            int                    `json:"review_round,omitempty"`
+	ReviewSeat             int                    `json:"review_seat,omitempty"`
+	RequiredModel          string                 `json:"required_model,omitempty"`
+	RequiredHarness        string                 `json:"required_harness,omitempty"`
+	ModelEnforcement       string                 `json:"model_enforcement,omitempty"`
 	State                  ReviewPublicationState `json:"state"`
 	Attempts               int                    `json:"attempts"`
 	CheckRunID             int64                  `json:"check_run_id,omitempty"`
@@ -422,6 +446,11 @@ type ReviewDecision struct {
 	ReviewerModel          string
 	ReviewerSession        string
 	SameModelAsImplementer string
+	ReviewRound            int
+	ReviewSeat             int
+	RequiredModel          string
+	RequiredHarness        string
+	ModelEnforcement       string
 	InterventionActorID    string
 	PublicationEligible    bool
 	Level                  EscalationLevel
