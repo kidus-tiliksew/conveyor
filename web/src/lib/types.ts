@@ -183,6 +183,11 @@ export interface WorkspaceHarness {
   probe_timeout: string
 }
 
+export interface WorkspaceReviewSeat {
+  model: string
+  harness?: string
+}
+
 export interface ExecutionPolicy {
   default_mode: TaskMode
   spec_approval: boolean
@@ -199,6 +204,7 @@ export interface WorkspaceConfigDocument {
     stages: Record<string, WorkspaceConfigRoute>
   }
   harnesses: WorkspaceHarness[]
+  review: { seats: WorkspaceReviewSeat[] }
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
 }
@@ -242,6 +248,12 @@ export interface WorkOrder {
   session_id?: string
   agent?: string
   model?: string
+  worker_id?: string
+  review_round?: number
+  review_seat?: number
+  required_model?: string
+  required_harness?: string
+  model_enforcement?: 'worker-pinned' | 'self-reported'
   lease_expires_at?: string
   queue_entered_at: string
   queue_deadline: string

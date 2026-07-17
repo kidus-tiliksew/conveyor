@@ -31,6 +31,7 @@ type createWorkspaceDocument struct {
 	Routing                   *config.Routing         `json:"routing,omitempty"`
 	Repos                     *[]config.Repo          `json:"repos,omitempty"`
 	Harnesses                 *[]config.Harness       `json:"harnesses,omitempty"`
+	Review                    *config.ReviewPanel     `json:"review,omitempty"`
 	Execution                 *config.ExecutionPolicy `json:"execution,omitempty"`
 }
 
@@ -120,6 +121,13 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.Harnesses != nil {
 			document.Harnesses = *partial.Harnesses
+		}
+		if partial.Review != nil {
+			if len(partial.Review.Seats) == 0 {
+				writeValidationError(w, "review", errors.New("review.seats must contain at least one seat"))
+				return
+			}
+			document.Review = *partial.Review
 		}
 		if partial.Execution != nil {
 			document.Execution = *partial.Execution

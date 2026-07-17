@@ -72,7 +72,7 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
 }
 
 export type TimelineEntry =
-  | { type: 'job'; at: string; job: Job; summary: string; model: string }
+  | { type: 'job'; at: string; job: Job; summary: string; model: string; order?: WorkOrder }
   | { type: 'note'; at: string; key: string; title: string; detail?: string; href?: string; alarm?: boolean }
   | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
@@ -142,11 +142,15 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       // Session ids and boolean flags are audit payload, not narrative; only
       // the reviewer model and a same-model caveat matter to a reader.
       const parts = [
+        typeof payload.review_seat === 'number' && payload.review_seat > 0 ? `seat ${payload.review_seat}` : undefined,
         typeof payload.reviewer_model === 'string' ? payload.reviewer_model : undefined,
+        typeof payload.model_enforcement === 'string' ? payload.model_enforcement : undefined,
         payload.same_model_as_implementer === true ? 'same model as the implementer' : undefined,
       ].filter(Boolean)
       return { title: `Independent review: ${String(payload.verdict ?? 'completed')}`, detail: parts.join(' · ') || undefined }
     }
+    case 'review.round_completed':
+      return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
     case 'merge.requested':
       return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.confirmed':
@@ -236,7 +240,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 		// BYOA jobs carry a placeholder tier; the work order knows the model
 		// the operator's agent actually ran.
 		const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
-		entries.push({ type: 'job', at: job.started_at, job, summary, model })
+		entries.push({ type: 'job', at: job.started_at, job, summary, model, order })
   }
   for (const order of item.work_orders ?? []) {
     const entry = orderEntry(order, startedJobs.has(order.job_id))

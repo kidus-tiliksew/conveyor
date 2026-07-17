@@ -214,6 +214,60 @@ func TestMultipleHarnessesRequireExplicitWorkerRoute(t *testing.T) {
 	}
 }
 
+func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+	}
+	base.Routing.Stages["implement"] = StageRoute{Model: "implementer", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	base.Routing.Stages["review"] = StageRoute{Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	document := base.WorkspaceDocument()
+	document.Review.Seats = []ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Harness: "claude"}}
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "review panel test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Review.Seats) != 2 || parsed.Review.Seats[0].Model != "gpt-review" || parsed.Review.Seats[1].Harness != "claude" {
+		t.Fatalf("review seats=%+v", parsed.Review.Seats)
+	}
+
+	document.Review.Seats[1].Harness = "missing"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "unknown harness") {
+		t.Fatalf("unknown harness error=%v", err)
+	}
+	document.Review.Seats = []ReviewSeat{{Model: ""}}
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "model is required") {
+		t.Fatalf("missing model error=%v", err)
+	}
+}
+
+func TestLoadRejectsExplicitlyEmptyReviewPanel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	data := `workspace: demo
+pack_dir: pack
+routing:
+  stages:
+    triage: {model: gpt, timeout: 20m, execution: in_process}
+    spec: {model: gpt, timeout: 30m, execution: in_process}
+    implement: {model: operator, timeout: 4h, execution: mcp}
+    review: {model: reviewer, timeout: 1h, execution: mcp}
+review:
+  seats: []
+repos:
+  - {name: repo, url: https://example.test/repo, base: main}
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "at least one seat") {
+		t.Fatalf("empty review panel error=%v", err)
+	}
+}
+
 func validConfig() *Config {
 	return &Config{Workspace: "demo", PackDir: ".", MaxBounces: 2, Database: Database{Backend: "memory"}, Routing: Routing{Stages: map[string]StageRoute{"triage": {Model: "gpt", TimeoutText: "20m", Execution: ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "30m", Execution: ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "4h", Execution: ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: ExecutionMCP}}}, Repos: []Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 }

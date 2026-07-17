@@ -195,15 +195,29 @@ func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Tim
 
 func requiredHarnesses(cfg *config.Config) (map[string]bool, error) {
 	result := map[string]bool{}
-	for _, stage := range []string{"implement", "review"} {
+	for _, stage := range []string{"implement"} {
 		route := cfg.Routing.Stages[stage]
-		if stage == "review" && route.Execution == config.ExecutionInProcess {
-			continue
-		}
 		if route.Harness == "" {
 			return nil, fmt.Errorf("%s route has no harness", stage)
 		}
 		result[route.Harness] = true
+	}
+	reviewRoute := cfg.Routing.Stages["review"]
+	if reviewRoute.Execution != config.ExecutionInProcess {
+		seats := cfg.Review.Seats
+		if len(seats) == 0 {
+			seats = []config.ReviewSeat{{Model: reviewRoute.Model, Harness: reviewRoute.Harness}}
+		}
+		for i, seat := range seats {
+			harness := seat.Harness
+			if harness == "" {
+				harness = reviewRoute.Harness
+			}
+			if harness == "" {
+				return nil, fmt.Errorf("review seat %d has no harness", i+1)
+			}
+			result[harness] = true
+		}
 	}
 	return result, nil
 }
@@ -229,11 +243,15 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if getErr != nil || task.Mode != core.TaskModeAuto {
 			continue
 		}
-		harness, ok := harnessFor(cfg, order.Stage)
+		harness, ok := harnessForOrder(cfg, order)
 		if !ok {
 			continue
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: cfg.Routing.Stages[string(order.Stage)].Model, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		model := cfg.Routing.Stages[string(order.Stage)].Model
+		if order.RequiredModel != "" {
+			model = order.RequiredModel
+		}
+		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
@@ -263,7 +281,7 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if task.Mode != core.TaskModeAuto {
 		return core.WorkOrder{}, fmt.Errorf("worker may claim Auto tasks only")
 	}
-	harness, ok := harnessFor(cfg, order.Stage)
+	harness, ok := harnessForOrder(cfg, order)
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("no harness configured for %s", order.Stage)
 	}
@@ -271,6 +289,9 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	claim.ClaimantID = worker.ID
 	claim.Agent = harness.Name
 	claim.Model = cfg.Routing.Stages[string(order.Stage)].Model
+	if order.RequiredModel != "" {
+		claim.Model = order.RequiredModel
+	}
 	if claim.Lease <= 0 {
 		claim.Lease = DefaultClaimLease
 	}
@@ -278,24 +299,34 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if job, exists, getErr := s.Store.GetLatestJob(ctx, task.ID); getErr == nil && exists && job.ID == claimed.JobID {
-		job.Harness = harness.Name
-		job.ModelTier = claim.Model
-		job.AuthMode = "byoa"
-		job.Runner = "worker"
-		job.Confinement = "none"
-		_ = s.Store.UpdateJob(ctx, job)
+	if jobs, getErr := s.Store.ListJobs(ctx, task.ID); getErr == nil {
+		for _, job := range jobs {
+			if job.ID != claimed.JobID {
+				continue
+			}
+			job.Harness = harness.Name
+			job.ModelTier = claim.Model
+			job.AuthMode = "byoa"
+			job.Runner = "worker"
+			job.Confinement = "none"
+			_ = s.Store.UpdateJob(ctx, job)
+			break
+		}
 	}
 	return claimed, nil
 }
 
-func harnessFor(cfg *config.Config, stage core.Stage) (config.Harness, bool) {
-	route, ok := cfg.Routing.Stages[string(stage)]
-	if !ok || route.Harness == "" {
+func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, bool) {
+	route, ok := cfg.Routing.Stages[string(order.Stage)]
+	name := order.RequiredHarness
+	if name == "" {
+		name = route.Harness
+	}
+	if !ok || name == "" {
 		return config.Harness{}, false
 	}
 	for _, harness := range cfg.Harnesses {
-		if harness.Name == route.Harness {
+		if harness.Name == name {
 			return harness, true
 		}
 	}

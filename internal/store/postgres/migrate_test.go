@@ -72,6 +72,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 15 {
 		t.Fatalf("fifteenth migration version = %d, err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/016_review_panel.sql")
+	if err != nil || version != 16 {
+		t.Fatalf("sixteenth migration version = %d, err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
@@ -86,5 +90,15 @@ func TestConfigDiffIgnoresRuntimeParsedTimeout(t *testing.T) {
 	document := cfg.WorkspaceDocument()
 	if sections := configDiff(document, document); len(sections) != 0 {
 		t.Fatalf("unchanged config diff = %v", sections)
+	}
+}
+
+func TestConfigDiffReportsReviewPanelChanges(t *testing.T) {
+	before := config.WorkspaceDocument{Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt"}}}}
+	after := before
+	after.Review.Seats = []config.ReviewSeat{{Model: "gpt"}, {Model: "claude", Harness: "claude"}}
+	sections := configDiff(before, after)
+	if len(sections) != 1 || sections[0] != "review" {
+		t.Fatalf("review config diff=%v", sections)
 	}
 }

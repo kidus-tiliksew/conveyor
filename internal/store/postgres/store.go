@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -309,7 +310,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 }
 
 func configDiff(before, after config.WorkspaceDocument) []string {
-	sections := make([]string, 0, 5)
+	sections := make([]string, 0, 6)
 	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
@@ -322,6 +323,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
 		sections = append(sections, "harnesses")
+	}
+	if !reflect.DeepEqual(before.Review, after.Review) {
+		sections = append(sections, "review")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")
@@ -787,6 +791,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+review_round, review_seat, required_model, required_harness, model_enforcement,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
@@ -820,13 +825,16 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+			review_round, review_seat, required_model, required_harness, model_enforcement,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$24)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$29)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
-			nullableTimeValue(order.LeaseExpiresAt), order.QueueEnteredAt, order.QueueDeadline,
+			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
+			order.RequiredModel, order.RequiredHarness, order.ModelEnforcement,
+			order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
 			order.TokensOut, true, order.CreatedAt)
@@ -834,6 +842,77 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 			return err
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	})
+}
+
+func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	if len(jobs) == 0 || len(jobs) != len(orders) {
+		return fmt.Errorf("review round requires one job per work order")
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", taskID)
+		}
+		var existing int
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspace(ctx), taskID, orders[0].ReviewRound).Scan(&existing); err != nil {
+			return err
+		}
+		if existing == len(orders) {
+			return nil
+		}
+		if existing != 0 {
+			return fmt.Errorf("review round %d is only partially persisted", orders[0].ReviewRound)
+		}
+		for i, job := range jobs {
+			if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID || orders[i].ReviewRound != orders[0].ReviewRound {
+				return fmt.Errorf("invalid review round member %d", i)
+			}
+		}
+		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: taskID, WorkspaceID: workspace(ctx), State: string(core.TaskRunning)}); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": core.TaskRunning})}); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		for i, job := range jobs {
+			if _, err = q.InsertJob(ctx, jobInsertParams(job)); err != nil {
+				return err
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)}); err != nil {
+				return err
+			}
+			order := orders[i]
+			if order.CreatedAt.IsZero() {
+				order.CreatedAt = now
+			}
+			if order.QueueEnteredAt.IsZero() {
+				order.QueueEnteredAt = order.CreatedAt
+			}
+			if order.QueueDeadline.IsZero() {
+				order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+			}
+			order.State, order.Claimable = core.WorkOrderQueued, true
+			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
+				id, workspace_id, task_id, job_id, stage, state, claimant_id,
+				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+				review_round, review_seat, required_model, required_harness, model_enforcement,
+				queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
+				self_reported, created_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,'',$11,$12,NULL,NULL,0,'',0,0,0,true,$13,$13)`,
+				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, core.WorkOrderQueued,
+				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
+				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+			if err != nil {
+				return err
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
+				return err
+			}
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
 	})
 }
 
@@ -939,12 +1018,28 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	}
 	if order.Stage == core.StageReview {
 		var blocked bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_orders WHERE task_id=$1 AND stage='implement' AND
-			(($2 <> '' AND session_id=$2) OR ($3 <> '' AND client_token_hash=$3)))`, order.TaskID, claim.SessionID, hash).Scan(&blocked); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_orders
+			WHERE workspace_id=$1 AND task_id=$2 AND id<>$3
+			AND (stage='implement' OR (stage='review' AND review_round=$4))
+			AND (($5 <> '' AND session_id=$5) OR ($6 <> '' AND client_token_hash=$6)))
+			OR EXISTS (SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+			WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='work_order.claimed'
+			AND e.payload_json->>'id'<>$3
+			AND (e.payload_json->>'stage'='implement' OR (e.payload_json->>'stage'='review' AND COALESCE((e.payload_json->>'review_round')::integer,0)=$4))
+			AND $5<>'' AND e.payload_json->>'session_id'=$5)`,
+			workspace(ctx), order.TaskID, order.ID, order.ReviewRound, claim.SessionID, hash).Scan(&blocked); err != nil {
 			return core.WorkOrder{}, err
 		}
 		if blocked {
-			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: use a fresh agent session")
+			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a fresh session and client token")
+		}
+		if claim.WorkerID != "" {
+			if order.RequiredModel != "" && claim.Model != order.RequiredModel {
+				return core.WorkOrder{}, fmt.Errorf("worker review model %q does not match pinned seat model %q", claim.Model, order.RequiredModel)
+			}
+			order.ModelEnforcement = "worker-pinned"
+		} else {
+			order.ModelEnforcement = "self-reported"
 		}
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
@@ -975,9 +1070,9 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 			executionDeadline = now.Add(claim.ExecutionTimeout)
 		}
 	}
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, worker_id=$6, lease_expires_at=$7, execution_started_at=$8, execution_deadline=$9, updated_at=$10 WHERE workspace_id=$11 AND id=$12 RETURNING "+workOrderColumns,
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, worker_id=$6, lease_expires_at=$7, execution_started_at=$8, execution_deadline=$9, model_enforcement=$10, updated_at=$11 WHERE workspace_id=$12 AND id=$13 RETURNING "+workOrderColumns,
 		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, claim.WorkerID, expires,
-		executionStarted, nullableTimeValue(executionDeadline), now, workspace(ctx), id)
+		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, workspace(ctx), id)
 	order, err = scanWorkOrder(row)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -1024,7 +1119,7 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL,
+		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
 		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
 		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
 		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
@@ -1077,7 +1172,7 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 			}
 			if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
 				if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-					session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL,
+					session_id='', client_token_hash='', agent='', model='', lease_expires_at=NULL, model_enforcement='',
 					updated_at=$1 WHERE workspace_id=$2 AND id=$3`, now, workspace(ctx), order.ID); err != nil {
 					return err
 				}
@@ -1154,11 +1249,12 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		}
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
-			queue_entered_at=$8, queue_deadline=$9, execution_started_at=$10,
-			execution_deadline=$11, redispatch_count=$12, progress=$13,
-			cost_usd=$14, tokens_in=$15, tokens_out=$16, self_reported=$17, updated_at=now()
-			WHERE workspace_id=$18 AND id=$19`, order.State, order.ClaimantID, order.SessionID,
+			model_enforcement=$8, queue_entered_at=$9, queue_deadline=$10, execution_started_at=$11,
+			execution_deadline=$12, redispatch_count=$13, progress=$14,
+			cost_usd=$15, tokens_in=$16, tokens_out=$17, self_reported=$18, updated_at=now()
+			WHERE workspace_id=$19 AND id=$20`, order.State, order.ClaimantID, order.SessionID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
+			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
 			nullableTimeValue(order.ExecutionDeadline), order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
@@ -1185,7 +1281,8 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
-reviewer_session, same_model_as_implementer, state, attempts, check_run_id,
+reviewer_session, same_model_as_implementer, review_round, review_seat,
+required_model, required_harness, model_enforcement, state, attempts, check_run_id,
 comment_id, last_error, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
@@ -1205,13 +1302,16 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 	command, err := tx.Exec(ctx, `INSERT INTO review_publications (
 			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
 			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
-			same_model_as_implementer, state
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			same_model_as_implementer, review_round, review_seat, required_model,
+			required_harness, model_enforcement, state
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
 		workspace(ctx), publication.TaskID, publication.JobID, publication.Verdict,
 		publication.ReasonCode, publication.Summary, publication.Feedback,
 		publication.ReviewedCommitSHA, publication.ReviewerModel,
 		publication.ReviewerSession, publication.SameModelAsImplementer,
+		publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel,
+		publication.RequiredHarness, publication.ModelEnforcement,
 		publication.State)
 	if err != nil {
 		return err
@@ -1238,7 +1338,8 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 // either the entire accepted decision or none of it.
 func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:review:"+workspace(ctx)+":"+decision.ReviewWorkOrderID); err != nil {
+		lockKey := fmt.Sprintf("conveyor:review:%s:%s:%d", workspace(ctx), decision.TaskID, decision.ReviewRound)
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
 			return err
 		}
 		var completed, accepted bool
@@ -1269,54 +1370,44 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 				return err
 			}
 		}
+		if decision.PublicationEligible {
+			if err := s.queueReviewPublicationTx(ctx, tx, q, reviewPublicationFromDecision(decision)); err != nil {
+				return err
+			}
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]any{"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound, "review_seat": decision.ReviewSeat})}); err != nil {
+			return err
+		}
+		reviews, required, err := completedReviewRoundTx(ctx, tx, workspace(ctx), decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
+		if err != nil {
+			return err
+		}
+		if len(reviews) < required {
+			return insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "review.round_pending", Payload: core.JSONPayload(map[string]any{"review_round": decision.ReviewRound, "completed": len(reviews), "required": required})})
+		}
+		aggregate := aggregateReviewRoundResult(decision.ReviewRound, reviews)
+		if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)}); err != nil {
+			return err
+		}
 
 		state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
-		if decision.Verdict == "changes_requested" {
-			var interventionExists, bounceExists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (
-				SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
-				WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.job_id=$3
-					AND e.kind='intervention.redirect' AND e.actor_id=$4
-			), EXISTS (
-				SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
-				WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.job_id=$3
-					AND e.kind='pipeline.bounced'
-					AND (e.payload_json->>'review_work_order_id'=$5 OR e.job_id=$3)
-			)`, workspace(ctx), decision.TaskID, decision.JobID, decision.InterventionActorID, decision.ReviewWorkOrderID).Scan(&interventionExists, &bounceExists); err != nil {
+		if aggregate.Verdict == "changes_requested" {
+			count, countErr := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
+			if countErr != nil {
+				return countErr
+			}
+			count++
+			now := time.Now().UTC()
+			actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
+			intervention := core.Intervention{TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: now}
+			if _, err = q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
 				return err
 			}
-			if !interventionExists {
-				now := time.Now().UTC()
-				intervention := core.Intervention{
-					TaskID: decision.TaskID, JobID: decision.JobID,
-					ActorID: decision.InterventionActorID, ActorRole: core.ActorAgent,
-					Action: core.InterventionRedirect, ReasonCode: decision.ReasonCode,
-					Comment: decision.Feedback, At: now,
-				}
-				if _, err := q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
-					return err
-				}
-				if err := insertEvent(ctx, q, core.Event{
-					TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect",
-					ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, At: now,
-					Payload: core.JSONPayload(map[string]any{"reason_code": decision.ReasonCode, "comment": decision.Feedback}),
-				}); err != nil {
-					return err
-				}
-			}
-			count, err := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
-			if err != nil {
+			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: actorID, ActorRole: core.ActorAgent, At: now, Payload: core.JSONPayload(map[string]any{"reason_code": aggregate.ReasonCode, "comment": aggregate.Feedback, "review_round": decision.ReviewRound, "reviews": aggregate.Reviews})}); err != nil {
 				return err
 			}
-			if !bounceExists {
-				count++
-				if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{
-					"from": "review", "to": "implement", "reason_code": decision.ReasonCode,
-					"feedback": decision.Feedback, "count": count, "source": "mcp-review",
-					"review_work_order_id": decision.ReviewWorkOrderID,
-				})}); err != nil {
-					return err
-				}
+			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})}); err != nil {
+				return err
 			}
 			if int(count) < decision.MaxBounces {
 				state, next, recovery = core.TaskQueued, core.StageImplement, ""
@@ -1336,7 +1427,7 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
 			"from_stage": before.NextStage, "next_stage": next, "recovery_stage": recovery, "state": state,
-			"review_work_order_id": decision.ReviewWorkOrderID,
+			"review_round": decision.ReviewRound,
 		})}); err != nil {
 			return err
 		}
@@ -1345,13 +1436,85 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 				return err
 			}
 		}
-		if decision.PublicationEligible {
-			if err := s.queueReviewPublicationTx(ctx, tx, q, reviewPublicationFromDecision(decision)); err != nil {
-				return err
-			}
-		}
-		return insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]string{"review_work_order_id": decision.ReviewWorkOrderID})})
+		return nil
 	})
+}
+
+type completedReviewRecord struct {
+	ReviewWorkOrderID string `json:"review_work_order_id"`
+	Verdict           string `json:"verdict"`
+	ReasonCode        string `json:"reason_code"`
+	Summary           string `json:"summary"`
+	Feedback          string `json:"feedback"`
+	ReviewerModel     string `json:"reviewer_model"`
+	ReviewRound       int    `json:"review_round"`
+	ReviewSeat        int    `json:"review_seat"`
+	RequiredModel     string `json:"required_model"`
+	RequiredHarness   string `json:"required_harness"`
+	ModelEnforcement  string `json:"model_enforcement"`
+}
+
+type reviewRoundResultRecord struct {
+	ReviewRound int                     `json:"review_round"`
+	Verdict     string                  `json:"verdict"`
+	ReasonCode  string                  `json:"reason_code"`
+	Summary     string                  `json:"summary"`
+	Feedback    string                  `json:"feedback,omitempty"`
+	Reviews     []completedReviewRecord `json:"reviews"`
+}
+
+func completedReviewRoundTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string, round int, workOrderID string) ([]completedReviewRecord, int, error) {
+	required := 1
+	if round > 0 {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspaceID, taskID, round).Scan(&required); err != nil {
+			return nil, 0, err
+		}
+	}
+	query := `SELECT e.payload_json FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='review.completed' AND COALESCE((e.payload_json->>'review_round')::integer,0)=$3`
+	args := []any{workspaceID, taskID, round}
+	if round == 0 {
+		query += ` AND e.payload_json->>'review_work_order_id'=$4`
+		args = append(args, workOrderID)
+	}
+	query += ` ORDER BY COALESCE((e.payload_json->>'review_seat')::integer,0), e.id`
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var reviews []completedReviewRecord
+	for rows.Next() {
+		var payload []byte
+		if err = rows.Scan(&payload); err != nil {
+			return nil, 0, err
+		}
+		var review completedReviewRecord
+		if err = json.Unmarshal(payload, &review); err != nil {
+			return nil, 0, err
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews, required, rows.Err()
+}
+
+func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) reviewRoundResultRecord {
+	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ReviewSeat < reviews[j].ReviewSeat })
+	if round == 0 && len(reviews) == 1 {
+		review := reviews[0]
+		return reviewRoundResultRecord{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+	}
+	result := reviewRoundResultRecord{ReviewRound: round, Verdict: "approve", ReasonCode: "approved", Summary: "All review panel seats approved.", Reviews: reviews}
+	var feedback []string
+	for _, review := range reviews {
+		if review.Verdict == "changes_requested" {
+			result.Verdict, result.ReasonCode, result.Summary = "changes_requested", "panel_changes_requested", "The review panel requested changes."
+		}
+		if strings.TrimSpace(review.Feedback) != "" {
+			feedback = append(feedback, fmt.Sprintf("Seat %d (%s, %s): %s", review.ReviewSeat, review.RequiredModel, review.ModelEnforcement, strings.TrimSpace(review.Feedback)))
+		}
+	}
+	result.Feedback = strings.Join(feedback, "\n")
+	return result
 }
 
 func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
@@ -1437,7 +1600,10 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
-		"publication_eligible":      decision.PublicationEligible,
+		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
+		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
+		"model_enforcement":    decision.ModelEnforcement,
+		"publication_eligible": decision.PublicationEligible,
 	})
 }
 
@@ -1448,6 +1614,9 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		Feedback: decision.Feedback, ReviewedCommitSHA: decision.ReviewedCommitSHA,
 		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
 		SameModelAsImplementer: decision.SameModelAsImplementer,
+		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
+		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness,
+		ModelEnforcement: decision.ModelEnforcement,
 	}
 }
 
@@ -1457,7 +1626,9 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 	err := row.Scan(&publication.ReviewWorkOrderID, &publication.TaskID, &publication.JobID,
 		&publication.Verdict, &publication.ReasonCode, &publication.Summary,
 		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
-		&publication.ReviewerSession, &publication.SameModelAsImplementer, &state,
+		&publication.ReviewerSession, &publication.SameModelAsImplementer,
+		&publication.ReviewRound, &publication.ReviewSeat, &publication.RequiredModel,
+		&publication.RequiredHarness, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
 		&publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
 	publication.State = core.ReviewPublicationState(state)
@@ -1470,6 +1641,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
+		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.ModelEnforcement,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)

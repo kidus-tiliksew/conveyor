@@ -139,7 +139,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, r
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	now := time.Now().UTC()
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND worker_id=$4 AND state='claimed' RETURNING `+workOrderColumns, now, workspace(ctx), workOrderID, workerID))
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND worker_id=$4 AND state='claimed' RETURNING `+workOrderColumns, now, workspace(ctx), workOrderID, workerID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, store.ErrWorkerUnauthorized
 	}

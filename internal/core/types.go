@@ -294,6 +294,11 @@ type WorkOrder struct {
 	Agent              string         `json:"agent,omitempty"`
 	Model              string         `json:"model,omitempty"`
 	WorkerID           string         `json:"worker_id,omitempty"`
+	ReviewRound        int            `json:"review_round,omitempty"`
+	ReviewSeat         int            `json:"review_seat,omitempty"`
+	RequiredModel      string         `json:"required_model,omitempty"`
+	RequiredHarness    string         `json:"required_harness,omitempty"`
+	ModelEnforcement   string         `json:"model_enforcement,omitempty"`
 	LeaseExpiresAt     time.Time      `json:"lease_expires_at,omitempty"`
 	QueueEnteredAt     time.Time      `json:"queue_entered_at"`
 	QueueDeadline      time.Time      `json:"queue_deadline"`
@@ -397,6 +402,11 @@ type ReviewPublication struct {
 	ReviewerModel          string                 `json:"reviewer_model,omitempty"`
 	ReviewerSession        string                 `json:"reviewer_session"`
 	SameModelAsImplementer string                 `json:"same_model_as_implementer"`
+	ReviewRound            int                    `json:"review_round,omitempty"`
+	ReviewSeat             int                    `json:"review_seat,omitempty"`
+	RequiredModel          string                 `json:"required_model,omitempty"`
+	RequiredHarness        string                 `json:"required_harness,omitempty"`
+	ModelEnforcement       string                 `json:"model_enforcement,omitempty"`
 	State                  ReviewPublicationState `json:"state"`
 	Attempts               int                    `json:"attempts"`
 	CheckRunID             int64                  `json:"check_run_id,omitempty"`
@@ -422,6 +432,11 @@ type ReviewDecision struct {
 	ReviewerModel          string
 	ReviewerSession        string
 	SameModelAsImplementer string
+	ReviewRound            int
+	ReviewSeat             int
+	RequiredModel          string
+	RequiredHarness        string
+	ModelEnforcement       string
 	InterventionActorID    string
 	PublicationEligible    bool
 	Level                  EscalationLevel
