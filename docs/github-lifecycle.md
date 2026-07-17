@@ -15,10 +15,16 @@ number, and URL.
 For `github:<owner>/<repo>#<number>` intake, Conveyor validates that the source
 repository matches the configured task repository, preserves the original
 issue body, and appends or updates the approved-spec section on that issue.
-Other tasks create a new issue. Before creating, the publisher searches for
-the exact task marker; this repairs the case where GitHub accepted creation but
-Conveyor lost the acknowledgement. The durable task association and remote
-marker make retries and restart reconciliation converge on one issue.
+Other tasks create a new issue. Before creating, the publisher exhaustively
+pages the repository's issues in stable creation order and looks for the exact
+task marker; it does not rely on GitHub's eventually indexed or capped search.
+Immediately before the external create call, Conveyor durably advances the
+create state from `not_started` to `reconciling`. If GitHub accepts creation but
+Conveyor loses the acknowledgement, every later attempt is reconciliation-only:
+an initial lookup miss remains retryable and can never authorize a second
+create. Finding the marker advances the state to `confirmed`. River's bounded
+attempts expose a durable failure if the remote issue does not converge in
+time, and startup reconciliation can retry that same lookup safely.
 
 Publication failures are visible as `github_issue.publication_retry` or
 `github_issue.publication_failed` events. Startup reconciliation recreates a

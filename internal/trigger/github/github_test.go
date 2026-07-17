@@ -33,22 +33,31 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 
 func TestPublishIssueCreatesOneMarkedIssue(t *testing.T) {
 	var calls [][]string
+	prepared := false
 	run := func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
-		if args[1] == "list" {
-			return []byte(`[]`), nil
+		if args[0] == "api" {
+			return []byte(`[[]]`), nil
 		}
 		return []byte("https://github.com/acme/api/issues/42\n"), nil
 	}
 	result, err := publishIssue(context.Background(), IssuePublication{
 		Repo: "acme/api", TaskID: "task-1", Title: "Add lifecycle",
 		ApprovedSpec: "## Intent\nShip it.\n\n## Acceptance criteria\n- It works.", SpecVersion: 3,
+		AllowCreate: true,
+		BeforeCreate: func(context.Context) error {
+			prepared = true
+			return nil
+		},
 	}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Number != 42 || result.Reused || len(calls) != 2 {
+	if result.Number != 42 || result.Reused || len(calls) != 2 || !prepared {
 		t.Fatalf("result=%+v calls=%v", result, calls)
+	}
+	if got := strings.Join(calls[0], " "); got != "api --paginate --slurp repos/acme/api/issues?state=all&sort=created&direction=asc&per_page=100" {
+		t.Fatalf("lookup args=%s", got)
 	}
 	if got := strings.Join(calls[1], " "); !strings.Contains(got, "<!-- conveyor:task=task-1 -->") || !strings.Contains(got, "Approved spec version: `3`") {
 		t.Fatalf("create args=%v", calls[1])
@@ -61,7 +70,7 @@ func TestPublishIssueRetryFindsMarkerAndUpdatesInsteadOfDuplicating(t *testing.T
 		calls = append(calls, append([]string(nil), args...))
 		switch len(calls) {
 		case 1:
-			return []byte(`[{"number":42,"url":"https://github.com/acme/api/issues/42","body":"<!-- conveyor:task=task-1 --> old"}]`), nil
+			return []byte(`[[{"number":42,"url":"https://github.com/acme/api/issues/42","body":"<!-- conveyor:task=task-1 --> old"}]]`), nil
 		case 2:
 			return []byte(`{"number":42,"url":"https://github.com/acme/api/issues/42","body":"Original context.\n\n<!-- conveyor:task=task-1 --> old"}`), nil
 		default:
@@ -78,6 +87,59 @@ func TestPublishIssueRetryFindsMarkerAndUpdatesInsteadOfDuplicating(t *testing.T
 	joined := strings.Join(calls[2], " ")
 	if !strings.Contains(joined, "Original context.") || strings.Count(joined, "<!-- conveyor:task=task-1 -->") != 1 {
 		t.Fatalf("updated body=%s", joined)
+	}
+}
+
+func TestPublishIssueLostAcknowledgementNeverCreatesTwiceWhileMarkerConverges(t *testing.T) {
+	lookupCalls := 0
+	createCalls := 0
+	prepared := false
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		switch {
+		case args[0] == "api":
+			lookupCalls++
+			if lookupCalls <= 2 {
+				return []byte(`[[]]`), nil
+			}
+			return []byte(`[[{"number":42,"body":"<!-- conveyor:task=task-1 -->"}]]`), nil
+		case args[0] == "issue" && args[1] == "create":
+			createCalls++
+			return nil, errors.New("connection reset after GitHub accepted create")
+		case args[0] == "issue" && args[1] == "view":
+			return []byte(`{"number":42,"url":"https://github.com/acme/api/issues/42","body":"<!-- conveyor:task=task-1 -->"}`), nil
+		case args[0] == "issue" && args[1] == "edit":
+			return nil, nil
+		default:
+			t.Fatalf("unexpected call: %v", args)
+			return nil, nil
+		}
+	}
+	publication := IssuePublication{
+		Repo: "acme/api", TaskID: "task-1", Title: "Title", ApprovedSpec: "approved", SpecVersion: 1,
+		AllowCreate: true,
+		BeforeCreate: func(context.Context) error {
+			prepared = true
+			return nil
+		},
+	}
+	if _, err := publishIssue(context.Background(), publication, run); err == nil || !prepared {
+		t.Fatalf("first publication err=%v prepared=%t", err, prepared)
+	}
+
+	publication.AllowCreate = false
+	if _, err := publishIssue(context.Background(), publication, run); !errors.Is(err, ErrIssueReconciliationPending) {
+		t.Fatalf("first recovery err=%v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls after missed recovery lookup=%d, want 1", createCalls)
+	}
+
+	result, err := publishIssue(context.Background(), publication, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reused || result.Number != 42 || createCalls != 1 {
+		t.Fatalf("result=%+v createCalls=%d", result, createCalls)
 	}
 }
 

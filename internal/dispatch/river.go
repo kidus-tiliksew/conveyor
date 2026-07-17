@@ -76,10 +76,16 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		}
 	}
 	if publishErr == nil {
-		result, publishErr = github.PublishIssue(ctx, github.IssuePublication{
+		allowCreate := lifecycle.CreateState == core.GitHubCreateNotStarted
+		result, publishErr = w.dispatcher.PublishIssue(ctx, github.IssuePublication{
 			Repo: lifecycle.Repository, TaskID: task.ID, Title: task.Title,
 			ApprovedSpec: spec.Content, SpecVersion: spec.Version,
 			SourceIssueNumber: lifecycle.SourceIssueNumber,
+			AllowCreate:       allowCreate,
+			BeforeCreate: func(createCtx context.Context) error {
+				lifecycle.CreateState = core.GitHubCreateReconciling
+				return w.dispatcher.Store.UpdateGitHubLifecycle(createCtx, lifecycle)
+			},
 		})
 	}
 	if publishErr != nil {
@@ -93,6 +99,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		return publishErr
 	}
 	lifecycle.State = core.GitHubPublicationPublished
+	lifecycle.CreateState = core.GitHubCreateConfirmed
 	lifecycle.IssueNumber = result.Number
 	lifecycle.IssueURL = result.URL
 	lifecycle.Outcome = "created"

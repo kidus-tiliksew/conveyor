@@ -31,6 +31,7 @@ type Dispatcher struct {
 	Pack            *pack.Bundle
 	Agent           inprocess.Agent
 	ConfigProvider  func(context.Context) (*config.Config, error)
+	PublishIssue    func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
 	ViewPullRequest func(context.Context, string, string) (github.PullRequest, error)
 	RequestMerge    func(context.Context, string, int) error
 	queue           chan queuedTask
@@ -40,6 +41,7 @@ type Dispatcher struct {
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
 	return &Dispatcher{
 		Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64),
+		PublishIssue:    github.PublishIssue,
 		ViewPullRequest: github.PullRequestForBranch,
 		RequestMerge:    github.MergePullRequest,
 	}

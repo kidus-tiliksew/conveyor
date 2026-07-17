@@ -660,7 +660,7 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 }
 
 const githubLifecycleColumns = `task_id, repository, spec_version, source,
-source_issue_number, issue_number, issue_url, outcome, state, attempts, last_error,
+source_issue_number, issue_number, issue_url, outcome, state, create_state, attempts, last_error,
 created_at, updated_at`
 
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
@@ -668,16 +668,19 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 		if lifecycle.State == "" {
 			lifecycle.State = core.GitHubPublicationQueued
 		}
+		if lifecycle.CreateState == "" {
+			lifecycle.CreateState = core.GitHubCreateNotStarted
+		}
 		if lifecycle.CreatedAt.IsZero() {
 			lifecycle.CreatedAt = time.Now().UTC()
 		}
 		command, err := tx.Exec(ctx, `INSERT INTO github_lifecycles (
 			workspace_id, task_id, repository, spec_version, source,
-			source_issue_number, state, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+			source_issue_number, state, create_state, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
 		ON CONFLICT (workspace_id, task_id) DO NOTHING`, workspace(ctx),
 			lifecycle.TaskID, lifecycle.Repository, lifecycle.SpecVersion,
-			lifecycle.Source, lifecycle.SourceIssueNumber, lifecycle.State,
+			lifecycle.Source, lifecycle.SourceIssueNumber, lifecycle.State, lifecycle.CreateState,
 			lifecycle.CreatedAt)
 		if err != nil {
 			return err
@@ -711,10 +714,10 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
-			last_error=$6, updated_at=now()
-			WHERE workspace_id=$7 AND task_id=$8`, lifecycle.IssueNumber,
+			last_error=$6, create_state=$7, updated_at=now()
+			WHERE workspace_id=$8 AND task_id=$9`, lifecycle.IssueNumber,
 			lifecycle.IssueURL, lifecycle.Outcome, lifecycle.State, lifecycle.Attempts,
-			lifecycle.LastError, workspace(ctx), lifecycle.TaskID)
+			lifecycle.LastError, lifecycle.CreateState, workspace(ctx), lifecycle.TaskID)
 		if err != nil {
 			return err
 		}
@@ -761,12 +764,13 @@ func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 
 func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecycle, error) {
 	var lifecycle core.GitHubLifecycle
-	var state string
+	var state, createState string
 	err := row.Scan(&lifecycle.TaskID, &lifecycle.Repository, &lifecycle.SpecVersion,
 		&lifecycle.Source, &lifecycle.SourceIssueNumber, &lifecycle.IssueNumber,
-		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &lifecycle.Attempts, &lifecycle.LastError,
+		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState, &lifecycle.Attempts, &lifecycle.LastError,
 		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
 	lifecycle.State = core.GitHubPublicationState(state)
+	lifecycle.CreateState = core.GitHubCreateState(createState)
 	return lifecycle, err
 }
 

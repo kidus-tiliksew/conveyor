@@ -1069,6 +1069,9 @@ func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 	if lifecycle.State == "" {
 		lifecycle.State = core.GitHubPublicationQueued
 	}
+	if lifecycle.CreateState == "" {
+		lifecycle.CreateState = core.GitHubCreateNotStarted
+	}
 	m.github[lifecycle.TaskID] = lifecycle
 	m.appendEventLocked(ctx, core.Event{TaskID: lifecycle.TaskID, Kind: "github_issue.publication_queued", Payload: core.JSONPayload(lifecycle)})
 	return nil

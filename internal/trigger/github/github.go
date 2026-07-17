@@ -33,7 +33,10 @@ const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
 const issueLifecycleMarkerPrefix = "<!-- conveyor:task="
 const pullRequestLifecycleMarker = "<!-- conveyor:task-link -->"
 
-var ErrPullRequestNotFound = errors.New("pull request not found")
+var (
+	ErrPullRequestNotFound        = errors.New("pull request not found")
+	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
+)
 
 type Issue struct {
 	Number int    `json:"number"`
@@ -49,6 +52,8 @@ type IssuePublication struct {
 	ApprovedSpec      string
 	SpecVersion       int
 	SourceIssueNumber int
+	AllowCreate       bool
+	BeforeCreate      func(context.Context) error
 }
 
 type IssuePublicationResult struct {
@@ -58,8 +63,9 @@ type IssuePublicationResult struct {
 }
 
 // PublishIssue creates or updates the one issue associated with an approved
-// task. The remote task marker is checked before creation so a retry after a
-// lost local acknowledgement converges instead of duplicating the issue.
+// task. The remote task marker is checked exhaustively before creation. Once
+// BeforeCreate durably records an ambiguous create window, callers must retry
+// with AllowCreate false until the exact marker is visible.
 func PublishIssue(ctx context.Context, publication IssuePublication) (IssuePublicationResult, error) {
 	return publishIssue(ctx, publication, gh)
 }
@@ -69,23 +75,24 @@ func publishIssue(ctx context.Context, publication IssuePublication, run ghRunne
 	number := publication.SourceIssueNumber
 	reused := number > 0
 	if number == 0 {
-		out, err := run(ctx, "issue", "list", "--repo", publication.Repo, "--state", "all", "--limit", "100", "--search", publication.TaskID+" in:body", "--json", "number,url,body")
+		var err error
+		number, err = findIssueByMarker(ctx, publication.Repo, marker, run)
 		if err != nil {
-			return IssuePublicationResult{}, fmt.Errorf("find task issue: %w", err)
+			return IssuePublicationResult{}, err
 		}
-		var matches []Issue
-		if err = json.Unmarshal(out, &matches); err != nil {
-			return IssuePublicationResult{}, fmt.Errorf("parse task issue search: %w", err)
-		}
-		for _, match := range matches {
-			if strings.Contains(match.Body, marker) {
-				number, reused = match.Number, true
-				break
-			}
-		}
+		reused = number > 0
 	}
 	section := issuePublicationBody(publication)
 	if number == 0 {
+		if !publication.AllowCreate {
+			return IssuePublicationResult{}, fmt.Errorf("%w for task %s", ErrIssueReconciliationPending, publication.TaskID)
+		}
+		if publication.BeforeCreate == nil {
+			return IssuePublicationResult{}, errors.New("GitHub issue creation requires a durable create-attempt recorder")
+		}
+		if err := publication.BeforeCreate(ctx); err != nil {
+			return IssuePublicationResult{}, fmt.Errorf("record GitHub issue create attempt: %w", err)
+		}
 		out, err := run(ctx, "issue", "create", "--repo", publication.Repo, "--title", publication.Title, "--body", section)
 		if err != nil {
 			return IssuePublicationResult{}, fmt.Errorf("create task issue: %w", err)
@@ -121,6 +128,34 @@ func publishIssue(ctx context.Context, publication IssuePublication, run ghRunne
 		return IssuePublicationResult{}, fmt.Errorf("update associated issue: %w", err)
 	}
 	return IssuePublicationResult{Number: number, URL: existing.URL, Reused: reused}, nil
+}
+
+// findIssueByMarker walks every issue in stable creation order. Unlike GitHub
+// search, this path is not index-dependent and is not capped at the first 100
+// matches, so reconciliation cannot mistake a temporarily absent search hit
+// for permission to create a second issue.
+func findIssueByMarker(ctx context.Context, repo, marker string, run ghRunner) (int, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return 0, fmt.Errorf("find task issue: invalid GitHub repository %q", repo)
+	}
+	endpoint := fmt.Sprintf("repos/%s/%s/issues?state=all&sort=created&direction=asc&per_page=100", owner, name)
+	out, err := run(ctx, "api", "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return 0, fmt.Errorf("find task issue: %w", err)
+	}
+	var pages [][]Issue
+	if err = json.Unmarshal(out, &pages); err != nil {
+		return 0, fmt.Errorf("parse exhaustive task issue listing: %w", err)
+	}
+	for _, page := range pages {
+		for _, issue := range page {
+			if issue.Number > 0 && strings.Contains(issue.Body, marker) {
+				return issue.Number, nil
+			}
+		}
+	}
+	return 0, nil
 }
 
 func issuePublicationBody(publication IssuePublication) string {

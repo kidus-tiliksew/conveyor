@@ -40,6 +40,7 @@ export interface GitHubLifecycle {
   issue_url?: string
   outcome?: 'created' | 'reused'
   state: 'queued' | 'retrying' | 'published' | 'failed'
+  create_state: 'not_started' | 'reconciling' | 'confirmed'
   attempts: number
   last_error?: string
   created_at: string

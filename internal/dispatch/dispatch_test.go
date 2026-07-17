@@ -263,6 +263,64 @@ func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *test
 	}
 }
 
+func TestIssuePublisherPersistsCreateAttemptBeforeAmbiguousRemoteCall(t *testing.T) {
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "lost-ack", Workspace: "test", Repo: "app", Title: "Lost ack", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: spec.Version}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	publishCalls := 0
+	d.PublishIssue = func(publishCtx context.Context, publication githubtrigger.IssuePublication) (githubtrigger.IssuePublicationResult, error) {
+		publishCalls++
+		if publishCalls == 1 {
+			if !publication.AllowCreate {
+				t.Fatal("first publication did not permit create")
+			}
+			if err := publication.BeforeCreate(publishCtx); err != nil {
+				t.Fatal(err)
+			}
+			return githubtrigger.IssuePublicationResult{}, errors.New("lost acknowledgement")
+		}
+		if publication.AllowCreate {
+			t.Fatal("ambiguous retry permitted a second create")
+		}
+		return githubtrigger.IssuePublicationResult{}, githubtrigger.ErrIssueReconciliationPending
+	}
+	worker := &githubIssuePublicationWorker{dispatcher: d}
+	job := func(attempt int) *river.Job[queueargs.GitHubIssuePublicationArgs] {
+		return &river.Job[queueargs.GitHubIssuePublicationArgs]{
+			JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
+			Args:   queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID},
+		}
+	}
+	if err = worker.Work(ctx, job(1)); err == nil {
+		t.Fatal("first ambiguous publication succeeded")
+	}
+	lifecycle, _, _ := st.GetGitHubLifecycle(ctx, task.ID)
+	if lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 1 {
+		t.Fatalf("lifecycle after lost acknowledgement=%+v", lifecycle)
+	}
+	if err = worker.Work(ctx, job(2)); !errors.Is(err, githubtrigger.ErrIssueReconciliationPending) {
+		t.Fatalf("retry error=%v", err)
+	}
+	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
+	if lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 2 || publishCalls != 2 {
+		t.Fatalf("lifecycle after reconciliation miss=%+v publishCalls=%d", lifecycle, publishCalls)
+	}
+}
+
 func TestReconcileGitHubLifecyclesRepairsApprovalOutboxGapOnce(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()

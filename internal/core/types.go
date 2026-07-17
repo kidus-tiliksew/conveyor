@@ -141,6 +141,18 @@ const (
 	GitHubPublicationFailed    GitHubPublicationState = "failed"
 )
 
+// GitHubCreateState records whether a remote create may still be attempted.
+// Once reconciling, retries may only look up the exact task marker; this closes
+// the ambiguity window where GitHub accepted a create but its acknowledgement
+// never reached Conveyor (spec §21.12 change 5, amended by §21.15).
+type GitHubCreateState string
+
+const (
+	GitHubCreateNotStarted  GitHubCreateState = "not_started"
+	GitHubCreateReconciling GitHubCreateState = "reconciling"
+	GitHubCreateConfirmed   GitHubCreateState = "confirmed"
+)
+
 // GitHubLifecycle is the durable task-to-issue projection created from the
 // exact approved spec. TaskID is the idempotency key; SourceIssueNumber is
 // retained separately so provenance remains reconstructible after publication.
@@ -154,6 +166,7 @@ type GitHubLifecycle struct {
 	IssueURL          string                 `json:"issue_url,omitempty"`
 	Outcome           string                 `json:"outcome,omitempty"` // created | reused
 	State             GitHubPublicationState `json:"state"`
+	CreateState       GitHubCreateState      `json:"create_state"`
 	Attempts          int                    `json:"attempts"`
 	LastError         string                 `json:"last_error,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`
