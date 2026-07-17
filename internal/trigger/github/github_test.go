@@ -31,6 +31,74 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	}
 }
 
+func TestPublishIssueCreatesOneMarkedIssue(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if args[1] == "list" {
+			return []byte(`[]`), nil
+		}
+		return []byte("https://github.com/acme/api/issues/42\n"), nil
+	}
+	result, err := publishIssue(context.Background(), IssuePublication{
+		Repo: "acme/api", TaskID: "task-1", Title: "Add lifecycle",
+		ApprovedSpec: "## Intent\nShip it.\n\n## Acceptance criteria\n- It works.", SpecVersion: 3,
+	}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Number != 42 || result.Reused || len(calls) != 2 {
+		t.Fatalf("result=%+v calls=%v", result, calls)
+	}
+	if got := strings.Join(calls[1], " "); !strings.Contains(got, "<!-- conveyor:task=task-1 -->") || !strings.Contains(got, "Approved spec version: `3`") {
+		t.Fatalf("create args=%v", calls[1])
+	}
+}
+
+func TestPublishIssueRetryFindsMarkerAndUpdatesInsteadOfDuplicating(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch len(calls) {
+		case 1:
+			return []byte(`[{"number":42,"url":"https://github.com/acme/api/issues/42","body":"<!-- conveyor:task=task-1 --> old"}]`), nil
+		case 2:
+			return []byte(`{"number":42,"url":"https://github.com/acme/api/issues/42","body":"Original context.\n\n<!-- conveyor:task=task-1 --> old"}`), nil
+		default:
+			return nil, nil
+		}
+	}
+	result, err := publishIssue(context.Background(), IssuePublication{Repo: "acme/api", TaskID: "task-1", Title: "Title", ApprovedSpec: "## Intent\nNew", SpecVersion: 2}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reused || result.Number != 42 || len(calls) != 3 || calls[2][1] != "edit" {
+		t.Fatalf("result=%+v calls=%v", result, calls)
+	}
+	joined := strings.Join(calls[2], " ")
+	if !strings.Contains(joined, "Original context.") || strings.Count(joined, "<!-- conveyor:task=task-1 -->") != 1 {
+		t.Fatalf("updated body=%s", joined)
+	}
+}
+
+func TestPublishIssueReusesExplicitSourceIssue(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if args[1] == "view" {
+			return []byte(`{"number":7,"url":"https://github.com/acme/api/issues/7","body":"Customer report"}`), nil
+		}
+		return nil, nil
+	}
+	result, err := publishIssue(context.Background(), IssuePublication{Repo: "acme/api", TaskID: "task-2", ApprovedSpec: "approved", SpecVersion: 1, SourceIssueNumber: 7}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reused || result.Number != 7 || len(calls) != 2 || calls[0][1] != "view" || calls[1][1] != "edit" {
+		t.Fatalf("result=%+v calls=%v", result, calls)
+	}
+}
+
 func TestPullRequestForBranchReturnsAuthoritativeMergeState(t *testing.T) {
 	pr, err := pullRequestForBranch(context.Background(), "acme/api", "conveyor/task-1", func(_ context.Context, args ...string) ([]byte, error) {
 		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable" {
@@ -114,8 +182,16 @@ func TestOpenPRReusesExistingPRAfterRedispatch(t *testing.T) {
 	if url != "https://github.com/acme/api/pull/7" {
 		t.Fatalf("url = %q", url)
 	}
-	if len(gitCalls) != 1 || len(ghCalls) != 1 || ghCalls[0][1] != "list" {
+	if len(gitCalls) != 1 || len(ghCalls) != 3 || ghCalls[0][1] != "list" || ghCalls[1][1] != "view" || ghCalls[2][1] != "edit" {
 		t.Fatalf("git calls=%v gh calls=%v", gitCalls, ghCalls)
+	}
+}
+
+func TestReconcilePullRequestBodyPreservesHumanContextAndReplacesFactoryBlock(t *testing.T) {
+	existing := "Human context.\n\n<!-- conveyor:task-link -->\nConveyor task `old`\n\nCloses #1"
+	updated := reconcilePullRequestBody(existing, "<!-- conveyor:task-link -->\nConveyor task `new`\n\nCloses #42")
+	if !strings.Contains(updated, "Human context.") || !strings.Contains(updated, "Closes #42") || strings.Contains(updated, "Closes #1") || strings.Count(updated, pullRequestLifecycleMarker) != 1 {
+		t.Fatalf("updated=%q", updated)
 	}
 }
 
@@ -243,6 +319,11 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 		ReviewWorkOrderID: "review-2", Verdict: "changes_requested", ReasonCode: "tests",
 		Summary: "Needs work.", Feedback: "Add the missing test.", ReviewedCommitSHA: "def456",
 		ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true",
+		ReviewRound: 2, ReviewSeat: 1, RequiredModel: "gpt", ModelEnforcement: "worker-pinned",
+		History: []ReviewHistoryItem{
+			{WorkOrderID: "review-1", Round: 1, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add the missing test.", ResolutionState: "resolved"},
+			{WorkOrderID: "review-2", Round: 2, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add another test.", ResolutionState: "unresolved"},
+		},
 		BounceHistory: []string{"bounce 1: tests"},
 	}, run)
 	if err != nil {
@@ -251,7 +332,7 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 	if got := strings.Join(calls[2], " "); !strings.Contains(got, "PATCH repos/acme/api/check-runs/42") || !strings.Contains(got, "conclusion=action_required") {
 		t.Fatalf("check retry args = %v", calls[2])
 	}
-	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") {
+	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") || !strings.Contains(got, "resolved") || !strings.Contains(got, "unresolved") || !strings.Contains(got, "round 2, seat 1") {
 		t.Fatalf("comment retry args = %v", calls[4])
 	}
 }

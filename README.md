@@ -158,6 +158,13 @@ primary checkout is never switched, stashed, reset, or edited. The agent pushes
 before `submit_for_review`; Conveyor then opens or reuses the PR and never
 resets or pushes the agent's branch.
 
+After spec approval, Conveyor durably creates or reuses the task's GitHub issue
+and exposes that association in task/activity/requirements reads. At
+`submit_for_review`, the PR body is reconciled with `Closes #N`; review Check
+Runs and the factory comment retain round/seat verdicts and requested-change
+resolution history. Retry, source-issue, and §21.15 boundary details are in
+[docs/github-lifecycle.md](docs/github-lifecycle.md).
+
 The dashboard exposes the same checkout command before or after the first push.
 If the task branch does not exist locally or remotely, the helper creates it
 from a freshly fetched `origin/<base>`; existing local, remote, or registered

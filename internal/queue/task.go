@@ -24,6 +24,13 @@ type ReviewPublicationArgs struct {
 
 func (ReviewPublicationArgs) Kind() string { return "review_publication" }
 
+type GitHubIssuePublicationArgs struct {
+	WorkspaceID string `json:"workspace_id" river:"unique"`
+	TaskID      string `json:"task_id" river:"unique"`
+}
+
+func (GitHubIssuePublicationArgs) Kind() string { return "github_issue_publication" }
+
 // DispatchQueue isolates workers by workspace even when multiple workspace
 // daemons share one Postgres/River cluster. Hashing avoids leaking workspace
 // names into queue identifiers and satisfies River's queue-name grammar.
@@ -35,4 +42,9 @@ func DispatchQueue(workspace string) string {
 func ReviewPublicationQueue(workspace string) string {
 	digest := sha256.Sum256([]byte(workspace))
 	return "review_publication_" + hex.EncodeToString(digest[:8])
+}
+
+func GitHubIssuePublicationQueue(workspace string) string {
+	digest := sha256.Sum256([]byte(workspace))
+	return "github_issue_publication_" + hex.EncodeToString(digest[:8])
 }

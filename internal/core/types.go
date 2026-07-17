@@ -108,27 +108,56 @@ const (
 
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
-	ID            string          `json:"id"`
-	Workspace     string          `json:"workspace"`
-	Source        string          `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
-	IntakeKey     string          `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
-	Title         string          `json:"title"`
-	Body          string          `json:"body"`  // free-form description; becomes part of the prompt
-	Class         string          `json:"class"` // bug | feature | chore
-	Level         EscalationLevel `json:"level"`
-	Mode          TaskMode        `json:"mode"`
-	SpecApproval  bool            `json:"spec_approval"`
-	MergeApproval bool            `json:"merge_approval"`
-	PolicyVersion int             `json:"policy_version"`
-	Repo          string          `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
-	BaseBranch    string          `json:"base_branch"`
-	Branch        string          `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
-	State         TaskState       `json:"state"`
-	NextStage     Stage           `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
-	RecoveryStage Stage           `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID  string          `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
-	FeatureID     string          `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
-	CreatedAt     time.Time       `json:"created_at"`
+	ID            string           `json:"id"`
+	Workspace     string           `json:"workspace"`
+	Source        string           `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
+	IntakeKey     string           `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
+	Title         string           `json:"title"`
+	Body          string           `json:"body"`  // free-form description; becomes part of the prompt
+	Class         string           `json:"class"` // bug | feature | chore
+	Level         EscalationLevel  `json:"level"`
+	Mode          TaskMode         `json:"mode"`
+	SpecApproval  bool             `json:"spec_approval"`
+	MergeApproval bool             `json:"merge_approval"`
+	PolicyVersion int              `json:"policy_version"`
+	Repo          string           `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch    string           `json:"base_branch"`
+	Branch        string           `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
+	State         TaskState        `json:"state"`
+	NextStage     Stage            `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage Stage            `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID  string           `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	FeatureID     string           `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
+	GitHub        *GitHubLifecycle `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
+	CreatedAt     time.Time        `json:"created_at"`
+}
+
+type GitHubPublicationState string
+
+const (
+	GitHubPublicationQueued    GitHubPublicationState = "queued"
+	GitHubPublicationRetrying  GitHubPublicationState = "retrying"
+	GitHubPublicationPublished GitHubPublicationState = "published"
+	GitHubPublicationFailed    GitHubPublicationState = "failed"
+)
+
+// GitHubLifecycle is the durable task-to-issue projection created from the
+// exact approved spec. TaskID is the idempotency key; SourceIssueNumber is
+// retained separately so provenance remains reconstructible after publication.
+type GitHubLifecycle struct {
+	TaskID            string                 `json:"task_id"`
+	Repository        string                 `json:"repository"`
+	SpecVersion       int                    `json:"spec_version"`
+	Source            string                 `json:"source"`
+	SourceIssueNumber int                    `json:"source_issue_number,omitempty"`
+	IssueNumber       int                    `json:"issue_number,omitempty"`
+	IssueURL          string                 `json:"issue_url,omitempty"`
+	Outcome           string                 `json:"outcome,omitempty"` // created | reused
+	State             GitHubPublicationState `json:"state"`
+	Attempts          int                    `json:"attempts"`
+	LastError         string                 `json:"last_error,omitempty"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
 }
 
 // Workspace is a durable control-plane boundary. ID and Name are immutable in

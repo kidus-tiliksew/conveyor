@@ -30,6 +30,22 @@ export type JobState =
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
 export type TaskMode = 'auto' | 'manual'
 
+export interface GitHubLifecycle {
+  task_id: string
+  repository: string
+  spec_version: number
+  source: string
+  source_issue_number?: number
+  issue_number?: number
+  issue_url?: string
+  outcome?: 'created' | 'reused'
+  state: 'queued' | 'retrying' | 'published' | 'failed'
+  attempts: number
+  last_error?: string
+  created_at: string
+  updated_at: string
+}
+
 export interface Task {
   id: string
   workspace: string
@@ -50,6 +66,7 @@ export interface Task {
   recovery_stage?: Stage
   parent_task_id?: string
   feature_id?: string
+  github?: GitHubLifecycle
   created_at: string
 }
 

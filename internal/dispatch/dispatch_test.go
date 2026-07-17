@@ -13,8 +13,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 type reviewAcceptanceFlakyStore struct {
@@ -185,6 +188,114 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
+	for _, source := range []string{"github:acme/api#42", "https://github.com/acme/api/issues/42"} {
+		number, err := sourceIssueNumber("acme/api", source)
+		if err != nil || number != 42 {
+			t.Fatalf("source=%q number=%d err=%v", source, number, err)
+		}
+	}
+	if _, err := sourceIssueNumber("acme/api", "github:other/api#42"); err == nil {
+		t.Fatal("cross-repository source issue was accepted")
+	}
+}
+
+func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
+	body := PRBody(core.Task{ID: "task-1", Source: "cli", GitHub: &core.GitHubLifecycle{IssueNumber: 42}})
+	if !strings.Contains(body, "Closes #42") {
+		t.Fatalf("body=%q", body)
+	}
+}
+
+func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "spec-task", Workspace: "test", Repo: "app", Source: "github:acme/app#19", State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "## Intent\nApproved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "spec-job", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	if err = d.HandleIntervention(ctx, task, job, core.Intervention{Action: core.InterventionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, ok, err := st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil || !ok || lifecycle.SpecVersion != spec.Version || lifecycle.SourceIssueNumber != 19 {
+		t.Fatalf("lifecycle=%+v ok=%t err=%v", lifecycle, ok, err)
+	}
+}
+
+func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "repo-boundary", Workspace: "test", Repo: "app", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "other/app", SpecVersion: spec.Version}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	worker := &githubIssuePublicationWorker{dispatcher: d}
+	err = worker.Work(ctx, &river.Job[queueargs.GitHubIssuePublicationArgs]{JobRow: &rivertype.JobRow{ID: 1, Attempt: 1, MaxAttempts: 5}, Args: queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}})
+	if err == nil || !strings.Contains(err.Error(), "does not match configured") {
+		t.Fatalf("error=%v", err)
+	}
+	lifecycle, _, _ := st.GetGitHubLifecycle(ctx, task.ID)
+	if lifecycle.LastError == "" || lifecycle.State != core.GitHubPublicationRetrying {
+		t.Fatalf("lifecycle=%+v", lifecycle)
+	}
+}
+
+func TestReconcileGitHubLifecyclesRepairsApprovalOutboxGapOnce(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "reconcile-issue", Workspace: "test", Repo: "app", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 1 {
+		t.Fatalf("first reconcile repaired=%d err=%v", repaired, reconcileErr)
+	}
+	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 0 {
+		t.Fatalf("second reconcile repaired=%d err=%v", repaired, reconcileErr)
+	}
+}
+
+func TestReviewHistoryKeepsRequestedChangesAndResolution(t *testing.T) {
+	events := []core.Event{
+		{Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1", "review_round": 1, "review_seat": 1, "verdict": "changes_requested", "reason_code": "tests", "feedback": "Add coverage."})},
+		{Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-2", "review_round": 2, "review_seat": 1, "verdict": "approve", "reason_code": "approved"})},
+		{Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 2, "verdict": "approve"})},
+	}
+	history := reviewHistory(events)
+	if len(history) != 2 || history[0].ResolutionState != "resolved" || history[1].ResolutionState != "accepted" {
+		t.Fatalf("history=%+v", history)
+	}
 }
 
 func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {

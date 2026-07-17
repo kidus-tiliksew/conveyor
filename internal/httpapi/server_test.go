@@ -123,6 +123,43 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestGitHubLifecycleAppearsInTaskActivityAndRequirementsReads(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "github-visible", Workspace: "demo", Repo: "api", Title: "Visible lifecycle", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	feature := core.Feature{ID: "feature-visible", Workspace: "demo", Name: "Lifecycle"}
+	if err := st.CreateFeature(ctx, feature); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AssignTaskFeature(ctx, task.ID, feature.ID); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/api", SpecVersion: 1}
+	if err := st.QueueGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
+	lifecycle.State = core.GitHubPublicationPublished
+	lifecycle.IssueNumber = 42
+	lifecycle.IssueURL = "https://github.com/acme/api/issues/42"
+	if err := st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	for _, path := range []string{"/v1/tasks/github-visible", "/v1/tasks/github-visible/activity", "/v1/requirements"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), lifecycle.IssueURL) {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()

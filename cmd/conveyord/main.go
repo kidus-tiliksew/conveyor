@@ -164,6 +164,22 @@ func main() {
 			}
 			for _, workspace := range workspaces {
 				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
+				lifecycles, lifecycleErr := d.ReconcileGitHubLifecycles(workspaceCtx)
+				if lifecycleErr != nil {
+					log.Printf("reconcile GitHub lifecycle intents: %v", lifecycleErr)
+					return
+				}
+				if lifecycles != 0 {
+					log.Printf("reconciled %d approved task GitHub lifecycle intent(s) in workspace %s", lifecycles, workspace.ID)
+				}
+				issueJobs, issueErr := pgStore.ReconcileGitHubLifecycles(workspaceCtx)
+				if issueErr != nil {
+					log.Printf("reconcile GitHub issue publications: %v", issueErr)
+					return
+				}
+				if issueJobs != 0 {
+					log.Printf("reconciled %d GitHub issue publication job(s) in workspace %s", issueJobs, workspace.ID)
+				}
 				repaired, err := pgStore.ReconcileQueuedTasks(workspaceCtx)
 				if err != nil {
 					log.Printf("reconcile queued tasks: %v", err)

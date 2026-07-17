@@ -139,6 +139,15 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} drafted` }
     case 'spec.version_approved':
       return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} approved` }
+    case 'github_issue.publication_queued':
+      return { title: 'GitHub issue publication queued' }
+    case 'github_issue.publication_retry':
+      return { title: 'GitHub issue publication retrying', detail: typeof payload.last_error === 'string' ? payload.last_error : undefined, alarm: Boolean(payload.last_error) }
+    case 'github_issue.publication_published':
+    case 'github_issue.associated':
+      return { title: 'GitHub issue associated', detail: typeof payload.issue_url === 'string' ? payload.issue_url : undefined, href: typeof payload.issue_url === 'string' ? payload.issue_url : undefined }
+    case 'github_issue.publication_failed':
+      return { title: 'GitHub issue publication failed', detail: typeof payload.last_error === 'string' ? payload.last_error : undefined, alarm: true }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
     case 'review.completed': {

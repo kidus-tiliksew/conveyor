@@ -30,6 +30,82 @@ type reviewPublicationWorker struct {
 	dispatcher *Dispatcher
 }
 
+type githubIssuePublicationWorker struct {
+	river.WorkerDefaults[queueargs.GitHubIssuePublicationArgs]
+	dispatcher *Dispatcher
+}
+
+func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.GitHubIssuePublicationArgs]) error {
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:github-issue-publication:%d", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
+	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, job.Args.TaskID)
+	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
+		return err
+	}
+	lifecycle.Attempts++
+	lifecycle.State = core.GitHubPublicationRetrying
+	lifecycle.LastError = ""
+	if err = w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		return err
+	}
+	task, err := w.dispatcher.Store.GetTask(ctx, lifecycle.TaskID)
+	if err != nil {
+		return err
+	}
+	spec, exists, err := w.dispatcher.Store.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil || !exists || !spec.Approved || spec.Version != lifecycle.SpecVersion {
+		if err == nil {
+			err = fmt.Errorf("approved spec version %d unavailable for task %s", lifecycle.SpecVersion, task.ID)
+		}
+		lifecycle.LastError = err.Error()
+		if job.Attempt >= job.MaxAttempts {
+			lifecycle.State = core.GitHubPublicationFailed
+		}
+		if updateErr := w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); updateErr != nil {
+			return fmt.Errorf("validate approved GitHub issue intent: %v; record retry: %w", err, updateErr)
+		}
+		return err
+	}
+	var result github.IssuePublicationResult
+	cfg, configErr := w.dispatcher.currentConfig(ctx)
+	publishErr := configErr
+	if publishErr == nil {
+		configuredRepo, repoExists := cfg.Repo(task.Repo)
+		if !repoExists || configuredRepo.GitHub == "" || configuredRepo.GitHub != lifecycle.Repository {
+			publishErr = fmt.Errorf("GitHub lifecycle repository %q does not match configured task repository", lifecycle.Repository)
+		}
+	}
+	if publishErr == nil {
+		result, publishErr = github.PublishIssue(ctx, github.IssuePublication{
+			Repo: lifecycle.Repository, TaskID: task.ID, Title: task.Title,
+			ApprovedSpec: spec.Content, SpecVersion: spec.Version,
+			SourceIssueNumber: lifecycle.SourceIssueNumber,
+		})
+	}
+	if publishErr != nil {
+		lifecycle.LastError = publishErr.Error()
+		if job.Attempt >= job.MaxAttempts {
+			lifecycle.State = core.GitHubPublicationFailed
+		}
+		if updateErr := w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); updateErr != nil {
+			return fmt.Errorf("publish GitHub issue: %v; record retry: %w", publishErr, updateErr)
+		}
+		return publishErr
+	}
+	lifecycle.State = core.GitHubPublicationPublished
+	lifecycle.IssueNumber = result.Number
+	lifecycle.IssueURL = result.URL
+	lifecycle.Outcome = "created"
+	if result.Reused {
+		lifecycle.Outcome = "reused"
+	}
+	lifecycle.LastError = ""
+	if err = w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.ReviewPublicationArgs]) error {
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%d", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
@@ -74,19 +150,28 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		}
 	}
 	taskLink := ""
-	if strings.HasPrefix(task.Source, "http://") || strings.HasPrefix(task.Source, "https://") {
+	if task.GitHub != nil && task.GitHub.IssueURL != "" {
+		taskLink = task.GitHub.IssueURL
+	}
+	if taskLink == "" && (strings.HasPrefix(task.Source, "http://") || strings.HasPrefix(task.Source, "https://")) {
 		taskLink = task.Source
-	} else if source, ok := strings.CutPrefix(task.Source, "github:"); ok {
-		if slug, number, found := strings.Cut(source, "#"); found && slug != "" && number != "" {
-			taskLink = "https://github.com/" + slug + "/issues/" + number
+	} else if taskLink == "" {
+		if source, ok := strings.CutPrefix(task.Source, "github:"); ok {
+			if slug, number, found := strings.Cut(source, "#"); found && slug != "" && number != "" {
+				taskLink = "https://github.com/" + slug + "/issues/" + number
+			}
 		}
 	}
+	history := reviewHistory(events)
 	result, publishErr := github.PublishReview(ctx, github.ReviewPublication{
 		Repo: repo.GitHub, Branch: task.Branch, TaskID: task.ID, TaskLink: taskLink,
 		ReviewWorkOrderID: publication.ReviewWorkOrderID, Verdict: publication.Verdict,
 		ReasonCode: publication.ReasonCode, Summary: publication.Summary, Feedback: publication.Feedback,
 		ReviewedCommitSHA: publication.ReviewedCommitSHA, ReviewerModel: publication.ReviewerModel,
 		ReviewerSession: publication.ReviewerSession, SameModelAsImplementer: publication.SameModelAsImplementer,
+		ReviewRound: publication.ReviewRound, ReviewSeat: publication.ReviewSeat,
+		RequiredModel: publication.RequiredModel, ModelEnforcement: publication.ModelEnforcement,
+		History:       history,
 		BounceHistory: bounceHistory,
 		SkipComment:   skipComment,
 	})
@@ -106,6 +191,65 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	publication.ReviewedCommitSHA = result.ReviewedCommitSHA
 	publication.LastError = ""
 	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
+}
+
+func reviewHistory(events []core.Event) []github.ReviewHistoryItem {
+	var history []github.ReviewHistoryItem
+	maxRound := -1
+	roundResults := map[int]string{}
+	for _, event := range events {
+		if event.Kind == "review.round_completed" {
+			var result struct {
+				Round   int    `json:"review_round"`
+				Verdict string `json:"verdict"`
+			}
+			if json.Unmarshal(event.Payload, &result) == nil {
+				roundResults[result.Round] = result.Verdict
+			}
+			continue
+		}
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var item struct {
+			WorkOrderID   string `json:"review_work_order_id"`
+			Verdict       string `json:"verdict"`
+			ReasonCode    string `json:"reason_code"`
+			Summary       string `json:"summary"`
+			Feedback      string `json:"feedback"`
+			ReviewerModel string `json:"reviewer_model"`
+			Round         int    `json:"review_round"`
+			Seat          int    `json:"review_seat"`
+		}
+		if json.Unmarshal(event.Payload, &item) != nil || item.WorkOrderID == "" {
+			continue
+		}
+		if item.Round > maxRound {
+			maxRound = item.Round
+		}
+		history = append(history, github.ReviewHistoryItem{WorkOrderID: item.WorkOrderID, Round: item.Round, Seat: item.Seat,
+			Verdict: item.Verdict, ReasonCode: item.ReasonCode, Summary: item.Summary,
+			Feedback: item.Feedback, ReviewerModel: item.ReviewerModel})
+	}
+	for i := range history {
+		history[i].ResolutionState = "accepted"
+		if history[i].Verdict != "changes_requested" {
+			continue
+		}
+		history[i].ResolutionState = "unresolved"
+		if history[i].Round < maxRound || (history[i].Round == 0 && i < len(history)-1) {
+			history[i].ResolutionState = "superseded"
+			for round := history[i].Round + 1; round <= maxRound; round++ {
+				if roundResults[round] == "approve" {
+					history[i].ResolutionState = "resolved"
+				}
+			}
+			if history[i].Round == 0 && history[len(history)-1].Verdict == "approve" {
+				history[i].ResolutionState = "resolved"
+			}
+		}
+	}
+	return history
 }
 
 func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs]) error {
@@ -166,10 +310,12 @@ func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []str
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
+	river.AddWorker(workers, &githubIssuePublicationWorker{dispatcher: dispatcher})
 	queues := map[string]river.QueueConfig{queueargs.ControlQueue: {MaxWorkers: 1}}
 	for _, workspace := range workspaces {
 		queues[queueargs.DispatchQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
 		queues[queueargs.ReviewPublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
+		queues[queueargs.GitHubIssuePublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
 	}
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
@@ -188,6 +334,10 @@ func AddWorkspaceQueues(client *river.Client[pgx.Tx], workspace string) error {
 		}
 	}
 	err := client.Queues().Add(queueargs.ReviewPublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
+	if err != nil && !errors.Is(err, &river.QueueAlreadyAddedError{}) {
+		return err
+	}
+	err = client.Queues().Add(queueargs.GitHubIssuePublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
 	if errors.Is(err, &river.QueueAlreadyAddedError{}) {
 		return nil
 	}
