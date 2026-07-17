@@ -374,7 +374,11 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 	if err != nil {
 		return core.Task{}, notFound(err, "task %s", id)
 	}
-	return taskFromDB(task), nil
+	result := taskFromDB(task)
+	if err = s.hydrateGitHubLifecycle(ctx, &result); err != nil {
+		return core.Task{}, err
+	}
+	return result, nil
 }
 
 func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
@@ -385,7 +389,11 @@ func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, 
 	if err != nil {
 		return core.Task{}, false, err
 	}
-	return taskFromDB(task), true, nil
+	result := taskFromDB(task)
+	if err = s.hydrateGitHubLifecycle(ctx, &result); err != nil {
+		return core.Task{}, false, err
+	}
+	return result, true, nil
 }
 
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
@@ -396,8 +404,22 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	result := make([]core.Task, len(rows))
 	for i := range rows {
 		result[i] = taskFromDB(rows[i])
+		if err = s.hydrateGitHubLifecycle(ctx, &result[i]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
+}
+
+func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) error {
+	lifecycle, ok, err := s.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		task.GitHub = &lifecycle
+	}
+	return nil
 }
 
 func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskState) error {
@@ -635,6 +657,125 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
 	})
+}
+
+const githubLifecycleColumns = `task_id, repository, spec_version, source,
+source_issue_number, issue_number, issue_url, outcome, state, create_state,
+create_attempts, reconcile_misses, attempts, last_error,
+created_at, updated_at`
+
+func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if lifecycle.State == "" {
+			lifecycle.State = core.GitHubPublicationQueued
+		}
+		if lifecycle.CreateState == "" {
+			lifecycle.CreateState = core.GitHubCreateNotStarted
+		}
+		if lifecycle.CreatedAt.IsZero() {
+			lifecycle.CreatedAt = time.Now().UTC()
+		}
+		command, err := tx.Exec(ctx, `INSERT INTO github_lifecycles (
+			workspace_id, task_id, repository, spec_version, source,
+			source_issue_number, state, create_state, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+		ON CONFLICT (workspace_id, task_id) DO NOTHING`, workspace(ctx),
+			lifecycle.TaskID, lifecycle.Repository, lifecycle.SpecVersion,
+			lifecycle.Source, lifecycle.SourceIssueNumber, lifecycle.State, lifecycle.CreateState,
+			lifecycle.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() == 1 {
+			if err = insertEvent(ctx, q, core.Event{TaskID: lifecycle.TaskID, Kind: "github_issue.publication_queued", Payload: core.JSONPayload(lifecycle)}); err != nil {
+				return err
+			}
+		}
+		_, err = s.river.InsertTx(ctx, tx, queueargs.GitHubIssuePublicationArgs{WorkspaceID: workspace(ctx), TaskID: lifecycle.TaskID}, &river.InsertOpts{
+			MaxAttempts: 5,
+			Queue:       queueargs.GitHubIssuePublicationQueue(workspace(ctx)),
+			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+				rivertype.JobStateRetryable, rivertype.JobStateScheduled,
+			}},
+		})
+		return err
+	})
+}
+
+func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
+	lifecycle, err := scanGitHubLifecycle(s.pool.QueryRow(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2", workspace(ctx), taskID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.GitHubLifecycle{}, false, nil
+	}
+	return lifecycle, err == nil, err
+}
+
+func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
+			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
+			last_error=$6, create_state=$7, create_attempts=$8, reconcile_misses=$9,
+			updated_at=now()
+			WHERE workspace_id=$10 AND task_id=$11`, lifecycle.IssueNumber,
+			lifecycle.IssueURL, lifecycle.Outcome, lifecycle.State, lifecycle.Attempts,
+			lifecycle.LastError, lifecycle.CreateState, lifecycle.CreateAttempts,
+			lifecycle.ReconcileMisses, workspace(ctx), lifecycle.TaskID)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)
+		}
+		kind := "github_issue.publication_retry"
+		if lifecycle.State == core.GitHubPublicationPublished {
+			kind = "github_issue.publication_published"
+		} else if lifecycle.State == core.GitHubPublicationFailed {
+			kind = "github_issue.publication_failed"
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: lifecycle.TaskID, Kind: kind, Payload: core.JSONPayload(lifecycle)})
+	})
+}
+
+func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
+		WHERE workspace_id=$1 AND state <> 'published' ORDER BY created_at`, workspace(ctx))
+	if err != nil {
+		return 0, err
+	}
+	var pending []core.GitHubLifecycle
+	for rows.Next() {
+		lifecycle, scanErr := scanGitHubLifecycle(rows)
+		if scanErr != nil {
+			rows.Close()
+			return 0, scanErr
+		}
+		pending = append(pending, lifecycle)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	for _, lifecycle := range pending {
+		if err = s.QueueGitHubLifecycle(ctx, lifecycle); err != nil {
+			return 0, err
+		}
+	}
+	return len(pending), nil
+}
+
+func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecycle, error) {
+	var lifecycle core.GitHubLifecycle
+	var state, createState string
+	err := row.Scan(&lifecycle.TaskID, &lifecycle.Repository, &lifecycle.SpecVersion,
+		&lifecycle.Source, &lifecycle.SourceIssueNumber, &lifecycle.IssueNumber,
+		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState,
+		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts, &lifecycle.LastError,
+		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
+	lifecycle.State = core.GitHubPublicationState(state)
+	lifecycle.CreateState = core.GitHubCreateState(createState)
+	return lifecycle, err
 }
 
 func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {

@@ -74,6 +74,17 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
               : 'No spec yet'
           }
         />
+        {item.task.github && (
+          <Fact
+            label="GitHub issue"
+            value={item.task.github.issue_url ? (
+              <a href={item.task.github.issue_url} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-primary hover:underline">
+                <span className="truncate">{item.task.github.repository}#{item.task.github.issue_number}</span>
+                <ExternalLink className="size-3 shrink-0" />
+              </a>
+            ) : `${item.task.github.state} · spec v${item.task.github.spec_version}`}
+          />
+        )}
         {prURL && (
           <Fact
             label="Pull request"

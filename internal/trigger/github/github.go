@@ -30,14 +30,136 @@ const DispatchedLabel = "conveyor:dispatched"
 const ReviewCheckName = "Conveyor / Code review"
 
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
+const issueLifecycleMarkerPrefix = "<!-- conveyor:task="
+const pullRequestLifecycleMarker = "<!-- conveyor:task-link -->"
 
-var ErrPullRequestNotFound = errors.New("pull request not found")
+var (
+	ErrPullRequestNotFound        = errors.New("pull request not found")
+	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
+)
 
 type Issue struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	URL    string `json:"url"`
+}
+
+type IssuePublication struct {
+	Repo              string
+	TaskID            string
+	Title             string
+	ApprovedSpec      string
+	SpecVersion       int
+	SourceIssueNumber int
+	AllowCreate       bool
+	BeforeCreate      func(context.Context) error
+}
+
+type IssuePublicationResult struct {
+	Number int
+	URL    string
+	Reused bool
+}
+
+// PublishIssue creates or updates the one issue associated with an approved
+// task. The remote task marker is checked exhaustively before creation. Once
+// BeforeCreate durably records an ambiguous create window, callers must retry
+// with AllowCreate false until the exact marker is visible.
+func PublishIssue(ctx context.Context, publication IssuePublication) (IssuePublicationResult, error) {
+	return publishIssue(ctx, publication, gh)
+}
+
+func publishIssue(ctx context.Context, publication IssuePublication, run ghRunner) (IssuePublicationResult, error) {
+	marker := issueLifecycleMarkerPrefix + publication.TaskID + " -->"
+	number := publication.SourceIssueNumber
+	reused := number > 0
+	if number == 0 {
+		var err error
+		number, err = findIssueByMarker(ctx, publication.Repo, marker, run)
+		if err != nil {
+			return IssuePublicationResult{}, err
+		}
+		reused = number > 0
+	}
+	section := issuePublicationBody(publication)
+	if number == 0 {
+		if !publication.AllowCreate {
+			return IssuePublicationResult{}, fmt.Errorf("%w for task %s", ErrIssueReconciliationPending, publication.TaskID)
+		}
+		if publication.BeforeCreate == nil {
+			return IssuePublicationResult{}, errors.New("GitHub issue creation requires a durable create-attempt recorder")
+		}
+		if err := publication.BeforeCreate(ctx); err != nil {
+			return IssuePublicationResult{}, fmt.Errorf("record GitHub issue create attempt: %w", err)
+		}
+		out, err := run(ctx, "issue", "create", "--repo", publication.Repo, "--title", publication.Title, "--body", section)
+		if err != nil {
+			return IssuePublicationResult{}, fmt.Errorf("create task issue: %w", err)
+		}
+		issueURL := strings.TrimSpace(string(out))
+		parts := strings.Split(strings.TrimRight(issueURL, "/"), "/")
+		if len(parts) == 0 {
+			return IssuePublicationResult{}, fmt.Errorf("parse created issue URL %q", issueURL)
+		}
+		parsed, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil || parsed <= 0 {
+			return IssuePublicationResult{}, fmt.Errorf("parse created issue URL %q", issueURL)
+		}
+		return IssuePublicationResult{Number: parsed, URL: issueURL}, nil
+	}
+	view, err := run(ctx, "issue", "view", strconv.Itoa(number), "--repo", publication.Repo, "--json", "number,url,body")
+	if err != nil {
+		return IssuePublicationResult{}, fmt.Errorf("read associated issue: %w", err)
+	}
+	var existing Issue
+	if err = json.Unmarshal(view, &existing); err != nil || existing.Number != number || existing.URL == "" {
+		return IssuePublicationResult{}, fmt.Errorf("parse associated issue %s#%d", publication.Repo, number)
+	}
+	body := strings.TrimSpace(existing.Body)
+	if index := strings.Index(body, issueLifecycleMarkerPrefix); index >= 0 {
+		body = strings.TrimSpace(body[:index])
+	}
+	if body != "" {
+		body += "\n\n"
+	}
+	body += section
+	if _, err = run(ctx, "issue", "edit", strconv.Itoa(number), "--repo", publication.Repo, "--body", body); err != nil {
+		return IssuePublicationResult{}, fmt.Errorf("update associated issue: %w", err)
+	}
+	return IssuePublicationResult{Number: number, URL: existing.URL, Reused: reused}, nil
+}
+
+// findIssueByMarker walks every issue in stable creation order. Unlike GitHub
+// search, this path is not index-dependent and is not capped at the first 100
+// matches, so reconciliation cannot mistake a temporarily absent search hit
+// for permission to create a second issue.
+func findIssueByMarker(ctx context.Context, repo, marker string, run ghRunner) (int, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return 0, fmt.Errorf("find task issue: invalid GitHub repository %q", repo)
+	}
+	endpoint := fmt.Sprintf("repos/%s/%s/issues?state=all&sort=created&direction=asc&per_page=100", owner, name)
+	out, err := run(ctx, "api", "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return 0, fmt.Errorf("find task issue: %w", err)
+	}
+	var pages [][]Issue
+	if err = json.Unmarshal(out, &pages); err != nil {
+		return 0, fmt.Errorf("parse exhaustive task issue listing: %w", err)
+	}
+	for _, page := range pages {
+		for _, issue := range page {
+			if issue.Number > 0 && strings.Contains(issue.Body, marker) {
+				return issue.Number, nil
+			}
+		}
+	}
+	return 0, nil
+}
+
+func issuePublicationBody(publication IssuePublication) string {
+	return fmt.Sprintf("%s%s -->\n## Conveyor approved specification\n\n- Task: `%s`\n- Approved spec version: `%d`\n\n%s", issueLifecycleMarkerPrefix, publication.TaskID, publication.TaskID, publication.SpecVersion, strings.TrimSpace(publication.ApprovedSpec))
 }
 
 type ReviewFeedback struct {
@@ -246,8 +368,25 @@ type ReviewPublication struct {
 	ReviewerModel          string
 	ReviewerSession        string
 	SameModelAsImplementer string
+	ReviewRound            int
+	ReviewSeat             int
+	RequiredModel          string
+	ModelEnforcement       string
+	History                []ReviewHistoryItem
 	BounceHistory          []string
 	SkipComment            bool
+}
+
+type ReviewHistoryItem struct {
+	WorkOrderID     string
+	Round           int
+	Seat            int
+	Verdict         string
+	ReasonCode      string
+	Summary         string
+	Feedback        string
+	ReviewerModel   string
+	ResolutionState string
 }
 
 type ReviewPublicationResult struct {
@@ -406,6 +545,9 @@ func reviewPublicationBody(publication ReviewPublication) string {
 		fmt.Fprintf(&body, " ([link](%s))", publication.TaskLink)
 	}
 	fmt.Fprintf(&body, "\n- Review work order: `%s`\n- Verdict: **%s**\n- Reason: `%s`\n- Reviewed commit: `%s`\n- Reviewer model: `%s`\n- Independent reviewer session: `%s`\n- Same model as implementer: `%s`\n\n%s", publication.ReviewWorkOrderID, publication.Verdict, publication.ReasonCode, publication.ReviewedCommitSHA, publication.ReviewerModel, publication.ReviewerSession, publication.SameModelAsImplementer, publication.Summary)
+	if publication.ReviewRound > 0 {
+		fmt.Fprintf(&body, "\n- Review round / seat: `%d / %d`\n- Required model: `%s` (`%s`)", publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel, publication.ModelEnforcement)
+	}
 	if strings.TrimSpace(publication.Feedback) != "" {
 		fmt.Fprintf(&body, "\n\n### Actionable feedback\n\n%s", publication.Feedback)
 	}
@@ -413,6 +555,22 @@ func reviewPublicationBody(publication ReviewPublication) string {
 		body.WriteString("\n\n### Bounce history\n")
 		for _, item := range publication.BounceHistory {
 			fmt.Fprintf(&body, "\n- %s", item)
+		}
+	}
+	if len(publication.History) != 0 {
+		body.WriteString("\n\n### Review and resolution history\n")
+		for _, item := range publication.History {
+			round := fmt.Sprintf("round %d", item.Round)
+			if item.Round == 0 {
+				round = "single review"
+			}
+			if item.Seat > 0 {
+				round += fmt.Sprintf(", seat %d", item.Seat)
+			}
+			fmt.Fprintf(&body, "\n- **%s** — %s — `%s` — %s (`%s`)", item.Verdict, round, item.WorkOrderID, item.ResolutionState, item.ReasonCode)
+			if strings.TrimSpace(item.Feedback) != "" {
+				fmt.Fprintf(&body, "\n  - %s", strings.ReplaceAll(strings.TrimSpace(item.Feedback), "\n", "\n  - "))
+			}
 		}
 	}
 	return body.String()
@@ -482,6 +640,13 @@ func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string
 		return "", fmt.Errorf("find existing PR: %w", err)
 	}
 	if value := strings.TrimSpace(string(existing)); value != "" {
+		current, viewErr := gh(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
+		if viewErr != nil {
+			return "", fmt.Errorf("read existing PR body: %w", viewErr)
+		}
+		if _, err = gh(ctx, "pr", "edit", branch, "--repo", repo, "--body", reconcilePullRequestBody(string(current), body)); err != nil {
+			return "", fmt.Errorf("update existing PR body: %w", err)
+		}
 		return value, nil
 	}
 	out, err := gh(ctx, "pr", "create", "--repo", repo, "--head", branch, "--base", base, "--title", title, "--body", body)
@@ -517,6 +682,13 @@ func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 		return "", fmt.Errorf("find existing PR: %w", err)
 	}
 	if url := strings.TrimSpace(string(existing)); url != "" {
+		current, viewErr := runGH(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
+		if viewErr != nil {
+			return "", fmt.Errorf("read existing PR body: %w", viewErr)
+		}
+		if _, err = runGH(ctx, "pr", "edit", branch, "--repo", repo, "--body", reconcilePullRequestBody(string(current), body)); err != nil {
+			return "", fmt.Errorf("update existing PR body: %w", err)
+		}
 		return url, nil
 	}
 	out, err := runGH(ctx, "pr", "create",
@@ -529,6 +701,20 @@ func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil // gh prints the PR URL
+}
+
+func reconcilePullRequestBody(existing, lifecycle string) string {
+	existing = strings.TrimSpace(existing)
+	lifecycle = strings.TrimSpace(lifecycle)
+	if index := strings.Index(existing, pullRequestLifecycleMarker); index >= 0 {
+		existing = strings.TrimSpace(existing[:index])
+	} else if strings.HasPrefix(existing, "Conveyor task `") && strings.Contains(existing, "\n\nSource: ") {
+		existing = ""
+	}
+	if existing == "" {
+		return lifecycle
+	}
+	return existing + "\n\n" + lifecycle
 }
 
 func gh(ctx context.Context, args ...string) ([]byte, error) {

@@ -44,6 +44,27 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	if tasks, err := st.ListTasks(ctxB); err != nil || len(tasks) != 1 || tasks[0].ID != taskB.ID {
 		t.Fatalf("workspace B tasks=%+v err=%v", tasks, err)
 	}
+	for _, item := range []struct {
+		ctx  context.Context
+		task core.Task
+	}{
+		{ctx: ctxA, task: taskA},
+		{ctx: ctxB, task: taskB},
+	} {
+		lifecycle := core.GitHubLifecycle{TaskID: item.task.ID, Repository: "acme/api", SpecVersion: 1}
+		if err := st.QueueGitHubLifecycle(item.ctx, lifecycle); err != nil {
+			t.Fatal(err)
+		}
+		lifecycle, _, _ = st.GetGitHubLifecycle(item.ctx, item.task.ID)
+		lifecycle.State, lifecycle.IssueNumber = core.GitHubPublicationPublished, 42
+		lifecycle.IssueURL = "https://github.com/acme/api/issues/42"
+		if err := st.UpdateGitHubLifecycle(item.ctx, lifecycle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := st.GetGitHubLifecycle(ctxA, taskB.ID); err != nil || ok {
+		t.Fatalf("workspace A lifecycle read workspace B ok=%t err=%v", ok, err)
+	}
 
 	if err := st.AppendEvent(ctxA, core.Event{TaskID: taskA.ID, Kind: "test.event"}); err != nil {
 		t.Fatal(err)

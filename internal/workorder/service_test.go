@@ -347,6 +347,64 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 }
 
+func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "issue-linked", Workspace: "test", Repo: "app", Title: "Linked change", Branch: "conveyor/issue-linked", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: spec.Version}
+	if err = st.QueueGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "issue-linked-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.UseDurableQueue()
+	opened := 0
+	var body string
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, OpenPR: func(_ context.Context, _, _, _, _ string, value string) (string, error) {
+		opened++
+		body = value
+		return "https://github.com/acme/app/pull/9", nil
+	}, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+		return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "abc"}, nil
+	}}
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err == nil || !strings.Contains(err.Error(), "retry after publication") || opened != 0 {
+		t.Fatalf("pending issue submit err=%v opened=%d", err, opened)
+	}
+	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
+	lifecycle.State = core.GitHubPublicationPublished
+	lifecycle.IssueNumber = 42
+	lifecycle.IssueURL = "https://github.com/acme/app/issues/42"
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+		t.Fatal(err)
+	}
+	if opened != 1 || !strings.Contains(body, "Closes #42") {
+		t.Fatalf("opened=%d body=%q", opened, body)
+	}
+}
+
 func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

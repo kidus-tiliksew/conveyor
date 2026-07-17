@@ -70,6 +70,10 @@ type Store interface {
 	CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error)
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
+	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
+	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
+	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
+	ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 
 	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error
@@ -122,6 +126,7 @@ func NewMemory() Store {
 		specs:         map[string][]core.SpecVersion{},
 		workOrders:    map[string]core.WorkOrder{},
 		publications:  map[string]core.ReviewPublication{},
+		github:        map[string]core.GitHubLifecycle{},
 		features:      map[string]core.Feature{},
 		artifacts:     map[memoryArtifactKey]memoryArtifact{},
 		pairings:      map[string]core.WorkerPairing{},
@@ -150,6 +155,7 @@ type memory struct {
 	specs         map[string][]core.SpecVersion
 	workOrders    map[string]core.WorkOrder
 	publications  map[string]core.ReviewPublication
+	github        map[string]core.GitHubLifecycle
 	features      map[string]core.Feature
 	artifacts     map[memoryArtifactKey]memoryArtifact
 	pairings      map[string]core.WorkerPairing
@@ -1105,6 +1111,58 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	return nil
 }
 
+func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[lifecycle.TaskID]; !ok {
+		return fmt.Errorf("task %s not found", lifecycle.TaskID)
+	}
+	if _, exists := m.github[lifecycle.TaskID]; exists {
+		return nil
+	}
+	now := time.Now().UTC()
+	if lifecycle.CreatedAt.IsZero() {
+		lifecycle.CreatedAt = now
+	}
+	lifecycle.UpdatedAt = lifecycle.CreatedAt
+	if lifecycle.State == "" {
+		lifecycle.State = core.GitHubPublicationQueued
+	}
+	if lifecycle.CreateState == "" {
+		lifecycle.CreateState = core.GitHubCreateNotStarted
+	}
+	m.github[lifecycle.TaskID] = lifecycle
+	m.appendEventLocked(ctx, core.Event{TaskID: lifecycle.TaskID, Kind: "github_issue.publication_queued", Payload: core.JSONPayload(lifecycle)})
+	return nil
+}
+
+func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	lifecycle, ok := m.github[taskID]
+	return lifecycle, ok, nil
+}
+
+func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.github[lifecycle.TaskID]; !ok {
+		return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)
+	}
+	lifecycle.UpdatedAt = time.Now().UTC()
+	m.github[lifecycle.TaskID] = lifecycle
+	kind := "github_issue.publication_retry"
+	if lifecycle.State == core.GitHubPublicationPublished {
+		kind = "github_issue.publication_published"
+	} else if lifecycle.State == core.GitHubPublicationFailed {
+		kind = "github_issue.publication_failed"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: lifecycle.TaskID, Kind: kind, Payload: core.JSONPayload(lifecycle)})
+	return nil
+}
+
+func (m *memory) ReconcileGitHubLifecycles(context.Context) (int, error) { return 0, nil }
+
 func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1140,6 +1198,10 @@ func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
 	if !ok {
 		return core.Task{}, fmt.Errorf("task %s not found", id)
 	}
+	if lifecycle, exists := m.github[id]; exists {
+		copy := lifecycle
+		t.GitHub = &copy
+	}
 	return t, nil
 }
 
@@ -1148,6 +1210,10 @@ func (m *memory) GetTaskByIntakeKey(_ context.Context, key string) (core.Task, b
 	defer m.mu.RUnlock()
 	for _, task := range m.tasks {
 		if key != "" && task.IntakeKey == key {
+			if lifecycle, exists := m.github[task.ID]; exists {
+				copy := lifecycle
+				task.GitHub = &copy
+			}
 			return task, true, nil
 		}
 	}
@@ -1159,6 +1225,10 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	defer m.mu.RUnlock()
 	out := make([]core.Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
+		if lifecycle, exists := m.github[t.ID]; exists {
+			copy := lifecycle
+			t.GitHub = &copy
+		}
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool {

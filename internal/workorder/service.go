@@ -281,6 +281,19 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	prURL := ""
 	if repo.GitHub != "" {
+		if spec, exists, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID); specErr != nil {
+			return nil, specErr
+		} else if exists && spec.Approved {
+			if task.GitHub == nil {
+				return nil, fmt.Errorf("approved task %s has no durable GitHub issue association yet; retry after reconciliation", task.ID)
+			}
+			if task.GitHub.Repository != repo.GitHub {
+				return nil, fmt.Errorf("task GitHub association repository %q does not match configured repository %q", task.GitHub.Repository, repo.GitHub)
+			}
+			if task.GitHub.State != core.GitHubPublicationPublished || task.GitHub.IssueNumber <= 0 {
+				return nil, fmt.Errorf("GitHub issue publication for task %s is %s; retry after publication reconciliation", task.ID, task.GitHub.State)
+			}
+		}
 		openPR := s.OpenPR
 		if openPR == nil {
 			openPR = github.OpenPRForBranch
