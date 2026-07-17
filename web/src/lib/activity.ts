@@ -156,6 +156,9 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       const parts = [
         typeof payload.review_seat === 'number' && payload.review_seat > 0 ? `seat ${payload.review_seat}` : undefined,
         typeof payload.reviewer_model === 'string' ? payload.reviewer_model : undefined,
+        typeof payload.required_effort === 'string' && payload.required_effort.trim()
+          ? `effort ${payload.required_effort.trim()}`
+          : undefined,
         typeof payload.model_enforcement === 'string' ? payload.model_enforcement : undefined,
         payload.same_model_as_implementer === true ? 'same model as the implementer' : undefined,
         typeof payload.feedback === 'string' && payload.feedback.trim() ? `feedback: ${payload.feedback.trim()}` : undefined,

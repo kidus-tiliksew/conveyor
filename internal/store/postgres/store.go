@@ -310,13 +310,16 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 }
 
 func configDiff(before, after config.WorkspaceDocument) []string {
-	sections := make([]string, 0, 6)
+	sections := make([]string, 0, 7)
 	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
 		sections = append(sections, "routing")
+	}
+	if !reflect.DeepEqual(before.ExecutionSettings, after.ExecutionSettings) {
+		sections = append(sections, "execution_settings")
 	}
 	if !reflect.DeepEqual(before.Repos, after.Repos) {
 		sections = append(sections, "repos")
@@ -940,7 +943,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-				review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
@@ -974,15 +977,15 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-			review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$30)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$31)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
-			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ModelEnforcement,
+			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
@@ -1046,14 +1049,15 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-			review_round, review_seat, required_model, required_harness, required_harness_config, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 				queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 				self_reported, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,'',$12,$13,NULL,NULL,0,'',0,0,0,true,$14,$14)`,
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,NULL,NULL,0,'',0,0,0,true,$15,$15)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, core.WorkOrderQueued,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
-				harnessSnapshotJSON(order.RequiredHarnessConfig), order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
+				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
 			if err != nil {
 				return err
 			}
@@ -1443,7 +1447,7 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
-required_model, required_harness, model_enforcement, state, attempts, check_run_id,
+required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
 comment_id, last_error, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
@@ -1464,15 +1468,15 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
 			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
 			same_model_as_implementer, review_round, review_seat, required_model,
-			required_harness, model_enforcement, state
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			required_harness, required_effort, model_enforcement, state
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
 		workspace(ctx), publication.TaskID, publication.JobID, publication.Verdict,
 		publication.ReasonCode, publication.Summary, publication.Feedback,
 		publication.ReviewedCommitSHA, publication.ReviewerModel,
 		publication.ReviewerSession, publication.SameModelAsImplementer,
 		publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel,
-		publication.RequiredHarness, publication.ModelEnforcement,
+		publication.RequiredHarness, publication.RequiredEffort, publication.ModelEnforcement,
 		publication.State)
 	if err != nil {
 		return err
@@ -1622,6 +1626,7 @@ type completedReviewRecord struct {
 	ReviewSeat        int    `json:"review_seat"`
 	RequiredModel     string `json:"required_model"`
 	RequiredHarness   string `json:"required_harness"`
+	RequiredEffort    string `json:"required_effort"`
 	ModelEnforcement  string `json:"model_enforcement"`
 }
 
@@ -1773,6 +1778,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
+		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
 		"publication_eligible": decision.PublicationEligible,
 	})
@@ -1786,7 +1792,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
 		SameModelAsImplementer: decision.SameModelAsImplementer,
 		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
-		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness,
+		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness, RequiredEffort: decision.RequiredEffort,
 		ModelEnforcement: decision.ModelEnforcement,
 	}
 }
@@ -1799,7 +1805,7 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
 		&publication.ReviewerSession, &publication.SameModelAsImplementer,
 		&publication.ReviewRound, &publication.ReviewSeat, &publication.RequiredModel,
-		&publication.RequiredHarness, &publication.ModelEnforcement, &state,
+		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
 		&publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
 	publication.State = core.ReviewPublicationState(state)
@@ -1813,7 +1819,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
-		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ModelEnforcement,
+		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
@@ -1825,6 +1831,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		}
 		if err == nil && snapshot.Name != "" {
 			order.RequiredHarnessConfig = &snapshot
+			order.RequiredEffort = snapshot.Effort
 		}
 	}
 	order.Claimable = order.State == core.WorkOrderQueued

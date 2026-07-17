@@ -13,6 +13,21 @@ database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
+# Canonical contextual settings (spec §21.18). The legacy routing block below
+# remains during the compatibility period but cannot override these values.
+execution_settings:
+  control_plane:
+    triage: {model: gpt-5.6-luna, timeout: 20m}
+    spec: {model: gpt-5.6-luna, timeout: 30m}
+  implementation:
+    harness: local-agent
+    model_policy: harness_default
+    timeout: 4h
+  review:
+    execution: mcp
+    timeout: 1h
+
+# Deprecated compatibility shape for older REST/CLI consumers.
 routing:
   stages:
     triage:
@@ -51,12 +66,31 @@ harnesses:
     probe_timeout: 10s
 
 # One durable review order is created per ordered seat. A seat-level harness
-# is optional and otherwise inherits routing.stages.review.harness.
+# is optional and otherwise uses execution_settings.review.fallback_harness.
+# Here every seat is explicit, so route-level fallback data is unused. Effort
+# is optional; when absent, the selected harness keeps its own default.
 review:
   seats:
     - model: gpt-5.6
+      harness: local-agent
     - model: claude-opus-4.1
       harness: local-agent
+
+# Adapter-level effort excerpt (spec §21.19). Merge these fields into the
+# corresponding full harness entries after their authenticated wrapper defines
+# the {mcp_config} transport; these are adapter argv, not complete launch
+# commands:
+# harnesses:
+#   - name: codex
+#     effort_args:
+#       high: [--config, 'model_reasoning_effort="high"']
+#   - name: claude
+#     effort_args:
+#       high: [--effort, high]
+# review:
+#   seats:
+#     - {model: gpt-5.6-sol, harness: codex, effort: high}
+#     - {model: claude-opus-4-8, harness: claude, effort: high}
 
 repos:
   - name: api

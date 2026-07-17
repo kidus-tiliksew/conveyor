@@ -190,6 +190,7 @@ export interface WorkspaceConfigRepo {
 
 export interface WorkspaceConfigRoute {
   model: string
+  model_policy?: 'explicit' | 'harness_default'
   timeout: string
   execution: 'in_process' | 'mcp'
   harness?: string
@@ -199,6 +200,8 @@ export interface WorkspaceHarness {
   name: string
   command: string[]
   model_args?: string[]
+  default_model_sentinels?: string[]
+  effort_args?: Partial<Record<'low' | 'medium' | 'high', string[]>>
   probe_command: string[]
   probe_timeout: string
 }
@@ -206,6 +209,7 @@ export interface WorkspaceHarness {
 export interface WorkspaceReviewSeat {
   model: string
   harness?: string
+  effort?: 'low' | 'medium' | 'high'
 }
 
 export interface ExecutionPolicy {
@@ -220,6 +224,24 @@ export interface WorkspaceConfigDocument {
   workspace: string
   max_bounces: number
   work_order_queue_timeout: string
+  execution_settings: {
+    control_plane: {
+      triage: { model: string; timeout: string }
+      spec: { model: string; timeout: string }
+    }
+    implementation: {
+      harness: string
+      model?: string
+      model_policy: 'explicit' | 'harness_default'
+      timeout: string
+    }
+    review: {
+      execution: 'in_process' | 'mcp'
+      timeout: string
+      fallback_model?: string
+      fallback_harness?: string
+    }
+  }
   routing: {
     stages: Record<string, WorkspaceConfigRoute>
   }
@@ -273,7 +295,9 @@ export interface WorkOrder {
   review_seat?: number
   required_model?: string
   required_harness?: string
+  required_effort?: 'low' | 'medium' | 'high'
   required_harness_config?: WorkspaceHarness
+  execution_timeout?: string
   model_enforcement?: 'worker-pinned' | 'self-reported'
   lease_expires_at?: string
   queue_entered_at: string

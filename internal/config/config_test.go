@@ -54,6 +54,20 @@ repos:
 	}
 }
 
+func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing.T) {
+	cfg, err := Load("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	implement := cfg.Routing.Stages["implement"]
+	if cfg.ExecutionSettings == nil || implement.ModelPolicy != ModelPolicyHarnessDefault || cfg.EffectiveModel("implement") != "" {
+		t.Fatalf("implementation settings=%+v effective_model=%q", cfg.ExecutionSettings, cfg.EffectiveModel("implement"))
+	}
+	if len(cfg.Review.Seats) != 2 || cfg.Routing.Stages["review"].Harness != "" {
+		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
+	}
+}
+
 func TestWorkOrderQueueTimeoutDefaultsAndRejectsInvalidDuration(t *testing.T) {
 	deployment := validConfig()
 	data, err := yaml.Marshal(deployment.WorkspaceDocument())
@@ -182,6 +196,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 			route := d.Routing.Stages["review"]
 			route.Harness = "missing"
 			d.Routing.Stages["review"] = route
+			d.ExecutionSettings.Review.FallbackHarness = "missing"
 		}, "unknown harness"},
 	}
 	for _, test := range tests {
@@ -214,23 +229,87 @@ func TestMultipleHarnessesRequireExplicitWorkerRoute(t *testing.T) {
 	}
 }
 
+func TestContextualSettingsOverrideLegacyRoutesAndAllowExplicitReviewSeats(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+	}
+	base.Routing.Stages["implement"] = StageRoute{Model: "subscription", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	base.Routing.Stages["review"] = StageRoute{Model: "stale", Harness: "stale-harness", TimeoutText: "1h", Execution: ExecutionMCP}
+	base.Review.Seats = []ReviewSeat{{Model: "gpt-review", Harness: "codex"}, {Model: "claude-review", Harness: "claude"}}
+	document := base.WorkspaceDocument()
+	document.ExecutionSettings.Implementation.Model = ""
+	document.ExecutionSettings.Implementation.ModelPolicy = ModelPolicyHarnessDefault
+	document.ExecutionSettings.Review.FallbackModel = ""
+	document.ExecutionSettings.Review.FallbackHarness = ""
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "contextual settings test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Routing.Stages["review"].Harness != "" || parsed.EffectiveModel("implement") != "" {
+		t.Fatalf("normalized routes=%+v", parsed.Routing.Stages)
+	}
+	canonical, err := MarshalWorkspaceDocument(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), "execution_settings:") || !strings.Contains(string(canonical), "routing:") {
+		t.Fatalf("canonical document lost contextual or compatibility shape: %s", canonical)
+	}
+}
+
+func TestHarnessDefaultModelOnlyForwardsDeclaredSentinel(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, DefaultModelSentinels: []string{"subscription"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}
+	base.Routing.Stages["implement"] = StageRoute{Model: "subscription", ModelPolicy: ModelPolicyHarnessDefault, Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	document := base.WorkspaceDocument()
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "declared sentinel test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.EffectiveModel("implement"); got != "subscription" {
+		t.Fatalf("effective model=%q", got)
+	}
+
+	document.ExecutionSettings.Implementation.Model = "unsupported-sentinel"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "undeclared sentinel test"); err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("undeclared sentinel error=%v", err)
+	}
+}
+
+func TestExplicitSymbolicModelRequiresHarnessDefaultPolicy(t *testing.T) {
+	route := StageRoute{Model: "subscription", ModelPolicy: ModelPolicyExplicit, Harness: "codex"}
+	harnesses := []Harness{{Name: "codex", DefaultModelSentinels: []string{"subscription"}}}
+	if _, err := normalizeHarnessModel(route, harnesses); err == nil || !strings.Contains(err.Error(), `symbolic model "subscription" requires harness_default model policy`) {
+		t.Fatalf("explicit symbolic model error=%v", err)
+	}
+}
+
 func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T) {
 	base := validConfig()
 	base.Harnesses = []Harness{
-		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
 	}
 	base.Routing.Stages["implement"] = StageRoute{Model: "implementer", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
 	base.Routing.Stages["review"] = StageRoute{Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
 	document := base.WorkspaceDocument()
-	document.Review.Seats = []ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Harness: "claude"}}
+	document.Review.Seats = []ReviewSeat{{Model: "gpt-5.6-sol", Harness: "codex", Effort: "high"}, {Model: "claude-opus-4-8", Harness: "claude", Effort: "high"}}
 	raw, _ := yaml.Marshal(document)
 	parsed, err := ParseWorkspaceDocument(raw, base, "review panel test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Review.Seats) != 2 || parsed.Review.Seats[0].Model != "gpt-review" || parsed.Review.Seats[1].Harness != "claude" {
+	if len(parsed.Review.Seats) != 2 || parsed.Review.Seats[0].Effort != "high" || parsed.Review.Seats[1].Harness != "claude" || parsed.Review.Seats[1].Effort != "high" {
 		t.Fatalf("review seats=%+v", parsed.Review.Seats)
+	}
+	encoded, _ := json.Marshal(parsed.WorkspaceDocument().Review.Seats)
+	if !strings.Contains(string(encoded), `"effort":"high"`) {
+		t.Fatalf("effort did not round trip: %s", encoded)
 	}
 
 	document.Review.Seats[1].Harness = "missing"
@@ -242,6 +321,21 @@ func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T)
 	raw, _ = yaml.Marshal(document)
 	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("missing model error=%v", err)
+	}
+	document.Review.Seats = []ReviewSeat{{Model: "gpt", Harness: "codex", Effort: "ultrathink"}}
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "must be low, medium, or high") {
+		t.Fatalf("invalid effort error=%v", err)
+	}
+	document.Review.Seats[0].Effort = "medium"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Fatalf("unsupported effort error=%v", err)
+	}
+	legacy := []ReviewSeat{{Model: "gpt", Harness: "codex"}}
+	encoded, _ = json.Marshal(legacy)
+	if strings.Contains(string(encoded), "effort") {
+		t.Fatalf("legacy seat gained effort: %s", encoded)
 	}
 }
 

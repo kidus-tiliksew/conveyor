@@ -516,6 +516,7 @@ type completedReview struct {
 	ReviewSeat        int    `json:"review_seat"`
 	RequiredModel     string `json:"required_model"`
 	RequiredHarness   string `json:"required_harness"`
+	RequiredEffort    string `json:"required_effort"`
 	ModelEnforcement  string `json:"model_enforcement"`
 }
 
@@ -580,6 +581,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
+		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
 		"publication_eligible": decision.PublicationEligible,
 	})
@@ -593,7 +595,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
 		SameModelAsImplementer: decision.SameModelAsImplementer,
 		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
-		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness,
+		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness, RequiredEffort: decision.RequiredEffort,
 		ModelEnforcement: decision.ModelEnforcement,
 	}
 }

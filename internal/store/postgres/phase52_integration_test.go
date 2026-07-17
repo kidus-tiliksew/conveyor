@@ -26,7 +26,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		"spec":      {Model: "gpt", TimeoutText: "1m", Timeout: time.Minute, Execution: config.ExecutionInProcess},
 		"implement": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
 		"review":    {Model: "reviewer", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
-	}}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review"}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+	}}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Effort: "high"}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	}
 	orders := []core.WorkOrder{
 		{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
-		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, Effort: "high", ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 	}
 	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" {
+	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" || persisted.RequiredEffort != "high" || persisted.RequiredHarnessConfig.EffortArgs["high"][1] != "high" {
 		t.Fatalf("restarted harness snapshot=%+v err=%v", persisted, getErr)
 	}
 	st = restarted

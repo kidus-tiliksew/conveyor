@@ -169,19 +169,23 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 				return fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
 			}
 		}
+		if harnessConfig != nil {
+			harnessConfig.Effort = seat.Effort
+		}
 		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
 			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
-			RequiredHarness: harness, RequiredHarnessConfig: harnessConfig,
-			QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+			RequiredHarness: harness, RequiredEffort: seat.Effort, RequiredHarnessConfig: harnessConfig,
+			ExecutionTimeoutText: route.TimeoutText,
+			QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
 	}
 	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		return err
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "review_round": round, "seat_count": len(orders)})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
 }
 
 func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {
@@ -190,13 +194,27 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 			continue
 		}
 		return &core.HarnessSnapshot{
-			Name: harness.Name, Command: append([]string(nil), harness.Command...),
-			ModelArgs:        append([]string(nil), harness.ModelArgs...),
-			ProbeCommand:     append([]string(nil), harness.ProbeCommand...),
-			ProbeTimeoutText: harness.ProbeTimeoutText,
+			Name:                  harness.Name,
+			Command:               append([]string(nil), harness.Command...),
+			ModelArgs:             append([]string(nil), harness.ModelArgs...),
+			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
+			EffortArgs:            cloneEffortArgs(harness.EffortArgs),
+			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
+			ProbeTimeoutText:      harness.ProbeTimeoutText,
 		}, true
 	}
 	return nil, false
+}
+
+func cloneEffortArgs(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for effort, args := range source {
+		result[effort] = append([]string(nil), args...)
+	}
+	return result
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
@@ -211,7 +229,8 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
+	effectiveModel := cfg.EffectiveModel(string(task.NextStage))
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
@@ -223,11 +242,28 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage, State: core.WorkOrderQueued, Claimable: true, SelfReported: true, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	var harnessConfig *core.HarnessSnapshot
+	if route.Harness != "" {
+		var found bool
+		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
+		if !found {
+			return fmt.Errorf("implementation route references unavailable harness %q", route.Harness)
+		}
+	}
+	order := core.WorkOrder{
+		ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage,
+		State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
+		RequiredModel: effectiveModel, RequiredHarness: route.Harness, RequiredHarnessConfig: harnessConfig,
+		ExecutionTimeoutText: route.TimeoutText,
+		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+	}
 	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
 		return err
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": task.NextStage, "execution": "mcp"})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{
+		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
+		"harness": route.Harness, "model": effectiveModel, "model_policy": route.ModelPolicy,
+	})})
 }
 
 func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
@@ -497,10 +533,10 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	repo, publicationEligible := cfg.Repo(task.Repo)
 	publicationEligible = publicationEligible && repo.GitHub != ""
 	round, seat := 0, 0
-	requiredModel, requiredHarness, enforcement := model, "", "self-reported"
+	requiredModel, requiredHarness, requiredEffort, enforcement := model, "", "", "self-reported"
 	if order, orderErr := d.Store.GetWorkOrder(ctx, reviewWorkOrderID); orderErr == nil {
 		round, seat = order.ReviewRound, order.ReviewSeat
-		requiredModel, requiredHarness = order.RequiredModel, order.RequiredHarness
+		requiredModel, requiredHarness, requiredEffort = order.RequiredModel, order.RequiredHarness, order.RequiredEffort
 		if order.ModelEnforcement != "" {
 			enforcement = order.ModelEnforcement
 		}
@@ -511,7 +547,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
-		RequiredHarness: requiredHarness, ModelEnforcement: enforcement,
+		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
 	}); err != nil {

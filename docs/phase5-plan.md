@@ -32,10 +32,12 @@ Suggested order:
 
 1. **Harness registry + stage routing** (data-only, unblocks everything
    after it): workspace config gains `harnesses: [{name, command,
-   model_args, probe_command, probe_timeout}]` — argv arrays, never
+   model_args, effort_args?, probe_command, probe_timeout}]` — argv arrays, never
    shell-evaluated. Per §21.14, `command` contains exactly one `{prompt}`
    and one `{mcp_config}`; `model_args` is appended to it and may use only
-   `{model}`; `probe_command` is standalone and accepts no placeholders.
+   `{model}`; `effort_args` maps `low`, `medium`, and `high` to literal,
+   placeholder-free adapter argv appended only when a seat requests that
+   exact effort (§21.19); `probe_command` is standalone and accepts no placeholders.
    Placeholders substitute as whole elements and invalid field/placeholder
    combinations are rejected at write time — under the standard §21.3
    mechanics: validated writes, `config.updated` events, hot reload. The
@@ -114,8 +116,8 @@ flow is byte-for-byte unchanged.
 change 4). Depends on 5.1 for the enforcement path.*
 
 1. **Panel config:** workspace review setting becomes
-   `{seats: [{model, harness?}]}` — operator-chosen count, model pinned per
-   seat.
+   `{seats: [{model, harness?, effort?}]}` — operator-chosen count, model
+   pinned per seat, with optional vendor-neutral `low | medium | high` effort.
 2. **Panel dispatch:** `submit_for_review` enqueues one review work order
    per seat; the self-review guard applies to every seat; seats must be
    distinct sessions from one another.
