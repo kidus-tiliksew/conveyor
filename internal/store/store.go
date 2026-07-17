@@ -123,7 +123,7 @@ func NewMemory() Store {
 		workOrders:    map[string]core.WorkOrder{},
 		publications:  map[string]core.ReviewPublication{},
 		features:      map[string]core.Feature{},
-		artifacts:     map[string]memoryArtifact{},
+		artifacts:     map[memoryArtifactKey]memoryArtifact{},
 		pairings:      map[string]core.WorkerPairing{},
 		workers:       map[string]core.Worker{},
 	}
@@ -133,6 +133,11 @@ type memoryArtifact struct {
 	meta    core.Artifact
 	content []byte
 	links   []core.Artifact
+}
+
+type memoryArtifactKey struct {
+	workspace string
+	id        string
 }
 
 type memory struct {
@@ -146,7 +151,7 @@ type memory struct {
 	workOrders    map[string]core.WorkOrder
 	publications  map[string]core.ReviewPublication
 	features      map[string]core.Feature
-	artifacts     map[string]memoryArtifact
+	artifacts     map[memoryArtifactKey]memoryArtifact
 	pairings      map[string]core.WorkerPairing
 	workers       map[string]core.Worker
 	nextEventID   int64
@@ -982,26 +987,46 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = time.Now().UTC()
 	}
-	if existing, ok := m.artifacts[artifact.ID]; ok {
+	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
+	if existing, ok := m.artifacts[key]; ok {
 		for _, link := range existing.links {
-			if link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID {
 				return link, nil
 			}
 		}
 		existing.links = append(existing.links, artifact)
-		m.artifacts[artifact.ID] = existing
+		m.artifacts[key] = existing
 		return artifact, nil
 	}
-	m.artifacts[artifact.ID] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...), links: []core.Artifact{artifact}}
+	m.artifacts[key] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...), links: []core.Artifact{artifact}}
 	return artifact, nil
+}
+
+func (m *memory) artifactForRead(ctx context.Context, id string) (memoryArtifact, bool) {
+	if workspace, scoped := WorkspaceFromContext(ctx); scoped {
+		artifact, ok := m.artifacts[memoryArtifactKey{workspace: workspace, id: id}]
+		return artifact, ok
+	}
+	var match memoryArtifact
+	found := false
+	for key, artifact := range m.artifacts {
+		if key.id != id {
+			continue
+		}
+		if found {
+			return memoryArtifact{}, false
+		}
+		match = artifact
+		found = true
+	}
+	return match, found
 }
 
 func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	artifact, ok := m.artifacts[id]
-	workspace, scoped := WorkspaceFromContext(ctx)
-	if !ok || (scoped && workspace != "" && artifact.meta.Workspace != workspace) {
+	artifact, ok := m.artifactForRead(ctx, id)
+	if !ok {
 		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
 	}
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
@@ -1010,9 +1035,8 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	artifact, ok := m.artifacts[id]
-	workspace, scoped := WorkspaceFromContext(ctx)
-	if !ok || (scoped && workspace != "" && artifact.meta.Workspace != workspace) {
+	artifact, ok := m.artifactForRead(ctx, id)
+	if !ok {
 		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
 	}
 	for _, link := range artifact.links {
@@ -1028,8 +1052,8 @@ func (m *memory) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	defer m.mu.RUnlock()
 	var out []core.Artifact
 	workspace, scoped := WorkspaceFromContext(ctx)
-	for _, artifact := range m.artifacts {
-		if scoped && workspace != "" && artifact.meta.Workspace != workspace {
+	for key, artifact := range m.artifacts {
+		if scoped && workspace != "" && key.workspace != workspace {
 			continue
 		}
 		out = append(out, artifact.links...)
