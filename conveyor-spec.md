@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.15**
-**Date:** July 16, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); draft-PR-on-first-push dropped (§21.15), following the harness-template expansion contract (§21.14)
+**Specification — v1.16**
+**Date:** July 17, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker service packaging inserted as Phase 5.5 (§21.16), following the draft-PR drop (§21.15)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -719,7 +719,8 @@ SSO/OIDC, SCIM, and RBAC enforcement are roadmap items for a post-Phase-5 enterp
 | **5.2** *(post-Beta)* | Adversarial review panel (§21.12): per-seat pinned reviewer models, unanimous-approve aggregation, merged bounce feedback, `model_enforcement` independence labels | Reviewer independence, enforced rather than asserted |
 | **5.3** *(post-Beta, parallelizable with 5.2)* | GitHub coordination (§21.12, §21.15): issue created or reused on spec approval, review verdicts and resolutions mirrored to the PR; PR creation stays at `submit_for_review` (§21.15) | The task's trail is legible on GitHub alone |
 | **5.4** *(post-Beta)* | Verification evidence (§21.12): evidence-gated `submit_for_review`, evidence artifacts in review work orders, on the review card, and on the PR | Reviewers confirm evidence rather than reproduce behavior |
-| **5.5** *(post-Beta)* | Platform agents & policy *(renumbered from Phase 5 by §21.12)*: monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2); repo-resident `.conveyor/` hints *(shim approval cards and environment inference retired with the sandbox lane, §21.4)* | The factory guards and onboards itself |
+| **5.5** *(post-Beta)* | Worker service packaging (§21.16): `conveyor worker install` / `uninstall` / `status` — launchd agent (macOS) / systemd user unit (Linux) wrapping the existing `worker run`, restart-on-failure, start-on-boot, documented log location | Auto capacity survives reboots without operator ritual |
+| **5.6** *(post-Beta)* | Platform agents & policy *(renumbered from Phase 5 by §21.12, from 5.5 by §21.16)*: monitor agent — CI/post-merge signals → tasks, out-of-pipeline reverse sync (§4, §4.2); repo-resident `.conveyor/` hints *(shim approval cards and environment inference retired with the sandbox lane, §21.4)* | The factory guards and onboards itself |
 | **6** *(post-Beta)* | Memory store (§15.1): Postgres + pgvector, workspace knowledge and lessons, the spec corpus as amendable intent (§4.2), hybrid retrieval with per-role context budgets | Agents work from accumulated context |
 | **7** *(post-Beta)* | Flywheel: transcript mining, self-improvement proposals, escalation-level graduation, pack versioning with the eval rig and shadow runs (§2.2, §15.2) — consuming the transcript corpus Beta accumulates | The flywheel |
 | **8** *(demand-triggered)* | Verification agent (Playwright + computer use, §12), K8sRunner, multi-repo worktree sets + linked-PR gating (§7.1), aggregate cost dashboard and budget policy (§14) *(per §21.4, this phase is the reintroduction of managed execution — until then, repo CI is the mechanical verifier)* | Trust + scale |
@@ -736,7 +737,8 @@ idempotent task intake without changing the Beta gate. §21.12 replaces the
 former Phase 5 row with phases 5.1–5.5 — worker execution and Auto/Manual
 modes, adversarial review, GitHub coordination, verification evidence, and
 the renumbered platform-agents phase — all post-Beta; the Beta gate and its
-exit criterion below are unchanged and run first.
+exit criterion below are unchanged and run first. §21.16 inserts worker
+service packaging as Phase 5.5 and renumbers platform agents to 5.6.
 
 **Beta exit criterion (§21.4):** five consecutive real tasks on the Conveyor
 repository shipped through the full pipeline — issue → triage → approved spec
@@ -1640,4 +1642,38 @@ One change; all other v1.14 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.15 accepted July 16, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, and draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15). Subsequent changes proceed by amendment with version bumps.*
+### 21.16 v1.16 — Worker service packaging phase (July 17, 2026)
+
+Phase 5.1 shipped `conveyor worker run` as a foreground process: enrollment
+persists across restarts (§21.13 change 5), but the process itself dies with
+the terminal or the machine, and Auto capacity stays down until an operator
+relaunches by hand. Health gating makes that failure visible — Auto greys
+out within one liveness lease — but unattended operation, the point of Auto
+mode, should not depend on an operator remembering to restart a process.
+This amendment amends the §19 roadmap. Two changes; all other v1.15
+decisions remain unchanged:
+
+1. **New Phase 5.5 — worker service packaging.** `conveyor worker install`
+   registers the worker as an OS-managed service wrapping the existing
+   `worker run` — a launchd agent on macOS, a systemd user unit on Linux —
+   with restart-on-failure and start-on-boot/login; it requires existing
+   enrollment and refuses with guidance when the credential is absent.
+   `conveyor worker uninstall` stops and removes the unit idempotently.
+   `conveyor worker status` reports service state, enrollment identity,
+   last heartbeat, and per-harness probe results. Service stdout/stderr go
+   to a documented log location surfaced by `status`. The service is
+   supervision only: no new protocol, endpoints, or behavior beyond the
+   foreground command it wraps; pairing and enrollment are unchanged, and
+   interactive `worker run` remains fully supported. Placement after
+   Phase 5.4 is deliberate operator prioritization — factory-coordinated
+   GitHub and evidence gating land before convenience packaging; the phase
+   has no technical dependency on 5.2–5.4.
+
+2. **Platform agents renumber to 5.6.** The former Phase 5.5 — monitor
+   agent and `.conveyor/` repo hints (§21.12 change 8) — becomes Phase
+   5.6, scope unchanged. The post-Beta sequence is
+   5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6.
+
+---
+
+*End of specification. v1.16 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), and worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16). Subsequent changes proceed by amendment with version bumps.*

@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.15, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.16, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -61,12 +61,13 @@ accepted by spec §21.12–§21.15 and now active (working breakdown in
 execution modes replacing L0–L3 + harness registry; Phase 5.2 adversarial
 review panel; Phase 5.3 factory-coordinated GitHub (issue on spec approval,
 verdict mirroring; PR stays at submit, §21.15); Phase 5.4 evidence-gated
-`submit_for_review`. Sequence 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5. The worker is
+`submit_for_review`; Phase 5.5 worker service packaging (`conveyor worker
+install`, §21.16). Sequence 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6. The worker is
 a thin supervisor over the unchanged §17.4 MCP lifecycle — never a second
 protocol, adapter interface, or credential pool.
 
 Do NOT build post-Beta or deferred surfaces beyond that:
-monitor agent, `.conveyor/` repo hints (Phase 5.5, after the worker); memory
+monitor agent, `.conveyor/` repo hints (Phase 5.6, after the worker); memory
 store / pgvector (Phase 6 — transport decided as MCP tools by §21.12, scope
 not pulled forward); transcript mining / self-improvement / eval rig
 (Phase 7); managed-execution reintroduction — independent verification

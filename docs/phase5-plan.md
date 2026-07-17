@@ -1,6 +1,6 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.15),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.16),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion rules are clarified by §21.14, which is
 authoritative over this file. This document is the working breakdown: what
@@ -179,9 +179,35 @@ just the evidence-attachment contract.
 with a clear error; with evidence attached, the reviewer sees it on the
 review card and the PR without leaving either surface.
 
-## Phase 5.5 — Platform agents & policy
+## Phase 5.5 — Worker service packaging
 
-*Renumbered from Phase 5 (§21.12 change 8); scope unchanged, deliberately
+*Proves: Auto capacity survives reboots without operator ritual (§21.16).
+Placed after 5.4 by deliberate prioritization; technically independent of
+5.2–5.4.*
+
+1. **`conveyor worker install`:** writes and loads a launchd agent (macOS)
+   or systemd user unit (Linux) wrapping `conveyor worker run` — restart on
+   failure, start on boot/login. Requires existing enrollment; refuses with
+   guidance when the credential file is absent. Records the unit path.
+2. **`conveyor worker uninstall` / `status`:** uninstall stops and removes
+   the unit idempotently; status reports service state, enrollment
+   identity, last heartbeat, and per-harness probe results.
+3. **Logging:** service stdout/stderr to a documented log location,
+   surfaced by `status`.
+
+Supervision only (§21.16): no new protocol, endpoints, or behavior beyond
+the foreground command the service wraps; pairing/enrollment unchanged;
+interactive `worker run` stays fully supported.
+
+**Exit criterion:** on a rebooted machine with the service installed, Auto
+mode is available again with no operator action — the worker heartbeats
+within one liveness lease of login; `install`/`uninstall` round-trip
+cleanly, with `status` accurate in both states.
+
+## Phase 5.6 — Platform agents & policy
+
+*Renumbered from Phase 5 (§21.12 change 8) and from 5.5 (§21.16); scope
+unchanged, deliberately
 sequenced after the worker: monitor-filed tasks plus Auto dispatch is the
 original autonomous loop completed.*
 
@@ -209,7 +235,7 @@ original autonomous loop completed.*
   should be filed as a Conveyor task and run through the Beta pipeline —
   the worker should be the factory's own product before it is the factory's
   own dispatcher.
-- **Parallelization:** 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5.
+- **Parallelization:** 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6.
 - **Honesty labels are load-bearing:** `dispatch: worker`,
   `model_enforcement`, and `confinement: none` are the operator's view into
   what the automation actually guarantees. They are not optional polish.
