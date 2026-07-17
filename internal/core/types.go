@@ -362,10 +362,11 @@ type WorkOrderClaim struct {
 }
 
 type HarnessProbe struct {
-	Harness   string    `json:"harness"`
-	Healthy   bool      `json:"healthy"`
-	Message   string    `json:"message,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Harness     string    `json:"harness"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Healthy     bool      `json:"healthy"`
+	Message     string    `json:"message,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
 }
 
 type WorkerPairing struct {

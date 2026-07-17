@@ -157,6 +157,20 @@ func workerTestConfig() *config.Config {
 	return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "gpt", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP}, "review": {Model: "gpt", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP}}}}
 }
 
+func TestHarnessFingerprintCanonicalizesEmptyArguments(t *testing.T) {
+	base := config.Harness{Name: "codex", Command: []string{"codex"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
+	withEmpty := base
+	withEmpty.ModelArgs = []string{}
+	if HarnessFingerprint(base) != HarnessFingerprint(withEmpty) {
+		t.Fatal("nil and empty optional arguments produced different harness fingerprints")
+	}
+	changed := base
+	changed.Command = []string{"codex-next"}
+	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
+		t.Fatal("different harness commands produced the same fingerprint")
+	}
+}
+
 func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
@@ -212,7 +226,15 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	cfg.Harnesses = []config.Harness{codex}
 	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "next-review", Harness: "codex"}}}
 	restarted := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
-	worker, err = restarted.Heartbeat(ctx, worker, []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: true}})
+	activeHarnesses, err := restarted.ActiveHarnesses(ctx)
+	if err != nil || len(activeHarnesses) != 2 {
+		t.Fatalf("active harness snapshots=%+v err=%v", activeHarnesses, err)
+	}
+	activeProbes := make([]core.HarnessProbe, 0, len(activeHarnesses))
+	for _, target := range activeHarnesses {
+		activeProbes = append(activeProbes, core.HarnessProbe{Harness: target.Harness.Name, Fingerprint: target.Fingerprint, Healthy: true})
+	}
+	worker, err = restarted.Heartbeat(ctx, worker, activeProbes)
 	if err != nil {
 		t.Fatalf("snapshotted harness probe after hot reload: %v", err)
 	}

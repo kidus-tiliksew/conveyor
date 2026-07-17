@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 type workerContextKey struct{}
@@ -141,7 +142,15 @@ func (s *Server) getWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, http.StatusOK, cfg.WorkspaceDocument())
+	active, err := s.Workers.ActiveHarnesses(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if active == nil {
+		active = []workerservice.HarnessProbeTarget{}
+	}
+	writeJSON(w, http.StatusOK, workerservice.WorkerConfig{WorkspaceDocument: cfg.WorkspaceDocument(), ActiveHarnesses: active})
 }
 
 func (s *Server) listWorkerOrders(w http.ResponseWriter, r *http.Request) {

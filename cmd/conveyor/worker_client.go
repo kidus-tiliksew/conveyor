@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
@@ -46,8 +45,8 @@ func (c *client) enrollWorker(pairing, name string) (workerservice.Enrollment, e
 	return result, err
 }
 
-func (c *client) workerConfig(credential string) (config.WorkspaceDocument, error) {
-	var result config.WorkspaceDocument
+func (c *client) workerConfig(credential string) (workerservice.WorkerConfig, error) {
+	var result workerservice.WorkerConfig
 	err := c.workerDo(http.MethodGet, "/v1/worker/config", nil, &result, credential)
 	return result, err
 }
