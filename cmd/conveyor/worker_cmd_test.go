@@ -36,6 +36,38 @@ func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testin
 	}
 }
 
+func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *testing.T) {
+	prompt := workerLaunchPrompt(core.WorkOrder{ID: "implement-order", Stage: core.StageImplement}, "demo", "worker-session")
+	requiredInOrder := []string{
+		"First call get_work_order",
+		"Immediately after get_work_order returns",
+		"plain-language summary of what the work order is about and what you will do next",
+		"before running checkout, inspecting files, or starting implementation",
+		"continue automatically without asking for confirmation, waiting for a user response, or pausing",
+	}
+	position := -1
+	for _, required := range requiredInOrder {
+		next := strings.Index(prompt, required)
+		if next < 0 {
+			t.Fatalf("implementation prompt is missing %q: %s", required, prompt)
+		}
+		if next <= position {
+			t.Fatalf("implementation prompt places %q out of order: %s", required, prompt)
+		}
+		position = next
+	}
+}
+
+func TestWorkerLaunchPromptDoesNotGiveReviewOrdersImplementationInstructions(t *testing.T) {
+	prompt := workerLaunchPrompt(core.WorkOrder{ID: "review-order", Stage: core.StageReview}, "demo", "worker-session")
+	if strings.Contains(prompt, "plain-language summary") || strings.Contains(prompt, "running checkout") {
+		t.Fatalf("review prompt contains implementation-only announcement instructions: %s", prompt)
+	}
+	if !strings.Contains(prompt, "call get_work_order with that exact session_id") || !strings.Contains(prompt, "standard review lifecycle") {
+		t.Fatalf("review prompt lost its existing lifecycle instructions: %s", prompt)
+	}
+}
+
 func TestProbeHarnessesRunsSlowProbesConcurrently(t *testing.T) {
 	directory := t.TempDir()
 	t.Setenv("CONVEYOR_PROBE_RENDEZVOUS", directory)
