@@ -164,12 +164,12 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 || !redispatched.ExecutionStartedAt.IsZero() {
 		t.Fatalf("redispatched=%+v err=%v", redispatched, err)
 	}
-	publication := core.ReviewPublication{ReviewWorkOrderID: task.ID + "-review", TaskID: task.ID, JobID: task.ID + "-review", Verdict: "approve", ReasonCode: "approved", Summary: "passes", ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true"}
+	publication := core.ReviewPublication{ReviewWorkOrderID: task.ID + "-review", TaskID: task.ID, JobID: task.ID + "-review", Verdict: "approve", ReasonCode: "approved", Summary: "passes", ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true", RequiredEffort: "high"}
 	if err = st.QueueReviewPublication(ctx, publication); err != nil {
 		t.Fatal(err)
 	}
 	storedPublication, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
-	if err != nil || storedPublication.State != core.ReviewPublicationQueued {
+	if err != nil || storedPublication.State != core.ReviewPublicationQueued || storedPublication.RequiredEffort != "high" {
 		t.Fatalf("publication=%+v err=%v", storedPublication, err)
 	}
 	storedPublication.State = core.ReviewPublicationPublished

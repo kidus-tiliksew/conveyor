@@ -1447,7 +1447,7 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
-required_model, required_harness, model_enforcement, state, attempts, check_run_id,
+required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
 comment_id, last_error, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
@@ -1468,15 +1468,15 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
 			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
 			same_model_as_implementer, review_round, review_seat, required_model,
-			required_harness, model_enforcement, state
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			required_harness, required_effort, model_enforcement, state
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
 		workspace(ctx), publication.TaskID, publication.JobID, publication.Verdict,
 		publication.ReasonCode, publication.Summary, publication.Feedback,
 		publication.ReviewedCommitSHA, publication.ReviewerModel,
 		publication.ReviewerSession, publication.SameModelAsImplementer,
 		publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel,
-		publication.RequiredHarness, publication.ModelEnforcement,
+		publication.RequiredHarness, publication.RequiredEffort, publication.ModelEnforcement,
 		publication.State)
 	if err != nil {
 		return err
@@ -1805,7 +1805,7 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
 		&publication.ReviewerSession, &publication.SameModelAsImplementer,
 		&publication.ReviewRound, &publication.ReviewSeat, &publication.RequiredModel,
-		&publication.RequiredHarness, &publication.ModelEnforcement, &state,
+		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
 		&publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
 	publication.State = core.ReviewPublicationState(state)
