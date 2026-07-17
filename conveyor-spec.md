@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.17**
+**Specification — v1.18**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); bounce cap retuned to check-in semantics (§21.17), following the worker service packaging phase (§21.16)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); per-seat reasoning effort added to adversarial review (§21.18)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1715,4 +1715,49 @@ too. Three changes; all other v1.16 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.17 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16), and the bounce cap retuned to check-in semantics — default 10, window reset on human intervention, escalation-not-failure surface (§21.17). Subsequent changes proceed by amendment with version bumps.*
+### 21.18 v1.18 — Per-seat reasoning effort (July 17, 2026)
+
+The Phase 5.2 review-seat contract pins a model and optional harness, but
+cannot independently express the reasoning effort expected from each seat.
+Smuggling provider flags through `model_args` would violate §21.14 and tie
+the workspace review contract to one vendor. This amendment refines §21.12
+change 4, §21.13 change 2, and §21.14; all other v1.17 decisions remain
+unchanged:
+
+1. **The review-seat contract is additive and vendor-neutral.** A seat is
+   `{model, harness?, effort?}`. `model` remains required; `harness` and
+   `effort` are optional. `effort`, when present, is exactly `low`,
+   `medium`, or `high`. Harness selection remains explicit and is never
+   inferred from a model name. Omitting `effort` preserves the selected
+   harness's existing default and serialization omits the field.
+
+2. **Harness adapters declare exact effort argv.** A harness registry entry
+   gains optional `effort_args`, a map from the supported semantic values to
+   literal argv arrays. These arrays contain no placeholders and are appended
+   only when a seat requests that exact value. This is the adapter boundary:
+   a Codex harness may map `high` to its `model_reasoning_effort` config argv,
+   while a Claude harness may map it to `--effort high`; the review-seat
+   schema remains provider-neutral. `command`, `model_args`, `effort_args`,
+   and `probe_command` are always executed as argv arrays without a shell.
+
+3. **Validation fails closed.** Unknown effort values, empty effort argv,
+   placeholders inside `effort_args`, and a seat effort unsupported by its
+   explicitly selected or inherited harness are workspace configuration
+   errors. A configured value is never ignored, defaulted, negotiated, or
+   translated by inspecting the model name.
+
+4. **Effort is snapshotted and auditable.** Review dispatch snapshots the
+   requested effort and the selected harness's effort argv together with the
+   existing model/harness execution contract. Work-order and review audit
+   payloads include `required_effort` when configured. Worker launches append
+   the snapshotted adapter argv; hot reload cannot change an in-flight seat.
+
+5. **The operator surface is first-class.** The Workspace UI exposes an
+   optional per-seat effort selector with unset, low, medium, and high values,
+   independently of model and harness. Operator documentation includes a
+   two-seat `high` example for explicit Codex and Claude harnesses and states
+   that unset effort preserves the harness default.
+
+---
+
+*End of specification. v1.18 accepted July 17, 2026; all prior amendments remain in force, and per-seat vendor-neutral reasoning effort with explicit harness adapter argv, fail-closed validation, durable snapshots, and operator UI is added by §21.18. Subsequent changes proceed by amendment with version bumps.*

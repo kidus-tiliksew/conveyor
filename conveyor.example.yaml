@@ -51,12 +51,29 @@ harnesses:
     probe_timeout: 10s
 
 # One durable review order is created per ordered seat. A seat-level harness
-# is optional and otherwise inherits routing.stages.review.harness.
+# is optional and otherwise inherits routing.stages.review.harness. Effort is
+# optional; when absent, the selected harness keeps its own default.
 review:
   seats:
     - model: gpt-5.6
     - model: claude-opus-4.1
       harness: local-agent
+
+# Adapter-level effort excerpt (spec §21.18). Merge these fields into the
+# corresponding full harness entries after their authenticated wrapper defines
+# the {mcp_config} transport; these are adapter argv, not complete launch
+# commands:
+# harnesses:
+#   - name: codex
+#     effort_args:
+#       high: [--config, 'model_reasoning_effort="high"']
+#   - name: claude
+#     effort_args:
+#       high: [--effort, high]
+# review:
+#   seats:
+#     - {model: gpt-5.6-sol, harness: codex, effort: high}
+#     - {model: claude-opus-4-8, harness: claude, effort: high}
 
 repos:
   - name: api

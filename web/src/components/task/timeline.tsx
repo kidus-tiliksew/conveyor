@@ -132,6 +132,7 @@ function JobEntry({ job, summary, model, order }: { job: Job; summary: string; m
             {stageLabels[job.stage] ?? job.stage}
           </span>
           {order?.review_seat && <Badge variant="mono">Seat {order.review_seat}</Badge>}
+          {order?.required_effort && <Badge variant="accent">Effort {order.required_effort}</Badge>}
           {order?.model_enforcement && <Badge variant={order.model_enforcement === 'worker-pinned' ? 'positive' : 'default'}>{order.model_enforcement}</Badge>}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
