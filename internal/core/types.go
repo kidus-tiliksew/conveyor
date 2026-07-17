@@ -328,11 +328,12 @@ const (
 // an in-flight seat's command, model arguments, or health probe (spec §21.12
 // change 4).
 type HarnessSnapshot struct {
-	Name             string   `json:"name"`
-	Command          []string `json:"command"`
-	ModelArgs        []string `json:"model_args,omitempty"`
-	ProbeCommand     []string `json:"probe_command"`
-	ProbeTimeoutText string   `json:"probe_timeout"`
+	Name                  string   `json:"name"`
+	Command               []string `json:"command"`
+	ModelArgs             []string `json:"model_args,omitempty"`
+	DefaultModelSentinels []string `json:"default_model_sentinels,omitempty"`
+	ProbeCommand          []string `json:"probe_command"`
+	ProbeTimeoutText      string   `json:"probe_timeout"`
 }
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
@@ -355,6 +356,7 @@ type WorkOrder struct {
 	RequiredModel         string           `json:"required_model,omitempty"`
 	RequiredHarness       string           `json:"required_harness,omitempty"`
 	RequiredHarnessConfig *HarnessSnapshot `json:"required_harness_config,omitempty"`
+	ExecutionTimeoutText  string           `json:"execution_timeout,omitempty"`
 	ModelEnforcement      string           `json:"model_enforcement,omitempty"`
 	LeaseExpiresAt        time.Time        `json:"lease_expires_at,omitempty"`
 	QueueEnteredAt        time.Time        `json:"queue_entered_at"`

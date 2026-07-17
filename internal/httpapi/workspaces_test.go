@@ -118,6 +118,8 @@ func TestCreateWorkspaceAcceptsCompleteInitialConfiguration(t *testing.T) {
 	document.MaxBounces = 4
 	document.WorkOrderQueueTimeoutText = "48h"
 	document.Routing.Stages["review"] = config.StageRoute{Model: "reviewer", TimeoutText: "2h", Execution: config.ExecutionMCP}
+	document.ExecutionSettings.Review.FallbackModel = "reviewer"
+	document.ExecutionSettings.Review.TimeoutText = "2h"
 	document.Repos = []config.Repo{{Name: "engineering", URL: "https://example.test/engineering", Base: "develop"}}
 	payload, err := json.Marshal(map[string]any{"id": "engineering", "name": "Engineering", "document": document})
 	if err != nil {

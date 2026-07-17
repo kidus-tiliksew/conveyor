@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.17**
+**Specification — v1.18**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); bounce cap retuned to check-in semantics (§21.17), following the worker service packaging phase (§21.16)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual and legacy stage routing is compatibility-only (§21.18)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1715,4 +1715,66 @@ too. Three changes; all other v1.16 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.17 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16), and the bounce cap retuned to check-in semantics — default 10, window reset on human intervention, escalation-not-failure surface (§21.17). Subsequent changes proceed by amendment with version bumps.*
+### 21.18 v1.18 — Contextual execution settings (July 17, 2026)
+
+The generic per-stage routing table from §21.4/§21.13 no longer matches the
+execution boundary established by the worker and adversarial review panel.
+Triage and spec are fixed control-plane stages, implementation is the only
+worker route with a workspace-owned model policy, and review seats own their
+models and optional harnesses. This amendment changes the configuration
+surface and normalization rules without breaking stored documents or durable
+dispatch snapshots. Six changes; all other v1.17 decisions remain unchanged:
+
+1. **Execution settings are contextual.** The canonical workspace document
+   exposes `execution_settings.control_plane.{triage,spec}` model/timeout
+   settings, `execution_settings.implementation` harness/model-policy/timeout
+   settings, and `execution_settings.review` execution/timeout plus optional
+   fallback model/harness. The Workspace UI presents those contexts rather
+   than a generic Stage Routing table. Triage and spec expose no harness or
+   execution selector; implementation is fixed to MCP and requires a harness;
+   review execution and timeout are co-located with the adversarial panel.
+
+2. **Legacy routing is compatibility-only.** `routing.stages` remains readable
+   and is still emitted during the v1.18 deprecation period for older REST/CLI
+   consumers and stored snapshots. A single normalization step maps a legacy
+   document into contextual settings. When both shapes are present, contextual
+   settings are authoritative and legacy fields cannot override them. Existing
+   values are preserved when the mapping is unambiguous; old triage/spec
+   harness values are ignored because those stages are fixed in-process.
+
+3. **Implementation owns a model policy, not an accidental model string.** Its
+   policy is either `explicit`, which requires and forwards the configured
+   provider model, or `harness_default`, which omits model arguments unless the
+   selected harness declares a supported default sentinel. Symbolic policy
+   labels such as `subscription` are never forwarded as provider model IDs
+   merely because they occupied the historical route `model` field. An
+   unresolved explicit model or undeclared sentinel is an actionable config or
+   dispatch error.
+
+4. **Review seats own review routing.** Each enabled seat owns its pinned model,
+   optional harness override, and first-class effort (§21.18 coordinates the
+   effort addition with the same panel contract). The route-level review model
+   and harness are fallback data only. When every seat names a harness, neither
+   fallback is required, validated, health-gated, nor dispatched. If any seat
+   omits its harness, only the fallback needed by that seat is validated.
+   Review execution mode and timeout remain route-level and always apply.
+
+5. **Snapshots contain the effective decision once.** New implementation and
+   review work orders snapshot the normalized harness definition, effective
+   model (including an intentionally omitted harness-default model), timeout,
+   execution mode, and per-seat effort. Compatibility fields may remain on the
+   wire, but workers and health checks consume the normalized snapshot and do
+   not make a second routing decision from legacy fields. Existing snapshots
+   without the additive fields remain readable and use their historical path.
+
+6. **Health follows actual requirements.** Control-plane stages never require
+   a worker harness. Implementation requires its normalized harness and model
+   policy. MCP review requires each effective seat harness, using the route
+   fallback only for seats without an override; a fully explicit panel does
+   not require a review-route harness. In-process review remains exempt. The
+   disabled “Inherit single harness” UI and equivalent misleading controls are
+   removed; validation explains when review fallback is unnecessary.
+
+---
+
+*End of specification. v1.18 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16), the bounce cap retuned to check-in semantics — default 10, window reset on human intervention, escalation-not-failure surface (§21.17), and execution settings made contextual with normalized model policy, review-seat fallback, and legacy routing compatibility (§21.18). Subsequent changes proceed by amendment with version bumps.*

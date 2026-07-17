@@ -25,14 +25,15 @@ type createWorkspaceRequest struct {
 }
 
 type createWorkspaceDocument struct {
-	Workspace                 *string                 `json:"workspace,omitempty"`
-	MaxBounces                *int                    `json:"max_bounces,omitempty"`
-	WorkOrderQueueTimeoutText *string                 `json:"work_order_queue_timeout,omitempty"`
-	Routing                   *config.Routing         `json:"routing,omitempty"`
-	Repos                     *[]config.Repo          `json:"repos,omitempty"`
-	Harnesses                 *[]config.Harness       `json:"harnesses,omitempty"`
-	Review                    *config.ReviewPanel     `json:"review,omitempty"`
-	Execution                 *config.ExecutionPolicy `json:"execution,omitempty"`
+	Workspace                 *string                             `json:"workspace,omitempty"`
+	MaxBounces                *int                                `json:"max_bounces,omitempty"`
+	WorkOrderQueueTimeoutText *string                             `json:"work_order_queue_timeout,omitempty"`
+	ExecutionSettings         *config.ContextualExecutionSettings `json:"execution_settings,omitempty"`
+	Routing                   *config.Routing                     `json:"routing,omitempty"`
+	Repos                     *[]config.Repo                      `json:"repos,omitempty"`
+	Harnesses                 *[]config.Harness                   `json:"harnesses,omitempty"`
+	Review                    *config.ReviewPanel                 `json:"review,omitempty"`
+	Execution                 *config.ExecutionPolicy             `json:"execution,omitempty"`
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +113,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.WorkOrderQueueTimeoutText != nil {
 			document.WorkOrderQueueTimeoutText = *partial.WorkOrderQueueTimeoutText
+		}
+		if partial.ExecutionSettings != nil {
+			document.ExecutionSettings = partial.ExecutionSettings
 		}
 		if partial.Routing != nil {
 			document.Routing = *partial.Routing

@@ -43,10 +43,14 @@ const (
 
 type StageRoute struct {
 	Model       string        `yaml:"model" json:"model"`
+	ModelPolicy string        `yaml:"model_policy,omitempty" json:"model_policy,omitempty"`
 	Harness     string        `yaml:"harness,omitempty" json:"harness,omitempty"`
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
+	// EffectiveModel is the normalized worker argument. It is deliberately
+	// absent from persisted compatibility routes (spec §21.18 changes 2-3).
+	EffectiveModel string `yaml:"-" json:"-"`
 
 	// v1.3 compatibility inputs. They are consumed during normalization and
 	// omitted from the canonical v1.4 document.
@@ -55,12 +59,13 @@ type StageRoute struct {
 }
 
 type Harness struct {
-	Name             string        `yaml:"name" json:"name"`
-	Command          []string      `yaml:"command" json:"command"`
-	ModelArgs        []string      `yaml:"model_args,omitempty" json:"model_args,omitempty"`
-	ProbeCommand     []string      `yaml:"probe_command" json:"probe_command"`
-	ProbeTimeout     time.Duration `yaml:"-" json:"-"`
-	ProbeTimeoutText string        `yaml:"probe_timeout" json:"probe_timeout"`
+	Name                  string        `yaml:"name" json:"name"`
+	Command               []string      `yaml:"command" json:"command"`
+	ModelArgs             []string      `yaml:"model_args,omitempty" json:"model_args,omitempty"`
+	DefaultModelSentinels []string      `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
+	ProbeCommand          []string      `yaml:"probe_command" json:"probe_command"`
+	ProbeTimeout          time.Duration `yaml:"-" json:"-"`
+	ProbeTimeoutText      string        `yaml:"probe_timeout" json:"probe_timeout"`
 }
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
@@ -93,15 +98,54 @@ type Routing struct {
 	Stages map[string]StageRoute `yaml:"stages" json:"stages"`
 }
 
+const (
+	ModelPolicyExplicit       = "explicit"
+	ModelPolicyHarnessDefault = "harness_default"
+)
+
+type ModelTimeoutSettings struct {
+	Model       string `yaml:"model" json:"model"`
+	TimeoutText string `yaml:"timeout" json:"timeout"`
+}
+
+type ControlPlaneSettings struct {
+	Triage ModelTimeoutSettings `yaml:"triage" json:"triage"`
+	Spec   ModelTimeoutSettings `yaml:"spec" json:"spec"`
+}
+
+type ImplementationSettings struct {
+	Harness     string `yaml:"harness" json:"harness"`
+	Model       string `yaml:"model,omitempty" json:"model,omitempty"`
+	ModelPolicy string `yaml:"model_policy" json:"model_policy"`
+	TimeoutText string `yaml:"timeout" json:"timeout"`
+}
+
+type ReviewExecutionSettings struct {
+	Execution       ExecutionMode `yaml:"execution" json:"execution"`
+	TimeoutText     string        `yaml:"timeout" json:"timeout"`
+	FallbackModel   string        `yaml:"fallback_model,omitempty" json:"fallback_model,omitempty"`
+	FallbackHarness string        `yaml:"fallback_harness,omitempty" json:"fallback_harness,omitempty"`
+}
+
+// ContextualExecutionSettings is the v1.18 canonical surface. Routing remains
+// additive compatibility data and is never a second source of truth when this
+// object is present (spec §21.18 changes 1-2).
+type ContextualExecutionSettings struct {
+	ControlPlane   ControlPlaneSettings    `yaml:"control_plane" json:"control_plane"`
+	Implementation ImplementationSettings  `yaml:"implementation" json:"implementation"`
+	Review         ReviewExecutionSettings `yaml:"review" json:"review"`
+}
+
 type WorkspaceDocument struct {
-	Workspace                 string          `yaml:"workspace" json:"workspace"`
-	MaxBounces                int             `yaml:"max_bounces" json:"max_bounces"`
-	WorkOrderQueueTimeoutText string          `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
-	Routing                   Routing         `yaml:"routing" json:"routing"`
-	Harnesses                 []Harness       `yaml:"harnesses,omitempty" json:"harnesses"`
-	Review                    ReviewPanel     `yaml:"review" json:"review"`
-	Execution                 ExecutionPolicy `yaml:"execution" json:"execution"`
-	Repos                     []Repo          `yaml:"repos" json:"repos"`
+	Workspace                 string                       `yaml:"workspace" json:"workspace"`
+	MaxBounces                int                          `yaml:"max_bounces" json:"max_bounces"`
+	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
+	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty" json:"execution_settings,omitempty"`
+	Routing                   Routing                      `yaml:"routing" json:"routing"`
+	Harnesses                 []Harness                    `yaml:"harnesses,omitempty" json:"harnesses"`
+	Review                    ReviewPanel                  `yaml:"review" json:"review"`
+	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
+	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -124,18 +168,19 @@ type UpdateReceipt struct {
 // Config combines immutable deployment settings with the current workspace
 // snapshot. CacheDir is retained for the bare-clone cache and checkout flow.
 type Config struct {
-	Workspace                 string          `yaml:"workspace"`
-	PackDir                   string          `yaml:"pack_dir"`
-	MaxBounces                int             `yaml:"max_bounces"`
-	WorkOrderQueueTimeout     time.Duration   `yaml:"-"`
-	WorkOrderQueueTimeoutText string          `yaml:"work_order_queue_timeout"`
-	CacheDir                  string          `yaml:"cache_dir"`
-	Database                  Database        `yaml:"database"`
-	Routing                   Routing         `yaml:"routing"`
-	Harnesses                 []Harness       `yaml:"harnesses,omitempty"`
-	Review                    ReviewPanel     `yaml:"review"`
-	Execution                 ExecutionPolicy `yaml:"execution"`
-	Repos                     []Repo          `yaml:"repos"`
+	Workspace                 string                       `yaml:"workspace"`
+	PackDir                   string                       `yaml:"pack_dir"`
+	MaxBounces                int                          `yaml:"max_bounces"`
+	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
+	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
+	CacheDir                  string                       `yaml:"cache_dir"`
+	Database                  Database                     `yaml:"database"`
+	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
+	Routing                   Routing                      `yaml:"routing"`
+	Harnesses                 []Harness                    `yaml:"harnesses,omitempty"`
+	Review                    ReviewPanel                  `yaml:"review"`
+	Execution                 ExecutionPolicy              `yaml:"execution"`
+	Repos                     []Repo                       `yaml:"repos"`
 }
 
 func Load(path string) (*Config, error) {
@@ -165,15 +210,9 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Workspace = document.Workspace
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
+	next.ExecutionSettings = document.ExecutionSettings
 	next.Routing = document.Routing
 	next.Harnesses = document.Harnesses
-	if document.Review.Seats == nil {
-		if route, ok := document.Routing.Stages["review"]; ok && route.Model != "" {
-			document.Review.Seats = []ReviewSeat{{Model: route.Model, Harness: route.Harness}}
-		} else {
-			document.Review = deployment.Review
-		}
-	}
 	next.Review = document.Review
 	next.Execution = document.Execution
 	next.Repos = document.Repos
@@ -191,7 +230,7 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil
+	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil || document.ExecutionSettings == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -260,7 +299,104 @@ func decodeKnown(data []byte, target any) error {
 	return decoder.Decode(target)
 }
 
+func applyContextualExecutionSettings(c *Config) {
+	if c.ExecutionSettings == nil {
+		return
+	}
+	settings := c.ExecutionSettings
+	if c.Routing.Stages == nil {
+		c.Routing.Stages = map[string]StageRoute{}
+	}
+	c.Routing.Stages["triage"] = StageRoute{
+		Model: settings.ControlPlane.Triage.Model, TimeoutText: settings.ControlPlane.Triage.TimeoutText,
+		Execution: ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
+	}
+	c.Routing.Stages["spec"] = StageRoute{
+		Model: settings.ControlPlane.Spec.Model, TimeoutText: settings.ControlPlane.Spec.TimeoutText,
+		Execution: ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
+	}
+	c.Routing.Stages["implement"] = StageRoute{
+		Model: settings.Implementation.Model, ModelPolicy: settings.Implementation.ModelPolicy,
+		Harness: settings.Implementation.Harness, TimeoutText: settings.Implementation.TimeoutText,
+		Execution: ExecutionMCP,
+	}
+	c.Routing.Stages["review"] = StageRoute{
+		Model: settings.Review.FallbackModel, Harness: settings.Review.FallbackHarness,
+		TimeoutText: settings.Review.TimeoutText, Execution: settings.Review.Execution,
+		ModelPolicy: ModelPolicyExplicit,
+	}
+}
+
+func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
+	triage := routing.Stages["triage"]
+	spec := routing.Stages["spec"]
+	implement := routing.Stages["implement"]
+	review := routing.Stages["review"]
+	return &ContextualExecutionSettings{
+		ControlPlane: ControlPlaneSettings{
+			Triage: ModelTimeoutSettings{Model: triage.Model, TimeoutText: triage.TimeoutText},
+			Spec:   ModelTimeoutSettings{Model: spec.Model, TimeoutText: spec.TimeoutText},
+		},
+		Implementation: ImplementationSettings{
+			Harness: implement.Harness, Model: implement.Model,
+			ModelPolicy: implement.ModelPolicy, TimeoutText: implement.TimeoutText,
+		},
+		Review: ReviewExecutionSettings{
+			Execution: review.Execution, TimeoutText: review.TimeoutText,
+			FallbackModel: review.Model, FallbackHarness: review.Harness,
+		},
+	}
+}
+
+func symbolicModelPolicy(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "subscription", "operator", "operator-owned", "default", "harness-default":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error) {
+	if route.ModelPolicy == ModelPolicyExplicit {
+		if strings.TrimSpace(route.Model) == "" {
+			return "", fmt.Errorf("explicit model policy requires a model")
+		}
+		return strings.TrimSpace(route.Model), nil
+	}
+	var selected *Harness
+	for i := range harnesses {
+		if harnesses[i].Name == route.Harness {
+			selected = &harnesses[i]
+			break
+		}
+	}
+	if selected == nil {
+		// Legacy/manual-only documents may predate the harness registry. They
+		// remain readable; worker health rejects Auto because no route harness
+		// is usable (spec §21.18 changes 2 and 6).
+		if route.Harness == "" {
+			return "", nil
+		}
+		return "", fmt.Errorf("harness_default model policy requires a usable harness")
+	}
+	symbol := strings.TrimSpace(route.Model)
+	if symbol == "" {
+		return "", nil
+	}
+	for _, supported := range selected.DefaultModelSentinels {
+		if symbol == supported {
+			return symbol, nil
+		}
+	}
+	if symbolicModelPolicy(symbol) {
+		return "", nil
+	}
+	return "", fmt.Errorf("model %q is not declared by harness %q as a default-model sentinel", symbol, selected.Name)
+}
+
 func normalize(c *Config, path string) (*Config, error) {
+	applyContextualExecutionSettings(c)
 	if c.PackDir == "" {
 		c.PackDir = "pack"
 	}
@@ -348,7 +484,17 @@ func normalize(c *Config, path string) (*Config, error) {
 		if route.Model == "" {
 			route.Model = route.LegacyModelTier
 		}
-		if route.Model == "" {
+		if route.ModelPolicy == "" {
+			if stage == "implement" && symbolicModelPolicy(route.Model) {
+				route.ModelPolicy = ModelPolicyHarnessDefault
+			} else {
+				route.ModelPolicy = ModelPolicyExplicit
+			}
+		}
+		if route.ModelPolicy != ModelPolicyExplicit && route.ModelPolicy != ModelPolicyHarnessDefault {
+			return nil, fmt.Errorf("routing stage %s: model_policy must be explicit or harness_default", stage)
+		}
+		if route.Model == "" && (stage == "triage" || stage == "spec" || stage == "implement" && route.ModelPolicy == ModelPolicyExplicit) {
 			return nil, fmt.Errorf("routing stage %s: model is required", stage)
 		}
 		if route.TimeoutText == "" {
@@ -378,11 +524,16 @@ func normalize(c *Config, path string) (*Config, error) {
 		if stage == "implement" && route.Execution != ExecutionMCP {
 			return nil, fmt.Errorf("routing stage implement: execution is fixed to mcp")
 		}
+		if stage == "triage" || stage == "spec" {
+			// Harness fields on pre-v1.18 control-plane routes are compatibility
+			// noise and never become worker requirements (spec §21.18 change 2).
+			route.Harness = ""
+		}
 		if stage == "review" && route.Execution == ExecutionInProcess {
 			if route.Harness != "" {
 				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
 			}
-		} else if stage == "implement" || stage == "review" {
+		} else if stage == "implement" {
 			if route.Harness == "" && len(c.Harnesses) == 1 {
 				route.Harness = c.Harnesses[0].Name
 			}
@@ -394,6 +545,11 @@ func normalize(c *Config, path string) (*Config, error) {
 					return nil, fmt.Errorf("routing stage %s: unknown harness %q", stage, route.Harness)
 				}
 			}
+			effective, modelErr := normalizeHarnessModel(route, c.Harnesses)
+			if modelErr != nil {
+				return nil, fmt.Errorf("routing stage implement: %w", modelErr)
+			}
+			route.EffectiveModel = effective
 		}
 		route.LegacyHarnesses = nil
 		route.LegacyModelTier = ""
@@ -431,6 +587,31 @@ func normalize(c *Config, path string) (*Config, error) {
 		}
 		c.Review.Seats[i] = seat
 	}
+	if reviewRoute.Execution == ExecutionMCP {
+		needsFallback := false
+		for _, seat := range c.Review.Seats {
+			needsFallback = needsFallback || seat.Harness == ""
+		}
+		if needsFallback {
+			if reviewRoute.Harness == "" && len(c.Harnesses) == 1 {
+				reviewRoute.Harness = c.Harnesses[0].Name
+			}
+			if reviewRoute.Harness == "" && len(c.Harnesses) > 0 {
+				return nil, fmt.Errorf("routing stage review: fallback harness is required for seats without a harness override")
+			}
+			if reviewRoute.Harness != "" {
+				if _, ok := harnesses[reviewRoute.Harness]; ok {
+					c.Routing.Stages["review"] = reviewRoute
+				} else {
+					return nil, fmt.Errorf("routing stage review: unknown harness %q for fallback", reviewRoute.Harness)
+				}
+			}
+		}
+		// A stale fallback is intentionally not validated when every seat is
+		// explicit; it is retained only for compatibility (spec §21.18 change 4).
+		c.Routing.Stages["review"] = reviewRoute
+	}
+	c.ExecutionSettings = contextualExecutionSettings(c.Routing)
 	repoNames := make(map[string]struct{}, len(c.Repos))
 	for i := range c.Repos {
 		repo := &c.Repos[i]
@@ -464,6 +645,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
+		ExecutionSettings:         contextualExecutionSettings(c.Routing),
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
 		Review:                    ReviewPanel{Seats: reviewSeats},
@@ -472,11 +654,20 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	}
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0
+		route.EffectiveModel = ""
 		route.LegacyHarnesses = nil
 		route.LegacyModelTier = ""
 		document.Routing.Stages[stage] = route
 	}
 	return document
+}
+
+func (c *Config) EffectiveModel(stage string) string {
+	route := c.Routing.Stages[stage]
+	if route.EffectiveModel != "" || route.ModelPolicy == ModelPolicyHarnessDefault {
+		return route.EffectiveModel
+	}
+	return route.Model
 }
 
 func validateHarness(h Harness, index int) error {

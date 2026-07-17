@@ -175,13 +175,14 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
 			RequiredHarness: harness, RequiredHarnessConfig: harnessConfig,
-			QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+			ExecutionTimeoutText: route.TimeoutText,
+			QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
 	}
 	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		return err
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "review_round": round, "seat_count": len(orders)})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
 }
 
 func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {
@@ -191,9 +192,10 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 		}
 		return &core.HarnessSnapshot{
 			Name: harness.Name, Command: append([]string(nil), harness.Command...),
-			ModelArgs:        append([]string(nil), harness.ModelArgs...),
-			ProbeCommand:     append([]string(nil), harness.ProbeCommand...),
-			ProbeTimeoutText: harness.ProbeTimeoutText,
+			ModelArgs:             append([]string(nil), harness.ModelArgs...),
+			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
+			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
+			ProbeTimeoutText:      harness.ProbeTimeoutText,
 		}, true
 	}
 	return nil, false
@@ -211,7 +213,8 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: route.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
+	effectiveModel := cfg.EffectiveModel(string(task.NextStage))
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}
@@ -223,11 +226,28 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage, State: core.WorkOrderQueued, Claimable: true, SelfReported: true, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	var harnessConfig *core.HarnessSnapshot
+	if route.Harness != "" {
+		var found bool
+		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
+		if !found {
+			return fmt.Errorf("implementation route references unavailable harness %q", route.Harness)
+		}
+	}
+	order := core.WorkOrder{
+		ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage,
+		State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
+		RequiredModel: effectiveModel, RequiredHarness: route.Harness, RequiredHarnessConfig: harnessConfig,
+		ExecutionTimeoutText: route.TimeoutText,
+		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+	}
 	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
 		return err
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": task.NextStage, "execution": "mcp"})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{
+		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
+		"harness": route.Harness, "model": effectiveModel, "model_policy": route.ModelPolicy,
+	})})
 }
 
 func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {

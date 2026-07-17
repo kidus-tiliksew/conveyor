@@ -182,6 +182,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 			route := d.Routing.Stages["review"]
 			route.Harness = "missing"
 			d.Routing.Stages["review"] = route
+			d.ExecutionSettings.Review.FallbackHarness = "missing"
 		}, "unknown harness"},
 	}
 	for _, test := range tests {
@@ -211,6 +212,58 @@ func TestMultipleHarnessesRequireExplicitWorkerRoute(t *testing.T) {
 	raw, _ := yaml.Marshal(document)
 	if _, err := ParseWorkspaceDocument(raw, base, "test"); err == nil || !strings.Contains(err.Error(), "harness is required") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestContextualSettingsOverrideLegacyRoutesAndAllowExplicitReviewSeats(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+	}
+	base.Routing.Stages["implement"] = StageRoute{Model: "subscription", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	base.Routing.Stages["review"] = StageRoute{Model: "stale", Harness: "stale-harness", TimeoutText: "1h", Execution: ExecutionMCP}
+	base.Review.Seats = []ReviewSeat{{Model: "gpt-review", Harness: "codex"}, {Model: "claude-review", Harness: "claude"}}
+	document := base.WorkspaceDocument()
+	document.ExecutionSettings.Implementation.Model = ""
+	document.ExecutionSettings.Implementation.ModelPolicy = ModelPolicyHarnessDefault
+	document.ExecutionSettings.Review.FallbackModel = ""
+	document.ExecutionSettings.Review.FallbackHarness = ""
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "contextual settings test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Routing.Stages["review"].Harness != "" || parsed.EffectiveModel("implement") != "" {
+		t.Fatalf("normalized routes=%+v", parsed.Routing.Stages)
+	}
+	canonical, err := MarshalWorkspaceDocument(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), "execution_settings:") || !strings.Contains(string(canonical), "routing:") {
+		t.Fatalf("canonical document lost contextual or compatibility shape: %s", canonical)
+	}
+}
+
+func TestHarnessDefaultModelOnlyForwardsDeclaredSentinel(t *testing.T) {
+	base := validConfig()
+	base.Harnesses = []Harness{{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, DefaultModelSentinels: []string{"subscription"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}
+	base.Routing.Stages["implement"] = StageRoute{Model: "subscription", ModelPolicy: ModelPolicyHarnessDefault, Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
+	document := base.WorkspaceDocument()
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "declared sentinel test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.EffectiveModel("implement"); got != "subscription" {
+		t.Fatalf("effective model=%q", got)
+	}
+
+	document.ExecutionSettings.Implementation.Model = "unsupported-sentinel"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "undeclared sentinel test"); err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("undeclared sentinel error=%v", err)
 	}
 }
 

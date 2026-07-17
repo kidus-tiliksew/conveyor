@@ -96,10 +96,18 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		return core.WorkOrder{}, err
 	}
 	route, ok := cfg.Routing.Stages[string(order.Stage)]
-	if !ok || route.Timeout <= 0 {
+	timeout := route.Timeout
+	if order.ExecutionTimeoutText != "" {
+		var parseErr error
+		timeout, parseErr = time.ParseDuration(order.ExecutionTimeoutText)
+		if parseErr != nil || timeout <= 0 {
+			return core.WorkOrder{}, fmt.Errorf("work-order execution timeout snapshot is invalid")
+		}
+	}
+	if !ok || timeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order execution timeout unavailable")
 	}
-	claim.ExecutionTimeout = route.Timeout
+	claim.ExecutionTimeout = timeout
 	if err = s.enforce(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}

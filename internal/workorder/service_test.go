@@ -149,7 +149,7 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	queuedAt := time.Now().Add(-2 * time.Hour)
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ExecutionTimeoutText: "2h", QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -159,7 +159,7 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.ExecutionStartedAt.IsZero() || claimed.ExecutionDeadline.Sub(claimed.ExecutionStartedAt) != time.Hour {
+	if claimed.ExecutionStartedAt.IsZero() || claimed.ExecutionDeadline.Sub(claimed.ExecutionStartedAt) != 2*time.Hour {
 		t.Fatalf("execution clocks = start %v deadline %v", claimed.ExecutionStartedAt, claimed.ExecutionDeadline)
 	}
 	jobs, err := st.ListJobs(ctx, task.ID)
