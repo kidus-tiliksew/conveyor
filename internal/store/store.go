@@ -57,6 +57,11 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
+	// CountEventsSinceHumanIntervention counts task events of the given kind
+	// recorded after the latest human intervention on the task — the check-in
+	// window of spec §21.17. With no human intervention it counts all events
+	// of that kind.
+	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
@@ -459,15 +464,22 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 				count++
 			}
 		}
+		// The check-in comparison uses bounces since the last human
+		// intervention, not the lifetime count (spec §21.17); the recorded
+		// count in the event payload stays lifetime for the timeline.
+		window := m.countEventsSinceHumanInterventionLocked(decision.TaskID, "pipeline.bounced")
 		m.nextReviewID++
 		actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
 		intervention := core.Intervention{ID: m.nextReviewID, TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: time.Now().UTC()}
 		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], intervention)
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": aggregate.ReasonCode, "comment": aggregate.Feedback, "review_round": decision.ReviewRound, "reviews": aggregate.Reviews}), At: intervention.At})
 		count++
+		window++
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})})
-		if count < decision.MaxBounces {
+		if window < decision.MaxBounces {
 			state, next, recovery = core.TaskQueued, core.StageImplement, ""
+		} else {
+			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})})
 		}
 	} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 		state, recovery = core.TaskApproved, ""
@@ -1251,6 +1263,28 @@ func (m *memory) CountEvents(_ context.Context, taskID, kind string) (int, error
 		}
 	}
 	return count, nil
+}
+
+func (m *memory) CountEventsSinceHumanIntervention(_ context.Context, taskID, kind string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.countEventsSinceHumanInterventionLocked(taskID, kind), nil
+}
+
+func (m *memory) countEventsSinceHumanInterventionLocked(taskID, kind string) int {
+	var since time.Time
+	for _, intervention := range m.interventions[taskID] {
+		if intervention.ActorRole == core.ActorHuman && intervention.At.After(since) {
+			since = intervention.At
+		}
+	}
+	count := 0
+	for _, event := range m.events[taskID] {
+		if event.Kind == kind && event.At.After(since) {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *memory) ListActivityMarkers(_ context.Context) ([]ActivityMarker, error) {

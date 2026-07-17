@@ -65,6 +65,31 @@ func (q *Queries) CountEvents(ctx context.Context, arg CountEventsParams) (int64
 	return column_1, err
 }
 
+const countEventsSinceHumanIntervention = `-- name: CountEventsSinceHumanIntervention :one
+SELECT count(*)::bigint FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3
+  AND e.at > COALESCE((
+      SELECT max(i.at) FROM interventions i
+      WHERE i.task_id = $1 AND i.actor_role = 'human'
+  ), '-infinity'::timestamptz)
+`
+
+type CountEventsSinceHumanInterventionParams struct {
+	TaskID      pgtype.Text `json:"task_id"`
+	Kind        string      `json:"kind"`
+	WorkspaceID string      `json:"workspace_id"`
+}
+
+// The §21.17 check-in window: events of a kind recorded after the latest
+// human intervention on the task (all of them when no human has intervened).
+func (q *Queries) CountEventsSinceHumanIntervention(ctx context.Context, arg CountEventsSinceHumanInterventionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countEventsSinceHumanIntervention, arg.TaskID, arg.Kind, arg.WorkspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getJob = `-- name: GetJob :one
 SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
 JOIN tasks t ON t.id = j.task_id

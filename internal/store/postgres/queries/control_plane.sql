@@ -152,6 +152,17 @@ SELECT count(*)::bigint FROM events e
 JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3;
 
+-- name: CountEventsSinceHumanIntervention :one
+-- The §21.17 check-in window: events of a kind recorded after the latest
+-- human intervention on the task (all of them when no human has intervened).
+SELECT count(*)::bigint FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3
+  AND e.at > COALESCE((
+      SELECT max(i.at) FROM interventions i
+      WHERE i.task_id = $1 AND i.actor_role = 'human'
+  ), '-infinity'::timestamptz);
+
 -- name: ListActivityMarkers :many
 SELECT
     t.id AS task_id,

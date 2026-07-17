@@ -677,6 +677,14 @@ func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int6
 	return result, nil
 }
 
+func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error) {
+	count, err := s.queries.CountEventsSinceHumanIntervention(ctx, db.CountEventsSinceHumanInterventionParams{TaskID: nullableText(taskID), Kind: kind, WorkspaceID: workspace(ctx)})
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
 func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, error) {
 	count, err := s.queries.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(taskID), Kind: kind, WorkspaceID: workspace(ctx)})
 	return int(count), err
@@ -1408,7 +1416,15 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			if countErr != nil {
 				return countErr
 			}
+			// The check-in comparison uses bounces since the last human
+			// intervention, not the lifetime count (spec §21.17); the
+			// recorded count in the event payload stays lifetime.
+			window, windowErr := q.CountEventsSinceHumanIntervention(ctx, db.CountEventsSinceHumanInterventionParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
+			if windowErr != nil {
+				return windowErr
+			}
 			count++
+			window++
 			now := time.Now().UTC()
 			actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
 			intervention := core.Intervention{TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: now}
@@ -1421,8 +1437,10 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})}); err != nil {
 				return err
 			}
-			if int(count) < decision.MaxBounces {
+			if int(window) < decision.MaxBounces {
 				state, next, recovery = core.TaskQueued, core.StageImplement, ""
+			} else if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})}); err != nil {
+				return err
 			}
 		} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 			state, recovery = core.TaskApproved, ""

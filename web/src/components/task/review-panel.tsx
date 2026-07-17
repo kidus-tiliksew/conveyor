@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { GitMerge, ThumbsUp, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
+import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
 import { mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
@@ -16,6 +16,7 @@ import { Textarea } from '../ui/input'
 // (see contracts.ts) — the comment is the operator's signal.
 
 type GateTone = 'positive' | 'neutral' | 'alarm'
+type GatePrimary = 'merge' | 'approve' | 'redirect'
 
 interface Gate {
   tone: GateTone
@@ -23,6 +24,7 @@ interface Gate {
   headline: string
   detail: string
   primaryLabel: string
+  primaryAction: GatePrimary
 }
 
 function gateFor(task: Task, events: TaskEvent[]): Gate {
@@ -33,6 +35,7 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
       headline: 'Ready to merge',
       detail: 'Approved at the gate — Conveyor will merge the pull request and confirm it with GitHub.',
       primaryLabel: 'Merge pull request',
+      primaryAction: 'merge',
     }
   }
   if (task.state === 'parked') {
@@ -42,6 +45,7 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
       headline: 'Parked — needs a human route',
       detail: 'Triage could not route this task on its own. Decide where it goes.',
       primaryLabel: 'Approve',
+      primaryAction: 'approve',
     }
   }
   // Walk back to the most recent incident, but stop at any human decision or
@@ -49,12 +53,15 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind
     if (kind === 'pipeline.bounce_limit') {
+      // Check-in, not failure (spec §21.17): the loop is alive and feedback
+      // resumes it with a fresh unsupervised round window.
       return {
         tone: 'alarm',
         icon: TriangleAlert,
-        headline: 'Bounce limit reached',
-        detail: 'Implement and review went back and forth to the limit. A human closes the loop.',
-        primaryLabel: 'Approve',
+        headline: 'Review loop checked in',
+        detail: 'Implement and review used their unsupervised rounds without converging. Send feedback to resume with a fresh window, or decide the task here.',
+        primaryLabel: 'Resume with feedback',
+        primaryAction: 'redirect',
       }
     }
     if (kind === 'job.timeout') {
@@ -64,6 +71,7 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
         headline: 'Job timed out',
         detail: 'The last job hit its wall-clock timeout before finishing.',
         primaryLabel: 'Approve',
+        primaryAction: 'approve',
       }
     }
     if (kind === 'job.created' || kind.startsWith('intervention.')) break
@@ -74,6 +82,7 @@ function gateFor(task: Task, events: TaskEvent[]): Gate {
     headline: 'Your review, please',
     detail: 'The line is holding at the human gate. Review the work below, then record a decision.',
     primaryLabel: 'Approve',
+    primaryAction: 'approve',
   }
 }
 
@@ -83,7 +92,10 @@ const toneStyles: Record<GateTone, { card: string; header: string; title: string
   alarm: { card: 'border-attention-dot/40', header: 'bg-attention-soft', title: 'text-attention', icon: 'text-attention-dot' },
 }
 
-const secondaryActions = interventionActions.filter((entry) => entry.action !== 'approve')
+// The gate's context-matched primary is excluded from the secondary row;
+// approve taken from the row records immediately (it needs no comment).
+const secondaryActionsFor = (primary: GatePrimary) =>
+  interventionActions.filter((entry) => entry.action !== (primary === 'redirect' ? 'redirect' : 'approve'))
 
 type GateMutation =
   | { kind: 'merge' }
@@ -121,7 +133,8 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
     mutation.reset()
   }
 
-  const expandedEntry = secondaryActions.find((entry) => entry.action === expanded)
+  const secondaryActions = secondaryActionsFor(gate.primaryAction)
+  const expandedEntry = interventionActions.find((entry) => entry.action === expanded && entry.action !== 'approve')
 
   return (
     <section className={cn('rounded-lg border bg-background', style.card)} aria-label="Human gate">
@@ -133,12 +146,14 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
         </div>
         <Button
           disabled={!token || mutation.isPending}
-          onClick={() => item.task.state === 'approved'
-            ? mutation.mutate({ kind: 'merge' })
-            : mutation.mutate({ kind: 'review', action: 'approve', comment: '' })}
+          onClick={() => {
+            if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
+            if (gate.primaryAction === 'redirect') return toggle('redirect')
+            mutation.mutate({ kind: 'review', action: 'approve', comment: '' })
+          }}
         >
-          {item.task.state === 'approved' ? <GitMerge /> : <ThumbsUp />}
-          {mutation.isPending && !expanded ? (item.task.state === 'approved' ? 'Merging…' : 'Recording…') : gate.primaryLabel}
+          {gate.primaryAction === 'merge' ? <GitMerge /> : gate.primaryAction === 'redirect' ? <Undo2 /> : <ThumbsUp />}
+          {mutation.isPending && !expanded ? (gate.primaryAction === 'merge' ? 'Merging…' : 'Recording…') : gate.primaryLabel}
         </Button>
       </div>
       <div className="px-4 py-2.5">
@@ -150,7 +165,9 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
               type="button"
               aria-expanded={expanded === entry.action}
               title={entry.hint}
-              onClick={() => toggle(entry.action)}
+              onClick={() => entry.action === 'approve'
+                ? mutation.mutate({ kind: 'review', action: 'approve', comment: '' })
+                : toggle(entry.action)}
               className={cn(
                 'rounded-md px-2 py-1 text-xs font-medium transition-colors',
                 expanded === entry.action ? 'bg-raised text-foreground' : 'text-muted hover:bg-surface hover:text-foreground',

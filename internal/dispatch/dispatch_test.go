@@ -372,6 +372,54 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	}
 }
 
+func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "window-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.UseDurableQueue()
+
+	// Two agent bounces exhaust the unsupervised window and park the task.
+	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round two"); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := st.GetTask(ctx, task.ID)
+	if err != nil || parked.State != core.TaskAwaiting {
+		t.Fatalf("parked task=%+v err=%v", parked, err)
+	}
+	if limits, _ := st.CountEvents(ctx, task.ID, "pipeline.bounce_limit"); limits != 1 {
+		t.Fatalf("bounce_limit events=%d", limits)
+	}
+
+	// A human redirect grants a fresh window (spec §21.17): the next bounce
+	// re-queues instead of re-parking.
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, ActorID: "operator", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "changes-requested", Comment: "keep going"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round three"); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := st.GetTask(ctx, task.ID)
+	if err != nil || resumed.State != core.TaskQueued || resumed.NextStage != core.StageImplement {
+		t.Fatalf("resumed task=%+v err=%v", resumed, err)
+	}
+	if limits, _ := st.CountEvents(ctx, task.ID, "pipeline.bounce_limit"); limits != 1 {
+		t.Fatalf("bounce_limit events after reset=%d", limits)
+	}
+}
+
 func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

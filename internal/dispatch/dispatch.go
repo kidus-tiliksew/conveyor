@@ -330,8 +330,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: kind, Payload: core.JSONPayload(map[string]string{"error": parseErr.Error()})}); err != nil {
 			return err
 		}
-		count, _ := d.Store.CountEvents(ctx, task.ID, kind)
+		count, _ := d.Store.CountEventsSinceHumanIntervention(ctx, task.ID, kind)
 		if count >= cfg.MaxBounces {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": kind, "window": count, "max_bounces": cfg.MaxBounces})})
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", job.Stage)
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, job.Stage, "")
@@ -467,8 +468,13 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, jobID, reason, feedback string) error {
 	count, _ := d.Store.CountEvents(ctx, taskID, "pipeline.bounced")
 	count++
+	// The check-in comparison uses bounces since the last human intervention,
+	// not the lifetime count (spec §21.17).
+	window, _ := d.Store.CountEventsSinceHumanIntervention(ctx, taskID, "pipeline.bounced")
+	window++
 	_ = d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": reason, "feedback": feedback, "count": count, "source": "mcp-review"})})
-	if count >= cfg.MaxBounces {
+	if window >= cfg.MaxBounces {
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": cfg.MaxBounces})})
 		return d.transition(ctx, taskID, core.TaskAwaiting, "", core.StageImplement)
 	}
 	return d.transition(ctx, taskID, core.TaskQueued, core.StageImplement, "")

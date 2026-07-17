@@ -63,7 +63,7 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
   // fresh dispatch — those supersede older incidents.
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind
-    if (kind === 'pipeline.bounce_limit') return 'Bounce limit reached — review loop needs a human'
+    if (kind === 'pipeline.bounce_limit') return 'Review check-in — the loop paused for a human look'
     if (kind === 'job.timeout') return 'Job hit its wall-clock timeout'
     if (kind === 'job.created' || kind.startsWith('intervention.')) break
   }
@@ -128,7 +128,7 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
       }
     }
     case 'pipeline.bounce_limit':
-      return { title: 'Bounce limit reached — parked at the human gate', alarm: true }
+      return { title: 'Review check-in — paused after the configured rounds', alarm: true }
     case 'job.timeout':
       return {
         title: 'Wall-clock timeout',

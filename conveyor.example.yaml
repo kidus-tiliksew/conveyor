@@ -3,7 +3,9 @@
 # their own agent subscriptions or API credentials on their own machines.
 workspace: demo
 pack_dir: pack
-max_bounces: 2
+# Review rounds before human check-in (spec §21.17): the window resets after
+# each human intervention; hitting it parks the task, it does not fail it.
+max_bounces: 10
 work_order_queue_timeout: 24h
 # cache_dir: ~/.conveyor/cache     # bare repo cache for checkout/diff flows
 

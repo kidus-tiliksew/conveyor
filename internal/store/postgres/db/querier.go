@@ -11,6 +11,9 @@ import (
 type Querier interface {
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
 	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
+	// The §21.17 check-in window: events of a kind recorded after the latest
+	// human intervention on the task (all of them when no human has intervened).
+	CountEventsSinceHumanIntervention(ctx context.Context, arg CountEventsSinceHumanInterventionParams) (int64, error)
 	GetJob(ctx context.Context, arg GetJobParams) (Job, error)
 	GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job, error)
 	GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVersionParams) (TaskSpec, error)

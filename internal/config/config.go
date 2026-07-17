@@ -272,7 +272,7 @@ func normalize(c *Config, path string) (*Config, error) {
 		c.PackDir = filepath.Join(configDir, c.PackDir)
 	}
 	if c.MaxBounces == 0 {
-		c.MaxBounces = 2
+		c.MaxBounces = 10
 	}
 	if c.MaxBounces < 1 {
 		return nil, fmt.Errorf("max_bounces must be at least 1")
