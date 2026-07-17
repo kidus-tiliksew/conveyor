@@ -143,6 +143,9 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if err != nil {
 		return Context{}, err
 	}
+	if order.Stage == core.StageReview {
+		role = pack.MCPReviewRole(role)
+	}
 	result := Context{Order: order, Task: task, RolePrompt: role}
 	if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
 		return Context{}, getErr

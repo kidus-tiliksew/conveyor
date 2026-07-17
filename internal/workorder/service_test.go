@@ -79,7 +79,10 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
-type staticAgent struct{ output string }
+type staticAgent struct {
+	output string
+	input  inprocess.Input
+}
 
 type flakyReviewAcceptanceStore struct {
 	store.Store
@@ -94,8 +97,46 @@ func (st *flakyReviewAcceptanceStore) AcceptReviewDecision(ctx context.Context, 
 	return st.Store.AcceptReviewDecision(ctx, decision)
 }
 
-func (agent staticAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
+func (agent *staticAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
+	agent.input = input
 	return inprocess.Result{Output: agent.output, TokensIn: 10, TokensOut: 4}, nil
+}
+
+func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-review-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "mcp-review-context-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	result, err := service.Get(ctx, job.ID, "review-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(result.RolePrompt), " ")
+	for _, required := range []string{"submit_review_verdict", "wait for and observe a successful tool response", "Printing, returning, or describing verdict JSON is not completion"} {
+		if !strings.Contains(normalized, required) {
+			t.Fatalf("MCP review context is missing %q: %s", required, result.RolePrompt)
+		}
+	}
+	if strings.Contains(result.RolePrompt, "```conveyor:review") {
+		t.Fatalf("MCP review context includes the in-process output contract: %s", result.RolePrompt)
+	}
 }
 
 func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
@@ -327,7 +368,8 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"review": {Model: "reviewer", Execution: config.ExecutionInProcess, Timeout: time.Minute},
 	}}}
-	dispatcher := dispatch.New(st, cfg, staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"})
+	agent := &staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"}
+	dispatcher := dispatch.New(st, cfg, agent)
 	dispatcher.Pack = bundle
 	service := &Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 
@@ -340,6 +382,9 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 	if result["await_review"] != false || result["verdict"] != "approve" {
 		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(agent.input.Prompt, "```conveyor:review") || strings.Contains(agent.input.Prompt, "submit_review_verdict") {
+		t.Fatalf("in-process review prompt has the wrong terminal contract: %s", agent.input.Prompt)
 	}
 	updated, err := st.GetTask(ctx, task.ID)
 	if err != nil || updated.State != core.TaskApproved {

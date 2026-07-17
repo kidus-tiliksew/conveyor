@@ -34,12 +34,17 @@ func TestLoadValidatesAndCachesWholePack(t *testing.T) {
 	}
 }
 
-func TestReviewRoleRequiresSuccessfulTerminalVerdictToolCall(t *testing.T) {
+func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageReview)
 	if err != nil {
 		t.Fatal(err)
 	}
-	normalized := strings.Join(strings.Fields(role), " ")
+	if strings.Contains(role, "submit_review_verdict") || strings.Contains(role, "```conveyor:review") {
+		t.Fatalf("shared review role contains an execution-specific terminal contract: %s", role)
+	}
+
+	mcp := MCPReviewRole(role)
+	normalized := strings.Join(strings.Fields(mcp), " ")
 	for _, required := range []string{
 		"call Conveyor's `submit_review_verdict` MCP tool",
 		"wait for and observe a successful tool response",
@@ -47,10 +52,20 @@ func TestReviewRoleRequiresSuccessfulTerminalVerdictToolCall(t *testing.T) {
 		"A missing or failed tool response is not terminal success",
 	} {
 		if !strings.Contains(normalized, required) {
-			t.Fatalf("review role is missing %q: %s", required, role)
+			t.Fatalf("MCP review role is missing %q: %s", required, mcp)
 		}
 	}
-	if strings.Contains(role, "end your answer with") || strings.Contains(role, "```conveyor:review") {
-		t.Fatalf("review role still permits output-only completion: %s", role)
+	if strings.Contains(mcp, "```conveyor:review") {
+		t.Fatalf("MCP review role still permits output-only completion: %s", mcp)
+	}
+
+	inProcess := InProcessReviewRole(role)
+	for _, required := range []string{"End your answer with exactly one machine-owned block", "```conveyor:review", `"verdict":"approve|changes_requested"`} {
+		if !strings.Contains(inProcess, required) {
+			t.Fatalf("in-process review role is missing %q: %s", required, inProcess)
+		}
+	}
+	if strings.Contains(inProcess, "submit_review_verdict") {
+		t.Fatalf("in-process review role requires an unavailable MCP tool: %s", inProcess)
 	}
 }

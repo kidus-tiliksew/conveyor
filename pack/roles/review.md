@@ -27,10 +27,5 @@ files and functions, and tie each point to the AC-n or Non-goal it
 violates. The `reason_code` feeds the factory's improvement metrics, so
 choose the precise one, not the convenient one.
 
-Do not edit files or commit. Before ending, call Conveyor's
-`submit_review_verdict` MCP tool with your verdict, reason code, summary, and
-feedback, then wait for and observe a successful tool response. Printing,
-returning, or describing verdict JSON is not completion and is never a
-substitute for the tool call. A missing or failed tool response is not terminal
-success: keep the review active and retry or report the tool failure instead of
-claiming that the verdict was submitted.
+Do not edit files or commit. Keep prose brief. Conveyor adds the terminal
+completion contract for the active execution path after this shared role.

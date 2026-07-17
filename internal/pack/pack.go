@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -53,4 +54,28 @@ func (l Loader) Role(stage core.Stage) (string, error) {
 		return "", fmt.Errorf("load %s role prompt: %w", stage, err)
 	}
 	return string(data), nil
+}
+
+// InProcessReviewRole adds the structured output contract consumed by
+// pipeline.ParseReview. The in-process Responses API has no Conveyor MCP tools.
+func InProcessReviewRole(role string) string {
+	return strings.TrimSpace(role) + `
+
+End your answer with exactly one machine-owned block and nothing after it:
+
+` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing AC-n status","feedback":"specific implementation guidance, empty only on approval"}
+` + "```"
+}
+
+// MCPReviewRole adds the terminal lifecycle contract used by operator-owned
+// Codex and Claude reviewers. Their prose or JSON output is never a verdict.
+func MCPReviewRole(role string) string {
+	return strings.TrimSpace(role) + `
+
+Before ending, call Conveyor's ` + "`submit_review_verdict`" + ` MCP tool with
+your verdict, reason code, summary, and feedback, then wait for and observe a
+successful tool response. Printing, returning, or describing verdict JSON is
+not completion and is never a substitute for the tool call. A missing or failed
+tool response is not terminal success: keep the review active and retry or
+report the tool failure instead of claiming that the verdict was submitted.`
 }
