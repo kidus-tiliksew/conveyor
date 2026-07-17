@@ -122,7 +122,7 @@ change 4). Depends on 5.1 for the enforcement path.*
 3. **Aggregation:** unanimous-approve. `await_review` returns once all
    verdicts arrive; any `changes_requested` bounces with all reviewers'
    feedback merged into one structured round — one bounce against the §21.2
-   cap regardless of panel size.
+   cap (retuned to check-in semantics by §21.17) regardless of panel size.
 4. **Enforcement labels:** independence labels gain
    `model_enforcement: worker-pinned | self-reported`; worker-executed seats
    are invoked with their pinned model and labeled enforced; the review card

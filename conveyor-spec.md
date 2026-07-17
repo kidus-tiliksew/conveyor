@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.16**
+**Specification — v1.17**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); worker service packaging inserted as Phase 5.5 (§21.16), following the draft-PR drop (§21.15)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); bounce cap retuned to check-in semantics (§21.17), following the worker service packaging phase (§21.16)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1676,4 +1676,43 @@ decisions remain unchanged:
 
 ---
 
-*End of specification. v1.16 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), and worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16). Subsequent changes proceed by amendment with version bumps.*
+### 21.17 v1.17 — Bounce cap retuned: check-in semantics (July 17, 2026)
+
+The §4/§21.2 bounce cap parks a task at the human gate rather than
+terminating it — it bounds how long an implementer↔reviewer loop runs
+*unsupervised*, and it matters more since §21.6 left bounces and timeouts
+as the only circuit breakers against runaway loops (§14), a risk the
+§21.12 unanimous-approve panels raise further. Operating experience found
+three defects in its tuning, not its existence: the default of 2 fires
+inside healthy review iteration; the counter is cumulative for the task's
+life, so after a first park every later bounce re-parks immediately even
+when a human has said "keep going"; and the operator surface names it a
+"maximum," implying termination rather than escalation. A per-mode cap
+(none for Manual, cap for Auto) was considered and not adopted — one
+uniform rule is simpler and Manual operators benefit from the check-in
+too. Three changes; all other v1.16 decisions remain unchanged:
+
+1. **The default rises from 2 to 10.** `max_bounces` remains
+   workspace-configurable under the §21.3 mechanics; the shipped default
+   becomes 10. The tripwire exists to catch structural disagreement
+   between agents, not to pace healthy iteration — it should fire on
+   stuck loops only.
+
+2. **Human intervention resets the window.** The cap compares bounces
+   *since the last human intervention on the task* (redirect, or resume
+   from the parked state), not the lifetime count. A human who reviews a
+   parked task and sends it back grants a fresh unsupervised allowance of
+   the full configured window. Every bounce is still recorded
+   (`pipeline.bounced` events and bounce histories are unchanged as §15
+   training signal); only the parking comparison changes.
+
+3. **The surface says what it does.** The workspace field renders as
+   "review rounds before human check-in" (the `max_bounces` wire and
+   config name is unchanged for compatibility); the parked card presents
+   the state as a check-in on a still-live loop — escalation, not
+   failure — with resume-with-a-fresh-window as its context-matched
+   primary action per the §21.11 verdict-first pattern.
+
+---
+
+*End of specification. v1.17 accepted July 17, 2026; all seven originally open questions resolved (§20), Phase 1 closure boundaries amended (§21.1), phases 3–9 restructured for the Beta milestone (§21.2), workspace configuration moved into the control plane (§21.3), execution pivoted to the MCP work-order model with requirements tree and artifacts, Phase 4.7 gating Beta (§21.4), durable MCP task intake added without a parallel triage path (§21.5), budget allocation/enforcement removed while usage telemetry remains observational (§21.6), operator-owned branch creation plus the repository Codex plugin made explicit (§21.7), dedicated local task worktrees made the safe default (§21.8), work-order queue, execution, and lease clocks separated with audited stale recovery (§21.9), explicit multi-workspace control-plane isolation added (§21.10), the human gate rebuilt verdict-first with derived reason codes, pull-to-local retired from the review UI, and redirect surfaced as "Request changes" (§21.11), and unattended execution productized post-Beta — the worker, Auto/Manual execution modes replacing the escalation ladder, adversarial review panels, factory-coordinated GitHub, and evidence-gated review (§21.12), with the worker execution contract — route-selected harnesses, route-scoped health gating, worker-control lease endpoints, token-exchange enrollment, stage-aware capacity, and the gate truth table with intake-time resolution — fixed by §21.13, deterministic field-local harness-template expansion fixed by §21.14, draft-PR-on-first-push dropped in favor of the existing PR-at-submit behavior (§21.15), worker service packaging inserted as Phase 5.5 with platform agents renumbered to 5.6 (§21.16), and the bounce cap retuned to check-in semantics — default 10, window reset on human intervention, escalation-not-failure surface (§21.17). Subsequent changes proceed by amendment with version bumps.*
