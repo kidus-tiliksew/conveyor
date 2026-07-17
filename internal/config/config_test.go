@@ -177,7 +177,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Routing.Stages["implement"].Harness != "codex" || parsed.Harnesses[0].ProbeTimeout != 5*time.Second {
+	if parsed.Routing.Stages["implement"].Harness != "codex" || parsed.Harnesses[0].ProbeTimeout != 5*time.Second || parsed.Harnesses[0].MCPTransport != MCPTransportJSONFile {
 		t.Fatalf("parsed=%+v", parsed)
 	}
 
@@ -192,6 +192,7 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 			d.Harnesses[0].Command = []string{"codex", "prefix-{prompt}", "{mcp_config}"}
 		}, "whole argv"},
 		{"non-positive timeout", func(d *WorkspaceDocument) { d.Harnesses[0].ProbeTimeoutText = "0s" }, "positive duration"},
+		{"unknown MCP transport", func(d *WorkspaceDocument) { d.Harnesses[0].MCPTransport = "provider_magic" }, "mcp_transport"},
 		{"dangling route", func(d *WorkspaceDocument) {
 			route := d.Routing.Stages["review"]
 			route.Harness = "missing"

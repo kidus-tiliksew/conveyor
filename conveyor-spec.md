@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.21**
+**Specification — v1.22**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), and worker-attempt recovery is bounded and audited (§21.20)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), and worker-attempt recovery is bounded and audited (§21.21)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1857,18 +1857,55 @@ dispatch contracts introduced by §§21.18–21.19:
    section offers Harness default, Low, Medium, and High beside the existing
    harness/model controls. Documentation explains harness-declared support,
    provider-neutral semantics, and the omission behavior of Harness default.
-   Review-seat effort behavior remains unchanged.
+Review-seat effort behavior remains unchanged.
 
 ---
 
-### 21.20 v1.21 — Worker attempt recovery and bounded child retry (July 17, 2026)
+### 21.20 v1.21 — Explicit harness MCP transport formats (July 17, 2026)
+
+Worker dogfooding found that §21.14's `{mcp_config}` placeholder did not define
+the representation of its runtime value. Claude Code accepts a JSON file path,
+while Codex CLI 0.142.0 treats `--config` as a TOML `key=value` override and
+rejects that path before startup. This amendment refines §21.13 change 2 and
+§21.14; all other v1.20 decisions remain unchanged:
+
+1. **Transport format is explicit and vendor-neutral.** A harness registry
+   entry gains `mcp_transport`, exactly `json_file` or `toml_override`.
+   Omission on existing documents and snapshots normalizes to `json_file` for
+   backward compatibility. Transport is snapshotted and included in the
+   harness fingerprint so hot reload cannot change an in-flight launch.
+
+2. **`{mcp_config}` remains one whole argv element.** For `json_file`, it
+   expands to the existing mode-0600 temporary JSON file and the worker removes
+   its containing directory after the child exits. For `toml_override`, it
+   expands to one TOML `key=value` string defining the Conveyor MCP server.
+   Command, model, effort, and probe argv retain the §21.14 and §21.19 rules;
+   there is no shell evaluation or repository-owned harness wrapper.
+
+3. **Credentials do not enter TOML argv.** The TOML value names
+   `CONVEYOR_API_TOKEN` as the bearer-token environment variable; the worker
+   already supplies the scoped credential in that child-only environment.
+   The token value is never serialized into argv, config documents, snapshots,
+   events, logs, or transcripts. JSON-file transport retains its existing
+   credential-bearing temporary file lifecycle.
+
+4. **Validation and operator guidance fail closed.** Unknown transports are
+   rejected at workspace-config write time. The Workspace UI creates a Codex
+   template with `toml_override` and `--config {mcp_config}`. Examples explain
+   that Claude-style `--mcp-config` commands use `json_file`. Regression
+   coverage validates both formats and, when Codex is installed, invokes its
+   real config parser without starting an agent turn.
+
+---
+
+### 21.21 v1.22 — Worker attempt recovery and bounded child retry (July 17, 2026)
 
 Operational review of supervised children found that an immediate harness
 exit could repeatedly claim and release one order, while lease-expiry cleanup
 could retain stale worker ownership, a running job projection, and an execution
 window that no longer belonged to a live attempt. This amendment supersedes
 §21.9 change 2 and §21.13 change 4 only for released or expired execution
-attempts; all other v1.20 decisions remain unchanged:
+attempts; all other v1.21 decisions remain unchanged:
 
 1. **Execution clocks belong to one attempt.** A claim starts one fixed
    execution window. Renewal cannot extend it. Release, cancellation, or lease
@@ -1908,4 +1945,4 @@ attempts; all other v1.20 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.21 accepted July 17, 2026; all prior amendments remain in force, and §21.20 adds attempt-scoped execution clocks, bounded durable child retry, atomic cleanup, and audited operator recovery. Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.22 accepted July 17, 2026; all prior amendments remain in force, §21.20 adds explicit secret-safe harness MCP transport formats, and §21.21 adds attempt-scoped execution clocks, bounded durable child retry, atomic cleanup, and audited operator recovery. Subsequent changes proceed by amendment with version bumps.*

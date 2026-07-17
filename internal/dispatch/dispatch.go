@@ -195,6 +195,7 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 		}
 		return &core.HarnessSnapshot{
 			Name:                  harness.Name,
+			MCPTransport:          harness.MCPTransport,
 			Command:               append([]string(nil), harness.Command...),
 			ModelArgs:             append([]string(nil), harness.ModelArgs...),
 			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
