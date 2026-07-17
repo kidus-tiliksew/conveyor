@@ -973,6 +973,18 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 		return core.WorkOrder{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	var taskID string
+	if err := tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&taskID); err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	// Session and client-token independence spans the implementation order and
+	// every seat in a review round. Serialize all claims for one task before
+	// locking an individual order so concurrent seats cannot both pass the
+	// sibling check against an uncommitted peer (spec §21.12 change 4).
+	lockKey := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspace(ctx), taskID)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
+		return core.WorkOrder{}, err
+	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
