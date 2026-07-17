@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,7 +17,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
@@ -41,6 +46,106 @@ func TestProbeHarnessesRunsSlowProbesConcurrently(t *testing.T) {
 	probes := probeHarnesses(t.Context(), harnesses)
 	if len(probes) != 2 || !probes[0].Healthy || !probes[1].Healthy {
 		t.Fatalf("probes=%+v", probes)
+	}
+}
+
+func TestWorkerAPILoopProbesActiveSnapshotsAfterHotReload(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	probeCommand := func(label string) []string {
+		return []string{os.Args[0], "-test.run=TestWorkerVersionedProbeHelper", "--", label}
+	}
+	oldCodex := config.Harness{Name: "codex", Command: []string{"codex-old", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: probeCommand("old-codex"), ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
+	oldClaude := config.Harness{Name: "claude", Command: []string{"claude-old", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: probeCommand("old-claude"), ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
+	cfg := &config.Config{
+		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeout: time.Hour,
+		Harnesses: []config.Harness{oldCodex, oldClaude},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Model: "gpt", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP},
+			"review":    {Model: "gpt-review", Harness: "codex", Timeout: time.Hour, Execution: config.ExecutionMCP},
+		}},
+		Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Harness: "claude"}}},
+		Execution: config.ExecutionPolicy{DefaultMode: "auto", ImplementConcurrency: 1, ReviewConcurrency: 2},
+		Repos:     []config.Repo{{Name: "app", Base: "main"}},
+	}
+	task := core.Task{ID: "worker-hot-reload", Workspace: "demo", Repo: "app", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.UseDurableQueue()
+	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hot reload changes codex in place and removes claude. The worker must
+	// probe both current and active-snapshot definitions before listing work.
+	newCodex := oldCodex
+	newCodex.Command = []string{"codex-new", "{prompt}", "{mcp_config}"}
+	newCodex.ProbeCommand = probeCommand("new-codex")
+	cfg.Harnesses = []config.Harness{newCodex}
+	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "next-review", Harness: "codex"}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, Now: func() time.Time { return now }}
+	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "hot-reload-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.ConfigProvider, server.WorkOrders, server.Workers = "demo", provider, orders, workers
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := &client{base: httpServer.URL, workspace: "demo"}
+
+	document, err := client.workerConfig(enrollment.Credential)
+	if err != nil || len(document.ActiveHarnesses) != 2 {
+		t.Fatalf("worker config active snapshots=%+v err=%v", document.ActiveHarnesses, err)
+	}
+	probeLog := t.TempDir()
+	t.Setenv("CONVEYOR_VERSIONED_PROBE_LOG", probeLog)
+	probes := probeWorkerConfig(t.Context(), document)
+	if len(probes) != 3 {
+		t.Fatalf("versioned probes=%+v", probes)
+	}
+	for _, label := range []string{"old-codex", "old-claude", "new-codex"} {
+		if _, err := os.Stat(filepath.Join(probeLog, label)); err != nil {
+			t.Fatalf("probe %s did not execute: %v", label, err)
+		}
+	}
+	if _, err = client.heartbeatWorker(enrollment.Credential, probes); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := client.listWorkerOrders(enrollment.Credential)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("orders after hot reload=%+v err=%v", listed, err)
+	}
+	bySeat := map[int]workerservice.DispatchOrder{}
+	for _, item := range listed {
+		bySeat[item.Order.ReviewSeat] = item
+	}
+	if bySeat[1].Model != "gpt-review" || bySeat[1].Harness.Command[0] != "codex-old" || bySeat[1].Harness.ProbeCommand[len(bySeat[1].Harness.ProbeCommand)-1] != "old-codex" || bySeat[2].Model != "claude-review" || bySeat[2].Harness.Command[0] != "claude-old" {
+		t.Fatalf("snapshotted dispatch orders=%+v", bySeat)
+	}
+	claimed, err := client.claimWorkerOrder(enrollment.Credential, bySeat[2].Order.ID, "worker-review-hot-reload", "worker-review-token")
+	if err != nil || claimed.Model != "claude-review" || claimed.ModelEnforcement != "worker-pinned" {
+		t.Fatalf("snapshotted claim=%+v err=%v", claimed, err)
+	}
+}
+
+func TestWorkerVersionedProbeHelper(t *testing.T) {
+	directory := os.Getenv("CONVEYOR_VERSIONED_PROBE_LOG")
+	if directory == "" {
+		return
+	}
+	label := os.Args[len(os.Args)-1]
+	if err := os.WriteFile(filepath.Join(directory, label), []byte("probed"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

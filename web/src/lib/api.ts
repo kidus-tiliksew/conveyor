@@ -77,6 +77,7 @@ export function fetchWorkspaceConfig(token: string) {
         ...result.document,
         harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
+        review: result.document.review ?? { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] },
       },
     }
   })

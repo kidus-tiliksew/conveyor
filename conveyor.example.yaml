@@ -48,6 +48,14 @@ harnesses:
     probe_command: [agent-cli, --version]
     probe_timeout: 10s
 
+# One durable review order is created per ordered seat. A seat-level harness
+# is optional and otherwise inherits routing.stages.review.harness.
+review:
+  seats:
+    - model: gpt-5.6
+    - model: claude-opus-4.1
+      harness: local-agent
+
 repos:
   - name: api
     url: https://github.com/your-org/your-repo

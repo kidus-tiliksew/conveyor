@@ -4,7 +4,7 @@ import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
-import type { ActivityItem, InterventionAction, Job } from '../../lib/types'
+import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 
@@ -54,7 +54,7 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
 }
 
 function TimelineRow({ entry }: { entry: TimelineEntry }) {
-  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} />
+  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} order={entry.order} />
   if (entry.type === 'order') {
     return (
       <li className="relative pl-7">
@@ -113,7 +113,7 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
 // The job footer keeps the operator-facing facts — duration and model — and
 // tucks the audit numbers (tokens, cost) behind a hover on the model chip.
 // Harness, auth mode, confinement, and actor plumbing stay in the API.
-function JobEntry({ job, summary, model }: { job: Job; summary: string; model: string }) {
+function JobEntry({ job, summary, model, order }: { job: Job; summary: string; model: string; order?: WorkOrder }) {
 	if (!job.started_at) return null
 	const running = job.state === 'running'
   return (
@@ -131,6 +131,8 @@ function JobEntry({ job, summary, model }: { job: Job; summary: string; model: s
           <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
             {stageLabels[job.stage] ?? job.stage}
           </span>
+          {order?.review_seat && <Badge variant="mono">Seat {order.review_seat}</Badge>}
+          {order?.model_enforcement && <Badge variant={order.model_enforcement === 'worker-pinned' ? 'positive' : 'default'}>{order.model_enforcement}</Badge>}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>

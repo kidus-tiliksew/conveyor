@@ -66,8 +66,12 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	}
 	claim.SessionID = "session-b"
 	claim.ClientToken = "token-b"
-	if _, err := st.ClaimWorkOrder(ctx, "review", claim); err != nil {
+	review, err := st.ClaimWorkOrder(ctx, "review", claim)
+	if err != nil {
 		t.Fatalf("fresh review claim: %v", err)
+	}
+	if review.ModelEnforcement != "self-reported" {
+		t.Fatalf("manual review enforcement=%q", review.ModelEnforcement)
 	}
 }
 

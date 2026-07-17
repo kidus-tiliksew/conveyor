@@ -583,3 +583,61 @@ func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
 		})
 	}
 }
+
+func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		mergeApproval bool
+		want          core.TaskState
+	}{{"human merge gate", true, core.TaskAwaiting}, {"automatic merge", false, core.TaskMerged}} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			now := time.Now().UTC()
+			task := core.Task{ID: "panel-policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/panel-policy", Mode: core.TaskModeAuto, PolicyVersion: 1, MergeApproval: test.mergeApproval, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			jobs := []core.Job{
+				{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending},
+				{ID: task.ID + "-review-1-seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending},
+			}
+			orders := []core.WorkOrder{
+				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+			}
+			if err := st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+			firstDispatcher := New(st, cfg, nil)
+			firstDispatcher.UseDurableQueue()
+			if err := firstDispatcher.ApplyExternalReview(ctx, task, jobs[0], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat one passes", Feedback: "seat one evidence"}, orders[0].ID, "review-session-1", "gpt-review"); err != nil {
+				t.Fatal(err)
+			}
+			if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskRunning {
+				t.Fatalf("panel advanced before unanimous verdict: %+v", current)
+			}
+
+			// A new dispatcher instance represents restart recovery before the
+			// second durable verdict arrives.
+			restarted := New(st, cfg, nil)
+			restarted.UseDurableQueue()
+			merged := false
+			restarted.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil
+			}
+			restarted.RequestMerge = func(context.Context, string, int) error { merged = true; return nil }
+			if err := restarted.ApplyExternalReview(ctx, task, jobs[1], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat two passes", Feedback: "seat two evidence"}, orders[1].ID, "review-session-2", "claude-review"); err != nil {
+				t.Fatal(err)
+			}
+			updated, _ := st.GetTask(ctx, task.ID)
+			if updated.State != test.want {
+				t.Fatalf("state=%s want=%s", updated.State, test.want)
+			}
+			if count, err := st.CountEvents(ctx, task.ID, "review.round_completed"); err != nil || count != 1 {
+				t.Fatalf("completed rounds=%d err=%v", count, err)
+			}
+		})
+	}
+}

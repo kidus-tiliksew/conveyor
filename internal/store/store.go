@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,7 @@ type Store interface {
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
 
 	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
+	CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
@@ -299,6 +301,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID, 
 	order.Agent = ""
 	order.Model = ""
 	order.WorkerID = ""
+	order.ModelEnforcement = ""
 	order.LeaseExpiresAt = time.Time{}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[workOrderID] = order
@@ -421,34 +424,48 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		payload := reviewDecisionPayload(decision)
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: payload})
 	}
+	if decision.PublicationEligible {
+		if _, exists := m.publications[decision.ReviewWorkOrderID]; !exists {
+			now := time.Now().UTC()
+			publication := reviewPublicationFromDecision(decision)
+			publication.State, publication.CreatedAt, publication.UpdatedAt = core.ReviewPublicationQueued, now, now
+			m.publications[publication.ReviewWorkOrderID] = publication
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)})
+		}
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]any{"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound, "review_seat": decision.ReviewSeat})})
+
+	reviews, required := m.completedReviewRoundLocked(decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
+	if len(reviews) < required {
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.round_pending", Payload: core.JSONPayload(map[string]any{"review_round": decision.ReviewRound, "completed": len(reviews), "required": required})})
+		return nil
+	}
+	for _, event := range m.events[decision.TaskID] {
+		var payload struct {
+			ReviewRound int `json:"review_round"`
+		}
+		if event.Kind == "review.round_completed" && json.Unmarshal(event.Payload, &payload) == nil && payload.ReviewRound == decision.ReviewRound {
+			return nil
+		}
+	}
+	aggregate := aggregateReviewRound(decision.ReviewRound, reviews)
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)})
+
 	state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
-	if decision.Verdict == "changes_requested" {
-		interventionExists, bounceExists, count := false, false, 0
+	if aggregate.Verdict == "changes_requested" {
+		count := 0
 		for _, event := range m.events[decision.TaskID] {
-			if event.Kind == "intervention.redirect" && event.JobID == decision.JobID && event.ActorID == decision.InterventionActorID {
-				interventionExists = true
-			}
-			if event.Kind != "pipeline.bounced" {
-				continue
-			}
-			count++
-			var prior struct {
-				ReviewWorkOrderID string `json:"review_work_order_id"`
-			}
-			if event.JobID == decision.JobID || (json.Unmarshal(event.Payload, &prior) == nil && prior.ReviewWorkOrderID == decision.ReviewWorkOrderID) {
-				bounceExists = true
+			if event.Kind == "pipeline.bounced" {
+				count++
 			}
 		}
-		if !interventionExists {
-			m.nextReviewID++
-			intervention := core.Intervention{ID: m.nextReviewID, TaskID: decision.TaskID, JobID: decision.JobID, ActorID: decision.InterventionActorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: decision.ReasonCode, Comment: decision.Feedback, At: time.Now().UTC()}
-			m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], intervention)
-			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": decision.ReasonCode, "comment": decision.Feedback}), At: intervention.At})
-		}
-		if !bounceExists {
-			count++
-			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": decision.ReasonCode, "feedback": decision.Feedback, "count": count, "source": "mcp-review", "review_work_order_id": decision.ReviewWorkOrderID})})
-		}
+		m.nextReviewID++
+		actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
+		intervention := core.Intervention{ID: m.nextReviewID, TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: time.Now().UTC()}
+		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], intervention)
+		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": aggregate.ReasonCode, "comment": aggregate.Feedback, "review_round": decision.ReviewRound, "reviews": aggregate.Reviews}), At: intervention.At})
+		count++
+		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})})
 		if count < decision.MaxBounces {
 			state, next, recovery = core.TaskQueued, core.StageImplement, ""
 		}
@@ -460,17 +477,73 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 	m.tasks[task.ID] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
-	if decision.PublicationEligible {
-		if _, exists := m.publications[decision.ReviewWorkOrderID]; !exists {
-			now := time.Now().UTC()
-			publication := reviewPublicationFromDecision(decision)
-			publication.State, publication.CreatedAt, publication.UpdatedAt = core.ReviewPublicationQueued, now, now
-			m.publications[publication.ReviewWorkOrderID] = publication
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)})
+	return nil
+}
+
+type completedReview struct {
+	ReviewWorkOrderID string `json:"review_work_order_id"`
+	Verdict           string `json:"verdict"`
+	ReasonCode        string `json:"reason_code"`
+	Summary           string `json:"summary"`
+	Feedback          string `json:"feedback"`
+	ReviewerModel     string `json:"reviewer_model"`
+	ReviewRound       int    `json:"review_round"`
+	ReviewSeat        int    `json:"review_seat"`
+	RequiredModel     string `json:"required_model"`
+	RequiredHarness   string `json:"required_harness"`
+	ModelEnforcement  string `json:"model_enforcement"`
+}
+
+type reviewRoundResult struct {
+	ReviewRound int               `json:"review_round"`
+	Verdict     string            `json:"verdict"`
+	ReasonCode  string            `json:"reason_code"`
+	Summary     string            `json:"summary"`
+	Feedback    string            `json:"feedback,omitempty"`
+	Reviews     []completedReview `json:"reviews"`
+}
+
+func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderID string) ([]completedReview, int) {
+	required := 0
+	for _, order := range m.workOrders {
+		if order.TaskID == taskID && order.Stage == core.StageReview && order.ReviewRound == round && (round > 0 || order.ID == workOrderID) {
+			required++
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]string{"review_work_order_id": decision.ReviewWorkOrderID})})
-	return nil
+	var reviews []completedReview
+	for _, event := range m.events[taskID] {
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var review completedReview
+		if json.Unmarshal(event.Payload, &review) == nil && review.ReviewRound == round && (round > 0 || review.ReviewWorkOrderID == workOrderID) {
+			reviews = append(reviews, review)
+		}
+	}
+	if required == 0 {
+		required = 1
+	}
+	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ReviewSeat < reviews[j].ReviewSeat })
+	return reviews, required
+}
+
+func aggregateReviewRound(round int, reviews []completedReview) reviewRoundResult {
+	if round == 0 && len(reviews) == 1 {
+		review := reviews[0]
+		return reviewRoundResult{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+	}
+	result := reviewRoundResult{ReviewRound: round, Verdict: "approve", ReasonCode: "approved", Summary: "All review panel seats approved.", Reviews: reviews}
+	var feedback []string
+	for _, review := range reviews {
+		if review.Verdict == "changes_requested" {
+			result.Verdict, result.ReasonCode, result.Summary = "changes_requested", "panel_changes_requested", "The review panel requested changes."
+		}
+		if strings.TrimSpace(review.Feedback) != "" {
+			feedback = append(feedback, fmt.Sprintf("Seat %d (%s, %s): %s", review.ReviewSeat, review.RequiredModel, review.ModelEnforcement, strings.TrimSpace(review.Feedback)))
+		}
+	}
+	result.Feedback = strings.Join(feedback, "\n")
+	return result
 }
 
 func reviewDecisionPayload(decision core.ReviewDecision) []byte {
@@ -480,7 +553,10 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
-		"publication_eligible":      decision.PublicationEligible,
+		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
+		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
+		"model_enforcement":    decision.ModelEnforcement,
+		"publication_eligible": decision.PublicationEligible,
 	})
 }
 
@@ -491,6 +567,9 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		Feedback: decision.Feedback, ReviewedCommitSHA: decision.ReviewedCommitSHA,
 		ReviewerModel: decision.ReviewerModel, ReviewerSession: decision.ReviewerSession,
 		SameModelAsImplementer: decision.SameModelAsImplementer,
+		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
+		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness,
+		ModelEnforcement: decision.ModelEnforcement,
 	}
 }
 
@@ -548,6 +627,65 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 	order.Claimable = order.State == core.WorkOrderQueued
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	return nil
+}
+
+func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
+		return fmt.Errorf("task %s belongs to workspace %s, not %s", taskID, task.Workspace, selected)
+	}
+	if len(jobs) == 0 || len(jobs) != len(orders) {
+		return fmt.Errorf("review round requires one job per work order")
+	}
+	existing := 0
+	for _, order := range orders {
+		if _, ok := m.workOrders[order.ID]; ok {
+			existing++
+		}
+	}
+	if existing == len(orders) {
+		return nil
+	}
+	if existing != 0 {
+		return fmt.Errorf("review round %d is only partially persisted", orders[0].ReviewRound)
+	}
+	for i, job := range jobs {
+		if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID {
+			return fmt.Errorf("invalid review round member %d", i)
+		}
+		if _, _, exists := m.findJobLocked(job.ID); exists {
+			return fmt.Errorf("job %s already exists", job.ID)
+		}
+	}
+	now := time.Now().UTC()
+	from := task.State
+	task.State = core.TaskRunning
+	m.tasks[taskID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": core.TaskRunning})})
+	for i, job := range jobs {
+		m.jobs[taskID] = append(m.jobs[taskID], job)
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)})
+		order := orders[i]
+		if order.CreatedAt.IsZero() {
+			order.CreatedAt = now
+		}
+		if order.QueueEnteredAt.IsZero() {
+			order.QueueEnteredAt = order.CreatedAt
+		}
+		if order.QueueDeadline.IsZero() {
+			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+		}
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		m.workOrders[order.ID] = order
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
 	return nil
 }
 
@@ -609,10 +747,30 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	}
 	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {
-			if candidate.TaskID == order.TaskID && candidate.Stage == core.StageImplement &&
+			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
+				(candidate.Stage == core.StageImplement || (candidate.Stage == core.StageReview && candidate.ReviewRound == order.ReviewRound)) &&
 				((claim.SessionID != "" && candidate.SessionID == claim.SessionID) || (claim.ClientToken != "" && candidate.ClientTokenHash == tokenHash(claim.ClientToken))) {
-				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: use a fresh agent session")
+				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a fresh session and client token")
 			}
+		}
+		for _, event := range m.events[order.TaskID] {
+			if event.Kind != "work_order.claimed" {
+				continue
+			}
+			var prior core.WorkOrder
+			if json.Unmarshal(event.Payload, &prior) == nil && prior.ID != order.ID &&
+				(prior.Stage == core.StageImplement || (prior.Stage == core.StageReview && prior.ReviewRound == order.ReviewRound)) &&
+				claim.SessionID != "" && prior.SessionID == claim.SessionID {
+				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a session not used by another seat or the implementer")
+			}
+		}
+		if claim.WorkerID != "" {
+			if order.RequiredModel != "" && claim.Model != order.RequiredModel {
+				return core.WorkOrder{}, fmt.Errorf("worker review model %q does not match pinned seat model %q", claim.Model, order.RequiredModel)
+			}
+			order.ModelEnforcement = "worker-pinned"
+		} else {
+			order.ModelEnforcement = "self-reported"
 		}
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
@@ -668,6 +826,7 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 	order.State, order.Claimable = core.WorkOrderQueued, true
 	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
 	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
+	order.ModelEnforcement = ""
 	order.LeaseExpiresAt = time.Time{}
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
@@ -700,6 +859,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		order.State, order.Claimable = core.WorkOrderQueued, true
 		order.ClaimantID, order.SessionID, order.Agent, order.Model = "", "", "", ""
 		order.ClientTokenHash = ""
+		order.ModelEnforcement = ""
 		order.LeaseExpiresAt = time.Time{}
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order

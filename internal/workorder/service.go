@@ -357,12 +357,17 @@ func (s *Service) latestReviewResult(ctx context.Context, taskID string, after t
 		return nil, err
 	}
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind == "review.completed" && !events[i].At.Before(after) {
+		if (events[i].Kind == "review.round_completed" || events[i].Kind == "review.completed") && !events[i].At.Before(after) {
 			var result map[string]any
 			if err = json.Unmarshal(events[i].Payload, &result); err != nil {
 				return nil, err
 			}
-			return result, nil
+			if events[i].Kind == "review.round_completed" {
+				return result, nil
+			}
+			if _, panelEvent := result["review_round"]; !panelEvent {
+				return result, nil
+			}
 		}
 	}
 	return nil, fmt.Errorf("review pending")
@@ -387,8 +392,19 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if err != nil {
 		return nil, err
 	}
-	job, ok, err := s.Store.GetLatestJob(ctx, task.ID)
-	if err != nil || !ok || job.ID != order.JobID {
+	jobs, err := s.Store.ListJobs(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	var job core.Job
+	found := false
+	for _, candidate := range jobs {
+		if candidate.ID == order.JobID {
+			job, found = candidate, true
+			break
+		}
+	}
+	if !found {
 		return nil, fmt.Errorf("review job unavailable")
 	}
 	if err = s.Dispatcher.ApplyExternalReview(ctx, task, job, validated, order.ID, session, order.Model); err != nil {
@@ -406,7 +422,34 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if err = s.Store.UpdateJob(ctx, job); err != nil {
 		return nil, err
 	}
-	return map[string]any{"verdict": validated.Verdict, "task_id": task.ID}, nil
+	result := map[string]any{"verdict": validated.Verdict, "task_id": task.ID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "model_enforcement": order.ModelEnforcement}
+	if aggregate, aggregateErr := s.reviewRoundResult(ctx, task.ID, order.ReviewRound); aggregateErr == nil {
+		result["round_status"] = "completed"
+		result["aggregate"] = aggregate
+	} else {
+		result["round_status"] = "pending"
+	}
+	return result, nil
+}
+
+func (s *Service) reviewRoundResult(ctx context.Context, taskID string, round int) (map[string]any, error) {
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.round_completed" {
+			continue
+		}
+		var result map[string]any
+		if json.Unmarshal(events[i].Payload, &result) != nil {
+			continue
+		}
+		if value, ok := result["review_round"].(float64); ok && int(value) == round {
+			return result, nil
+		}
+	}
+	return nil, fmt.Errorf("review pending")
 }
 
 func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {
