@@ -460,6 +460,79 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 	}
 }
 
+func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
+	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
+		t.Helper()
+		claimed := make(chan struct{}, 1)
+		released := make(chan core.WorkOrderRelease, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+				http.NotFound(w, r)
+				return
+			}
+			switch parts[4] {
+			case "claim":
+				claimed <- struct{}{}
+				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed})
+			case "release":
+				var request core.WorkOrderRelease
+				var wire struct {
+					Reason     string `json:"reason"`
+					Outcome    string `json:"outcome"`
+					ExitStatus *int   `json:"exit_status"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&wire)
+				request.Reason, request.Outcome, request.ExitStatus = wire.Reason, wire.Outcome, wire.ExitStatus
+				released <- request
+				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "classified-" + mode, Stage: core.StageReview}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}}}
+		done := make(chan error, 1)
+		go func() {
+			done <- runHarnessChild(ctx, &client{base: server.URL, workspace: "demo"}, "worker-credential", item)
+		}()
+		<-claimed
+		if mode == "cancel" {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}
+		if err := <-done; err == nil {
+			t.Fatal("child unexpectedly succeeded")
+		}
+		select {
+		case release := <-released:
+			if release.Outcome != wantOutcome || !reflect.DeepEqual(release.ExitStatus, wantExit) {
+				t.Fatalf("release=%+v want outcome=%s exit=%v", release, wantOutcome, wantExit)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("release was not reported")
+		}
+	}
+	exit := 7
+	t.Run("immediate exit", func(t *testing.T) { test(t, "exit", core.WorkOrderOutcomeChildFailure, &exit) })
+	t.Run("cancellation", func(t *testing.T) { test(t, "cancel", core.WorkOrderOutcomeCancelled, nil) })
+}
+
+func TestWorkerLifecycleHelper(t *testing.T) {
+	if len(os.Args) < 2 {
+		return
+	}
+	mode := os.Args[len(os.Args)-1]
+	switch mode {
+	case "exit":
+		os.Exit(7)
+	case "cancel":
+		time.Sleep(30 * time.Second)
+	}
+}
+
 func TestWorkerHarnessHelper(t *testing.T) {
 	if os.Getenv("CONVEYOR_FAKE_HARNESS") != "1" {
 		return

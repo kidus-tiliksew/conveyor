@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.21, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.22, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -21,7 +21,7 @@ with a version bump (§21), never silent edits.
 ## Phase discipline
 
 Phases 1–4.7 are complete and Beta was achieved July 15, 2026. Phase 5.1 is
-active under spec §21.12–§21.14 and §21.20 and [docs/phase5-plan.md](docs/phase5-plan.md).
+active under spec §21.12–§21.14 and §§21.20–21.21 and [docs/phase5-plan.md](docs/phase5-plan.md).
 Preserve the full multi-stage pipeline described by spec §19 and
 [docs/beta-plan.md](docs/beta-plan.md). Do not build later post-Beta work
 without explicit activation. K8sRunner, multi-repo worktree sets,

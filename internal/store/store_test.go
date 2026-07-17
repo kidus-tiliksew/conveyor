@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -308,5 +309,83 @@ func TestMemoryStoreMatchesProductionRelationships(t *testing.T) {
 	}
 	if len(after) != 1 || after[0].Kind != "transcript.persisted" {
 		t.Fatalf("incremental events = %+v", after)
+	}
+}
+
+func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
+	ctx := WithWorkspace(WithActor(context.Background(), Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "retry-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "retry-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	workerID := "worker-1"
+	policy := core.WorkOrderRelease{Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited: status 1", InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3}
+	wantDelays := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+	var priorStart time.Time
+	for attempt := 0; attempt < 4; attempt++ {
+		sessionID := fmt.Sprintf("session-%d", attempt)
+		claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: fmt.Sprintf("token-%d", attempt), ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		if !priorStart.IsZero() && !claimed.ExecutionStartedAt.After(priorStart) {
+			t.Fatalf("attempt %d reused execution start %v", attempt, claimed.ExecutionStartedAt)
+		}
+		priorStart = claimed.ExecutionStartedAt
+		if attempt == 1 {
+			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+				t.Fatalf("stale renew error=%v", staleErr)
+			}
+			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+				t.Fatalf("stale release error=%v", staleErr)
+			}
+		}
+		exit := 1
+		policy.SessionID = sessionID
+		policy.ExitStatus = &exit
+		released, err := st.ReleaseWorkerClaim(ctx, job.ID, workerID, policy)
+		if err != nil {
+			t.Fatalf("release %d: %v", attempt, err)
+		}
+		if released.WorkerID != "" || !released.ExecutionStartedAt.IsZero() || !released.ExecutionDeadline.IsZero() {
+			t.Fatalf("release %d retained active attempt: %+v", attempt, released)
+		}
+		if attempt < len(wantDelays) {
+			if released.RetrySuppressed || released.AutomaticRetryCount != attempt+1 || released.NextRetryAt.Sub(released.LastFailureAt) != wantDelays[attempt] {
+				t.Fatalf("release %d retry state: %+v", attempt, released)
+			}
+			if _, claimErr := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "too-soon", ClientToken: "too-soon"}); claimErr == nil || !strings.Contains(claimErr.Error(), "backoff") {
+				t.Fatalf("release %d immediate claim error=%v", attempt, claimErr)
+			}
+			released.NextRetryAt = time.Now().Add(-time.Millisecond)
+			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+		} else if !released.RetrySuppressed || !released.NextRetryAt.IsZero() || released.AutomaticRetryCount != 3 {
+			t.Fatalf("final suppression: %+v", released)
+		}
+	}
+	if _, err := st.RecoverWorkOrder(WithWorkspace(ctx, "other"), job.ID, "recover-1", time.Hour); err == nil {
+		t.Fatal("cross-workspace recovery succeeded")
+	}
+	recovered, err := st.RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
+	if err != nil || !recovered.Claimable || recovered.RetrySuppressed || recovered.AutomaticRetryCount != 0 {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	duplicate, err := st.RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
+	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	events, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	if events != 1 {
+		t.Fatalf("recovery events=%d", events)
 	}
 }

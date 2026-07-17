@@ -168,38 +168,39 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	}
 }
 
-func TestExecutionDeadlineSurvivesLeaseReclaimAndTimesOut(t *testing.T) {
+func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "execution")
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixedDeadline := claimed.ExecutionDeadline
+	firstDeadline := claimed.ExecutionDeadline
 	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
 	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute}); err == nil || !strings.Contains(err.Error(), "operator recovery") {
+		t.Fatalf("claim after expiry error = %v", err)
+	}
+	expired, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || expired.State != core.WorkOrderQueued || !expired.RetrySuppressed || expired.WorkerID != "" || !expired.ExecutionStartedAt.IsZero() || !expired.ExecutionDeadline.IsZero() {
+		t.Fatalf("expired = %+v err=%v", expired, err)
+	}
+	recovered, err := service.Recover(ctx, order.ID, "recover-1")
+	if err != nil || !recovered.Claimable || recovered.RetrySuppressed {
+		t.Fatalf("recovered = %+v err=%v", recovered, err)
+	}
+	duplicate, err := service.Recover(ctx, order.ID, "recover-1")
+	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
+		t.Fatalf("duplicate recovery = %+v err=%v", duplicate, err)
 	}
 	reclaimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reclaimed.ExecutionDeadline.Equal(fixedDeadline) {
-		t.Fatalf("deadline changed from %v to %v", fixedDeadline, reclaimed.ExecutionDeadline)
-	}
-	reclaimed.ExecutionDeadline = time.Now().Add(-time.Second)
-	if err = st.UpdateWorkOrder(ctx, reclaimed); err != nil {
-		t.Fatal(err)
-	}
-	orders, err := service.List(ctx)
-	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderTimedOut || orders[0].Claimable {
-		t.Fatalf("orders = %+v err=%v", orders, err)
-	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderTimedOut) {
-		t.Fatalf("timeout claim error = %v", err)
-	}
-	if _, err = service.Progress(ctx, order.ID, "second", "late progress"); !errors.Is(err, store.ErrWorkOrderTimedOut) {
-		t.Fatalf("timeout progress error = %v", err)
+	if !reclaimed.ExecutionDeadline.After(firstDeadline) || !reclaimed.ExecutionStartedAt.After(claimed.ExecutionStartedAt) {
+		t.Fatalf("fresh window first=%v/%v second=%v/%v", claimed.ExecutionStartedAt, firstDeadline, reclaimed.ExecutionStartedAt, reclaimed.ExecutionDeadline)
 	}
 }
 

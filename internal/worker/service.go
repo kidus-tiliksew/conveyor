@@ -25,6 +25,9 @@ const (
 	DefaultPairingTTL    = 10 * time.Minute
 	DefaultLivenessLease = 15 * time.Second
 	DefaultClaimLease    = 30 * time.Second
+	DefaultRetryDelay    = time.Second
+	DefaultRetryMaximum  = 4 * time.Second
+	DefaultRetryLimit    = 3
 )
 
 type Service struct {
@@ -32,6 +35,9 @@ type Service struct {
 	WorkOrders     *workorder.Service
 	ConfigProvider func(context.Context) (*config.Config, error)
 	Now            func() time.Time
+	RetryDelay     time.Duration
+	RetryMaximum   time.Duration
+	RetryLimit     int
 }
 
 type Enrollment struct {
@@ -560,9 +566,37 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 	return result
 }
 
-func (s *Service) Renew(ctx context.Context, worker core.Worker, id string) (core.WorkOrder, error) {
-	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, DefaultClaimLease)
+func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID string) (core.WorkOrder, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("session_id is required")
+	}
+	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, sessionID, DefaultClaimLease)
 }
-func (s *Service) Release(ctx context.Context, worker core.Worker, id, reason string) (core.WorkOrder, error) {
-	return s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, strings.TrimSpace(reason))
+func (s *Service) Release(ctx context.Context, worker core.Worker, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	if strings.TrimSpace(release.SessionID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("session_id is required")
+	}
+	release.Reason = strings.TrimSpace(release.Reason)
+	if release.Outcome == "" {
+		release.Outcome = core.WorkOrderOutcomeReleased
+	}
+	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
+		return core.WorkOrder{}, fmt.Errorf("invalid worker release outcome %q", release.Outcome)
+	}
+	release.InitialRetryDelay = s.RetryDelay
+	if release.InitialRetryDelay <= 0 {
+		release.InitialRetryDelay = DefaultRetryDelay
+	}
+	release.MaximumRetryDelay = s.RetryMaximum
+	if release.MaximumRetryDelay <= 0 {
+		release.MaximumRetryDelay = DefaultRetryMaximum
+	}
+	if release.MaximumRetryDelay < release.InitialRetryDelay {
+		release.MaximumRetryDelay = release.InitialRetryDelay
+	}
+	release.AutomaticRetryLimit = s.RetryLimit
+	if release.AutomaticRetryLimit <= 0 {
+		release.AutomaticRetryLimit = DefaultRetryLimit
+	}
+	return s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, release)
 }

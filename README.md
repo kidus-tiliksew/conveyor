@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.21.
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.22.
 [docs/beta-plan.md](docs/beta-plan.md) records the completed Beta path;
 [docs/phase5-plan.md](docs/phase5-plan.md) is the active post-Beta breakdown.
 
@@ -27,7 +27,7 @@ provides:
   UI, workspace-scoped config, and MCP connection guidance; and
 - Postgres projections plus River-backed durable dispatch.
 
-Phase 5.1 is active under spec §21.12–§21.14 and §21.20: worker execution on operator
+Phase 5.1 is active under spec §21.12–§21.14 and §§21.20–21.21: worker execution on operator
 hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
 routing, enrollment, heartbeat health, and supervised Auto work-order claims.
 

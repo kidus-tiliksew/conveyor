@@ -102,6 +102,66 @@ func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *te
 	}
 }
 
+func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "recover-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "recover-order", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "child", Outcome: core.WorkOrderOutcomeCancelled, Reason: "worker shutting down"}); err != nil {
+		t.Fatal(err)
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	server.ConfigProvider = provider
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	call := func(token, requestID string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+job.ID+"/recover?workspace_id=demo", strings.NewReader(`{"request_id":"`+requestID+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("", "recover-1"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("token", ""); response.Code != http.StatusConflict {
+		t.Fatalf("missing id status=%d body=%s", response.Code, response.Body.String())
+	}
+	first := call("token", "recover-1")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"claimable":true`) {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := call("token", "recover-1")
+	if second.Code != http.StatusOK {
+		t.Fatalf("duplicate status=%d body=%s", second.Code, second.Body.String())
+	}
+	if response := call("token", "recover-2"); response.Code != http.StatusConflict {
+		t.Fatalf("new request after recovery status=%d body=%s", response.Code, response.Body.String())
+	}
+	count, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	if count != 1 {
+		t.Fatalf("recovery events=%d", count)
+	}
+}
+
 func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()

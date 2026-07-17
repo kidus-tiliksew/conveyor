@@ -1,9 +1,9 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.21),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.22),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion and transport rules are clarified by §21.14
-and §21.20, which are
+and §21.20; worker-attempt recovery is fixed by §21.21. These are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
@@ -88,13 +88,18 @@ Suggested order:
    would unblock them sit unclaimed. Each order runs under a fresh
    identity/token pair so the self-review guard and independence labels
    hold. Supervision means lease renewal while a child is alive,
-   exit-status capture, and active claim release on failure — additive
+   exit-status capture, durable bounded 1s/2s/4s child retry, and active claim
+   release on failure. Release or lease expiry ends that execution attempt,
+   clears its active clocks/ownership, and requires the audited recovery path
+   after cancellation, expiry, or retry suppression — additive
    worker-control endpoints (§21.13 change 4); the agent-facing §17.4
-   lifecycle is unchanged, and renewal never extends the §21.9 execution
-   deadline. The spawned session performs the standard flow itself
+   lifecycle is unchanged, and renewal never extends the attempt's §21.21
+   execution deadline. The spawned session performs the standard flow itself
    (`conveyor checkout` → §21.7 branch adoption → implement → push →
-   `submit_for_review` → `await_review`). §21.9 clocks and stale recovery
-   remain the backstop when a worker dies outright.
+   `submit_for_review` → `await_review`). §21.21 lease-expiry cleanup and
+   audited recovery are the backstop when a worker dies outright.
+   `conveyord --worker-retry-delay` and `--worker-retry-max` configure the
+   bounded delay window; startup rejects a maximum below the initial delay.
 5. **Health-gated Auto:** Auto offered only while a worker holds a live
    liveness lease and **every harness referenced by the applicable
    implement/review routes** probes healthy (§21.13 change 3; an

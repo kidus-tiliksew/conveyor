@@ -67,13 +67,14 @@ func (c *client) claimWorkerOrder(credential, id, session, clientToken string) (
 	err := c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/claim", payload, &result, credential)
 	return result, err
 }
-func (c *client) renewWorkerOrder(credential, id string) (core.WorkOrder, error) {
+func (c *client) renewWorkerOrder(credential, id, sessionID string) (core.WorkOrder, error) {
 	var result core.WorkOrder
-	err := c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", []byte(`{}`), &result, credential)
+	payload, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	err := c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", payload, &result, credential)
 	return result, err
 }
-func (c *client) releaseWorkerOrder(credential, id, reason string) error {
-	payload, _ := json.Marshal(map[string]string{"reason": reason})
+func (c *client) releaseWorkerOrder(credential, id string, release core.WorkOrderRelease) error {
+	payload, _ := json.Marshal(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus})
 	var ignored core.WorkOrder
 	return c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/release", payload, &ignored, credential)
 }

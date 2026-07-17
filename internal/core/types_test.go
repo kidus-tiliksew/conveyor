@@ -39,7 +39,7 @@ func TestQueuedWorkOrderJSONOmitsExecutionAndLeaseClocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := string(data)
-	for _, field := range []string{"execution_started_at", "execution_deadline", "lease_expires_at"} {
+	for _, field := range []string{"execution_started_at", "execution_deadline", "lease_expires_at", "last_failure_at", "next_retry_at"} {
 		if strings.Contains(encoded, field) {
 			t.Fatalf("queued work order contains %s: %s", field, encoded)
 		}

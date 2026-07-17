@@ -368,6 +368,13 @@ type WorkOrder struct {
 	QueueDeadline         time.Time        `json:"queue_deadline"`
 	ExecutionStartedAt    time.Time        `json:"execution_started_at,omitempty"`
 	ExecutionDeadline     time.Time        `json:"execution_deadline,omitempty"`
+	LastAttemptOutcome    string           `json:"last_attempt_outcome,omitempty"`
+	LastFailureMessage    string           `json:"last_failure_message,omitempty"`
+	LastFailureExitStatus *int             `json:"last_failure_exit_status,omitempty"`
+	LastFailureAt         time.Time        `json:"last_failure_at,omitempty"`
+	AutomaticRetryCount   int              `json:"automatic_retry_count"`
+	NextRetryAt           time.Time        `json:"next_retry_at,omitempty"`
+	RetrySuppressed       bool             `json:"retry_suppressed"`
 	RedispatchCount       int              `json:"redispatch_count"`
 	Progress              string           `json:"progress,omitempty"`
 	CostUSD               float64          `json:"cost_usd"`
@@ -388,6 +395,8 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 		LeaseExpiresAt     *time.Time `json:"lease_expires_at,omitempty"`
 		ExecutionStartedAt *time.Time `json:"execution_started_at,omitempty"`
 		ExecutionDeadline  *time.Time `json:"execution_deadline,omitempty"`
+		LastFailureAt      *time.Time `json:"last_failure_at,omitempty"`
+		NextRetryAt        *time.Time `json:"next_retry_at,omitempty"`
 	}{workOrderAlias: workOrderAlias(w)}
 	if !w.LeaseExpiresAt.IsZero() {
 		wired.LeaseExpiresAt = &w.LeaseExpiresAt
@@ -398,7 +407,18 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 	if !w.ExecutionDeadline.IsZero() {
 		wired.ExecutionDeadline = &w.ExecutionDeadline
 	}
+	if !w.LastFailureAt.IsZero() {
+		wired.LastFailureAt = &w.LastFailureAt
+	}
+	if !w.NextRetryAt.IsZero() {
+		wired.NextRetryAt = &w.NextRetryAt
+	}
 	return json.Marshal(wired)
+}
+
+func (w WorkOrder) ClaimableAt(at time.Time) bool {
+	return w.State == WorkOrderQueued && !w.RetrySuppressed &&
+		(w.NextRetryAt.IsZero() || !w.NextRetryAt.After(at))
 }
 
 type WorkOrderClaim struct {
@@ -410,6 +430,23 @@ type WorkOrderClaim struct {
 	Lease            time.Duration
 	ExecutionTimeout time.Duration
 	WorkerID         string
+}
+
+const (
+	WorkOrderOutcomeChildFailure = "child_failure"
+	WorkOrderOutcomeReleased     = "released"
+	WorkOrderOutcomeCancelled    = "cancelled"
+	WorkOrderOutcomeExpired      = "expired"
+)
+
+type WorkOrderRelease struct {
+	SessionID           string
+	Reason              string
+	Outcome             string
+	ExitStatus          *int
+	InitialRetryDelay   time.Duration
+	MaximumRetryDelay   time.Duration
+	AutomaticRetryLimit int
 }
 
 type HarnessProbe struct {

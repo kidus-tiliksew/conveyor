@@ -192,7 +192,11 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
-	order, err := s.Workers.Renew(r.Context(), worker, chi.URLParam(r, "id"))
+	var request struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	order, err := s.Workers.Renew(r.Context(), worker, chi.URLParam(r, "id"), request.SessionID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -203,10 +207,13 @@ func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
 	var request struct {
-		Reason string `json:"reason"`
+		SessionID  string `json:"session_id"`
+		Reason     string `json:"reason"`
+		Outcome    string `json:"outcome"`
+		ExitStatus *int   `json:"exit_status"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
-	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), request.Reason)
+	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderRelease{SessionID: request.SessionID, Reason: request.Reason, Outcome: request.Outcome, ExitStatus: request.ExitStatus})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

@@ -75,12 +75,12 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 	deadline := claimed.ExecutionDeadline
 	now = now.Add(10 * time.Second)
-	renewed, err := service.Renew(workerCtx, worker, claimed.ID)
+	renewed, err := service.Renew(workerCtx, worker, claimed.ID, "session-a")
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := service.Release(workerCtx, worker, claimed.ID, "test exit")
-	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.Equal(deadline) {
+	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: "test exit", Outcome: core.WorkOrderOutcomeReleased})
+	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
 
@@ -93,7 +93,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err = st.UpdateWorkOrder(workerCtx, submittedClaim); err != nil {
 		t.Fatal(err)
 	}
-	if submitted, renewErr := service.Renew(workerCtx, worker, submittedClaim.ID); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
+	if submitted, renewErr := service.Renew(workerCtx, worker, submittedClaim.ID, "session-b"); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
 	}
 }
