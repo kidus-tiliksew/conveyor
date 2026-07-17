@@ -525,23 +525,25 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 type reviewItem struct {
-	Task              core.Task           `json:"task"`
-	Jobs              []core.Job          `json:"jobs"`
-	Events            []core.Event        `json:"events"`
-	Interventions     []core.Intervention `json:"interventions"`
-	CheckoutCommand   string              `json:"checkout_command,omitempty"`
-	CheckoutAvailable bool                `json:"checkout_available"`
-	CheckoutGuidance  string              `json:"checkout_guidance"`
-	NeedsAttention    bool                `json:"needs_attention"`
-	Spec              *core.SpecVersion   `json:"spec,omitempty"`
-	WorkOrders        []core.WorkOrder    `json:"work_orders"`
+	Task              core.Task                       `json:"task"`
+	Jobs              []core.Job                      `json:"jobs"`
+	Events            []core.Event                    `json:"events"`
+	Interventions     []core.Intervention             `json:"interventions"`
+	CheckoutCommand   string                          `json:"checkout_command,omitempty"`
+	CheckoutAvailable bool                            `json:"checkout_available"`
+	CheckoutGuidance  string                          `json:"checkout_guidance"`
+	NeedsAttention    bool                            `json:"needs_attention"`
+	Spec              *core.SpecVersion               `json:"spec,omitempty"`
+	WorkOrders        []core.WorkOrder                `json:"work_orders"`
+	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
 }
 
 type activityItem struct {
-	Task           core.Task  `json:"task"`
-	LatestStage    core.Stage `json:"latest_stage,omitempty"`
-	LastEventAt    time.Time  `json:"last_event_at"`
-	NeedsAttention bool       `json:"needs_attention"`
+	Task              core.Task                       `json:"task"`
+	LatestStage       core.Stage                      `json:"latest_stage,omitempty"`
+	LastEventAt       time.Time                       `json:"last_event_at"`
+	NeedsAttention    bool                            `json:"needs_attention"`
+	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
 }
 
 func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
@@ -575,7 +577,8 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 		marker := markerByTask[task.ID]
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention: task.State == core.TaskAwaiting || task.State == core.TaskParked,
+			NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked,
+			ReviewDiagnostics: marker.ReviewDiagnostics,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -621,9 +624,10 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention: task.State == core.TaskAwaiting || task.State == core.TaskParked,
-		Spec:           specPointer,
-		WorkOrders:     workOrders,
+		NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked,
+		Spec:              specPointer,
+		WorkOrders:        workOrders,
+		ReviewDiagnostics: store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
 	})
 }
 

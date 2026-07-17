@@ -428,6 +428,63 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 	}
 }
 
+func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "missing-verdicts", State: core.TaskRunning, CreatedAt: now.Add(-time.Hour)}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []core.Job{
+		{ID: "review-current-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning},
+		{ID: "review-expired-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning},
+	} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := core.WorkOrder{
+		ID: "review-current", TaskID: task.ID, JobID: "review-current-job", Stage: core.StageReview,
+		State: core.WorkOrderClaimed, ReviewRound: 1, ReviewSeat: 1,
+		ExecutionStartedAt: now.Add(-2 * time.Minute), LeaseExpiresAt: now.Add(5 * time.Minute),
+	}
+	expiredClaim := core.WorkOrder{
+		ID: "review-expired", TaskID: task.ID, JobID: "review-expired-job", Stage: core.StageReview,
+		State: core.WorkOrderClaimed, ReviewRound: 1, ReviewSeat: 2,
+		ExecutionStartedAt: now.Add(-10 * time.Minute), LeaseExpiresAt: now.Add(-5 * time.Minute),
+	}
+	expired := expiredClaim
+	expired.State, expired.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
+	for _, order := range []core.WorkOrder{current, expired} {
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, JobID: expired.JobID, Kind: "work_order.claimed",
+		Payload: core.JSONPayload(expiredClaim), At: now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(st).Handler()
+	for _, path := range []string{"/v1/activity", "/v1/tasks/missing-verdicts/activity"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		for _, expected := range []string{
+			`"status":"claimed_without_verdict"`, `"work_order_id":"review-current"`, `"review_seat":1`,
+			`"status":"expired_without_verdict"`, `"work_order_id":"review-expired"`, `"review_seat":2`,
+		} {
+			if !strings.Contains(response.Body.String(), expected) {
+				t.Fatalf("%s missing %s: %s", path, expected, response.Body.String())
+			}
+		}
+	}
+}
+
 func TestDashboardIsEmbedded(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewServer(store.NewMemory()).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tasks/example", nil))

@@ -27,9 +27,5 @@ files and functions, and tie each point to the AC-n or Non-goal it
 violates. The `reason_code` feeds the factory's improvement metrics, so
 choose the precise one, not the convenient one.
 
-Do not edit files or commit. Keep prose brief and end your answer with
-exactly one machine-owned block and nothing after it:
-
-```conveyor:review
-{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing AC-n status","feedback":"specific implementation guidance, empty only on approval"}
-```
+Do not edit files or commit. Keep prose brief. Conveyor adds the terminal
+completion contract for the active execution path after this shared role.

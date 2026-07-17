@@ -341,6 +341,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task
 	if err != nil {
 		return inprocess.Input{}, err
 	}
+	if stage == core.StageReview {
+		role = pack.InProcessReviewRole(role)
+	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nExecution mode: %s · Spec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Mode, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)

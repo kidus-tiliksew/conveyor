@@ -145,8 +145,18 @@ func TestWorkerLaunchPromptDoesNotGiveReviewOrdersImplementationInstructions(t *
 	if strings.Contains(prompt, "plain-language summary") || strings.Contains(prompt, "running checkout") {
 		t.Fatalf("review prompt contains implementation-only announcement instructions: %s", prompt)
 	}
-	if !strings.Contains(prompt, "call get_work_order with that exact session_id") || !strings.Contains(prompt, "standard review lifecycle") {
-		t.Fatalf("review prompt lost its existing lifecycle instructions: %s", prompt)
+	for _, required := range []string{
+		"call get_work_order with that exact session_id",
+		"standard review lifecycle",
+		"calling submit_review_verdict",
+		"waiting for its response",
+		"observing that the tool call succeeded before exiting",
+		"Printing, returning, or describing verdict JSON is not completion",
+		"a missing or failed tool response is not terminal success",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("review prompt is missing %q: %s", required, prompt)
+		}
 	}
 }
 
@@ -460,6 +470,183 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 	}
 }
 
+func TestRunHarnessChildReviewExitReconciliation(t *testing.T) {
+	for _, harnessName := range []string{"codex", "claude"} {
+		for _, scenario := range []struct {
+			name         string
+			mode         string
+			wantError    bool
+			wantState    core.WorkOrderState
+			wantReleases int
+			wantSubmits  int
+		}{
+			{name: "successful tool submission", mode: "submit", wantState: core.WorkOrderCompleted, wantSubmits: 1},
+			{name: "successful submission before failure exit", mode: "submit-failure", wantState: core.WorkOrderCompleted, wantSubmits: 1},
+			{name: "JSON-only final output", mode: "json-only", wantError: true, wantState: core.WorkOrderQueued, wantReleases: 1},
+			{name: "clean exit without submission", mode: "clean", wantError: true, wantState: core.WorkOrderQueued, wantReleases: 1},
+			{name: "failure exit", mode: "failure", wantError: true, wantState: core.WorkOrderQueued, wantReleases: 1},
+		} {
+			t.Run(harnessName+"/"+scenario.name, func(t *testing.T) {
+				t.Setenv("CONVEYOR_FAKE_HARNESS", "1")
+				t.Setenv("CONVEYOR_FAKE_HARNESS_MODE", scenario.mode)
+				var mu sync.Mutex
+				state := core.WorkOrderQueued
+				session := ""
+				releaseReasons := []string{}
+				submits := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("Authorization") != "Bearer worker-credential" {
+						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						return
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					if r.URL.Path == "/mcp" {
+						var request struct {
+							ID     json.RawMessage `json:"id"`
+							Params struct {
+								Name      string         `json:"name"`
+								Arguments map[string]any `json:"arguments"`
+							} `json:"params"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+							http.Error(w, err.Error(), http.StatusBadRequest)
+							return
+						}
+						if request.Params.Arguments["session_id"] != session {
+							http.Error(w, "wrong session", http.StatusForbidden)
+							return
+						}
+						switch request.Params.Name {
+						case "get_work_order":
+						case "submit_review_verdict":
+							submits++
+							state = core.WorkOrderCompleted
+						default:
+							http.Error(w, "unexpected tool", http.StatusBadRequest)
+							return
+						}
+						_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+						return
+					}
+					parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+					if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+						http.NotFound(w, r)
+						return
+					}
+					switch parts[4] {
+					case "claim":
+						var claim struct {
+							SessionID string `json:"session_id"`
+						}
+						_ = json.NewDecoder(r.Body).Decode(&claim)
+						session, state = claim.SessionID, core.WorkOrderClaimed
+					case "renew":
+					case "release":
+						var release struct {
+							Reason string `json:"reason"`
+						}
+						_ = json.NewDecoder(r.Body).Decode(&release)
+						releaseReasons = append(releaseReasons, release.Reason)
+						state = core.WorkOrderQueued
+					default:
+						http.NotFound(w, r)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: state})
+				}))
+				defer server.Close()
+
+				item := workerservice.DispatchOrder{
+					Order:   core.WorkOrder{ID: "review-" + harnessName + "-exit", Stage: core.StageReview},
+					Harness: config.Harness{Name: harnessName, Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+					Model:   harnessName + "-review",
+				}
+				err := runHarnessChild(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item)
+				if (err != nil) != scenario.wantError {
+					t.Fatalf("run error=%v wantError=%v", err, scenario.wantError)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if state != scenario.wantState || len(releaseReasons) != scenario.wantReleases || submits != scenario.wantSubmits {
+					t.Fatalf("state=%s releases=%q submits=%d", state, releaseReasons, submits)
+				}
+				for _, reason := range releaseReasons {
+					if reason != "harness exited without terminal verdict submission" {
+						t.Fatalf("release reason=%q", reason)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunHarnessChildReviewCanRetryAfterExitRelease(t *testing.T) {
+	t.Setenv("CONVEYOR_FAKE_HARNESS", "1")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_MODE", "clean")
+	var mu sync.Mutex
+	state := core.WorkOrderQueued
+	session := ""
+	releases, submits := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/mcp" {
+			var request struct {
+				ID     json.RawMessage `json:"id"`
+				Params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"params"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request.Params.Arguments["session_id"] != session {
+				http.Error(w, "wrong session", http.StatusForbidden)
+				return
+			}
+			if request.Params.Name == "submit_review_verdict" {
+				submits++
+				state = core.WorkOrderCompleted
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		switch parts[4] {
+		case "claim":
+			var claim struct {
+				SessionID string `json:"session_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&claim)
+			session, state = claim.SessionID, core.WorkOrderClaimed
+		case "renew":
+		case "release":
+			releases++
+			state = core.WorkOrderQueued
+		}
+		_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: state})
+	}))
+	defer server.Close()
+	item := workerservice.DispatchOrder{
+		Order:   core.WorkOrder{ID: "review-retry", Stage: core.StageReview},
+		Harness: config.Harness{Name: "claude", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+		Model:   "claude-review",
+	}
+	c := &client{base: server.URL, workspace: "demo"}
+	if err := runHarnessChild(t.Context(), c, "worker-credential", item); err == nil {
+		t.Fatal("clean exit without submission succeeded")
+	}
+	t.Setenv("CONVEYOR_FAKE_HARNESS_MODE", "submit")
+	if err := runHarnessChild(t.Context(), c, "worker-credential", item); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if state != core.WorkOrderCompleted || releases != 1 || submits != 1 {
+		t.Fatalf("state=%s releases=%d submits=%d", state, releases, submits)
+	}
+}
+
 func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
 		t.Helper()
@@ -581,9 +768,22 @@ func TestWorkerHarnessHelper(t *testing.T) {
 	if strings.Contains(orderID, "implement") {
 		call("submit_for_review", identity)
 	} else {
+		mode := os.Getenv("CONVEYOR_FAKE_HARNESS_MODE")
+		switch mode {
+		case "json-only":
+			fmt.Fprintln(os.Stdout, `{"verdict":"approve","reason_code":"approved","summary":"printed but not submitted"}`)
+			return
+		case "clean":
+			return
+		case "failure":
+			t.Fatal("fake review harness failed before verdict submission")
+		}
 		identity["verdict"] = "approve"
 		identity["reason_code"] = "fake"
 		identity["summary"] = fmt.Sprintf("reviewed %s", orderID)
 		call("submit_review_verdict", identity)
+		if mode == "submit-failure" {
+			t.Fatal("fake review harness failed after verdict submission")
+		}
 	}
 }
