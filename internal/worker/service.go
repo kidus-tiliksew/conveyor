@@ -45,6 +45,7 @@ type DispatchOrder struct {
 	Harness          config.Harness `json:"harness"`
 	Model            string         `json:"model"`
 	Effort           string         `json:"effort,omitempty"`
+	EffortArgv       []string       `json:"effort_argv,omitempty"`
 	HarnessSelection string         `json:"harness_selection"`
 	Dispatch         string         `json:"dispatch"`
 	Confinement      string         `json:"confinement"`
@@ -353,7 +354,11 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if order.RequiredModel != "" {
 			model = order.RequiredModel
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		var effortArgv []string
+		if order.RequiredEffort != "" && order.RequiredHarnessConfig != nil {
+			effortArgv = append([]string(nil), order.RequiredHarnessConfig.EffortArgv...)
+		}
+		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
@@ -486,8 +491,11 @@ func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
 	snapshot := &core.HarnessSnapshot{
 		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: harness.Command, ModelArgs: harness.ModelArgs,
 		DefaultModelSentinels: harness.DefaultModelSentinels,
-		EffortArgs:            harness.EffortArgs,
-		ProbeCommand:          harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+		EffortArgs:            harness.EffortArgs, Effort: route.Effort,
+		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+	}
+	if route.Effort != "" {
+		snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[route.Effort]...)
 	}
 	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }

@@ -324,9 +324,9 @@ const (
 )
 
 // HarnessSnapshot is the immutable worker execution contract captured for a
-// review seat when its round is created. Workspace hot reloads must not alter
-// an in-flight seat's command, model arguments, or health probe (spec §21.12
-// change 4).
+// implementation or review order when it is created. Workspace hot reloads
+// must not alter an in-flight command, model arguments, effort arguments, or
+// health probe (spec §21.19).
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	MCPTransport          string              `json:"mcp_transport"`
@@ -335,6 +335,7 @@ type HarnessSnapshot struct {
 	DefaultModelSentinels []string            `json:"default_model_sentinels,omitempty"`
 	EffortArgs            map[string][]string `json:"effort_args,omitempty"`
 	Effort                string              `json:"effort,omitempty"`
+	EffortArgv            []string            `json:"effort_argv,omitempty"`
 	ProbeCommand          []string            `json:"probe_command"`
 	ProbeTimeoutText      string              `json:"probe_timeout"`
 }

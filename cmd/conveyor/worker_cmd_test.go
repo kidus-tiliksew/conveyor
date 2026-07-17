@@ -102,6 +102,22 @@ func TestExpandHarnessAppendsExplicitAdapterEffortArgs(t *testing.T) {
 	}
 }
 
+func TestImplementationExpansionUsesCapturedEffortArgvAfterHotReload(t *testing.T) {
+	harness := config.Harness{
+		Command:    []string{"codex", "{prompt}", "{mcp_config}"},
+		EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="low"`}},
+	}
+	captured := []string{"--config", `model_reasoning_effort="high"`}
+	got := expandHarnessWithEffortArgv(harness, "", captured, "implement", "/tmp/mcp.json")
+	want := []string{"codex", "implement", "/tmp/mcp.json", "--config", `model_reasoning_effort="high"`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured implementation argv=%q want=%q", got, want)
+	}
+	if got := expandHarnessWithEffortArgv(harness, "", nil, "implement", "/tmp/mcp.json"); len(got) != 3 {
+		t.Fatalf("unset implementation effort appended argv: %q", got)
+	}
+}
+
 func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *testing.T) {
 	prompt := workerLaunchPrompt(core.WorkOrder{ID: "implement-order", Stage: core.StageImplement}, "demo", "worker-session")
 	requiredInOrder := []string{

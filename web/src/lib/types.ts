@@ -191,6 +191,7 @@ export interface WorkspaceConfigRepo {
 export interface WorkspaceConfigRoute {
   model: string
   model_policy?: 'explicit' | 'harness_default'
+  effort?: 'low' | 'medium' | 'high'
   timeout: string
   execution: 'in_process' | 'mcp'
   harness?: string
@@ -234,6 +235,7 @@ export interface WorkspaceConfigDocument {
       harness: string
       model?: string
       model_policy: 'explicit' | 'harness_default'
+	  effort?: 'low' | 'medium' | 'high'
       timeout: string
     }
     review: {

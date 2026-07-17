@@ -5,7 +5,7 @@ pipeline, specifications, review gates, audit history, and requirements
 corpus; operator-owned coding agents perform implementation and code review
 through MCP.
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.14.
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.21.
 [docs/beta-plan.md](docs/beta-plan.md) records the completed Beta path;
 [docs/phase5-plan.md](docs/phase5-plan.md) is the active post-Beta breakdown.
 
@@ -35,6 +35,14 @@ The worker is an unconfined BYOA dispatcher on operator hardware. Workspace
 configuration owns the harness registry, implement/review harness routes,
 default mode, independent gates, and stage-aware capacity. Manual MCP claims
 remain first-class and are never forced through a configured harness.
+
+The Workspace Implementation section can optionally request provider-neutral
+`low`, `medium`, or `high` reasoning effort. `Harness default` leaves the field
+unset and appends no effort arguments. Explicit values save only when the
+selected harness declares the matching `effort_args` mapping; Conveyor never
+infers effort from a model name. Dispatch snapshots the requested value and
+exact shell-free adapter argv, so later configuration reloads cannot change an
+in-flight implementation. See [conveyor.example.yaml](conveyor.example.yaml).
 
 ## Run locally
 

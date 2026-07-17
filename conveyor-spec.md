@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.20**
+**Specification — v1.21**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), adversarial review has per-seat reasoning effort (§21.19), and harness MCP transport is explicit (§21.20)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), and harness MCP transport is explicit (§21.20)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1777,7 +1777,7 @@ dispatch snapshots. Six changes; all other v1.17 decisions remain unchanged:
 
 ---
 
-### 21.19 v1.19 — Per-seat reasoning effort (July 17, 2026)
+### 21.19 v1.19, amended by v1.20 — Provider-neutral reasoning effort (July 17, 2026)
 
 The Phase 5.2 review-seat contract pins a model and optional harness, but
 cannot independently express the reasoning effort expected from each seat.
@@ -1822,13 +1822,52 @@ unchanged from v1.18:
 
 ---
 
-### 21.20 v1.20 — Explicit harness MCP transport formats (July 17, 2026)
+#### v1.20 implementation extension
+
+Implementation execution gains the same provider-neutral reasoning-effort
+control as review seats without weakening the contextual settings or immutable
+dispatch contracts introduced by §§21.18–21.19:
+
+1. **Implementation effort is optional and semantic.**
+   `execution_settings.implementation.effort` is omitted for the selected
+   harness default or is exactly `low`, `medium`, or `high`. The deprecated
+   compatibility route may mirror this value, but contextual implementation
+   settings remain authoritative. Effort is never inferred from a model name,
+   model policy, provider, or symbolic model value.
+
+2. **The selected harness validates the value.** An explicit implementation
+   effort is accepted only when the selected harness declares a non-empty
+   literal argv array for that value in `effort_args`. Unknown or unsupported
+   values fail as implementation-field validation errors. Workspace settings
+   expose semantic effort only; raw argv remains an adapter concern.
+
+3. **Dispatch snapshots the exact launch contract.** An implementation work
+   order durably captures both the requested semantic effort and a copy of the
+   exact adapter argv resolved at dispatch. The work-order and associated audit
+   event omit both fields when effort is unset. Harness or workspace hot reload
+   may affect later dispatches but cannot alter an in-flight snapshot.
+
+4. **Workers execute the snapshot without reinterpretation.** Implementation
+   launch appends only the captured effort argv to the existing shell-free
+   command vector. Workers do not recompute implementation effort from live
+   configuration or model data. Unset effort appends nothing and preserves the
+   historical command and serialization behavior.
+
+5. **The operator surface is first-class.** The Workspace Implementation
+   section offers Harness default, Low, Medium, and High beside the existing
+   harness/model controls. Documentation explains harness-declared support,
+   provider-neutral semantics, and the omission behavior of Harness default.
+Review-seat effort behavior remains unchanged.
+
+---
+
+### 21.20 v1.21 — Explicit harness MCP transport formats (July 17, 2026)
 
 Worker dogfooding found that §21.14's `{mcp_config}` placeholder did not define
 the representation of its runtime value. Claude Code accepts a JSON file path,
 while Codex CLI 0.142.0 treats `--config` as a TOML `key=value` override and
 rejects that path before startup. This amendment refines §21.13 change 2 and
-§21.14; all other v1.19 decisions remain unchanged:
+§21.14; all other v1.20 decisions remain unchanged:
 
 1. **Transport format is explicit and vendor-neutral.** A harness registry
    entry gains `mcp_transport`, exactly `json_file` or `toml_override`.
@@ -1859,4 +1898,4 @@ rejects that path before startup. This amendment refines §21.13 change 2 and
 
 ---
 
-*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, per-seat vendor-neutral reasoning effort is added by §21.19, and explicit secret-safe harness MCP transport formats are added by §21.20. Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.21 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, §21.19 covers both per-seat and optional implementation vendor-neutral reasoning effort with immutable adapter argv snapshots, and explicit secret-safe harness MCP transport formats are added by §21.20. Subsequent changes proceed by amendment with version bumps.*
