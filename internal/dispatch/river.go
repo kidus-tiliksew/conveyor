@@ -190,7 +190,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		ReviewedCommitSHA: publication.ReviewedCommitSHA, ReviewerModel: publication.ReviewerModel,
 		ReviewerSession: publication.ReviewerSession, SameModelAsImplementer: publication.SameModelAsImplementer,
 		ReviewRound: publication.ReviewRound, ReviewSeat: publication.ReviewSeat,
-		RequiredModel: publication.RequiredModel, ModelEnforcement: publication.ModelEnforcement,
+		RequiredModel: publication.RequiredModel, RequiredEffort: publication.RequiredEffort, ModelEnforcement: publication.ModelEnforcement,
 		History:       history,
 		BounceHistory: bounceHistory,
 		SkipComment:   skipComment,

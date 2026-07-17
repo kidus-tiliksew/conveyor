@@ -381,7 +381,7 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 		ReviewWorkOrderID: "review-2", Verdict: "changes_requested", ReasonCode: "tests",
 		Summary: "Needs work.", Feedback: "Add the missing test.", ReviewedCommitSHA: "def456",
 		ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true",
-		ReviewRound: 2, ReviewSeat: 1, RequiredModel: "gpt", ModelEnforcement: "worker-pinned",
+		ReviewRound: 2, ReviewSeat: 1, RequiredModel: "gpt", RequiredEffort: "high", ModelEnforcement: "worker-pinned",
 		History: []ReviewHistoryItem{
 			{WorkOrderID: "review-1", Round: 1, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add the missing test.", ResolutionState: "resolved"},
 			{WorkOrderID: "review-2", Round: 2, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add another test.", ResolutionState: "unresolved"},
@@ -394,7 +394,7 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 	if got := strings.Join(calls[2], " "); !strings.Contains(got, "PATCH repos/acme/api/check-runs/42") || !strings.Contains(got, "conclusion=action_required") {
 		t.Fatalf("check retry args = %v", calls[2])
 	}
-	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") || !strings.Contains(got, "resolved") || !strings.Contains(got, "unresolved") || !strings.Contains(got, "round 2, seat 1") {
+	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") || !strings.Contains(got, "resolved") || !strings.Contains(got, "unresolved") || !strings.Contains(got, "round 2, seat 1") || !strings.Contains(got, "Required effort: `high`") {
 		t.Fatalf("comment retry args = %v", calls[4])
 	}
 }
@@ -405,5 +405,12 @@ func TestFactoryMarkedFeedbackIsNeverHuman(t *testing.T) {
 	}
 	if !humanFeedback("alice", "Please address this.") {
 		t.Fatal("human feedback was suppressed")
+	}
+}
+
+func TestReviewPublicationBodyOmitsUnsetLegacyEffort(t *testing.T) {
+	body := reviewPublicationBody(ReviewPublication{TaskID: "task-1", ReviewWorkOrderID: "review-1", Verdict: "approve", ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt", ModelEnforcement: "worker-pinned"})
+	if strings.Contains(body, "Required effort") {
+		t.Fatalf("legacy publication invented effort: %s", body)
 	}
 }

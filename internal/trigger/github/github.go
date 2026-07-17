@@ -371,6 +371,7 @@ type ReviewPublication struct {
 	ReviewRound            int
 	ReviewSeat             int
 	RequiredModel          string
+	RequiredEffort         string
 	ModelEnforcement       string
 	History                []ReviewHistoryItem
 	BounceHistory          []string
@@ -547,6 +548,9 @@ func reviewPublicationBody(publication ReviewPublication) string {
 	fmt.Fprintf(&body, "\n- Review work order: `%s`\n- Verdict: **%s**\n- Reason: `%s`\n- Reviewed commit: `%s`\n- Reviewer model: `%s`\n- Independent reviewer session: `%s`\n- Same model as implementer: `%s`\n\n%s", publication.ReviewWorkOrderID, publication.Verdict, publication.ReasonCode, publication.ReviewedCommitSHA, publication.ReviewerModel, publication.ReviewerSession, publication.SameModelAsImplementer, publication.Summary)
 	if publication.ReviewRound > 0 {
 		fmt.Fprintf(&body, "\n- Review round / seat: `%d / %d`\n- Required model: `%s` (`%s`)", publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel, publication.ModelEnforcement)
+		if publication.RequiredEffort != "" {
+			fmt.Fprintf(&body, "\n- Required effort: `%s`", publication.RequiredEffort)
+		}
 	}
 	if strings.TrimSpace(publication.Feedback) != "" {
 		fmt.Fprintf(&body, "\n\n### Actionable feedback\n\n%s", publication.Feedback)
