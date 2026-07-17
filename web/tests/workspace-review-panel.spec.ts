@@ -83,26 +83,26 @@ test('review panel keeps rejected values and reflects a saved panel after reload
   await expect(models.nth(1)).toHaveValue('invalid-model')
 
   await models.nth(1).fill('claude-review-v2')
-  await page.getByLabel('Harness', { exact: true }).nth(1).selectOption('claude')
+  await page.getByLabel('Seat 2 harness').selectOption('claude')
   await page.getByRole('button', { name: 'Save' }).click()
   await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
 
   await page.reload()
   await expect(page.getByText('2 configured seats')).toBeVisible()
   await expect(page.getByLabel('Pinned model').nth(1)).toHaveValue('claude-review-v2')
-  await expect(page.getByLabel('Harness', { exact: true }).nth(1)).toHaveValue('claude')
-	await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('')
-	await expect(page.getByLabel('Reasoning effort').nth(1)).toHaveValue('high')
+  await expect(page.getByLabel('Seat 2 harness')).toHaveValue('claude')
+  await expect(page.getByLabel('Seat 1 reasoning effort')).toHaveValue('')
+  await expect(page.getByLabel('Seat 2 reasoning effort')).toHaveValue('high')
 
-	await page.getByLabel('Reasoning effort').nth(0).selectOption('high')
-	await page.getByRole('button', { name: 'Save' }).click()
-	await page.reload()
-	await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('high')
+  await page.getByLabel('Seat 1 reasoning effort').selectOption('high')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.reload()
+  await expect(page.getByLabel('Seat 1 reasoning effort')).toHaveValue('high')
 
-	await page.getByLabel('Reasoning effort').nth(0).selectOption('')
-	await page.getByRole('button', { name: 'Save' }).click()
-	await page.reload()
-	await expect(page.getByLabel('Reasoning effort').nth(0)).toHaveValue('')
+  await page.getByLabel('Seat 1 reasoning effort').selectOption('')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.reload()
+  await expect(page.getByLabel('Seat 1 reasoning effort')).toHaveValue('')
 })
 
 test('workspace renders contextual execution settings without generic routing controls', async ({ page }) => {
@@ -123,7 +123,7 @@ test('fully explicit review seats remove fallback requirements', async ({ page }
   await mockWorkspaceAPIs(page)
   await page.goto('/workspace')
 
-  await page.getByLabel('Harness', { exact: true }).nth(0).selectOption('codex')
+  await page.getByLabel('Seat 1 harness').selectOption('codex')
   await expect(page.getByText(/Every seat is explicitly routed/)).toBeVisible()
   await expect(page.getByLabel('Review fallback harness')).toHaveCount(0)
 })

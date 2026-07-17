@@ -17,6 +17,36 @@ type fakeWorkspaceConfigStore struct {
 	updates int
 }
 
+func contextualWorkspaceDocument() config.WorkspaceDocument {
+	return config.WorkspaceDocument{
+		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",
+		ExecutionSettings: &config.ContextualExecutionSettings{
+			ControlPlane: config.ControlPlaneSettings{
+				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
+				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
+			},
+			Implementation: config.ImplementationSettings{Harness: "codex", Model: "operator", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "fallback", FallbackHarness: "codex"},
+		},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
+			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
+			"implement": {Model: "operator", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"review":    {Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
+		}},
+		Harnesses: []config.Harness{
+			{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+			{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+		},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
+			{Model: "gpt-review", Effort: "high"},
+			{Model: "claude-review", Harness: "claude", Effort: "high"},
+		}},
+		Execution: config.ExecutionPolicy{DefaultMode: "manual", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main"}},
+	}
+}
+
 func (f *fakeWorkspaceConfigStore) WorkspaceConfig(context.Context) (config.VersionedDocument, error) {
 	return f.record, nil
 }
@@ -34,16 +64,7 @@ func (f *fakeWorkspaceConfigStore) UpdateWorkspaceConfig(ctx context.Context, ex
 }
 
 func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
-	document := config.WorkspaceDocument{
-		Workspace: "demo", MaxBounces: 2,
-		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: "operator", TimeoutText: "2h", Execution: config.ExecutionMCP},
-			"review":    {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP},
-		}},
-		Repos: []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main"}},
-	}
+	document := contextualWorkspaceDocument()
 	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 3}}
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "token"
@@ -68,8 +89,12 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if strings.Contains(strings.ToLower(getResult.Body.String()), "budget") {
 		t.Fatalf("GET exposed removed budget surface: %s", getResult.Body)
 	}
-	if !strings.Contains(getResult.Body.String(), `"harnesses":[]`) {
-		t.Fatalf("GET exposed a nullable harness collection: %s", getResult.Body)
+	var got config.VersionedDocument
+	if err := json.Unmarshal(getResult.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Document.ExecutionSettings == nil || got.Document.ExecutionSettings.Implementation.Harness != "codex" || got.Document.Review.Seats[1].Effort != "high" || got.Document.Routing.Stages["review"].Harness != "codex" {
+		t.Fatalf("GET lost contextual or compatibility config: %+v", got.Document)
 	}
 
 	invalidDocument := document
@@ -84,7 +109,8 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 		t.Fatalf("invalid status=%d updates=%d body=%s", invalidResult.Code, backend.updates, invalidResult.Body)
 	}
 
-	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", TimeoutText: "45m", Execution: config.ExecutionMCP}
+	document.ExecutionSettings.Implementation.TimeoutText = "45m"
+	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "45m", Execution: config.ExecutionMCP}
 	body, _ := json.Marshal(map[string]any{"document": document})
 	put := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
 	put.Header.Set("Authorization", "Bearer token")
@@ -94,6 +120,9 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	h.ServeHTTP(putResult, put)
 	if putResult.Code != http.StatusOK || backend.updates != 1 || !strings.Contains(putResult.Body.String(), `"actor_id":"alice"`) {
 		t.Fatalf("PUT status=%d updates=%d body=%s", putResult.Code, backend.updates, putResult.Body)
+	}
+	if backend.record.Document.ExecutionSettings == nil || backend.record.Document.ExecutionSettings.Implementation.TimeoutText != "45m" || backend.record.Document.Review.Seats[1].Effort != "high" || backend.record.Document.Routing.Stages["implement"].Harness != "codex" {
+		t.Fatalf("PUT lost contextual or compatibility config: %+v", backend.record.Document)
 	}
 
 	stale := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
