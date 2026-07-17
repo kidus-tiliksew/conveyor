@@ -631,7 +631,7 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	harness := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
+	harness := config.Harness{Name: "codex", MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Model: "gpt-5", ModelPolicy: config.ModelPolicyExplicit, EffectiveModel: "gpt-5", Harness: "codex", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP},
 	}}}
@@ -644,7 +644,7 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
 	order := orders[0]
-	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" {
+	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" || order.RequiredHarnessConfig.MCPTransport != config.MCPTransportTOMLOverride {
 		t.Fatalf("snapshotted order=%+v", order)
 	}
 }

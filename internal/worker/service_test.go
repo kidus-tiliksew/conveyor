@@ -169,6 +169,18 @@ func TestHarnessFingerprintCanonicalizesEmptyArguments(t *testing.T) {
 	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
 		t.Fatal("different harness commands produced the same fingerprint")
 	}
+	changed = base
+	changed.MCPTransport = config.MCPTransportTOMLOverride
+	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
+		t.Fatal("different MCP transports produced the same fingerprint")
+	}
+}
+
+func TestLegacyHarnessSnapshotDefaultsToJSONFileTransport(t *testing.T) {
+	harness := harnessFromSnapshot(&core.HarnessSnapshot{Name: "legacy", ProbeTimeoutText: "5s"})
+	if harness.MCPTransport != config.MCPTransportJSONFile {
+		t.Fatalf("legacy transport=%q want=%q", harness.MCPTransport, config.MCPTransportJSONFile)
+	}
 }
 
 func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.T) {

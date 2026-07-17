@@ -19,8 +19,8 @@ const baseDocument = {
     review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
   } },
   harnesses: [
-    { name: 'codex', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s' },
-    { name: 'claude', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s' },
+    { name: 'codex', mcp_transport: 'toml_override', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s' },
+    { name: 'claude', mcp_transport: 'json_file', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s' },
   ],
   review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude', effort: 'high' }] },
   execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
@@ -115,6 +115,12 @@ test('workspace renders contextual execution settings without generic routing co
   await expect(page.getByLabel('Implementation model policy')).toHaveValue('explicit')
   await expect(page.getByLabel('Review execution')).toHaveValue('mcp')
   await expect(page.getByLabel('Review timeout')).toHaveValue('1h')
+  await expect(page.getByLabel('MCP transport')).toHaveCount(2)
+  await expect(page.getByLabel('MCP transport').nth(0)).toHaveValue('toml_override')
+  await expect(page.getByLabel('MCP transport').nth(1)).toHaveValue('json_file')
+  await page.getByRole('button', { name: 'Add' }).first().click()
+  await expect(page.getByLabel('MCP transport').nth(2)).toHaveValue('toml_override')
+  await expect(page.getByLabel('Command argv').nth(2)).toHaveValue('["codex","exec","{prompt}","--config","{mcp_config}"]')
   await expect(page.getByText('Stage routing')).toHaveCount(0)
   await expect(page.getByText('Inherit single harness')).toHaveCount(0)
 })

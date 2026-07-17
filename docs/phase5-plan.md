@@ -1,8 +1,9 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.16),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.20),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
-its harness-template expansion rules are clarified by §21.14, which is
+its harness-template expansion and transport rules are clarified by §21.14
+and §21.20, which are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
@@ -31,13 +32,14 @@ gates-on-by-default.
 Suggested order:
 
 1. **Harness registry + stage routing** (data-only, unblocks everything
-   after it): workspace config gains `harnesses: [{name, command,
-   model_args, effort_args?, probe_command, probe_timeout}]` — argv arrays, never
+   after it): workspace config gains `harnesses: [{name, mcp_transport,
+   command, model_args, effort_args?, probe_command, probe_timeout}]` — argv arrays, never
    shell-evaluated. Per §21.14, `command` contains exactly one `{prompt}`
    and one `{mcp_config}`; `model_args` is appended to it and may use only
    `{model}`; `effort_args` maps `low`, `medium`, and `high` to literal,
    placeholder-free adapter argv appended only when a seat requests that
-   exact effort (§21.19); `probe_command` is standalone and accepts no placeholders.
+   exact effort (§21.19); `mcp_transport` is `json_file` or the secret-free
+   `toml_override` (§21.20); `probe_command` is standalone and accepts no placeholders.
    Placeholders substitute as whole elements and invalid field/placeholder
    combinations are rejected at write time — under the standard §21.3
    mechanics: validated writes, `config.updated` events, hot reload. The

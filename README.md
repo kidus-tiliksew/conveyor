@@ -27,7 +27,7 @@ provides:
   UI, workspace-scoped config, and MCP connection guidance; and
 - Postgres projections plus River-backed durable dispatch.
 
-Phase 5.1 is active under spec §21.12–§21.14: worker execution on operator
+Phase 5.1 is active under spec §21.12–§21.14 and §21.20: worker execution on operator
 hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
 routing, enrollment, heartbeat health, and supervised Auto work-order claims.
 
@@ -201,6 +201,14 @@ The Phase 4.7 document deliberately has no runner, image, credential pool,
 secret reference, vendor policy, or tool policy fields. Operator agents own
 their execution environment; repository CI is the mechanical verifier until
 managed execution is explicitly activated in Phase 8.
+
+Harnesses declare how their `{mcp_config}` argv element is represented. Use
+`mcp_transport: json_file` for CLIs such as Claude Code that accept a JSON MCP
+file. Use `mcp_transport: toml_override` with Codex's
+`--config {mcp_config}` form; Conveyor emits a TOML override that references
+the child-only `CONVEYOR_API_TOKEN` environment variable and never places the
+credential value in argv (spec §21.20). Existing documents without the field
+normalize to `json_file`.
 
 Stage routes contain only model, timeout, and execution mode. Conveyor retains
 token and USD usage as audit telemetry, but it has no allocation, remaining

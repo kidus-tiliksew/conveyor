@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.19**
+**Specification — v1.20**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18) and adversarial review has per-seat reasoning effort (§21.19)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), adversarial review has per-seat reasoning effort (§21.19), and harness MCP transport is explicit (§21.20)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1822,4 +1822,41 @@ unchanged from v1.18:
 
 ---
 
-*End of specification. v1.19 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, and per-seat vendor-neutral reasoning effort with explicit harness adapter argv, fail-closed validation, durable snapshots, and operator UI is added by §21.19. Subsequent changes proceed by amendment with version bumps.*
+### 21.20 v1.20 — Explicit harness MCP transport formats (July 17, 2026)
+
+Worker dogfooding found that §21.14's `{mcp_config}` placeholder did not define
+the representation of its runtime value. Claude Code accepts a JSON file path,
+while Codex CLI 0.142.0 treats `--config` as a TOML `key=value` override and
+rejects that path before startup. This amendment refines §21.13 change 2 and
+§21.14; all other v1.19 decisions remain unchanged:
+
+1. **Transport format is explicit and vendor-neutral.** A harness registry
+   entry gains `mcp_transport`, exactly `json_file` or `toml_override`.
+   Omission on existing documents and snapshots normalizes to `json_file` for
+   backward compatibility. Transport is snapshotted and included in the
+   harness fingerprint so hot reload cannot change an in-flight launch.
+
+2. **`{mcp_config}` remains one whole argv element.** For `json_file`, it
+   expands to the existing mode-0600 temporary JSON file and the worker removes
+   its containing directory after the child exits. For `toml_override`, it
+   expands to one TOML `key=value` string defining the Conveyor MCP server.
+   Command, model, effort, and probe argv retain the §21.14 and §21.19 rules;
+   there is no shell evaluation or repository-owned harness wrapper.
+
+3. **Credentials do not enter TOML argv.** The TOML value names
+   `CONVEYOR_API_TOKEN` as the bearer-token environment variable; the worker
+   already supplies the scoped credential in that child-only environment.
+   The token value is never serialized into argv, config documents, snapshots,
+   events, logs, or transcripts. JSON-file transport retains its existing
+   credential-bearing temporary file lifecycle.
+
+4. **Validation and operator guidance fail closed.** Unknown transports are
+   rejected at workspace-config write time. The Workspace UI creates a Codex
+   template with `toml_override` and `--config {mcp_config}`. Examples explain
+   that Claude-style `--mcp-config` commands use `json_file`. Regression
+   coverage validates both formats and, when Codex is installed, invokes its
+   real config parser without starting an agent turn.
+
+---
+
+*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, per-seat vendor-neutral reasoning effort is added by §21.19, and explicit secret-safe harness MCP transport formats are added by §21.20. Subsequent changes proceed by amendment with version bumps.*
