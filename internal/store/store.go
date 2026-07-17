@@ -107,13 +107,112 @@ type Store interface {
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
 
+const (
+	ReviewClaimedWithoutVerdict = "claimed_without_verdict"
+	ReviewExpiredWithoutVerdict = "expired_without_verdict"
+)
+
+// ReviewVerdictDiagnostic describes a review claim that has not reached the
+// authoritative submit_review_verdict lifecycle operation. It is derived from
+// work-order state and audit events, never from child-process output.
+type ReviewVerdictDiagnostic struct {
+	Status         string    `json:"status"`
+	WorkOrderID    string    `json:"work_order_id"`
+	ReviewRound    int       `json:"review_round,omitempty"`
+	ReviewSeat     int       `json:"review_seat,omitempty"`
+	ClaimedAt      time.Time `json:"claimed_at,omitempty"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
+	Reason         string    `json:"reason"`
+}
+
+// ReviewVerdictDiagnostics derives missing-verdict state from durable
+// work-order projections and lifecycle events. A queued order is classified as
+// expired only when its latest claim lease elapsed without a later release or
+// accepted review decision.
+func ReviewVerdictDiagnostics(orders []core.WorkOrder, events []core.Event, now time.Time) []ReviewVerdictDiagnostic {
+	var diagnostics []ReviewVerdictDiagnostic
+	for _, order := range orders {
+		if order.Stage != core.StageReview || (order.State != core.WorkOrderClaimed && order.State != core.WorkOrderQueued) {
+			continue
+		}
+		claimedAt := order.ExecutionStartedAt
+		leaseExpiresAt := order.LeaseExpiresAt
+		claimIndex, releaseIndex, terminalIndex := -1, -1, -1
+		for eventIndex, event := range events {
+			if !reviewLifecycleEventMatches(order, event) {
+				continue
+			}
+			switch event.Kind {
+			case "work_order.claimed":
+				claimIndex, claimedAt = eventIndex, event.At
+				var claimed core.WorkOrder
+				if json.Unmarshal(event.Payload, &claimed) == nil && !claimed.LeaseExpiresAt.IsZero() {
+					leaseExpiresAt = claimed.LeaseExpiresAt
+				}
+			case "work_order.lease_renewed":
+				if claimIndex >= 0 && eventIndex > claimIndex {
+					var payload struct {
+						LeaseExpiresAt time.Time `json:"lease_expires_at"`
+					}
+					if json.Unmarshal(event.Payload, &payload) == nil && !payload.LeaseExpiresAt.IsZero() {
+						leaseExpiresAt = payload.LeaseExpiresAt
+					}
+				}
+			case "work_order.released":
+				releaseIndex = eventIndex
+			case "review.completed", "review.accepted":
+				terminalIndex = eventIndex
+			}
+		}
+		base := ReviewVerdictDiagnostic{
+			WorkOrderID: order.ID, ReviewRound: order.ReviewRound, ReviewSeat: order.ReviewSeat,
+			ClaimedAt: claimedAt, LeaseExpiresAt: leaseExpiresAt,
+		}
+		if order.State == core.WorkOrderClaimed {
+			if claimIndex >= 0 && terminalIndex > claimIndex {
+				continue
+			}
+			base.Status = ReviewClaimedWithoutVerdict
+			base.Reason = "review claim is active without a successful submit_review_verdict response"
+			diagnostics = append(diagnostics, base)
+			continue
+		}
+		if claimIndex < 0 || leaseExpiresAt.IsZero() || leaseExpiresAt.After(now) ||
+			releaseIndex > claimIndex || terminalIndex > claimIndex {
+			continue
+		}
+		base.Status = ReviewExpiredWithoutVerdict
+		base.Reason = "review claim lease expired without terminal verdict submission"
+		diagnostics = append(diagnostics, base)
+	}
+	sort.Slice(diagnostics, func(i, j int) bool {
+		if diagnostics[i].LeaseExpiresAt.Equal(diagnostics[j].LeaseExpiresAt) {
+			return diagnostics[i].WorkOrderID < diagnostics[j].WorkOrderID
+		}
+		return diagnostics[i].LeaseExpiresAt.Before(diagnostics[j].LeaseExpiresAt)
+	})
+	return diagnostics
+}
+
+func reviewLifecycleEventMatches(order core.WorkOrder, event core.Event) bool {
+	if event.JobID != "" && event.JobID == order.JobID {
+		return true
+	}
+	var payload struct {
+		ID                string `json:"id"`
+		ReviewWorkOrderID string `json:"review_work_order_id"`
+	}
+	return json.Unmarshal(event.Payload, &payload) == nil && (payload.ID == order.ID || payload.ReviewWorkOrderID == order.ID)
+}
+
 // ActivityMarker contains only the changing fields needed by the activity
-// index. Full job and event histories are loaded for one selected task, not
-// once per task on every dashboard refresh.
+// index plus narrow review lifecycle diagnostics. Full job and event histories
+// are still loaded only for one selected task.
 type ActivityMarker struct {
-	TaskID      string
-	LatestStage core.Stage
-	LastEventAt time.Time
+	TaskID            string
+	LatestStage       core.Stage
+	LastEventAt       time.Time
+	ReviewDiagnostics []ReviewVerdictDiagnostic
 }
 
 func NewMemory() Store {
@@ -1418,7 +1517,15 @@ func (m *memory) countEventsSinceHumanInterventionLocked(taskID, kind string) in
 	return count
 }
 
-func (m *memory) ListActivityMarkers(_ context.Context) ([]ActivityMarker, error) {
+func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error) {
+	orders, err := m.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ordersByTask := make(map[string][]core.WorkOrder)
+	for _, order := range orders {
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	markers := make([]ActivityMarker, 0, len(m.tasks))
@@ -1431,6 +1538,7 @@ func (m *memory) ListActivityMarkers(_ context.Context) ([]ActivityMarker, error
 		if events := m.events[id]; len(events) != 0 {
 			marker.LastEventAt = events[len(events)-1].At
 		}
+		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })

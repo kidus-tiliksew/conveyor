@@ -40,6 +40,49 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestReviewVerdictDiagnosticsDistinguishClaimedExpiredAndReleased(t *testing.T) {
+	now := time.Now().UTC()
+	claimed := core.WorkOrder{
+		ID: "review-claimed", JobID: "job-claimed", Stage: core.StageReview, State: core.WorkOrderClaimed,
+		ReviewRound: 2, ReviewSeat: 1, ExecutionStartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute),
+	}
+	expiredClaim := core.WorkOrder{
+		ID: "review-expired", JobID: "job-expired", Stage: core.StageReview, State: core.WorkOrderClaimed,
+		ReviewRound: 2, ReviewSeat: 2, LeaseExpiresAt: now.Add(-time.Minute),
+	}
+	expired := expiredClaim
+	expired.State, expired.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
+	releasedClaim := core.WorkOrder{
+		ID: "review-released", JobID: "job-released", Stage: core.StageReview, State: core.WorkOrderClaimed,
+		ReviewRound: 2, ReviewSeat: 3, LeaseExpiresAt: now.Add(-time.Minute),
+	}
+	released := releasedClaim
+	released.State, released.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
+	terminalClaim := core.WorkOrder{
+		ID: "review-terminal", JobID: "job-terminal", Stage: core.StageReview, State: core.WorkOrderClaimed,
+		ReviewRound: 2, ReviewSeat: 4, LeaseExpiresAt: now.Add(-time.Minute),
+	}
+	terminal := terminalClaim
+	terminal.State, terminal.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
+	events := []core.Event{
+		{JobID: expired.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(expiredClaim), At: now.Add(-2 * time.Minute)},
+		{JobID: released.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(releasedClaim), At: now.Add(-2 * time.Minute)},
+		{JobID: released.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]string{"reason": "harness exited without terminal verdict submission"}), At: now.Add(-30 * time.Second)},
+		{JobID: terminal.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(terminalClaim), At: now.Add(-2 * time.Minute)},
+		{JobID: terminal.JobID, Kind: "review.completed", Payload: core.JSONPayload(map[string]string{"review_work_order_id": terminal.ID}), At: now.Add(-30 * time.Second)},
+	}
+	diagnostics := ReviewVerdictDiagnostics([]core.WorkOrder{claimed, expired, released, terminal}, events, now)
+	if len(diagnostics) != 2 {
+		t.Fatalf("diagnostics=%+v", diagnostics)
+	}
+	if diagnostics[0].WorkOrderID != expired.ID || diagnostics[0].Status != ReviewExpiredWithoutVerdict || diagnostics[0].ReviewSeat != 2 {
+		t.Fatalf("expired diagnostic=%+v", diagnostics[0])
+	}
+	if diagnostics[1].WorkOrderID != claimed.ID || diagnostics[1].Status != ReviewClaimedWithoutVerdict || diagnostics[1].ReviewSeat != 1 {
+		t.Fatalf("claimed diagnostic=%+v", diagnostics[1])
+	}
+}
+
 func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

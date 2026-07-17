@@ -839,10 +839,46 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	if err != nil {
 		return nil, err
 	}
+	orders, err := s.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ordersByTask := make(map[string][]core.WorkOrder)
+	hasReviewOrders := false
+	for _, order := range orders {
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
+	}
+	eventsByTask := make(map[string][]core.Event)
+	if hasReviewOrders {
+		lifecycleRows, queryErr := s.pool.Query(ctx, `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+			FROM events e JOIN tasks t ON t.id=e.task_id
+			WHERE t.workspace_id=$1 AND e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted')
+			AND EXISTS (SELECT 1 FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=e.task_id
+				AND w.stage='review' AND w.state IN ('claimed','queued') AND w.execution_started_at IS NOT NULL)
+			ORDER BY e.at,e.id`, workspace(ctx))
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		for lifecycleRows.Next() {
+			var event core.Event
+			if scanErr := lifecycleRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
+				lifecycleRows.Close()
+				return nil, scanErr
+			}
+			eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
+		}
+		if queryErr = lifecycleRows.Err(); queryErr != nil {
+			lifecycleRows.Close()
+			return nil, queryErr
+		}
+		lifecycleRows.Close()
+	}
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
 		result[i] = store.ActivityMarker{
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
+			ReviewDiagnostics: store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
 		}
 	}
 	return result, nil

@@ -17,6 +17,10 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
 	} : { jobs: [], events: [], work_orders: [] }
+	const reviewDiagnostics = taskId === 'diagnostics' ? [
+		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
+		{ status: 'expired_without_verdict', work_order_id: 'diagnostics-review-1-seat-2', review_round: 1, review_seat: 2, claimed_at: '2026-07-15T11:30:00Z', lease_expires_at: '2026-07-15T11:45:00Z', reason: 'review claim lease expired without terminal verdict submission' },
+	] : []
   return {
     task: {
       id: taskId,
@@ -51,6 +55,7 @@ function activity(taskId: string, overflowing: boolean) {
       approved_at: createdAt,
     },
 		work_orders: reviewActivity.work_orders,
+		review_diagnostics: reviewDiagnostics,
   }
 }
 
@@ -64,6 +69,11 @@ async function mockTaskAPIs(page: Page) {
       await route.fulfill({ json: activity(taskId, taskId === 'overflowing') })
       return
     }
+		if (url.pathname === '/v1/activity') {
+			const item = activity('diagnostics', false)
+			await route.fulfill({ json: [{ task: item.task, latest_stage: 'review', last_event_at: createdAt, needs_attention: false, review_diagnostics: item.review_diagnostics }] })
+			return
+		}
     if (url.pathname.endsWith('/events/stream')) {
       await route.fulfill({ status: 204 })
       return
@@ -139,4 +149,18 @@ test('review cards and activity notes retain approve and changes feedback', asyn
 	const legacyReviewActivity = page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })
 	await expect(legacyReviewActivity).toBeVisible()
 	await expect(legacyReviewActivity).not.toContainText('effort')
+})
+
+test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
+	await page.goto('/tasks/diagnostics/full')
+
+	await expect(page.getByText('Review claimed without terminal verdict submission')).toBeVisible()
+	await expect(page.getByText(/seat 1 · diagnostics-review-1-seat-1 · review claim is active/)).toBeVisible()
+	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
+	await expect(page.getByText(/seat 2 · diagnostics-review-1-seat-2 · review claim lease expired/)).toBeVisible()
+})
+
+test('board activity surfaces expired-without-verdict state', async ({ page }) => {
+	await page.goto('/')
+	await expect(page.getByText('Verdict claim expired')).toBeVisible()
 })

@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { gateBadge, parseProvenance } from '../../lib/activity'
+import { gateBadge, parseProvenance, reviewDiagnosticBadge } from '../../lib/activity'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -19,6 +19,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const provenance = parseProvenance(item.task.source)
   const lastAt = item.last_event_at || item.task.created_at
   const gate = gateBadge(item)
+  const reviewDiagnostic = reviewDiagnosticBadge(item)
   return (
     <Link
       to="/tasks/$taskId"
@@ -35,6 +36,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
+        {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
         <Badge variant="mono" className="capitalize">{item.task.mode || 'manual'}</Badge>
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent" className="max-w-36 truncate">{provenance.label}</Badge>
