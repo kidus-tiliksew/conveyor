@@ -64,6 +64,9 @@ execution:
 # agent-cli with the authenticated headless harness installed on the worker.
 harnesses:
   - name: local-agent
+    # JSON-file transport is for harnesses such as Claude Code or an operator
+    # wrapper with a real --mcp-config file option (spec §21.20).
+    mcp_transport: json_file
     command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]
     model_args: [--model, "{model}"]
     # Provider-specific flags stay inside this shell-free adapter mapping.
@@ -91,9 +94,19 @@ review:
 # commands:
 # harnesses:
 #   - name: codex
+#     mcp_transport: toml_override
+#     command: [codex, exec, "{prompt}", --config, "{mcp_config}"]
+#     model_args: [--model, "{model}"]
+#     probe_command: [codex, --version]
+#     probe_timeout: 10s
 #     effort_args:
 #       high: [--config, 'model_reasoning_effort="high"']
 #   - name: claude
+#     mcp_transport: json_file
+#     command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}"]
+#     model_args: [--model, "{model}"]
+#     probe_command: [claude, --version]
+#     probe_timeout: 10s
 #     effort_args:
 #       high: [--effort, high]
 # review:

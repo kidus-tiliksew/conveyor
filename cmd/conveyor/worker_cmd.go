@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -318,11 +319,9 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		return err
 	}
 	defer os.RemoveAll(directory)
-	configPath := filepath.Join(directory, "mcp.json")
-	mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": strings.TrimRight(c.base, "/") + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
-	data, _ := json.Marshal(mcp)
-	if err = os.WriteFile(configPath, data, 0o600); err != nil {
-		release("write MCP config failed")
+	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
+	if err != nil {
+		release("prepare MCP config failed")
 		return err
 	}
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
@@ -342,7 +341,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
 		}
 	}
-	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, configPath)
+	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
 	if len(argv) == 0 {
 		release("empty harness command")
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
@@ -390,6 +389,29 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			<-done
 			return ctx.Err()
 		}
+	}
+}
+
+// prepareMCPConfig preserves the JSON-file transport for existing harnesses
+// while keeping scoped credentials out of TOML override argv (spec §21.20).
+func prepareMCPConfig(directory, base, credential, transport string) (string, error) {
+	endpoint := strings.TrimRight(base, "/") + "/mcp"
+	switch transport {
+	case "", config.MCPTransportJSONFile:
+		configPath := filepath.Join(directory, "mcp.json")
+		mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": endpoint, "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
+		data, err := json.Marshal(mcp)
+		if err != nil {
+			return "", fmt.Errorf("marshal MCP config: %w", err)
+		}
+		if err = os.WriteFile(configPath, data, 0o600); err != nil {
+			return "", fmt.Errorf("write MCP config: %w", err)
+		}
+		return configPath, nil
+	case config.MCPTransportTOMLOverride:
+		return "mcp_servers.conveyor={url=" + strconv.Quote(endpoint) + ", bearer_token_env_var=\"CONVEYOR_API_TOKEN\"}", nil
+	default:
+		return "", fmt.Errorf("unsupported MCP transport %q", transport)
 	}
 }
 

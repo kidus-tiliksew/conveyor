@@ -61,6 +61,7 @@ type StageRoute struct {
 
 type Harness struct {
 	Name                  string              `yaml:"name" json:"name"`
+	MCPTransport          string              `yaml:"mcp_transport" json:"mcp_transport"`
 	Command               []string            `yaml:"command" json:"command"`
 	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
 	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
@@ -69,6 +70,13 @@ type Harness struct {
 	ProbeTimeout          time.Duration       `yaml:"-" json:"-"`
 	ProbeTimeoutText      string              `yaml:"probe_timeout" json:"probe_timeout"`
 }
+
+const (
+	// MCP transport controls the representation substituted for the whole
+	// {mcp_config} argv element (spec §21.20).
+	MCPTransportJSONFile     = "json_file"
+	MCPTransportTOMLOverride = "toml_override"
+)
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
 // model is always pinned; Harness optionally overrides the workspace review
@@ -482,6 +490,9 @@ func normalize(c *Config, path string) (*Config, error) {
 		if _, duplicate := harnesses[harness.Name]; duplicate {
 			return nil, fmt.Errorf("duplicate harness name %q", harness.Name)
 		}
+		if harness.MCPTransport == "" {
+			harness.MCPTransport = MCPTransportJSONFile
+		}
 		harnesses[harness.Name] = *harness
 		if err := validateHarness(*harness, i); err != nil {
 			return nil, err
@@ -729,6 +740,9 @@ func validateHarness(h Harness, index int) error {
 	}
 	if len(h.Command) == 0 {
 		return fmt.Errorf("harnesses[%d].command is required", index)
+	}
+	if h.MCPTransport != MCPTransportJSONFile && h.MCPTransport != MCPTransportTOMLOverride {
+		return fmt.Errorf("harnesses[%d].mcp_transport must be %q or %q", index, MCPTransportJSONFile, MCPTransportTOMLOverride)
 	}
 	counts, err := field("command", h.Command, map[string]bool{"{prompt}": true, "{mcp_config}": true})
 	if err != nil {
