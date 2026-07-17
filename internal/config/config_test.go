@@ -54,6 +54,20 @@ repos:
 	}
 }
 
+func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing.T) {
+	cfg, err := Load("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	implement := cfg.Routing.Stages["implement"]
+	if cfg.ExecutionSettings == nil || implement.ModelPolicy != ModelPolicyHarnessDefault || cfg.EffectiveModel("implement") != "" {
+		t.Fatalf("implementation settings=%+v effective_model=%q", cfg.ExecutionSettings, cfg.EffectiveModel("implement"))
+	}
+	if len(cfg.Review.Seats) != 2 || cfg.Routing.Stages["review"].Harness != "" {
+		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
+	}
+}
+
 func TestWorkOrderQueueTimeoutDefaultsAndRejectsInvalidDuration(t *testing.T) {
 	deployment := validConfig()
 	data, err := yaml.Marshal(deployment.WorkspaceDocument())
@@ -270,20 +284,24 @@ func TestHarnessDefaultModelOnlyForwardsDeclaredSentinel(t *testing.T) {
 func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T) {
 	base := validConfig()
 	base.Harnesses = []Harness{
-		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+		{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
 	}
 	base.Routing.Stages["implement"] = StageRoute{Model: "implementer", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
 	base.Routing.Stages["review"] = StageRoute{Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: ExecutionMCP}
 	document := base.WorkspaceDocument()
-	document.Review.Seats = []ReviewSeat{{Model: "gpt-review"}, {Model: "claude-review", Harness: "claude"}}
+	document.Review.Seats = []ReviewSeat{{Model: "gpt-5.6-sol", Harness: "codex", Effort: "high"}, {Model: "claude-opus-4-8", Harness: "claude", Effort: "high"}}
 	raw, _ := yaml.Marshal(document)
 	parsed, err := ParseWorkspaceDocument(raw, base, "review panel test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Review.Seats) != 2 || parsed.Review.Seats[0].Model != "gpt-review" || parsed.Review.Seats[1].Harness != "claude" {
+	if len(parsed.Review.Seats) != 2 || parsed.Review.Seats[0].Effort != "high" || parsed.Review.Seats[1].Harness != "claude" || parsed.Review.Seats[1].Effort != "high" {
 		t.Fatalf("review seats=%+v", parsed.Review.Seats)
+	}
+	encoded, _ := json.Marshal(parsed.WorkspaceDocument().Review.Seats)
+	if !strings.Contains(string(encoded), `"effort":"high"`) {
+		t.Fatalf("effort did not round trip: %s", encoded)
 	}
 
 	document.Review.Seats[1].Harness = "missing"
@@ -295,6 +313,21 @@ func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T)
 	raw, _ = yaml.Marshal(document)
 	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("missing model error=%v", err)
+	}
+	document.Review.Seats = []ReviewSeat{{Model: "gpt", Harness: "codex", Effort: "ultrathink"}}
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "must be low, medium, or high") {
+		t.Fatalf("invalid effort error=%v", err)
+	}
+	document.Review.Seats[0].Effort = "medium"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "review panel test"); err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Fatalf("unsupported effort error=%v", err)
+	}
+	legacy := []ReviewSeat{{Model: "gpt", Harness: "codex"}}
+	encoded, _ = json.Marshal(legacy)
+	if strings.Contains(string(encoded), "effort") {
+		t.Fatalf("legacy seat gained effort: %s", encoded)
 	}
 }
 

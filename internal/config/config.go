@@ -59,13 +59,14 @@ type StageRoute struct {
 }
 
 type Harness struct {
-	Name                  string        `yaml:"name" json:"name"`
-	Command               []string      `yaml:"command" json:"command"`
-	ModelArgs             []string      `yaml:"model_args,omitempty" json:"model_args,omitempty"`
-	DefaultModelSentinels []string      `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
-	ProbeCommand          []string      `yaml:"probe_command" json:"probe_command"`
-	ProbeTimeout          time.Duration `yaml:"-" json:"-"`
-	ProbeTimeoutText      string        `yaml:"probe_timeout" json:"probe_timeout"`
+	Name                  string              `yaml:"name" json:"name"`
+	Command               []string            `yaml:"command" json:"command"`
+	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
+	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
+	EffortArgs            map[string][]string `yaml:"effort_args,omitempty" json:"effort_args,omitempty"`
+	ProbeCommand          []string            `yaml:"probe_command" json:"probe_command"`
+	ProbeTimeout          time.Duration       `yaml:"-" json:"-"`
+	ProbeTimeoutText      string              `yaml:"probe_timeout" json:"probe_timeout"`
 }
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
@@ -74,6 +75,7 @@ type Harness struct {
 type ReviewSeat struct {
 	Model   string `yaml:"model" json:"model"`
 	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
+	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
 }
 
 type ReviewPanel struct {
@@ -464,7 +466,7 @@ func normalize(c *Config, path string) (*Config, error) {
 	if c.Execution.ReviewConcurrency < 1 {
 		return nil, fmt.Errorf("execution.review_concurrency must be at least 1")
 	}
-	harnesses := make(map[string]struct{}, len(c.Harnesses))
+	harnesses := make(map[string]Harness, len(c.Harnesses))
 	for i := range c.Harnesses {
 		harness := &c.Harnesses[i]
 		if strings.TrimSpace(harness.Name) == "" || !safePathSegment(harness.Name) {
@@ -473,7 +475,7 @@ func normalize(c *Config, path string) (*Config, error) {
 		if _, duplicate := harnesses[harness.Name]; duplicate {
 			return nil, fmt.Errorf("duplicate harness name %q", harness.Name)
 		}
-		harnesses[harness.Name] = struct{}{}
+		harnesses[harness.Name] = *harness
 		if err := validateHarness(*harness, i); err != nil {
 			return nil, err
 		}
@@ -574,6 +576,7 @@ func normalize(c *Config, path string) (*Config, error) {
 	for i, seat := range c.Review.Seats {
 		seat.Model = strings.TrimSpace(seat.Model)
 		seat.Harness = strings.TrimSpace(seat.Harness)
+		seat.Effort = strings.TrimSpace(seat.Effort)
 		if seat.Model == "" {
 			return nil, fmt.Errorf("review.seats[%d].model is required", i)
 		}
@@ -583,6 +586,25 @@ func normalize(c *Config, path string) (*Config, error) {
 		if seat.Harness != "" {
 			if _, ok := harnesses[seat.Harness]; !ok {
 				return nil, fmt.Errorf("review.seats[%d].harness references unknown harness %q", i, seat.Harness)
+			}
+		}
+		if seat.Effort != "" {
+			if !validEffort(seat.Effort) {
+				return nil, fmt.Errorf("review.seats[%d].effort must be low, medium, or high", i)
+			}
+			if reviewRoute.Execution == ExecutionInProcess {
+				return nil, fmt.Errorf("review.seats[%d].effort cannot override an in_process review route", i)
+			}
+			harnessName := seat.Harness
+			if harnessName == "" {
+				harnessName = reviewRoute.Harness
+			}
+			if harnessName == "" && len(c.Harnesses) == 1 {
+				harnessName = c.Harnesses[0].Name
+			}
+			harness, ok := harnesses[harnessName]
+			if !ok || len(harness.EffortArgs[seat.Effort]) == 0 {
+				return nil, fmt.Errorf("review.seats[%d].effort %q is not supported by harness %q", i, seat.Effort, harnessName)
 			}
 		}
 		c.Review.Seats[i] = seat
@@ -697,6 +719,17 @@ func validateHarness(h Harness, index int) error {
 	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
 		return err
 	}
+	for effort, values := range h.EffortArgs {
+		if !validEffort(effort) {
+			return fmt.Errorf("harnesses[%d].effort_args contains unsupported effort %q", index, effort)
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("harnesses[%d].effort_args.%s must contain at least one argv element", index, effort)
+		}
+		if _, err = field("effort_args."+effort, values, map[string]bool{}); err != nil {
+			return err
+		}
+	}
 	if len(h.ProbeCommand) == 0 {
 		return fmt.Errorf("harnesses[%d].probe_command is required", index)
 	}
@@ -708,6 +741,10 @@ func validateHarness(h Harness, index int) error {
 		return fmt.Errorf("harnesses[%d].probe_timeout must be a positive duration", index)
 	}
 	return nil
+}
+
+func validEffort(effort string) bool {
+	return effort == "low" || effort == "medium" || effort == "high"
 }
 
 func MarshalWorkspaceDocument(c *Config) ([]byte, error) {

@@ -201,6 +201,7 @@ export interface WorkspaceHarness {
   command: string[]
   model_args?: string[]
   default_model_sentinels?: string[]
+  effort_args?: Partial<Record<'low' | 'medium' | 'high', string[]>>
   probe_command: string[]
   probe_timeout: string
 }
@@ -208,6 +209,7 @@ export interface WorkspaceHarness {
 export interface WorkspaceReviewSeat {
   model: string
   harness?: string
+  effort?: 'low' | 'medium' | 'high'
 }
 
 export interface ExecutionPolicy {
@@ -293,6 +295,7 @@ export interface WorkOrder {
   review_seat?: number
   required_model?: string
   required_harness?: string
+  required_effort?: 'low' | 'medium' | 'high'
   required_harness_config?: WorkspaceHarness
   execution_timeout?: string
   model_enforcement?: 'worker-pinned' | 'self-reported'
