@@ -150,7 +150,7 @@ function JobEntry({ job, summary, model, order }: { job: Job; summary: string; m
 // Provider logo keyed off the model name (bundled SVGs, no network fetch).
 function providerLogo(model: string): { svg: string; className?: string } | undefined {
   const name = model.toLowerCase()
-  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai')) return { svg: openaiIcon, className: 'text-[#0a0a0a]' }
+  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai')) return { svg: openaiIcon, className: 'text-foreground' }
   if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
   if (/gemini|google/.test(name)) return { svg: geminiIcon }
   return undefined
