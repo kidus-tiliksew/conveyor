@@ -2,7 +2,7 @@
 
 **Specification — v1.20**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), and provider-neutral reasoning effort is available for review seats (§21.19) and implementation (§21.20)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), and provider-neutral reasoning effort is available for review seats and implementation (§21.19)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1777,7 +1777,7 @@ dispatch snapshots. Six changes; all other v1.17 decisions remain unchanged:
 
 ---
 
-### 21.19 v1.19 — Per-seat reasoning effort (July 17, 2026)
+### 21.19 v1.19, amended by v1.20 — Provider-neutral reasoning effort (July 17, 2026)
 
 The Phase 5.2 review-seat contract pins a model and optional harness, but
 cannot independently express the reasoning effort expected from each seat.
@@ -1822,7 +1822,7 @@ unchanged from v1.18:
 
 ---
 
-### 21.20 v1.20 — Implementation reasoning effort (July 17, 2026)
+#### v1.20 implementation extension
 
 Implementation execution gains the same provider-neutral reasoning-effort
 control as review seats without weakening the contextual settings or immutable
@@ -1861,4 +1861,4 @@ dispatch contracts introduced by §§21.18–21.19:
 
 ---
 
-*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, per-seat vendor-neutral reasoning effort is added by §21.19, and optional implementation reasoning effort with immutable adapter argv snapshots is added by §21.20. Subsequent changes proceed by amendment with version bumps.*
+*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, and §21.19 now covers both per-seat and optional implementation vendor-neutral reasoning effort with immutable adapter argv snapshots. Subsequent changes proceed by amendment with version bumps.*

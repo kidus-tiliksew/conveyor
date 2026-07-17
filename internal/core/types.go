@@ -326,7 +326,7 @@ const (
 // HarnessSnapshot is the immutable worker execution contract captured for a
 // implementation or review order when it is created. Workspace hot reloads
 // must not alter an in-flight command, model arguments, effort arguments, or
-// health probe (spec §§21.19-21.20).
+// health probe (spec §21.19).
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	Command               []string            `json:"command"`

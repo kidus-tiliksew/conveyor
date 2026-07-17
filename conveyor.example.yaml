@@ -85,7 +85,7 @@ review:
 
 # Adapter-level review effort excerpt (spec §21.19). Implementation effort uses
 # the same harness mappings through execution_settings.implementation (spec
-# §21.20). Merge these fields into the
+# §21.19 v1.20 extension). Merge these fields into the
 # corresponding full harness entries after their authenticated wrapper defines
 # the {mcp_config} transport; these are adapter argv, not complete launch
 # commands:
