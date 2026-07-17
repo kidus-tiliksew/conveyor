@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -8,6 +9,23 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
+	cfg := validConfig()
+	cfg.Harnesses = nil
+	cfg.Repos = nil
+	document := cfg.WorkspaceDocument()
+	if document.Harnesses == nil || document.Repos == nil {
+		t.Fatalf("workspace document contains nil collections: %+v", document)
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"harnesses":[]`) || !strings.Contains(string(data), `"repos":[]`) {
+		t.Fatalf("workspace document JSON contains nullable collections: %s", data)
+	}
+}
 
 func TestLoadPhase47Config(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")

@@ -410,9 +410,9 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
-		Harnesses:                 append([]Harness(nil), c.Harnesses...),
+		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
 		Execution:                 c.Execution,
-		Repos:                     append([]Repo(nil), c.Repos...),
+		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 	}
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0

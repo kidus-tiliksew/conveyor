@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,10 +11,7 @@ import (
 )
 
 func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
-	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
-	}
+	databaseURL := integrationDatabaseURL(t)
 	st, err := Open(t.Context(), databaseURL)
 	if err != nil {
 		t.Fatal(err)

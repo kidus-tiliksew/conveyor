@@ -37,6 +37,10 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		return response
 	}
+	emptyList := call(http.MethodGet, "/v1/workers", "", "operator")
+	if emptyList.Code != http.StatusOK || !strings.Contains(emptyList.Body.String(), `"workers":[]`) {
+		t.Fatalf("empty list status=%d body=%s", emptyList.Code, emptyList.Body.String())
+	}
 	pairResponse := call(http.MethodPost, "/v1/workers/pairings", `{"ttl_seconds":60}`, "operator")
 	if pairResponse.Code != http.StatusCreated {
 		t.Fatalf("pair status=%d body=%s", pairResponse.Code, pairResponse.Body.String())

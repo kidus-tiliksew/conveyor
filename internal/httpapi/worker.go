@@ -89,6 +89,14 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if workers == nil {
+		workers = []core.Worker{}
+	}
+	for i := range workers {
+		if workers[i].Probes == nil {
+			workers[i].Probes = []core.HarnessProbe{}
+		}
+	}
 	cfg, err := s.ConfigProvider(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)

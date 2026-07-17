@@ -233,6 +233,12 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	if err := decoder.Decode(&document); err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
+	if document.Harnesses == nil {
+		document.Harnesses = []config.Harness{}
+	}
+	if document.Repos == nil {
+		document.Repos = []config.Repo{}
+	}
 	return config.VersionedDocument{Document: document, Version: row.ConfigVersion}, nil
 }
 

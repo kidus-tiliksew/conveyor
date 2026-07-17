@@ -68,6 +68,9 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if strings.Contains(strings.ToLower(getResult.Body.String()), "budget") {
 		t.Fatalf("GET exposed removed budget surface: %s", getResult.Body)
 	}
+	if !strings.Contains(getResult.Body.String(), `"harnesses":[]`) {
+		t.Fatalf("GET exposed a nullable harness collection: %s", getResult.Body)
+	}
 
 	invalidDocument := document
 	invalidDocument.MaxBounces = -1

@@ -59,6 +59,19 @@ make dev
 Use `make db-up` or `make db-down` when only the database lifecycle is needed.
 The named `conveyor-postgres-data` volume survives `make db-down`.
 
+Postgres integration tests use a separate disposable Compose service and
+database so test workspaces never enter the development database:
+
+```sh
+make test-integration
+```
+
+That target starts `postgres-test` on `127.0.0.1:5433`, runs the Postgres
+package against the `conveyor_test` database, and removes the test container
+afterward. Its data directory is a tmpfs. Regular `make test` explicitly clears
+`CONVEYOR_TEST_DATABASE_URL`; integration tests also refuse database names that
+do not end in `_test`.
+
 To run an already-built daemon without rebuilding or changing the database:
 
 ```sh

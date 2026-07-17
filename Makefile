@@ -5,8 +5,10 @@ ENV_FILE ?= .env
 CONVEYOR_CONFIG ?= conveyor.yaml
 LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
+TEST_POSTGRES_PORT ?= 5433
+TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
 
-.PHONY: all build ui test vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui test test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -18,7 +20,17 @@ ui:
 	cd web && npm ci && npm run build
 
 test:
-	go test ./...
+	CONVEYOR_TEST_DATABASE_URL= go test ./...
+
+test-integration: test-db-up
+	@trap '$(MAKE) test-db-down' EXIT; \
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./internal/store/postgres -count=1
+
+test-db-up:
+	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test up -d --wait postgres-test
+
+test-db-down:
+	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test rm -s -f postgres-test
 
 vet:
 	go vet ./...

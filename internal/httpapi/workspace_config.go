@@ -29,6 +29,12 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if record.Document.Harnesses == nil {
+		record.Document.Harnesses = []config.Harness{}
+	}
+	if record.Document.Repos == nil {
+		record.Document.Repos = []config.Repo{}
+	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", record.Version))
 	writeJSON(w, http.StatusOK, record)
 }

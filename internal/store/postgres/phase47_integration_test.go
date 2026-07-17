@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,10 +13,7 @@ import (
 )
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
-	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
-	}
+	databaseURL := integrationDatabaseURL(t)
 	ctx := context.Background()
 	st, err := Open(ctx, databaseURL)
 	if err != nil {

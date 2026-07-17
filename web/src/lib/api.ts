@@ -70,7 +70,15 @@ export async function downloadArtifact(token: string, artifact: Artifact) { cons
 export function fetchWorkspaceConfig(token: string) {
 	return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-    return response.json() as Promise<VersionedWorkspaceConfig>
+    const result = await response.json() as VersionedWorkspaceConfig
+    return {
+      ...result,
+      document: {
+        ...result.document,
+        harnesses: result.document.harnesses ?? [],
+        repos: result.document.repos ?? [],
+      },
+    }
   })
 }
 
@@ -114,7 +122,7 @@ export interface CreateTaskInput {
   merge_approval?: boolean
 }
 
-export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<WorkerList> }
+export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); const result = await response.json() as WorkerList; return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) } }
 export async function issueWorkerPairing(token: string) { const response = await fetch(workspaceURL('/v1/workers/pairings'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ ttl_seconds: 600 }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<{ pairing_token: string; expires_at: string }> }
 export async function revokeWorker(token: string, id: string) { const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), { method: 'DELETE', headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()) }
 

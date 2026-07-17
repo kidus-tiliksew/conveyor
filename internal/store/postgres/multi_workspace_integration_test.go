@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,10 +11,7 @@ import (
 )
 
 func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
-	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
-	}
+	databaseURL := integrationDatabaseURL(t)
 	root := context.Background()
 	st, err := Open(root, databaseURL)
 	if err != nil {
@@ -108,10 +104,7 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 }
 
 func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
-	databaseURL := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("CONVEYOR_TEST_DATABASE_URL is not set")
-	}
+	databaseURL := integrationDatabaseURL(t)
 	root := context.Background()
 	st, err := Open(root, databaseURL)
 	if err != nil {
