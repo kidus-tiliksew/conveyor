@@ -281,6 +281,14 @@ func TestHarnessDefaultModelOnlyForwardsDeclaredSentinel(t *testing.T) {
 	}
 }
 
+func TestExplicitSymbolicModelRequiresHarnessDefaultPolicy(t *testing.T) {
+	route := StageRoute{Model: "subscription", ModelPolicy: ModelPolicyExplicit, Harness: "codex"}
+	harnesses := []Harness{{Name: "codex", DefaultModelSentinels: []string{"subscription"}}}
+	if _, err := normalizeHarnessModel(route, harnesses); err == nil || !strings.Contains(err.Error(), `symbolic model "subscription" requires harness_default model policy`) {
+		t.Fatalf("explicit symbolic model error=%v", err)
+	}
+}
+
 func TestReviewPanelValidatesOrderedPinnedSeatsAndHarnessOverrides(t *testing.T) {
 	base := validConfig()
 	base.Harnesses = []Harness{

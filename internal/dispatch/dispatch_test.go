@@ -19,6 +19,7 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"gopkg.in/yaml.v3"
 )
 
 type capturingInputAgent struct {
@@ -645,6 +646,78 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 	order := orders[0]
 	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" {
 		t.Fatalf("snapshotted order=%+v", order)
+	}
+}
+
+func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "reject-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	document := implementationModelDocument(config.ModelPolicyExplicit, "subscription", nil)
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = config.ParseWorkspaceDocument(raw, &config.Config{Workspace: "demo", PackDir: "."}, "symbolic dispatch test"); err == nil || !strings.Contains(err.Error(), `symbolic model "subscription" requires harness_default model policy`) {
+		t.Fatalf("explicit symbolic model error=%v", err)
+	}
+	orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
+	if listErr != nil || len(orders) != 0 {
+		t.Fatalf("invalid symbolic model created work orders=%+v err=%v", orders, listErr)
+	}
+}
+
+func TestImplementationDispatchSnapshotsDeclaredDefaultSentinel(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "declared-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	document := implementationModelDocument(config.ModelPolicyHarnessDefault, "subscription", []string{"subscription"})
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseWorkspaceDocument(raw, &config.Config{Workspace: "demo", PackDir: "."}, "declared sentinel dispatch test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, cfg, nil)
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].RequiredModel != "subscription" {
+		t.Fatalf("declared sentinel orders=%+v err=%v", orders, err)
+	}
+}
+
+func implementationModelDocument(policy, model string, sentinels []string) config.WorkspaceDocument {
+	return config.WorkspaceDocument{
+		Workspace: "demo", MaxBounces: 2,
+		ExecutionSettings: &config.ContextualExecutionSettings{
+			ControlPlane: config.ControlPlaneSettings{
+				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
+				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
+			},
+			Implementation: config.ImplementationSettings{Harness: "codex", Model: model, ModelPolicy: policy, TimeoutText: "1h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "gpt-review", FallbackHarness: "codex"},
+		},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
+			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
+			"implement": {Model: model, ModelPolicy: policy, Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
+			"review":    {Model: "gpt-review", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
+		}},
+		Harnesses: []config.Harness{{
+			Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"},
+			DefaultModelSentinels: sentinels, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+		}},
+		Repos: []config.Repo{{Name: "api", URL: "https://example.test/api", Base: "main"}},
 	}
 }
 

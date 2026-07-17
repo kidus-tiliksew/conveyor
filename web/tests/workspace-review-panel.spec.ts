@@ -9,13 +9,13 @@ const baseDocument = {
       triage: { model: 'gpt', timeout: '20m' },
       spec: { model: 'gpt', timeout: '30m' },
     },
-    implementation: { model: 'operator', model_policy: 'explicit', harness: 'codex', timeout: '4h' },
+    implementation: { model: 'gpt-implement', model_policy: 'explicit', harness: 'codex', timeout: '4h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'fallback', fallback_harness: 'codex' },
   },
   routing: { stages: {
     triage: { model: 'gpt', timeout: '20m', execution: 'in_process' },
     spec: { model: 'gpt', timeout: '30m', execution: 'in_process' },
-    implement: { model: 'operator', harness: 'codex', timeout: '4h', execution: 'mcp' },
+    implement: { model: 'gpt-implement', harness: 'codex', timeout: '4h', execution: 'mcp' },
     review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
   } },
   harnesses: [

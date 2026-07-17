@@ -25,13 +25,13 @@ func contextualWorkspaceDocument() config.WorkspaceDocument {
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
 				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
 			},
-			Implementation: config.ImplementationSettings{Harness: "codex", Model: "operator", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
+			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
 			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "fallback", FallbackHarness: "codex"},
 		},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
 			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: "operator", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"implement": {Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
 			"review":    {Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
 		Harnesses: []config.Harness{
@@ -110,7 +110,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	}
 
 	document.ExecutionSettings.Implementation.TimeoutText = "45m"
-	document.Routing.Stages["implement"] = config.StageRoute{Model: "operator", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "45m", Execution: config.ExecutionMCP}
+	document.Routing.Stages["implement"] = config.StageRoute{Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "45m", Execution: config.ExecutionMCP}
 	body, _ := json.Marshal(map[string]any{"document": document})
 	put := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
 	put.Header.Set("Authorization", "Bearer token")

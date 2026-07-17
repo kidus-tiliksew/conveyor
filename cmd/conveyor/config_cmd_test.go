@@ -86,13 +86,13 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
 				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
 			},
-			Implementation: config.ImplementationSettings{Harness: "codex", Model: "operator", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
+			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
 			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "fallback", FallbackHarness: "codex"},
 		},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
 			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: "operator", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"implement": {Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
 			"review":    {Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
 		Harnesses: []config.Harness{

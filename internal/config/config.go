@@ -360,11 +360,15 @@ func symbolicModelPolicy(model string) bool {
 }
 
 func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error) {
+	symbol := strings.TrimSpace(route.Model)
 	if route.ModelPolicy == ModelPolicyExplicit {
-		if strings.TrimSpace(route.Model) == "" {
+		if symbol == "" {
 			return "", fmt.Errorf("explicit model policy requires a model")
 		}
-		return strings.TrimSpace(route.Model), nil
+		if symbolicModelPolicy(symbol) {
+			return "", fmt.Errorf("symbolic model %q requires harness_default model policy", symbol)
+		}
+		return symbol, nil
 	}
 	var selected *Harness
 	for i := range harnesses {
@@ -382,7 +386,6 @@ func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error
 		}
 		return "", fmt.Errorf("harness_default model policy requires a usable harness")
 	}
-	symbol := strings.TrimSpace(route.Model)
 	if symbol == "" {
 		return "", nil
 	}
