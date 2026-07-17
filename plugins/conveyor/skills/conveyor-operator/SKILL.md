@@ -41,19 +41,25 @@ parallel workflow.
 3. Call `claim_work_order` with a bounded lease, then call `get_work_order` for
    the approved specification, configured repository, assigned base, exact
    task branch, deadline, feedback, artifacts, and acceptance criteria.
-4. Resolve every relevant artifact reference with `read_artifact`, passing the
+4. Immediately after `get_work_order` returns, announce a concise,
+   plain-language summary of what the work order is about and what you will do
+   next. Make this announcement before resolving the checkout, inspecting
+   files, or starting implementation. It is informational: continue
+   automatically without asking for confirmation, waiting for a user response,
+   or pausing.
+5. Resolve every relevant artifact reference with `read_artifact`, passing the
    same workspace, work order, and session plus the referenced artifact ID.
    Decode the returned base64 content according to its MIME type. Treat a read
    failure as missing required context; never continue from filename metadata.
-5. Immediately resolve the dedicated checkout with `conveyor checkout
+6. Resolve the dedicated checkout with `conveyor checkout
    <task-id>`. Use its returned path as the working directory. If the current
    checkout is already a clean dedicated clone/worktree for the assigned
    branch, the helper may return it. If the CLI is unavailable, use the safe
    fallback below; never implement in a shared primary checkout.
-6. Work only in the configured repository, returned task worktree, and exact
+7. Work only in the configured repository, returned task worktree, and exact
    assigned branch. Implement the approved specification and run the
    repository's required validation there.
-7. Use `report_progress` for meaningful milestones and `report_usage` with
+8. Use `report_progress` for meaningful milestones and `report_usage` with
    cumulative, truthful usage. Respect the lease and fixed execution deadline;
    reclaiming an expired lease does not extend execution time. If a never-
    claimed order is reported `stale`, use `redispatch_work_order` for the
@@ -61,12 +67,12 @@ parallel workflow.
    Never redispatch an active or execution-timed-out order. Upload a
    transcript only when required and only after confirming it contains no
    secrets.
-8. Commit the completed work in the dedicated worktree, push the assigned
+9. Commit the completed work in the dedicated worktree, push the assigned
    branch with upstream tracking, and verify the remote push succeeded.
-9. Call `submit_for_review` only after the push and when the user's instruction
+10. Call `submit_for_review` only after the push and when the user's instruction
    authorizes the review handoff. Use `await_review` when keeping the
    implementation session available for feedback.
-10. If `await_review` returns `changes_requested`, keep the same Codex session,
+11. If `await_review` returns `changes_requested`, keep the same Codex session,
    list and claim the newly queued implementation order before editing. Return
    to the original worktree path, add commits to its existing branch, push,
    resubmit, and reuse the existing PR. Never edit under the submitted order or

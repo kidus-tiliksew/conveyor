@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ffffff" />
+    <script>
+      (() => {
+        const key = 'conveyor-theme'
+        let choice = 'system'
+        try {
+          const saved = localStorage.getItem(key)
+          if (saved === 'light' || saved === 'dark' || saved === 'system') choice = saved
+        } catch {}
+        const systemDark = matchMedia('(prefers-color-scheme: dark)').matches
+        const theme = choice === 'system' ? (systemDark ? 'dark' : 'light') : choice
+        document.documentElement.dataset.theme = theme
+        document.documentElement.style.colorScheme = theme
+        const meta = document.querySelector('meta[name="theme-color"]')
+        if (meta) meta.content = theme === 'dark' ? '#0f1115' : '#ffffff'
+      })()
+    </script>
     <link rel="icon" href="/favicon.svg" />
     <title>Conveyor — Activity</title>
   </head>

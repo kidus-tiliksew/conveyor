@@ -13,6 +13,8 @@
   --color-foreground: #16181d;
   --color-muted: #5c616b;
   --color-faint: #9aa0aa;
+  --color-markdown: #363a42;
+  --color-selection: #dbe3fe;
 
   --color-primary: #3355f5;
   --color-primary-foreground: #ffffff;
@@ -58,6 +60,37 @@
   -webkit-font-smoothing: antialiased;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-background: #0f1115;
+  --color-surface: #15181e;
+  --color-card: #191d24;
+  --color-raised: #222731;
+  --color-border: #2a303a;
+  --color-edge: #3a424f;
+  --color-foreground: #f2f4f7;
+  --color-muted: #aeb5c0;
+  --color-faint: #7f8998;
+  --color-markdown: #d7dbe2;
+  --color-selection: #34498f;
+
+  --color-primary: #8aa2ff;
+  --color-primary-foreground: #0b1023;
+  --color-primary-soft: #202b58;
+
+  --color-attention: #f6b968;
+  --color-attention-soft: #3c2a16;
+  --color-attention-dot: #fbbf24;
+
+  --color-positive: #67cf8a;
+  --color-positive-soft: #163524;
+  --color-failure: #ff8a83;
+  --color-failure-soft: #3d1f20;
+
+  --color-rail: #12151a;
+  --color-rail-raised: #252b34;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -67,13 +100,13 @@ body {
 }
 
 button, input, textarea, select { font: inherit; }
-::selection { background: #dbe3fe; }
+::selection { background: var(--color-selection); }
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
 /* Rendered spec markdown (§4.1). The machine-owned fenced blocks are hidden
    here and rendered structurally by the acceptance checklist instead. */
-.markdown { font-size: 0.875rem; line-height: 1.7; color: #363a42; }
+.markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   color: var(--color-foreground);
