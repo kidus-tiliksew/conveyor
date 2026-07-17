@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.19**
+**Specification — v1.20**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18) and adversarial review has per-seat reasoning effort (§21.19)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), and provider-neutral reasoning effort is available for review seats (§21.19) and implementation (§21.20)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1822,4 +1822,43 @@ unchanged from v1.18:
 
 ---
 
-*End of specification. v1.19 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, and per-seat vendor-neutral reasoning effort with explicit harness adapter argv, fail-closed validation, durable snapshots, and operator UI is added by §21.19. Subsequent changes proceed by amendment with version bumps.*
+### 21.20 v1.20 — Implementation reasoning effort (July 17, 2026)
+
+Implementation execution gains the same provider-neutral reasoning-effort
+control as review seats without weakening the contextual settings or immutable
+dispatch contracts introduced by §§21.18–21.19:
+
+1. **Implementation effort is optional and semantic.**
+   `execution_settings.implementation.effort` is omitted for the selected
+   harness default or is exactly `low`, `medium`, or `high`. The deprecated
+   compatibility route may mirror this value, but contextual implementation
+   settings remain authoritative. Effort is never inferred from a model name,
+   model policy, provider, or symbolic model value.
+
+2. **The selected harness validates the value.** An explicit implementation
+   effort is accepted only when the selected harness declares a non-empty
+   literal argv array for that value in `effort_args`. Unknown or unsupported
+   values fail as implementation-field validation errors. Workspace settings
+   expose semantic effort only; raw argv remains an adapter concern.
+
+3. **Dispatch snapshots the exact launch contract.** An implementation work
+   order durably captures both the requested semantic effort and a copy of the
+   exact adapter argv resolved at dispatch. The work-order and associated audit
+   event omit both fields when effort is unset. Harness or workspace hot reload
+   may affect later dispatches but cannot alter an in-flight snapshot.
+
+4. **Workers execute the snapshot without reinterpretation.** Implementation
+   launch appends only the captured effort argv to the existing shell-free
+   command vector. Workers do not recompute implementation effort from live
+   configuration or model data. Unset effort appends nothing and preserves the
+   historical command and serialization behavior.
+
+5. **The operator surface is first-class.** The Workspace Implementation
+   section offers Harness default, Low, Medium, and High beside the existing
+   harness/model controls. Documentation explains harness-declared support,
+   provider-neutral semantics, and the omission behavior of Harness default.
+   Review-seat effort behavior remains unchanged.
+
+---
+
+*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, per-seat vendor-neutral reasoning effort is added by §21.19, and optional implementation reasoning effort with immutable adapter argv snapshots is added by §21.20. Subsequent changes proceed by amendment with version bumps.*

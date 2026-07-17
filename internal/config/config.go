@@ -45,6 +45,7 @@ type StageRoute struct {
 	Model       string        `yaml:"model" json:"model"`
 	ModelPolicy string        `yaml:"model_policy,omitempty" json:"model_policy,omitempty"`
 	Harness     string        `yaml:"harness,omitempty" json:"harness,omitempty"`
+	Effort      string        `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
@@ -119,6 +120,7 @@ type ImplementationSettings struct {
 	Harness     string `yaml:"harness" json:"harness"`
 	Model       string `yaml:"model,omitempty" json:"model,omitempty"`
 	ModelPolicy string `yaml:"model_policy" json:"model_policy"`
+	Effort      string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	TimeoutText string `yaml:"timeout" json:"timeout"`
 }
 
@@ -319,8 +321,9 @@ func applyContextualExecutionSettings(c *Config) {
 	}
 	c.Routing.Stages["implement"] = StageRoute{
 		Model: settings.Implementation.Model, ModelPolicy: settings.Implementation.ModelPolicy,
-		Harness: settings.Implementation.Harness, TimeoutText: settings.Implementation.TimeoutText,
-		Execution: ExecutionMCP,
+		Harness: settings.Implementation.Harness, Effort: settings.Implementation.Effort,
+		TimeoutText: settings.Implementation.TimeoutText,
+		Execution:   ExecutionMCP,
 	}
 	c.Routing.Stages["review"] = StageRoute{
 		Model: settings.Review.FallbackModel, Harness: settings.Review.FallbackHarness,
@@ -341,7 +344,8 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 		},
 		Implementation: ImplementationSettings{
 			Harness: implement.Harness, Model: implement.Model,
-			ModelPolicy: implement.ModelPolicy, TimeoutText: implement.TimeoutText,
+			ModelPolicy: implement.ModelPolicy, Effort: implement.Effort,
+			TimeoutText: implement.TimeoutText,
 		},
 		Review: ReviewExecutionSettings{
 			Execution: review.Execution, TimeoutText: review.TimeoutText,
@@ -486,6 +490,9 @@ func normalize(c *Config, path string) (*Config, error) {
 		harness.ProbeTimeout = parsed
 	}
 	for stage, route := range c.Routing.Stages {
+		if stage != "implement" && strings.TrimSpace(route.Effort) != "" {
+			return nil, fmt.Errorf("routing stage %s: effort is valid only for implementation", stage)
+		}
 		if route.Model == "" {
 			route.Model = route.LegacyModelTier
 		}
@@ -539,15 +546,26 @@ func normalize(c *Config, path string) (*Config, error) {
 				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
 			}
 		} else if stage == "implement" {
+			route.Effort = strings.TrimSpace(route.Effort)
 			if route.Harness == "" && len(c.Harnesses) == 1 {
 				route.Harness = c.Harnesses[0].Name
 			}
 			if route.Harness == "" && len(c.Harnesses) > 1 {
 				return nil, fmt.Errorf("routing stage %s: harness is required when multiple harnesses are registered", stage)
 			}
+			var implementationHarness Harness
 			if route.Harness != "" {
-				if _, ok := harnesses[route.Harness]; !ok {
+				var ok bool
+				if implementationHarness, ok = harnesses[route.Harness]; !ok {
 					return nil, fmt.Errorf("routing stage %s: unknown harness %q", stage, route.Harness)
+				}
+			}
+			if route.Effort != "" {
+				if !validEffort(route.Effort) {
+					return nil, fmt.Errorf("execution_settings.implementation.effort must be low, medium, or high")
+				}
+				if len(implementationHarness.EffortArgs[route.Effort]) == 0 {
+					return nil, fmt.Errorf("execution_settings.implementation.effort %q is not supported by harness %q", route.Effort, route.Harness)
 				}
 			}
 			effective, modelErr := normalizeHarnessModel(route, c.Harnesses)

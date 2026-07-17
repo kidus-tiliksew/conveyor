@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,43 @@ func TestHarnessFingerprintCanonicalizesEmptyArguments(t *testing.T) {
 	changed.Command = []string{"codex-next"}
 	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
 		t.Fatal("different harness commands produced the same fingerprint")
+	}
+}
+
+func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
+	orders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: orders, ConfigProvider: orders.ConfigProvider, Now: func() time.Time { return now }}
+	task := core.Task{ID: "implementation-effort", Workspace: "demo", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "implementation-effort-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &core.HarnessSnapshot{
+		Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"},
+		EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, Effort: "high",
+		EffortArgv: []string{"--config", `model_reasoning_effort="high"`}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "gpt", RequiredHarness: "codex", RequiredEffort: "high", RequiredHarnessConfig: snapshot, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	snapshotHarness := harnessFromSnapshot(snapshot)
+	worker := core.Worker{ID: "implementation-worker", Workspace: "demo", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Fingerprint: HarnessFingerprint(snapshotHarness), Healthy: true}}, CreatedAt: now}
+	listed, err := service.ListAuto(ctx, worker)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	item := listed[0]
+	if item.Effort != "high" || !reflect.DeepEqual(item.EffortArgv, snapshot.EffortArgv) || !reflect.DeepEqual(item.Harness.EffortArgs["high"], snapshot.EffortArgv) {
+		t.Fatalf("implementation dispatch recomputed hot-reloaded effort: %+v", item)
 	}
 }
 

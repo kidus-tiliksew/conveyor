@@ -249,21 +249,31 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		if !found {
 			return fmt.Errorf("implementation route references unavailable harness %q", route.Harness)
 		}
+		if route.Effort != "" {
+			harnessConfig.Effort = route.Effort
+			harnessConfig.EffortArgv = append([]string(nil), harnessConfig.EffortArgs[route.Effort]...)
+		}
 	}
 	order := core.WorkOrder{
 		ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage,
 		State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
-		RequiredModel: effectiveModel, RequiredHarness: route.Harness, RequiredHarnessConfig: harnessConfig,
+		RequiredModel: effectiveModel, RequiredHarness: route.Harness,
+		RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig,
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 	}
 	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
 		return err
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
 		"harness": route.Harness, "model": effectiveModel, "model_policy": route.ModelPolicy,
-	})})
+	}
+	if route.Effort != "" {
+		payload["required_effort"] = route.Effort
+		payload["effort_argv"] = append([]string(nil), harnessConfig.EffortArgv...)
+	}
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(payload)})
 }
 
 func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
