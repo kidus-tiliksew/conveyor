@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
+			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
 			r.Get("/requirements", s.listRequirements)
 			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)

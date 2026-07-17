@@ -130,6 +130,21 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	return s.Store.RedispatchWorkOrder(ctx, id, timeout)
 }
 
+func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkOrder, error) {
+	if strings.TrimSpace(requestID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+	}
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	timeout := cfg.WorkOrderQueueTimeout
+	if timeout <= 0 {
+		timeout = config.DefaultWorkOrderQueueTimeout
+	}
+	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
+}
+
 func (s *Service) Get(ctx context.Context, id, session string) (Context, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {

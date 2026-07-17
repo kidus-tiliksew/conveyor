@@ -306,6 +306,13 @@ export interface WorkOrder {
   queue_deadline: string
   execution_started_at?: string
   execution_deadline?: string
+  last_attempt_outcome?: 'child_failure' | 'released' | 'cancelled' | 'expired'
+  last_failure_message?: string
+  last_failure_exit_status?: number
+  last_failure_at?: string
+  automatic_retry_count?: number
+  next_retry_at?: string
+  retry_suppressed?: boolean
   redispatch_count: number
   progress?: string
   cost_usd: number

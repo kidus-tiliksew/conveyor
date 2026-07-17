@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.20**
+**Specification — v1.21**
 **Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), and provider-neutral reasoning effort is available for review seats and implementation (§21.19)
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), and worker-attempt recovery is bounded and audited (§21.20)
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1861,4 +1861,51 @@ dispatch contracts introduced by §§21.18–21.19:
 
 ---
 
-*End of specification. v1.20 accepted July 17, 2026; all prior amendments remain in force, contextual execution settings with legacy routing compatibility are added by §21.18, and §21.19 now covers both per-seat and optional implementation vendor-neutral reasoning effort with immutable adapter argv snapshots. Subsequent changes proceed by amendment with version bumps.*
+### 21.20 v1.21 — Worker attempt recovery and bounded child retry (July 17, 2026)
+
+Operational review of supervised children found that an immediate harness
+exit could repeatedly claim and release one order, while lease-expiry cleanup
+could retain stale worker ownership, a running job projection, and an execution
+window that no longer belonged to a live attempt. This amendment supersedes
+§21.9 change 2 and §21.13 change 4 only for released or expired execution
+attempts; all other v1.20 decisions remain unchanged:
+
+1. **Execution clocks belong to one attempt.** A claim starts one fixed
+   execution window. Renewal cannot extend it. Release, cancellation, or lease
+   expiry ends that attempt, clears every active ownership and execution-clock
+   field, and returns the job projection to pending. The append-only claim,
+   release, failure, and expiry events retain attempt history. A later eligible
+   claim starts a fresh execution window; an old deadline is never revived.
+
+2. **Child retry is durable and bounded.** A child failure records its message,
+   available exit status, time, automatic-retry count, next eligibility, and
+   suppression state on the work order. The first three automatic retries wait
+   1, 2, and 4 seconds (subject to a configured maximum no lower than the
+   initial delay). Failure after those retries leaves the queued order
+   suppressed from automatic claim. Cancellation records its distinct outcome
+   and requires recovery without consuming the child-failure retry allowance.
+
+3. **Queue eligibility is independent.** A queued order is claimable only when
+   it is not suppressed and its durable retry time has arrived. The original
+   queue-retention clock, the fixed execution clock of a live attempt, and its
+   claim lease remain separate. Listing and worker dispatch expose the retry
+   state rather than relying on a process-local timer.
+
+4. **Cleanup is atomic and stale-safe.** Release and lease expiry clear worker,
+   session, token, claimant, agent/model, lease, and active execution fields in
+   the same store transaction that resets the job projection. Conditional
+   ownership checks prevent a stale worker, refresh, or cancellation from
+   overwriting a newer claim. Memory and Postgres stores expose the same
+   lifecycle.
+
+5. **Recovery is explicit, scoped, and idempotent.** An authenticated operator
+   may recover a queued, unclaimed released/expired/suppressed order through the
+   workspace-scoped work-order recovery API and UI. A request identity is
+   required and durably deduplicated. Recovery clears backoff/suppression,
+   refreshes queue eligibility, records actor/workspace/target/prior outcome
+   and request identity in the audit stream, and attaches no worker. Active,
+   completed, cross-workspace, and otherwise incompatible targets fail closed.
+
+---
+
+*End of specification. v1.21 accepted July 17, 2026; all prior amendments remain in force, and §21.20 adds attempt-scoped execution clocks, bounded durable child retry, atomic cleanup, and audited operator recovery. Subsequent changes proceed by amendment with version bumps.*

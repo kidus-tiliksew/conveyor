@@ -12,6 +12,7 @@ import type {
   Artifact,
   TaskMode,
   WorkerList,
+  WorkOrder,
 } from './types'
 
 function workspaceURL(path: string) {
@@ -148,6 +149,16 @@ export async function redispatchTask(taskId: string, token: string) {
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<Task>
+}
+
+export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string) {
+	const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
+		method: 'POST',
+		headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+		body: JSON.stringify({ request_id: requestId }),
+	})
+	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+	return response.json() as Promise<WorkOrder>
 }
 
 export interface ReviewInput {

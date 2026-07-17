@@ -309,12 +309,12 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	if _, err := c.claimWorkerOrder(credential, item.Order.ID, sessionID, clientToken); err != nil {
 		return err
 	}
-	release := func(reason string) {
-		_ = c.releaseWorkerOrder(credential, item.Order.ID, reason)
+	release := func(outcome, reason string, exitStatus *int) {
+		_ = c.releaseWorkerOrder(credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus})
 	}
 	directory, err := os.MkdirTemp("", "conveyor-worker-")
 	if err != nil {
-		release("create worker temp directory failed")
+		release(core.WorkOrderOutcomeReleased, "create worker temp directory failed", nil)
 		return err
 	}
 	defer os.RemoveAll(directory)
@@ -322,7 +322,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": strings.TrimRight(c.base, "/") + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
 	data, _ := json.Marshal(mcp)
 	if err = os.WriteFile(configPath, data, 0o600); err != nil {
-		release("write MCP config failed")
+		release(core.WorkOrderOutcomeReleased, "write MCP config failed", nil)
 		return err
 	}
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
@@ -331,27 +331,31 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		if item.Order.Stage == core.StageImplement {
 			effortArgv = append([]string(nil), item.EffortArgv...)
 			if len(effortArgv) == 0 {
-				release("configured effort is unsupported by harness snapshot")
+				release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
 				return fmt.Errorf("implementation harness snapshot %s has no argv for effort %s", item.Harness.Name, item.Effort)
 			}
 		} else {
 			effortArgv = append([]string(nil), item.Harness.EffortArgs[item.Effort]...)
 		}
 		if len(effortArgv) == 0 {
-			release("configured effort is unsupported by harness snapshot")
+			release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
 			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
 		}
 	}
 	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, configPath)
 	if len(argv) == 0 {
-		release("empty harness command")
+		release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	command.Env = append(os.Environ(), "CONVEYOR_API_TOKEN="+credential, "CONVEYOR_ADDR="+c.base, "CONVEYOR_WORKSPACE="+c.workspace, "CONVEYOR_WORK_ORDER_ID="+item.Order.ID, "CONVEYOR_SESSION_ID="+sessionID)
 	if err = command.Start(); err != nil {
-		release("harness launch failed")
+		if ctx.Err() != nil {
+			release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			return ctx.Err()
+		}
+		release(core.WorkOrderOutcomeChildFailure, "harness launch failed: "+err.Error(), nil)
 		return err
 	}
 	done := make(chan error, 1)
@@ -361,17 +365,27 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	for {
 		select {
 		case waitErr := <-done:
+			if ctx.Err() != nil {
+				release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+				return ctx.Err()
+			}
 			if waitErr != nil {
-				release("harness exited: " + waitErr.Error())
+				var exitStatus *int
+				var exitErr *exec.ExitError
+				if errors.As(waitErr, &exitErr) {
+					status := exitErr.ExitCode()
+					exitStatus = &status
+				}
+				release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
 				return waitErr
 			}
-			renewed, renewErr := c.renewWorkerOrder(credential, item.Order.ID)
+			renewed, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID)
 			if renewErr != nil {
-				release("could not confirm work-order completion")
+				release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", nil)
 				return fmt.Errorf("confirm work-order completion: %w", renewErr)
 			}
 			if renewed.State == core.WorkOrderClaimed {
-				release("harness exited before completing work order")
+				release(core.WorkOrderOutcomeChildFailure, "harness exited before completing work order", nil)
 				return errors.New("harness exited before completing work order")
 			}
 			if renewed.State != core.WorkOrderSubmitted && renewed.State != core.WorkOrderCompleted {
@@ -379,15 +393,16 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			}
 			return nil
 		case <-ticker.C:
-			if _, renewErr := c.renewWorkerOrder(credential, item.Order.ID); renewErr != nil {
+			if _, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID); renewErr != nil {
 				_ = command.Process.Kill()
 				<-done
+				release(core.WorkOrderOutcomeReleased, "claim renewal failed: "+renewErr.Error(), nil)
 				return renewErr
 			}
 		case <-ctx.Done():
-			release("worker shutting down")
 			_ = command.Process.Kill()
 			<-done
+			release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
 		}
 	}

@@ -16,6 +16,10 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'recovery' ? {
+		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
+		events: [],
+		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : { jobs: [], events: [], work_orders: [] }
   return {
     task: {
@@ -74,6 +78,20 @@ async function mockTaskAPIs(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockTaskAPIs(page)
+})
+
+test('suppressed worker order exposes failure state and audited recovery action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let recoveryRequest = ''
+	await page.route('**/v1/work-orders/*/recover*', async (route) => {
+		recoveryRequest = route.request().postData() ?? ''
+		await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
+	})
+	await page.goto('/tasks/recovery/full')
+	await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
+	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
+	await page.getByRole('button', { name: 'Recover work order' }).click()
+	await expect.poll(() => recoveryRequest).toContain('request_id')
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {

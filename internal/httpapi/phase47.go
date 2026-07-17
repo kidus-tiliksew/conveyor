@@ -25,6 +25,26 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, orders)
 }
 
+func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
+	if s.WorkOrders == nil {
+		http.Error(w, "work-order service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request struct {
+		RequestID string `json:"request_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	if request.RequestID == "" {
+		request.RequestID = r.Header.Get("X-Idempotency-Key")
+	}
+	order, err := s.WorkOrders.Recover(r.Context(), chi.URLParam(r, "id"), request.RequestID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
 type requirementNode struct {
 	Feature core.Feature       `json:"feature"`
 	Tasks   []core.Task        `json:"tasks"`
