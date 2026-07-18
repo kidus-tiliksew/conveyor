@@ -1,8 +1,8 @@
-import { AlertTriangle, Cpu, ExternalLink, UserRound } from 'lucide-react'
+import { AlertTriangle, Check, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import { buildTimeline, type TimelineEntry } from '../../lib/activity'
+import { buildTimeline, type PanelSeat, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
@@ -47,6 +47,26 @@ function keyFor(entry: TimelineEntry) {
   return entry.key
 }
 
+// The panel's timeline dot: a segmented ring, one arc per seat, filling as
+// verdicts arrive — the collapsed, feed-glanceable form of the header tally.
+function ringGradient(seats: PanelSeat[]): string | undefined {
+  if (seats.length < 2) return undefined
+  const gap = 16
+  const segment = (360 - seats.length * gap) / seats.length
+  const stops: string[] = []
+  let angle = 0
+  for (const seat of seats) {
+    const color = seat.review
+      ? seat.review.verdict === 'approve' ? 'var(--color-positive)' : 'var(--color-attention-dot)'
+      : seat.status === 'stale' || seat.status === 'timed_out' ? 'var(--color-attention-dot)'
+        : seat.status === 'failed' ? 'var(--color-failure)'
+          : 'var(--color-edge)'
+    stops.push(`${color} ${angle}deg ${angle + segment}deg`, `transparent ${angle + segment}deg ${angle + segment + gap}deg`)
+    angle += segment + gap
+  }
+  return `conic-gradient(from -90deg, ${stops.join(', ')})`
+}
+
 const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], string> = {
   waiting: 'bg-edge',
   active: 'animate-pulse bg-primary',
@@ -55,6 +75,7 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
 
 function TimelineRow({ entry }: { entry: TimelineEntry }) {
   if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} order={entry.order} />
+  if (entry.type === 'panel') return <PanelEntry entry={entry} />
   if (entry.type === 'order') {
     return (
       <li className="relative pl-7">
@@ -110,6 +131,227 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   )
 }
 
+// The review panel as one deliberating body (spec §21.12 change 4): seats as
+// rows inside a single card, a verdict tally in the header, and — on a
+// changes-requested settle — every dissenting seat's notes merged into one
+// attributed round. Vocabulary is the spec's own: panel, seats, verdicts.
+function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }> }) {
+  const { seats, resolution } = entry
+  const verdictsIn = seats.filter((seat) => seat.review).length
+  const changes = seats.filter((seat) => seat.review?.verdict === 'changes_requested').length
+  const deliberating = !resolution && seats.some((seat) => seat.status === 'deliberating')
+  // Reviewer feedback surfaces as each verdict lands — not held until the
+  // round settles — so nothing a reviewer wrote is ever invisible.
+  const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
+  const spendUSD = seats.reduce((sum, seat) => sum + (seat.job?.cost_usd || seat.order.cost_usd || 0), 0)
+  const gradient = ringGradient(seats)
+  const single = seats[0]
+  return (
+    <li className="relative pl-7">
+      {gradient ? (
+        <span
+          aria-hidden
+          className={cn('absolute -left-0.5 top-2.5 size-[19px] rounded-full', deliberating && 'animate-pulse')}
+          style={{ background: gradient }}
+        >
+          <span className="absolute inset-1 rounded-full bg-background" />
+        </span>
+      ) : (
+        <TimelineDot
+          className={cn(
+            'bg-edge',
+            single?.review?.verdict === 'approve' && 'bg-positive',
+            single?.review?.verdict === 'changes_requested' && 'bg-attention-dot',
+            !single?.review && (single?.status === 'stale' || single?.status === 'timed_out') && 'bg-attention-dot',
+            !single?.review && single?.status === 'failed' && 'bg-failure',
+            deliberating && 'animate-pulse bg-primary',
+          )}
+        />
+      )}
+      <article className="rounded-lg border border-border bg-card">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">{stageLabels.review}</span>
+          <span className="text-xs text-muted">
+            {seats.length > 1 ? `Panel of ${seats.length} · unanimous to pass` : 'Panel of 1'}
+          </span>
+          <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
+            {seats.map((seat) => (
+              <span
+                key={seat.seat}
+                className={cn(
+                  'size-2 rounded-full',
+                  seat.review
+                    ? seat.review.verdict === 'approve' ? 'bg-positive' : 'bg-attention-dot'
+                    : 'border-[1.5px] border-edge',
+                )}
+              />
+            ))}
+          </span>
+          <time className="ml-auto text-[11px] text-faint">
+            {resolution ? `Settled ${absoluteTime(resolution.at)}` : `Convened ${absoluteTime(entry.at)}`}
+          </time>
+        </div>
+        <div className="divide-y divide-border/60">
+          {seats.map((seat, index) => (
+            <SeatRow key={seat.seat} seat={seat} index={index} />
+          ))}
+        </div>
+        {notes.length > 0 && (
+          <div className="border-t border-border px-4 py-3">
+            <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
+                {entry.round > 0 ? `Round ${entry.round} — ` : ''}the panel’s notes
+              </span>
+              {resolution?.verdict === 'changes_requested' && seats.length > 1 && (
+                <span className="text-[11px] text-faint">counts once against the bounce cap</span>
+              )}
+            </div>
+            {notes.map((seat) => (
+              <div key={seat.seat} className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0">
+                <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">Seat {seat.seat}</span>
+                <p className="whitespace-pre-line leading-6 text-foreground/85">{seat.review!.feedback.trim()}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {resolution ? (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-x-2 gap-y-1 rounded-b-lg border-t border-border px-4 py-2.5 text-sm font-medium',
+              resolution.verdict === 'approve' ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
+            )}
+          >
+            {resolution.verdict === 'approve' ? <Check className="size-4 shrink-0" /> : <Undo2 className="size-4 shrink-0" />}
+            {resolution.verdict === 'approve'
+              ? seats.length > 1 ? `The panel is unanimous — ${seats.length} of ${seats.length} approved` : 'Approved'
+              : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}
+            <span className="text-xs font-normal opacity-80">
+              {resolution.verdict === 'approve'
+                ? spendUSD > 0 ? `${usd(spendUSD)} across the panel` : ''
+                : `feedback sent back as one round${resolution.bounce ? ` (bounce ${resolution.bounce})` : ''}`}
+            </span>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+            <span>{verdictsIn} of {seats.length} verdicts in</span>
+            {seats.length > 1 && (
+              <>
+                <span className="text-faint">·</span>
+                <span>any “changes requested” bounces the task</span>
+              </>
+            )}
+            {spendUSD > 0 && <span className="ml-auto">{usd(spendUSD)} so far</span>}
+          </div>
+        )}
+      </article>
+    </li>
+  )
+}
+
+function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
+      <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">Seat {seat.seat}</span>
+      <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
+        <ModelChip
+          model={seat.model}
+          costUSD={seat.job?.cost_usd || seat.order.cost_usd}
+          tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
+          tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
+          note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
+        />
+      </span>
+      <EnforcementChip enforcement={seat.order.model_enforcement} />
+      <span className="ml-auto">
+        <SeatState seat={seat} index={index} />
+      </span>
+      {seat.status === 'deliberating' && seat.order.progress && (
+        <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{seat.order.progress}</p>
+      )}
+    </div>
+  )
+}
+
+// Enforcement rendered honestly (spec §21.12 change 4): a pin for the model
+// the worker invoked itself, a dashed circle for what a claiming agent
+// merely reported — with the plain-words difference behind a hover.
+function EnforcementChip({ enforcement }: { enforcement?: WorkOrder['model_enforcement'] }) {
+  if (!enforcement) return null
+  const pinned = enforcement === 'worker-pinned'
+  return (
+    <span className="group/enforce relative inline-flex cursor-default items-center gap-1 whitespace-nowrap text-[11px] text-faint">
+      {pinned ? <Pin aria-hidden className="size-3 shrink-0" /> : <CircleDashed aria-hidden className="size-3 shrink-0" />}
+      <span>{pinned ? 'pinned' : 'self-reported'}</span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-60 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/enforce:opacity-100"
+      >
+        {pinned
+          ? 'Executed by your worker, invoked with this exact model — enforcement Conveyor can vouch for.'
+          : 'Claimed by an operator-attached agent. The model is what the session reported — Conveyor can’t enforce it.'}
+      </span>
+    </span>
+  )
+}
+
+// Deliberating seats pulse out of phase with one another — independent
+// minds, not one process with several labels.
+function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
+  const { review, status, job } = seat
+  if (review) {
+    const approved = review.verdict === 'approve'
+    const took = job?.started_at ? duration(job.started_at, job.ended_at ?? review.at) : undefined
+    return (
+      <span className="flex items-center justify-end gap-2">
+        <span
+          title={review.summary.trim() || undefined}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+            approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
+          )}
+        >
+          {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
+          {approved ? 'Approved' : 'Changes'}
+        </span>
+        {took && <span className="font-mono text-[11px] tabular-nums text-muted">{took}</span>}
+      </span>
+    )
+  }
+  if (status === 'deliberating') {
+    return (
+      <span className="flex items-center justify-end gap-2">
+        <span className="inline-flex items-center gap-1.5 text-xs text-primary">
+          <span className="size-1.5 animate-pulse rounded-full bg-primary" style={{ animationDelay: `${index * 0.5}s` }} />
+          Deliberating
+        </span>
+        {job?.started_at && <span className="font-mono text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>}
+      </span>
+    )
+  }
+  if (status === 'waiting') {
+    return (
+      <span
+        className="flex items-center justify-end gap-1.5 text-xs text-faint"
+        title="Any agent connected over MCP can claim this seat. The server URL is in Settings."
+      >
+        <span className="size-1.5 rounded-full border-[1.5px] border-edge" />
+        Waiting for an agent
+      </span>
+    )
+  }
+  const label = status === 'stale' ? 'Went stale in the queue' : status === 'timed_out' ? 'Timed out' : status === 'failed' ? 'Failed' : 'Cancelled'
+  return (
+    <span
+      className={cn(
+        'flex items-center justify-end text-xs',
+        status === 'cancelled' ? 'text-faint' : status === 'failed' ? 'text-failure' : 'text-attention',
+      )}
+    >
+      {label}
+    </span>
+  )
+}
+
 // The job footer keeps the operator-facing facts — duration and model — and
 // tucks the audit numbers (tokens, cost) behind a hover on the model chip.
 // Harness, auth mode, confinement, and actor plumbing stay in the API.
@@ -157,16 +399,17 @@ function providerLogo(model: string): { svg: string; className?: string } | unde
   return undefined
 }
 
-function ModelChip({ model, costUSD, tokensIn, tokensOut }: { model: string; costUSD: number; tokensIn: number; tokensOut: number }) {
+function ModelChip({ model, costUSD, tokensIn, tokensOut, note }: { model: string; costUSD: number; tokensIn: number; tokensOut: number; note?: string }) {
   const logo = providerLogo(model)
   const usage = [
     tokensIn + tokensOut > 0 ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out` : undefined,
     costUSD > 0 ? usd(costUSD) : undefined,
+    note,
   ]
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="group/model relative inline-flex cursor-default items-center gap-1.5">
+    <span className="group/model relative inline-flex max-w-full cursor-default items-center gap-1.5">
       {logo ? (
         <span
           aria-hidden
@@ -176,7 +419,7 @@ function ModelChip({ model, costUSD, tokensIn, tokensOut }: { model: string; cos
       ) : (
         <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
       )}
-      <span>{model}</span>
+      <span className="truncate" title={model}>{model}</span>
       {usage && (
         <span
           role="tooltip"
