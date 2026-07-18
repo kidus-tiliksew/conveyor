@@ -1490,8 +1490,12 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 		return core.WorkOrder{}, err
 	}
 	if state == core.WorkOrderTimedOut {
+		endedAt := now
+		if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+			endedAt = order.ExecutionDeadline
+		}
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed', ended_at=COALESCE(ended_at,$1),
-			updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+			updated_at=$2 WHERE id=$3`, endedAt, now, order.JobID); err != nil {
 			return core.WorkOrder{}, err
 		}
 	}

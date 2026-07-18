@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -321,7 +322,7 @@ func TestListReviewFeedbackStopsBeforeFetchingMergedPRComments(t *testing.T) {
 	}
 }
 
-func TestPublishReviewCreatesSuccessfulCheckAndFactoryComment(t *testing.T) {
+func TestPublishReviewCreatesSuccessfulStatusAndFactoryComment(t *testing.T) {
 	var calls [][]string
 	run := func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
@@ -329,7 +330,7 @@ func TestPublishReviewCreatesSuccessfulCheckAndFactoryComment(t *testing.T) {
 		case 1:
 			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"abc123"}`), nil
 		case 2:
-			return []byte(`{"check_runs":[]}`), nil
+			return []byte(`{"statuses":[]}`), nil
 		case 3:
 			return []byte(`{"id":41}`), nil
 		case 4:
@@ -347,19 +348,19 @@ func TestPublishReviewCreatesSuccessfulCheckAndFactoryComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CheckRunID != 41 || result.CommentID != 51 || result.ReviewedCommitSHA != "abc123" {
+	if result.CheckRunID != 0 || result.CommentID != 51 || result.ReviewedCommitSHA != "abc123" {
 		t.Fatalf("result = %+v", result)
 	}
 	joined := strings.Join(calls[2], " ")
-	if !strings.Contains(joined, "conclusion=success") || !strings.Contains(joined, "name="+ReviewCheckName) || !strings.Contains(joined, "external_id=review-1") || !strings.Contains(joined, "Reviewed commit: `abc123`") {
-		t.Fatalf("check args = %v", calls[2])
+	if !strings.Contains(joined, "POST repos/acme/api/statuses/abc123") || !strings.Contains(joined, "state=success") || !strings.Contains(joined, "context="+ReviewStatusContext) || !strings.Contains(joined, "target_url=https://github.com/acme/api/pull/7") {
+		t.Fatalf("status args = %v", calls[2])
 	}
 	if !strings.Contains(strings.Join(calls[4], " "), "<!-- conveyor:review-publication task=task-1 -->") {
 		t.Fatalf("comment args = %v", calls[4])
 	}
 }
 
-func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
+func TestPublishReviewRetryUpdatesAggregateStatusAndStickyComment(t *testing.T) {
 	var calls [][]string
 	run := func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
@@ -367,7 +368,7 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 		case 1:
 			return []byte(`{"number":7,"headRefOid":"def456"}`), nil
 		case 2:
-			return []byte(`{"check_runs":[{"id":42,"external_id":"review-2"}]}`), nil
+			return []byte(`{"statuses":[{"state":"pending","context":"Conveyor / Code review","description":"Waiting for the remaining independent review verdicts"}]}`), nil
 		case 3:
 			return []byte(`{"id":42}`), nil
 		case 4:
@@ -387,15 +388,41 @@ func TestPublishReviewRetryUpdatesExistingCheckAndStickyComment(t *testing.T) {
 			{WorkOrderID: "review-2", Round: 2, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add another test.", ResolutionState: "unresolved"},
 		},
 		BounceHistory: []string{"bounce 1: tests"},
+		StatusState:   "failure",
 	}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(calls[2], " "); !strings.Contains(got, "PATCH repos/acme/api/check-runs/42") || !strings.Contains(got, "conclusion=action_required") {
-		t.Fatalf("check retry args = %v", calls[2])
+	if got := strings.Join(calls[2], " "); !strings.Contains(got, "POST repos/acme/api/statuses/def456") || !strings.Contains(got, "state=failure") {
+		t.Fatalf("status retry args = %v", calls[2])
 	}
 	if got := strings.Join(calls[4], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") || !strings.Contains(got, "bounce 1: tests") || !strings.Contains(got, "resolved") || !strings.Contains(got, "unresolved") || !strings.Contains(got, "round 2, seat 1") || !strings.Contains(got, "Required effort: `high`") {
 		t.Fatalf("comment retry args = %v", calls[4])
+	}
+}
+
+func TestPublishReviewDoesNotDuplicateMatchingCommitStatus(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch len(calls) {
+		case 1:
+			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"abc123"}`), nil
+		case 2:
+			return []byte(`{"statuses":[{"state":"pending","context":"Conveyor / Code review","description":"Waiting for the remaining independent review verdicts","target_url":"https://github.com/acme/api/pull/7"}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call: %v", args)
+		}
+	}
+	_, err := publishReview(context.Background(), ReviewPublication{
+		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+		ReviewWorkOrderID: "review-1", Verdict: "approve", StatusState: "pending", SkipComment: true,
+	}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("matching status caused extra calls: %v", calls)
 	}
 }
 

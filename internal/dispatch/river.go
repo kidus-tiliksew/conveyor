@@ -183,6 +183,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		}
 	}
 	history := reviewHistory(events)
+	statusState := reviewRoundStatus(events, publication.ReviewRound, publication.Verdict)
 	result, publishErr := github.PublishReview(ctx, github.ReviewPublication{
 		Repo: repo.GitHub, Branch: task.Branch, TaskID: task.ID, TaskLink: taskLink,
 		ReviewWorkOrderID: publication.ReviewWorkOrderID, Verdict: publication.Verdict,
@@ -194,6 +195,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		History:       history,
 		BounceHistory: bounceHistory,
 		SkipComment:   skipComment,
+		StatusState:   statusState,
 	})
 	if publishErr != nil {
 		publication.LastError = publishErr.Error()
@@ -211,6 +213,32 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	publication.ReviewedCommitSHA = result.ReviewedCommitSHA
 	publication.LastError = ""
 	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
+}
+
+func reviewRoundStatus(events []core.Event, round int, seatVerdict string) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.round_completed" {
+			continue
+		}
+		var result struct {
+			Round   int    `json:"review_round"`
+			Verdict string `json:"verdict"`
+		}
+		if json.Unmarshal(events[i].Payload, &result) != nil || result.Round != round {
+			continue
+		}
+		if result.Verdict == "changes_requested" {
+			return "failure"
+		}
+		return "success"
+	}
+	if round > 0 {
+		return "pending"
+	}
+	if seatVerdict == "changes_requested" {
+		return "failure"
+	}
+	return "success"
 }
 
 func reviewHistory(events []core.Event) []github.ReviewHistoryItem {

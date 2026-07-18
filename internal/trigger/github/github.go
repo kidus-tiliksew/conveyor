@@ -27,7 +27,11 @@ const ReadyLabel = "conveyor:ready"
 // from replaying it after the Phase 1 in-memory store is lost.
 const DispatchedLabel = "conveyor:dispatched"
 
-const ReviewCheckName = "Conveyor / Code review"
+// ReviewStatusContext is the portable commit-status context used for the
+// aggregate review result. Unlike Check Runs, commit statuses can be written
+// by the user-owned credentials already required for GitHub coordination
+// (spec §21.22).
+const ReviewStatusContext = "Conveyor / Code review"
 
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
 const issueLifecycleMarkerPrefix = "<!-- conveyor:task="
@@ -376,6 +380,10 @@ type ReviewPublication struct {
 	History                []ReviewHistoryItem
 	BounceHistory          []string
 	SkipComment            bool
+	// StatusState is the aggregate state of the current review round: pending,
+	// success, or failure. It is computed from the durable round-completed event
+	// rather than from one panel seat's verdict.
+	StatusState string
 }
 
 type ReviewHistoryItem struct {
@@ -391,6 +399,8 @@ type ReviewHistoryItem struct {
 }
 
 type ReviewPublicationResult struct {
+	// CheckRunID is retained for wire/storage compatibility with historical
+	// publications. Commit-status publications leave it zero (spec §21.22).
 	CheckRunID        int64
 	CommentID         int64
 	ReviewedCommitSHA string
@@ -408,24 +418,19 @@ func publishReview(ctx context.Context, publication ReviewPublication, run ghRun
 	if publication.ReviewedCommitSHA == "" {
 		publication.ReviewedCommitSHA = target.HeadSHA
 	}
-	conclusion := "success"
-	if publication.Verdict == "changes_requested" {
-		conclusion = "action_required"
-	}
 	body := reviewPublicationBody(publication)
-	checkID, err := upsertReviewCheck(ctx, publication, conclusion, body, run)
-	if err != nil {
+	if err = upsertReviewStatus(ctx, publication, target.URL, run); err != nil {
 		return ReviewPublicationResult{}, err
 	}
 	commentID := int64(0)
 	if publication.SkipComment {
-		return ReviewPublicationResult{CheckRunID: checkID, ReviewedCommitSHA: publication.ReviewedCommitSHA}, nil
+		return ReviewPublicationResult{ReviewedCommitSHA: publication.ReviewedCommitSHA}, nil
 	}
 	commentID, err = upsertReviewComment(ctx, publication.Repo, target.Number, publication.TaskID, body, run)
 	if err != nil {
 		return ReviewPublicationResult{}, err
 	}
-	return ReviewPublicationResult{CheckRunID: checkID, CommentID: commentID, ReviewedCommitSHA: publication.ReviewedCommitSHA}, nil
+	return ReviewPublicationResult{CommentID: commentID, ReviewedCommitSHA: publication.ReviewedCommitSHA}, nil
 }
 
 type reviewTargetResult struct {
@@ -457,46 +462,49 @@ func reviewTarget(ctx context.Context, repo, branch string, run ghRunner) (revie
 	return target, nil
 }
 
-func upsertReviewCheck(ctx context.Context, publication ReviewPublication, conclusion, body string, run ghRunner) (int64, error) {
-	endpoint := fmt.Sprintf("repos/%s/commits/%s/check-runs?check_name=%s", publication.Repo, publication.ReviewedCommitSHA, url.QueryEscape(ReviewCheckName))
-	out, err := run(ctx, "api", endpoint)
-	if err != nil {
-		return 0, fmt.Errorf("list review checks: %w", err)
-	}
-	var checks struct {
-		CheckRuns []struct {
-			ID         int64  `json:"id"`
-			ExternalID string `json:"external_id"`
-		} `json:"check_runs"`
-	}
-	if err := json.Unmarshal(out, &checks); err != nil {
-		return 0, fmt.Errorf("parse review checks: %w", err)
-	}
-	checkID := int64(0)
-	for _, check := range checks.CheckRuns {
-		if check.ExternalID == publication.ReviewWorkOrderID {
-			checkID = check.ID
-			break
+func upsertReviewStatus(ctx context.Context, publication ReviewPublication, targetURL string, run ghRunner) error {
+	state := publication.StatusState
+	if state == "" {
+		state = "success"
+		if publication.Verdict == "changes_requested" {
+			state = "failure"
 		}
 	}
-	args := []string{"api", "--method"}
-	if checkID == 0 {
-		args = append(args, "POST", "repos/"+publication.Repo+"/check-runs", "-f", "head_sha="+publication.ReviewedCommitSHA, "-f", "external_id="+publication.ReviewWorkOrderID)
-	} else {
-		args = append(args, "PATCH", fmt.Sprintf("repos/%s/check-runs/%d", publication.Repo, checkID))
+	if state != "pending" && state != "success" && state != "failure" {
+		return fmt.Errorf("publish review status: invalid aggregate state %q", state)
 	}
-	args = append(args, "-f", "name="+ReviewCheckName, "-f", "status=completed", "-f", "conclusion="+conclusion, "-f", "output[title]="+publication.Verdict, "-f", "output[summary]="+body)
-	out, err = run(ctx, args...)
+	description := map[string]string{
+		"pending": "Waiting for the remaining independent review verdicts",
+		"success": "Independent review approved this commit",
+		"failure": "Independent review requested changes",
+	}[state]
+	endpoint := fmt.Sprintf("repos/%s/commits/%s/status", publication.Repo, publication.ReviewedCommitSHA)
+	out, err := run(ctx, "api", endpoint)
 	if err != nil {
-		return 0, fmt.Errorf("publish review check: %w", err)
+		return fmt.Errorf("read review status: %w", err)
 	}
-	var result struct {
-		ID int64 `json:"id"`
+	var combined struct {
+		Statuses []struct {
+			State       string `json:"state"`
+			Context     string `json:"context"`
+			Description string `json:"description"`
+			TargetURL   string `json:"target_url"`
+		} `json:"statuses"`
 	}
-	if err := json.Unmarshal(out, &result); err != nil || result.ID == 0 {
-		return 0, fmt.Errorf("parse published review check")
+	if err := json.Unmarshal(out, &combined); err != nil {
+		return fmt.Errorf("parse review status: %w", err)
 	}
-	return result.ID, nil
+	for _, status := range combined.Statuses {
+		if status.Context == ReviewStatusContext && status.State == state && status.Description == description && status.TargetURL == targetURL {
+			return nil
+		}
+	}
+	_, err = run(ctx, "api", "--method", "POST", "repos/"+publication.Repo+"/statuses/"+publication.ReviewedCommitSHA,
+		"-f", "state="+state, "-f", "context="+ReviewStatusContext, "-f", "description="+description, "-f", "target_url="+targetURL)
+	if err != nil {
+		return fmt.Errorf("publish review status: %w", err)
+	}
+	return nil
 }
 
 func upsertReviewComment(ctx context.Context, repo string, pr int, taskID, body string, run ghRunner) (int64, error) {

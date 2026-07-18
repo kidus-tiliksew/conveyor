@@ -16,6 +16,10 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'timeout' ? {
+		jobs: [{ id: 'timeout-review', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'failed', started_at: '2026-07-15T12:00:00Z', ended_at: '2026-07-15T12:30:00Z' }],
+		events: [],
+		work_orders: [{ id: 'timeout-review', task_id: taskId, job_id: 'timeout-review', stage: 'review', state: 'timed_out', queue_entered_at: '2026-07-15T11:00:00Z', queue_deadline: '2026-07-16T11:00:00Z', execution_started_at: '2026-07-15T12:00:00Z', execution_deadline: '2026-07-15T12:30:00Z', updated_at: '2026-07-16T08:24:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'recovery' ? {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
@@ -108,6 +112,16 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('timeout timeline and duration use the execution deadline', async ({ page }) => {
+	await page.goto('/tasks/timeout/full')
+	const expectedDeadline = await page.evaluate(() => new Date('2026-07-15T12:30:00Z').toLocaleString('en', {
+		month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+	}))
+	const timeoutEntry = page.locator('li').filter({ hasText: 'Review — timed out' })
+	await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
+	await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {

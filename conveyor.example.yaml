@@ -103,7 +103,9 @@ review:
 #       high: [--config, 'model_reasoning_effort="high"']
 #   - name: claude
 #     mcp_transport: json_file
-#     command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}"]
+#     # Headless workers cannot answer an interactive MCP permission prompt.
+#     # Pre-authorize only the scoped Conveyor lifecycle server.
+#     command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --allowedTools, "mcp__conveyor__*"]
 #     model_args: [--model, "{model}"]
 #     probe_command: [claude, --version]
 #     probe_timeout: 10s

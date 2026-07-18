@@ -1083,7 +1083,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
 		if job, index, exists := m.findJobLocked(order.JobID); exists {
-			job.State, job.EndedAt = core.JobFailed, now
+			job.State, job.EndedAt = core.JobFailed, order.ExecutionDeadline
 			m.jobs[job.TaskID][index] = job
 		}
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(order), At: now})

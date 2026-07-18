@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -65,6 +66,13 @@ func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing
 	}
 	if len(cfg.Review.Seats) != 2 || cfg.Routing.Stages["review"].Harness != "" {
 		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
+	}
+	example, err := os.ReadFile("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(example, []byte(`--allowedTools, "mcp__conveyor__*"`)) {
+		t.Fatal("Claude worker example does not pre-authorize the scoped Conveyor MCP lifecycle")
 	}
 }
 

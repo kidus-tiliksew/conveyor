@@ -152,7 +152,7 @@ Independent of 5.1/5.2 — parallelizable with 5.2.*
    task; a task that originated from an issue (§9) updates that issue
    instead of duplicating it; the eventual PR carries `Closes #N`.
 2. **Verdict mirroring:** review verdicts and their resolutions post to the
-   PR, extending the existing Check Run + factory-comment machinery into a
+   PR, extending the existing aggregate commit-status + factory-comment machinery into a
    complete review trail; redirect rounds show as review threads with their
    resolutions.
 
