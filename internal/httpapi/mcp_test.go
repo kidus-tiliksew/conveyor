@@ -127,6 +127,14 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 		if strings.Contains(string(data), `"required":null`) {
 			t.Fatalf("tool %v emits required:null", tool["name"])
 		}
+		if tool["name"] == "create_task" {
+			schema := tool["inputSchema"].(map[string]any)
+			for _, field := range schema["required"].([]string) {
+				if field == "title" {
+					t.Fatalf("create_task still requires title: %s", data)
+				}
+			}
+		}
 	}
 }
 
@@ -161,6 +169,11 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	server.Workspace = "demo"
 	server.Repos = []string{"api"}
 	enqueued := 0
+	generated := 0
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) {
+		generated++
+		return "Triage this issue", nil
+	}
 	server.OnCreate = func(context.Context, string) { enqueued++ }
 	handler := server.Handler()
 
@@ -202,13 +215,13 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 		return result.Task, result.Created, false
 	}
 
-	first, created, failed := call("Triage this issue")
-	if failed || !created || first.State != core.TaskQueued || first.NextStage != core.StageTriage {
+	first, created, failed := call("")
+	if failed || !created || first.Title != "Triage this issue" || first.State != core.TaskQueued || first.NextStage != core.StageTriage {
 		t.Fatalf("first task=%+v created=%t failed=%t", first, created, failed)
 	}
-	second, created, failed := call("Triage this issue")
-	if failed || created || second.ID != first.ID || enqueued != 1 {
-		t.Fatalf("retry task=%+v created=%t failed=%t enqueued=%d", second, created, failed, enqueued)
+	second, created, failed := call("")
+	if failed || created || second.ID != first.ID || enqueued != 1 || generated != 1 {
+		t.Fatalf("retry task=%+v created=%t failed=%t enqueued=%d generated=%d", second, created, failed, enqueued, generated)
 	}
 	if _, _, failed = call("Different issue"); !failed {
 		t.Fatal("reusing the idempotency key for different input succeeded")

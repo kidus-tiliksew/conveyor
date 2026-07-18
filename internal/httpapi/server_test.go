@@ -339,6 +339,66 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestCreateTaskGeneratesMissingTitleBeforePersistence(t *testing.T) {
+	st := store.NewMemory()
+	s := NewServer(st)
+	s.Repos = []string{"api"}
+	s.Workspace = "demo"
+	s.BearerToken = "token"
+	generated := 0
+	s.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) {
+		generated++
+		if task.Body != "Describe the requested change" || task.Repo != "api" || task.Source != "dashboard" {
+			t.Fatalf("title input = %+v", task)
+		}
+		return "Generated task title", nil
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"title":"  ","body":"Describe the requested change","repo":"api","source":"dashboard","mode":"manual","spec_approval":false,"merge_approval":true}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var task core.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != core.TaskModeManual || task.SpecApproval || !task.MergeApproval {
+		t.Fatalf("generated=%d task=%+v", generated, task)
+	}
+	persisted, err := st.GetTask(store.WithWorkspace(t.Context(), "demo"), task.ID)
+	if err != nil || persisted.Title != "Generated task title" {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+
+	explicit := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"title":"Keep this title","body":"Other context","repo":"api"}`))
+	explicit.Header.Set("Authorization", "Bearer token")
+	explicitResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(explicitResponse, explicit)
+	if explicitResponse.Code != http.StatusCreated || generated != 1 || !strings.Contains(explicitResponse.Body.String(), `"title":"Keep this title"`) {
+		t.Fatalf("explicit status=%d body=%s generated=%d", explicitResponse.Code, explicitResponse.Body.String(), generated)
+	}
+}
+
+func TestCreateTaskTitleGenerationFailsClosed(t *testing.T) {
+	st := store.NewMemory()
+	s := NewServer(st)
+	s.Repos, s.Workspace, s.BearerToken = []string{"api"}, "demo", "token"
+	s.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "", fmt.Errorf("AI unavailable") }
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Needs a generated title","repo":"api"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "generate task title") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	}
+}
+
 func TestGitHubLifecycleAppearsInTaskActivityAndRequirementsReads(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

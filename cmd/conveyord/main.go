@@ -144,6 +144,7 @@ func main() {
 	srv.Deployment = deployment
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
+	srv.GenerateTaskTitle = d.GenerateTaskTitle
 	srv.OnIntervention = d.HandleIntervention
 	srv.OnMerge = d.MergeApprovedTask
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {

@@ -31,6 +31,10 @@ type Server struct {
 	// OnCreate is invoked with each created task's ID (the dispatcher's
 	// Enqueue). Nil means tasks queue without dispatch (tests).
 	OnCreate func(context.Context, string)
+	// GenerateTaskTitle uses the trusted control-plane AI integration when an
+	// intake source omits a title. Nil fails closed instead of persisting an
+	// untitled task.
+	GenerateTaskTitle func(context.Context, core.Task) (string, error)
 	// OnIntervention advances stage gates after the append-only decision is
 	// committed (spec §4, §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error

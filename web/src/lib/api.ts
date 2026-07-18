@@ -115,7 +115,6 @@ function mutationHeaders(token: string) {
 }
 
 export interface CreateTaskInput {
-  title: string
   body: string
   repo: string
   base_branch?: string
