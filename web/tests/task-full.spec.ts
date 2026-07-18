@@ -9,10 +9,14 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:02:00Z', ended_at: '2026-07-15T12:03:00Z' },
 		],
 		events: [
-			{ id: 1, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { review_work_order_id: 'reviews-review-1-seat-1', review_round: 1, verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 1, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human', payload: { version: 1 }, at: '2026-07-15T11:59:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { review_work_order_id: 'reviews-review-1-seat-1', review_round: 1, verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 3, task_id: taskId, kind: 'review.completed', actor_id: 'legacy-worker', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Legacy duplicate', feedback: 'This standalone duplicate stays hidden.' }, at: '2026-07-15T12:01:15Z' },
+			{ id: 4, task_id: taskId, kind: 'pull_request.opened', actor_id: 'system', actor_role: 'system', payload: { url: 'https://example.test/pull/1' }, at: '2026-07-15T12:01:30Z' },
 			// Deliberately no review_work_order_id: seat matching must fall back
 			// to the event's job id for older payloads.
-			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 5, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 6, task_id: taskId, kind: 'pipeline.bounced', actor_id: 'system', actor_role: 'system', payload: { count: 1, reason_code: 'changes_requested', feedback: 'Changes guidance remains visible.' }, at: '2026-07-15T12:04:00Z' },
 		],
 		work_orders: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
@@ -208,7 +212,7 @@ test('short full-screen task content does not create a nested vertical scrollbar
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
 })
 
-test('review panel folds seats into one card and retains all reviewer feedback', async ({ page }) => {
+test('review panel replaces duplicate review and bounce activity notes', async ({ page }) => {
 	await page.goto('/tasks/reviews/full')
 
 	// One panel card, not one card per seat (spec §21.12 change 4).
@@ -227,7 +231,14 @@ test('review panel folds seats into one card and retains all reviewer feedback',
 	await expect(panel.getByText('Changes guidance remains visible.')).toBeVisible()
 
 	// The per-seat audit events fold into the panel — no duplicate rows.
-	await expect(page.getByText('Independent review:')).toHaveCount(0)
+	await expect(page.getByText(/^Independent review:/)).toHaveCount(0)
+	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
+
+	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	await expect(timelineRows).toHaveCount(3)
+	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
+	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
+	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
 })
 
 test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
