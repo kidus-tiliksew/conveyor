@@ -9,7 +9,9 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:02:00Z', ended_at: '2026-07-15T12:03:00Z' },
 		],
 		events: [
-			{ id: 1, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 1, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { review_work_order_id: 'reviews-review-1-seat-1', review_round: 1, verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			// Deliberately no review_work_order_id: seat matching must fall back
+			// to the event's job id for older payloads.
 			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
 		],
 		work_orders: [
@@ -206,25 +208,26 @@ test('short full-screen task content does not create a nested vertical scrollbar
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
 })
 
-test('review cards and activity notes retain approve and changes feedback', async ({ page }) => {
+test('review panel folds seats into one card and retains all reviewer feedback', async ({ page }) => {
 	await page.goto('/tasks/reviews/full')
 
-	const approvedCard = page.locator('article').filter({ hasText: 'Seat one approved' })
-	await expect(approvedCard.getByText('Reviewer feedback: Approved guidance remains visible.')).toBeVisible()
-	await expect(approvedCard.getByText('Seat 1')).toBeVisible()
-	await expect(approvedCard.getByText('Effort high')).toBeVisible()
-	await expect(approvedCard.getByText('worker-pinned')).toBeVisible()
+	// One panel card, not one card per seat (spec §21.12 change 4).
+	const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+	await expect(panel).toHaveCount(1)
 
-	const changesCard = page.locator('article').filter({ hasText: 'Seat two requested changes' })
-	await expect(changesCard.getByText('Reviewer feedback: Changes guidance remains visible.')).toBeVisible()
-	await expect(changesCard.getByText('Seat 2')).toBeVisible()
-	await expect(changesCard.getByText('worker-pinned')).toBeVisible()
+	// Both seats resolve their verdicts — including the seat whose
+	// review.completed event carries no review_work_order_id.
+	await expect(panel.getByText('Approved', { exact: true })).toBeVisible()
+	await expect(panel.getByText('Changes', { exact: true })).toBeVisible()
+	await expect(panel.getByText('pinned', { exact: true })).toHaveCount(2)
+	await expect(panel.getByText('2 of 2 verdicts in')).toBeVisible()
 
-	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Approved guidance remains visible.' })).toBeVisible()
-	await expect(page.locator('span.text-xs.text-muted').filter({ hasText: 'effort high' })).toBeVisible()
-	const legacyReviewActivity = page.locator('span.text-xs.text-muted').filter({ hasText: 'feedback: Changes guidance remains visible.' })
-	await expect(legacyReviewActivity).toBeVisible()
-	await expect(legacyReviewActivity).not.toContainText('effort')
+	// Feedback from every seat stays visible, attributed in the merged notes.
+	await expect(panel.getByText('Approved guidance remains visible.')).toBeVisible()
+	await expect(panel.getByText('Changes guidance remains visible.')).toBeVisible()
+
+	// The per-seat audit events fold into the panel — no duplicate rows.
+	await expect(page.getByText('Independent review:')).toHaveCount(0)
 })
 
 test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
