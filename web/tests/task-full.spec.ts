@@ -22,6 +22,19 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'diagnostics' ? {
+		jobs: [
+			{ id: 'diagnostics-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'running', started_at: '2026-07-15T12:00:00Z' },
+			{ id: 'diagnostics-review-1-seat-2', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'running', started_at: '2026-07-15T12:00:30Z' },
+		],
+		events: [
+			{ id: 1, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human', payload: { version: 1 }, at: '2026-07-15T11:59:00Z' },
+			{ id: 2, task_id: taskId, kind: 'pull_request.opened', actor_id: 'system', actor_role: 'system', payload: { url: 'https://example.test/pull/1' }, at: '2026-07-15T12:05:00Z' },
+		],
+		work_orders: [
+			{ id: 'diagnostics-review-1-seat-1', task_id: taskId, job_id: 'diagnostics-review-1-seat-1', stage: 'review', state: 'claimed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', queue_entered_at: '2026-07-15T12:00:00Z', queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'diagnostics-review-1-seat-2', task_id: taskId, job_id: 'diagnostics-review-1-seat-2', stage: 'review', state: 'claimed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', queue_entered_at: '2026-07-15T12:00:30Z', queue_deadline: '2026-07-16T12:00:30Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : taskId === 'timeout' ? {
 		jobs: [{ id: 'timeout-review', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'failed', started_at: '2026-07-15T12:00:00Z', ended_at: '2026-07-15T12:30:00Z' }],
 		events: [],
@@ -43,7 +56,8 @@ function activity(taskId: string, overflowing: boolean) {
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
-		{ status: 'expired_without_verdict', work_order_id: 'diagnostics-review-1-seat-2', review_round: 1, review_seat: 2, claimed_at: '2026-07-15T11:30:00Z', lease_expires_at: '2026-07-15T11:45:00Z', reason: 'review claim lease expired without terminal verdict submission' },
+		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-2', review_round: 1, review_seat: 2, claimed_at: '2026-07-15T12:00:30Z', lease_expires_at: '2026-07-15T12:15:30Z', reason: 'review claim is active without a successful submit_review_verdict response' },
+		{ status: 'expired_without_verdict', work_order_id: 'diagnostics-review-0-seat-3', review_round: 0, review_seat: 3, claimed_at: '2026-07-15T12:01:00Z', lease_expires_at: '2026-07-15T12:02:00Z', reason: 'review claim lease expired without terminal verdict submission' },
 	] : []
   return {
     task: {
@@ -241,13 +255,29 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
 })
 
-test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
+test('active review claim diagnostics stay in the review panel instead of standalone history rows', async ({ page }) => {
 	await page.goto('/tasks/diagnostics/full')
 
-	await expect(page.getByText('Review claimed without terminal verdict submission')).toBeVisible()
-	await expect(page.getByText(/seat 1 · diagnostics-review-1-seat-1 · review claim is active/)).toBeVisible()
+	await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
+	await expect(page.getByText(/review claim is active without a successful submit_review_verdict response/)).toHaveCount(0)
+	const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+	await expect(panel).toHaveCount(1)
+	await expect(panel.getByText('Deliberating')).toHaveCount(2)
 	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
-	await expect(page.getByText(/seat 2 · diagnostics-review-1-seat-2 · review claim lease expired/)).toBeVisible()
+	await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
+
+	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	await expect(timelineRows).toHaveCount(4)
+	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
+	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
+	await expect(timelineRows.nth(2)).toContainText('Review claim expired without verdict submission')
+	await expect(timelineRows.nth(3)).toContainText('Pull request opened')
+
+	// The task sheet uses the same historical rendering boundary.
+	await page.goto('/tasks/diagnostics')
+	await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
+	await expect(page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })).toHaveCount(1)
+	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {
