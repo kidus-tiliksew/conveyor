@@ -117,19 +117,21 @@ credentials or subscriptions.
 Create and inspect work:
 
 ```sh
-bin/conveyor --workspace demo task new 'fix the typo in README' --repo api --mode manual
+bin/conveyor --workspace demo task new --repo api --mode manual --message 'fix the typo in README'
 bin/conveyor --workspace demo task list
 bin/conveyor --workspace demo config export > workspace.yaml
 ```
 
 MCP clients can submit newly discovered work through `create_task`. Pass
 `workspace_id` explicitly whenever more than one workspace exists. Required
-arguments are `title`, `repo`, and a caller-stable `idempotency_key`; optional
-arguments are `body`, `source`, `base_branch`, and `level` (default `L2`). The
-tool durably creates and enqueues the normal task, returns immediately, and
-reuses the original task when the same key and input are retried. Luna triage
-then advances through the same audited pipeline used by UI, CLI, API, and
-GitHub intake.
+arguments are `body`, `repo`, and a caller-stable `idempotency_key`; title is
+not an intake field. Optional arguments include `source`, `base_branch`,
+execution mode, and approval-gate overrides. Conveyor uses its trusted
+control-plane AI integration to generate and persist a title from `body`
+before creation succeeds. The tool then enqueues the normal task, returns
+immediately, and reuses the original task when the same key and input are
+retried. Luna triage advances through the same audited pipeline used by UI,
+CLI, API, and GitHub intake.
 
 Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
 Each review must use a fresh agent session and client token; Conveyor rejects

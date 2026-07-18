@@ -31,6 +31,9 @@ type Server struct {
 	// OnCreate is invoked with each created task's ID (the dispatcher's
 	// Enqueue). Nil means tasks queue without dispatch (tests).
 	OnCreate func(context.Context, string)
+	// GenerateTaskTitle uses the trusted control-plane AI integration for every
+	// task intake. Nil fails closed instead of persisting an untitled task.
+	GenerateTaskTitle func(context.Context, core.Task) (string, error)
 	// OnIntervention advances stage gates after the append-only decision is
 	// committed (spec §4, §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
@@ -339,7 +342,6 @@ func reviewable(state core.TaskState) bool {
 }
 
 type createTaskReq struct {
-	Title         string               `json:"title"`
 	Body          string               `json:"body"`
 	Repo          string               `json:"repo"`
 	BaseBranch    string               `json:"base_branch"`
@@ -348,6 +350,20 @@ type createTaskReq struct {
 	Mode          core.TaskMode        `json:"mode"`
 	SpecApproval  *bool                `json:"spec_approval,omitempty"`
 	MergeApproval *bool                `json:"merge_approval,omitempty"`
+}
+
+func (req *createTaskReq) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for name := range fields {
+		if strings.EqualFold(name, "title") {
+			return fmt.Errorf("title is generated and must not be supplied")
+		}
+	}
+	type request createTaskReq
+	return json.Unmarshal(data, (*request)(req))
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {

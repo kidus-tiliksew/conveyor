@@ -38,7 +38,7 @@ func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]by
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("task", `{"title":"Attachment task","body":"Use every file","repo":"api","mode":"manual","spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
+	if err := writer.WriteField("task", `{"body":"Use every file","repo":"api","mode":"manual","spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.WriteField("idempotency_key", intakeKey); err != nil {
@@ -68,6 +68,7 @@ func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *te
 	flaky := &failOnceArtifactStore{Store: base, failAt: 2}
 	server := NewServer(flaky)
 	server.BearerToken, server.Workspace, server.Repos = "token", "demo", []string{"api"}
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Attachment task", nil }
 	enqueued := 0
 	server.OnCreate = func(ctx context.Context, taskID string) {
 		enqueued++
@@ -243,6 +244,7 @@ func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, Now: func() time.Time { return now }}
 	server := NewServer(st)
 	server.BearerToken, server.Workspace, server.ConfigProvider, server.Workers = "token", "demo", provider, workers
+	server.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) { return task.Body, nil }
 	request := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer token")
@@ -250,10 +252,10 @@ func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	if response := request(`{"title":"explicit","repo":"api","mode":"auto"}`); response.Code != http.StatusConflict {
+	if response := request(`{"body":"explicit","repo":"api","mode":"auto"}`); response.Code != http.StatusConflict {
 		t.Fatalf("explicit Auto status=%d body=%s", response.Code, response.Body.String())
 	}
-	response := request(`{"title":"default","repo":"api"}`)
+	response := request(`{"body":"default","repo":"api"}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("default status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -277,7 +279,7 @@ func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	response = request(`{"title":"healthy","repo":"api","mode":"auto","spec_approval":false,"merge_approval":false}`)
+	response = request(`{"body":"healthy","repo":"api","mode":"auto","spec_approval":false,"merge_approval":false}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("healthy status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -295,9 +297,10 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	s.Repos = []string{"api"}
 	s.Workspace = "test"
 	s.BearerToken = "secret-token"
+	s.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Fix it", nil }
 	s.OnCreate = func(_ context.Context, id string) { created <- id }
 	h := s.Handler()
-	body := []byte(`{"title":"fix it","repo":"api"}`)
+	body := []byte(`{"body":"fix it","repo":"api"}`)
 
 	for _, tc := range []struct {
 		name   string
@@ -336,6 +339,66 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("created tasks = %d, want 1", len(tasks))
+	}
+}
+
+func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *testing.T) {
+	st := store.NewMemory()
+	s := NewServer(st)
+	s.Repos = []string{"api"}
+	s.Workspace = "demo"
+	s.BearerToken = "token"
+	generated := 0
+	s.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) {
+		generated++
+		if task.Body != "Describe the requested change" || task.Repo != "api" || task.Source != "dashboard" {
+			t.Fatalf("title input = %+v", task)
+		}
+		return "Generated task title", nil
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Describe the requested change","repo":"api","source":"dashboard","mode":"manual","spec_approval":false,"merge_approval":true}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var task core.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != core.TaskModeManual || task.SpecApproval || !task.MergeApproval {
+		t.Fatalf("generated=%d task=%+v", generated, task)
+	}
+	persisted, err := st.GetTask(store.WithWorkspace(t.Context(), "demo"), task.ID)
+	if err != nil || persisted.Title != "Generated task title" {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+
+	explicit := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"title":"Keep this title","body":"Other context","repo":"api"}`))
+	explicit.Header.Set("Authorization", "Bearer token")
+	explicitResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(explicitResponse, explicit)
+	if explicitResponse.Code != http.StatusBadRequest || generated != 1 || !strings.Contains(explicitResponse.Body.String(), "must not be supplied") {
+		t.Fatalf("explicit status=%d body=%s generated=%d", explicitResponse.Code, explicitResponse.Body.String(), generated)
+	}
+}
+
+func TestCreateTaskTitleGenerationFailsClosed(t *testing.T) {
+	st := store.NewMemory()
+	s := NewServer(st)
+	s.Repos, s.Workspace, s.BearerToken = []string{"api"}, "demo", "token"
+	s.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "", fmt.Errorf("AI unavailable") }
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Needs a generated title","repo":"api"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "generate task title") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 }
 

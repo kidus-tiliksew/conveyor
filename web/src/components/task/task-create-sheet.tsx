@@ -36,7 +36,6 @@ export function TaskCreateSheet() {
   const workerHealth = useQuery({ queryKey: ['workers', token, workspace?.workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace?.workspace), refetchInterval: 5000 })
   const autoAvailable = workerHealth.data?.auto_available === true
 
-  const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
@@ -52,7 +51,6 @@ export function TaskCreateSheet() {
   const mutation = useMutation({
     mutationFn: async () => {
       const task = await createTask(token, {
-        title: title.trim(),
         body: body.trim(),
         repo: repoName,
         ...(mode ? { mode } : {}),
@@ -92,13 +90,9 @@ export function TaskCreateSheet() {
       </header>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        <Field label="Title">
-          <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What should change?" maxLength={200} />
-        </Field>
-
         <Field
           label="Description"
-          hint="Becomes the triage and spec prompt — richer context here saves bounce rounds."
+          hint="AI generates the task title from this context, which also becomes the triage and spec prompt."
         >
           <Textarea
             value={body}
@@ -200,7 +194,7 @@ export function TaskCreateSheet() {
             </>
           )}
         </p>
-        <Button disabled={!token || !title.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
+        <Button disabled={!token || !body.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
           {mutation.isPending ? 'Creating…' : 'Create task'}
         </Button>
       </footer>

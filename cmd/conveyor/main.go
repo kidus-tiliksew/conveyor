@@ -106,10 +106,10 @@ func taskCmd() *cobra.Command {
 
 	var repo, base, body, mode, specGate, mergeGate string
 	newCmd := &cobra.Command{
-		Use:   "new <title>",
+		Use:   "new",
 		Short: "Create a task",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			specApproval, err := optionalGate(specGate)
 			if err != nil {
 				return err
@@ -118,7 +118,7 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithMode(args[0], body, repo, base, core.TaskMode(mode), specApproval, mergeApproval)
+			t, err := newClient().createTaskWithMode(body, repo, base, core.TaskMode(mode), specApproval, mergeApproval)
 			if err != nil {
 				return err
 			}
