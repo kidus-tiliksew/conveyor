@@ -143,6 +143,23 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	if task.State == core.TaskRunning && latestRound > 0 {
 		return nil
 	}
+	jobs, orders, err := BuildReviewRound(cfg, task, route, round)
+	if err != nil {
+		return err
+	}
+	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+		return err
+	}
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
+}
+
+// BuildReviewRound snapshots the current workspace panel and harness routing
+// into a new immutable round. Retry recovery uses this same constructor so it
+// cannot accidentally reuse an expired seat's stale execution snapshot.
+func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round int) ([]core.Job, []core.WorkOrder, error) {
+	if cfg == nil || round <= 0 {
+		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
+	}
 	now := time.Now().UTC()
 	queueTimeout := cfg.WorkOrderQueueTimeout
 	if queueTimeout <= 0 {
@@ -166,7 +183,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			var ok bool
 			harnessConfig, ok = reviewHarnessSnapshot(cfg, harness)
 			if !ok {
-				return fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
+				return nil, nil, fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
 			}
 		}
 		if harnessConfig != nil {
@@ -182,10 +199,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
 	}
-	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
-		return err
-	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
+	return jobs, orders, nil
 }
 
 func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {

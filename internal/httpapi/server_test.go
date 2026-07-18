@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -159,6 +160,77 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	count, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
 	if count != 1 {
 		t.Fatalf("recovery events=%d", count)
+	}
+}
+
+func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "retry-review-http", Workspace: "demo", Repo: "api", Branch: "conveyor/task-retry-review-http", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for seat, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderTimedOut} {
+		id := fmt.Sprintf("%s-review-1-seat-%d", task.ID, seat+1)
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: state, ReviewRound: 1, ReviewSeat: seat + 1, LastFailureMessage: "worker retries exhausted"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 9, "head_sha": "head-9"})}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
+		Repos:     []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
+		Routing:   config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
+		Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}},
+		Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
+	}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	service := &workorder.Service{Store: st, ConfigProvider: provider, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+		return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "head-9"}, nil
+	}}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace, server.ConfigProvider, server.WorkOrders = "token", "demo", provider, service
+
+	activity := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"review_recovery"`) || !strings.Contains(activity.Body.String(), `"prior_round":1`) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+	reviews := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), task.ID) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) {
+		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+	call := func(token, requestID, reason string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review-round/retry?workspace_id=demo", strings.NewReader(fmt.Sprintf(`{"request_id":%q,"reason":%q}`, requestID, reason)))
+		request.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("", "retry-1", "review worker timed out"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("token", "retry-1", ""); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status=%d body=%s", response.Code, response.Body.String())
+	}
+	first := call("token", "retry-1", "review worker timed out")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"new_round":2`) || strings.Count(first.Body.String(), `"review_round":2`) != 2 {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	if duplicate := call("token", "retry-1", "review worker timed out"); duplicate.Code != http.StatusOK || !strings.Contains(duplicate.Body.String(), `"new_round":2`) {
+		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	if conflict := call("token", "retry-1", "different reason"); conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
 }
 

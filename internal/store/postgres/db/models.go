@@ -135,6 +135,18 @@ type ReviewPublication struct {
 	RequiredEffort         string             `json:"required_effort"`
 }
 
+type ReviewRoundRetry struct {
+	WorkspaceID string             `json:"workspace_id"`
+	RequestID   string             `json:"request_id"`
+	TaskID      string             `json:"task_id"`
+	Reason      string             `json:"reason"`
+	PriorRound  int32              `json:"prior_round"`
+	NewRound    int32              `json:"new_round"`
+	PrHead      string             `json:"pr_head"`
+	ActorID     string             `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Task struct {
 	ID              string             `json:"id"`
 	WorkspaceID     string             `json:"workspace_id"`

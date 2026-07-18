@@ -7,6 +7,7 @@ import { SpecCard } from '../components/task/spec-card'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
 import { WorkOrderRecoveryCard } from '../components/task/work-order-recovery-card'
+import { ReviewRoundRetryCard } from '../components/task/review-round-retry-card'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -61,7 +62,7 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 }
 
 function FullBody({ item }: { item: ActivityItem }) {
-  const reviewable = item.needs_attention || item.task.state === 'approved'
+  const reviewable = item.task.state === 'awaiting_human' || item.task.state === 'parked' || item.task.state === 'approved'
   return (
     <div
       aria-label="Task content"
@@ -82,6 +83,7 @@ function FullBody({ item }: { item: ActivityItem }) {
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
           {reviewable && <ReviewPanel item={item} />}
+          <ReviewRoundRetryCard item={item} />
           <WorkOrderRecoveryCard item={item} />
           {canRedispatch(item) && <RedispatchCard item={item} />}
           <Timeline item={item} />
