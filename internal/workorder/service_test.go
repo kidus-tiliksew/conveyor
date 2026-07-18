@@ -79,6 +79,63 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "review-retry-service", Workspace: "demo", Repo: "app", Branch: "conveyor/task-review-retry-service", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for seat, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderTimedOut} {
+		id := task.ID + "-review-1-seat-" + string(rune('1'+seat))
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: state, ReviewRound: 1, ReviewSeat: seat + 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 7, "head_sha": "approved-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
+		Repos:   []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
+		Harnesses: []config.Harness{
+			{Name: "codex", Command: []string{"current-codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
+			{Name: "claude", Command: []string{"current-claude", "{prompt}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
+		},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex", Effort: "high"}, {Model: "claude-current", Harness: "claude"}}},
+	}
+	currentHead := "changed-head"
+	service := &Service{
+		Store:          st,
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+			return githubtrigger.ReviewTarget{Number: 7, HeadSHA: currentHead}, nil
+		},
+	}
+	if _, err := service.RetryReviewRound(ctx, task.ID, "retry-head", "reviewer timed out"); !errors.Is(err, store.ErrReviewRetryConflict) || !strings.Contains(err.Error(), "requires implementation handoff") {
+		t.Fatalf("changed head error=%v", err)
+	}
+	if orders, _ := st.ListTaskWorkOrders(ctx, task.ID); len(orders) != 2 {
+		t.Fatalf("changed head created orders=%+v", orders)
+	}
+	currentHead = "approved-head"
+	result, err := service.RetryReviewRound(ctx, task.ID, "retry-head", "reviewer timed out")
+	if err != nil || result.NewRound != 2 || len(result.WorkOrders) != 2 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if result.WorkOrders[0].RequiredModel != "gpt-current" || result.WorkOrders[0].RequiredEffort != "high" || result.WorkOrders[0].RequiredHarnessConfig.Command[0] != "current-codex" || result.WorkOrders[1].RequiredHarnessConfig.Command[0] != "current-claude" {
+		t.Fatalf("current snapshots=%+v", result.WorkOrders)
+	}
+	duplicate, err := service.RetryReviewRound(ctx, task.ID, "retry-head", "reviewer timed out")
+	if err != nil || duplicate.NewRound != 2 || len(duplicate.WorkOrders) != 2 {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+}
+
 type staticAgent struct {
 	output string
 	input  inprocess.Input

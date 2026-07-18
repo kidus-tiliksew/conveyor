@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
@@ -539,6 +540,7 @@ type reviewItem struct {
 	Spec              *core.SpecVersion               `json:"spec,omitempty"`
 	WorkOrders        []core.WorkOrder                `json:"work_orders"`
 	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
+	ReviewRecovery    *store.ReviewRecoveryState      `json:"review_recovery,omitempty"`
 }
 
 type activityItem struct {
@@ -547,6 +549,7 @@ type activityItem struct {
 	LastEventAt       time.Time                       `json:"last_event_at"`
 	NeedsAttention    bool                            `json:"needs_attention"`
 	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
+	ReviewRecovery    *store.ReviewRecoveryState      `json:"review_recovery,omitempty"`
 }
 
 func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
@@ -574,14 +577,15 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 	}
 	items := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
-		if reviewsOnly && !reviewable(task.State) {
+		marker := markerByTask[task.ID]
+		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil {
 			continue
 		}
-		marker := markerByTask[task.ID]
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked,
+			NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil,
 			ReviewDiagnostics: marker.ReviewDiagnostics,
+			ReviewRecovery:    marker.ReviewRecovery,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -630,10 +634,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked,
+		NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil,
 		Spec:              specPointer,
 		WorkOrders:        workOrders,
 		ReviewDiagnostics: store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
+		ReviewRecovery:    store.ReviewRecoveryNeeded(workOrders),
 	})
 }
 
