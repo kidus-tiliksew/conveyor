@@ -124,10 +124,10 @@ bin/conveyor --workspace demo config export > workspace.yaml
 
 MCP clients can submit newly discovered work through `create_task`. Pass
 `workspace_id` explicitly whenever more than one workspace exists. Required
-arguments are `repo` and a caller-stable `idempotency_key`; `body` is also
-required when `title` is omitted. Optional arguments are `title`, `source`,
-`base_branch`, and `level` (default `L2`). Without a title, Conveyor uses its
-trusted control-plane AI integration to generate and persist one from `body`
+arguments are `body`, `repo`, and a caller-stable `idempotency_key`; title is
+not an intake field. Optional arguments include `source`, `base_branch`,
+execution mode, and approval-gate overrides. Conveyor uses its trusted
+control-plane AI integration to generate and persist a title from `body`
 before creation succeeds. The tool then enqueues the normal task, returns
 immediately, and reuses the original task when the same key and input are
 retried. Luna triage advances through the same audited pipeline used by UI,

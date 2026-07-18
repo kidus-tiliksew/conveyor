@@ -99,11 +99,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if workerAuth {
 			return nil, fmt.Errorf("worker credentials cannot create tasks")
 		}
+		if _, supplied := args["title"]; supplied {
+			return nil, fmt.Errorf("title is generated and must not be supplied")
+		}
 		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
 			return nil, fmt.Errorf("idempotency_key is required")
 		}
 		result, err := s.createTaskRecord(ctx, createTaskReq{
-			Title:         stringArg("title"),
 			Body:          stringArg("body"),
 			Repo:          stringArg("repo"),
 			BaseBranch:    stringArg("base_branch"),
@@ -294,7 +296,7 @@ func mcpTools() []map[string]any {
 	num := map[string]string{"type": "number"}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace and enqueue its existing triage pipeline. When title is omitted, Conveyor generates it from body using the trusted control-plane AI integration. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "title": str, "body": str, "repo": str, "base_branch": str, "source": str, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": str, "repo": str, "base_branch": str, "source": str, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},

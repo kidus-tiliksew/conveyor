@@ -1,6 +1,6 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.25),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.26),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion and transport rules are clarified by §21.14
 and §21.20; worker-attempt recovery is fixed by §21.21, portable review

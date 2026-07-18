@@ -21,12 +21,22 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 		if got := r.Header.Get("X-Workspace-ID"); got != "engineering" {
 			t.Fatalf("X-Workspace-ID = %q", got)
 		}
+		var input map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		if input["body"] != "fix it" {
+			t.Fatalf("body = %#v", input)
+		}
+		if _, supplied := input["title"]; supplied {
+			t.Fatalf("CLI still sends title: %#v", input)
+		}
 		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1"})
 	}))
 	defer srv.Close()
 
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
-	if _, err := c.createTask("fix it", "", "api", "main"); err != nil {
+	if _, err := c.createTask("fix it", "api", "main"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,8 +64,22 @@ func TestClientWorkspaceConfigUpdateSendsIfMatch(t *testing.T) {
 
 func TestClientRefusesCreateWithoutToken(t *testing.T) {
 	c := &client{base: "http://unused"}
-	if _, err := c.createTask("fix it", "", "api", "main"); err == nil {
+	if _, err := c.createTask("fix it", "api", "main"); err == nil {
 		t.Fatal("expected missing-token error")
+	}
+}
+
+func TestTaskNewDoesNotAcceptATitleArgument(t *testing.T) {
+	command := taskCmd()
+	newCommand, _, err := command.Find([]string{"new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newCommand.Use != "new" {
+		t.Fatalf("use = %q", newCommand.Use)
+	}
+	if err := newCommand.Args(newCommand, []string{"manual title"}); err == nil {
+		t.Fatal("task new accepted a title argument")
 	}
 }
 

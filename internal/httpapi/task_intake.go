@@ -40,16 +40,12 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 }
 
 func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskReq, intakeKey, defaultSource string, initialState core.TaskState) (taskCreateResult, error) {
-	req.Title = strings.TrimSpace(req.Title)
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
 	intakeKey = strings.TrimSpace(intakeKey)
-	if len(req.Title) > 200 {
-		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "title must be at most 200 characters"}
-	}
-	if req.Title == "" && strings.TrimSpace(req.Body) == "" {
-		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "body is required when title is omitted"}
+	if strings.TrimSpace(req.Body) == "" {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "body is required"}
 	}
 	if req.Repo == "" {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "repo is required"}
@@ -133,18 +129,16 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 			}
 		}
 	}
-	if req.Title == "" {
-		if s.GenerateTaskTitle == nil {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}
-		}
-		generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo})
-		if err != nil {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("generate task title: %v", err)}
-		}
-		req.Title = strings.TrimSpace(generated)
-		if req.Title == "" || len(req.Title) > 200 {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "generate task title: AI returned an invalid title"}
-		}
+	if s.GenerateTaskTitle == nil {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}
+	}
+	generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo})
+	if err != nil {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("generate task title: %v", err)}
+	}
+	title := strings.TrimSpace(generated)
+	if title == "" || len(title) > 200 {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "generate task title: AI returned an invalid title"}
 	}
 
 	id := core.NewTaskID()
@@ -153,7 +147,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		Workspace:     workspace,
 		Source:        req.Source,
 		IntakeKey:     intakeKey,
-		Title:         req.Title,
+		Title:         title,
 		Body:          req.Body,
 		Level:         req.Level,
 		Mode:          req.Mode,
@@ -190,7 +184,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 }
 
 func sameIntakeRequest(task core.Task, req createTaskReq) bool {
-	if (req.Title != "" && task.Title != req.Title) || task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
+	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
 		return false
 	}
 	if req.Mode == "" && req.Level != "" {

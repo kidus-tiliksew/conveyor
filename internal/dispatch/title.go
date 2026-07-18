@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 )
 
-// GenerateTaskTitle resolves a missing intake title through the same trusted
+// GenerateTaskTitle resolves an intake title through the same trusted
 // in-process AI client and triage route used by the control-plane pipeline.
 // Intake fails if the model cannot produce one valid title; untitled tasks are
 // never persisted.
