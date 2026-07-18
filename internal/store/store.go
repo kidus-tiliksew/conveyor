@@ -223,7 +223,7 @@ type ActivityMarker struct {
 
 // InterruptedReviewRecoveryState describes only the latest round's incomplete
 // seats whose worker attempts expired or were retry-suppressed. Completed seats
-// remain authoritative and are never recreated (spec §21.24).
+// remain authoritative and are never recreated (spec §21.26).
 type InterruptedReviewRecoveryState struct {
 	Needed         bool             `json:"needed"`
 	ReviewRound    int              `json:"review_round"`

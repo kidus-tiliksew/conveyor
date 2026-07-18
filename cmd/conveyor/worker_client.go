@@ -31,7 +31,7 @@ func (e *workerHTTPError) Error() string {
 
 // transientWorkerError is deliberately narrow: authentication, conflicts,
 // malformed responses, and invalid configuration must fail closed instead of
-// disappearing into the reconnect loop (spec §21.24).
+// disappearing into the reconnect loop (spec §21.26).
 func transientWorkerError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
