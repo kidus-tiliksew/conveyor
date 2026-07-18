@@ -117,7 +117,7 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
 	now := time.Now().UTC()
 	expires := now.Add(lease)
-	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND session_id=$6 AND state='claimed' AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID, sessionID)
+	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND session_id=$6 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID, sessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
@@ -148,6 +148,24 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		return core.WorkOrder{}, err
 	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
+		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+	}
+	if !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
+		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
+		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+	}
+	if !current.LeaseExpiresAt.After(now) {
+		if _, err = s.expireWorkOrderClaimTx(ctx, tx, current, now); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
 		return core.WorkOrder{}, store.ErrWorkerUnauthorized
 	}
 	retryCount := current.AutomaticRetryCount

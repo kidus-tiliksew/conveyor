@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -136,6 +137,12 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)
+	if _, err = st.RenewWorkerClaim(ctx, expiredJob.ID, worker.ID, "expiring-session", time.Minute); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("expired session renewed directly: %v", err)
+	}
+	if _, err = st.ReleaseWorkerClaim(ctx, expiredJob.ID, worker.ID, core.WorkOrderRelease{SessionID: "expiring-session", Outcome: core.WorkOrderOutcomeReleased}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("expired session released directly: %v", err)
+	}
 	expired, err := st.GetWorkOrder(ctx, expiredJob.ID)
 	if err != nil || expired.State != core.WorkOrderQueued || !expired.RetrySuppressed || expired.LastAttemptOutcome != core.WorkOrderOutcomeExpired || expired.WorkerID != "" || expired.SessionID != "" || !expired.ExecutionStartedAt.IsZero() || !expired.ExecutionDeadline.IsZero() {
 		t.Fatalf("expired=%+v err=%v", expired, err)

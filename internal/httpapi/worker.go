@@ -204,6 +204,20 @@ func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, order)
 }
 
+func (s *Server) reconcileWorkerOrder(w http.ResponseWriter, r *http.Request) {
+	worker, ok := workerFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	result, err := s.Workers.Reconcile(r.Context(), worker, chi.URLParam(r, "id"), r.URL.Query().Get("session_id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
 	var request struct {

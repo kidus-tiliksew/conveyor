@@ -8,6 +8,8 @@ import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
 import { WorkOrderRecoveryCard } from '../components/task/work-order-recovery-card'
 import { ReviewRoundRetryCard } from '../components/task/review-round-retry-card'
+import { InterruptedReviewRecoveryCard } from '../components/task/interrupted-review-recovery-card'
+import { WorkerStatusCard } from '../components/task/worker-status-card'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -83,6 +85,8 @@ function FullBody({ item }: { item: ActivityItem }) {
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
           {reviewable && <ReviewPanel item={item} />}
+          <WorkerStatusCard item={item} />
+          <InterruptedReviewRecoveryCard item={item} />
           <ReviewRoundRetryCard item={item} />
           <WorkOrderRecoveryCard item={item} />
           {canRedispatch(item) && <RedispatchCard item={item} />}

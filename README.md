@@ -153,6 +153,13 @@ health; `worker revoke <worker-id>` revokes an enrollment. Explicit Auto intake
 fails while routed harness health is unavailable; workspace-default Auto
 instead persists Manual and records an audit event.
 
+The worker reconnects across bounded transient control-plane failures while
+reusing that saved credential; revoked credentials and invalid configuration
+remain terminal. Run it under a service manager for durable operation. Optional
+macOS sleep prevention, launchd/systemd examples, reconnect expectations, and
+interrupted-review recovery are documented in
+[docs/worker-operations.md](docs/worker-operations.md).
+
 ### Branch ownership
 
 Task intake records the canonical `conveyor/task-<id>` branch name and selected

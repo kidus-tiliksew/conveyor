@@ -171,6 +171,16 @@ export async function retryReviewRound(taskId: string, token: string, requestId:
 	return response.json() as Promise<import('./types').ReviewRoundRetryResult>
 }
 
+export async function recoverInterruptedReviewRound(taskId: string, token: string, requestId: string) {
+	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`), {
+		method: 'POST',
+		headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+		body: JSON.stringify({ request_id: requestId }),
+	})
+	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+	return response.json() as Promise<import('./types').InterruptedReviewRecoveryResult>
+}
+
 export interface ReviewInput {
   action: InterventionAction
   reasonCode: string

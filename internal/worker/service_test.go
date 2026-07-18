@@ -98,6 +98,33 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	worker := core.Worker{ID: "worker-status", Workspace: "demo", Name: "status", CredentialHash: "hash", CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), []core.HarnessProbe{{Harness: "claude", Healthy: false, CheckedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "claude"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "claude", Execution: config.ExecutionMCP}, "review": {Harness: "claude", Execution: config.ExecutionMCP}}}}
+	service := &Service{Store: st, Now: func() time.Time { return now }}
+	task := core.Task{ID: "worker-status-task", Workspace: "demo", Mode: core.TaskModeAuto, NextStage: core.StageReview}
+	orders := []core.WorkOrder{{ID: "seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderQueued, RequiredHarness: "claude", RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired}}
+	status := service.TaskAvailability(ctx, cfg, task, orders)
+	if status.Available || status.QueueContext != "interrupted" || status.LastHeartbeatAge != "0s" || len(status.RequiredHarnesses) != 1 || status.RequiredHarnesses[0] != "claude" {
+		t.Fatalf("status=%+v", status)
+	}
+	if _, err := st.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), []core.HarnessProbe{{Harness: "claude", Healthy: true, CheckedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if healthy := service.TaskAvailability(ctx, cfg, task, orders); !healthy.Available {
+		t.Fatalf("healthy status=%+v", healthy)
+	}
+}
+
 func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()

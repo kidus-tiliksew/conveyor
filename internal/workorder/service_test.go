@@ -450,6 +450,43 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 }
 
+func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "stale-session", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
+		id := task.ID + "-" + string(stage)
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: stage, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1}
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "expired-" + string(stage), ClientToken: "token-" + string(stage), WorkerID: "worker", ClaimantID: "worker", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		session := "expired-" + string(stage)
+		if _, err := st.RenewWorkerClaim(ctx, id, "worker", session, time.Minute); !errors.Is(err, store.ErrWorkerUnauthorized) {
+			t.Fatalf("%s stale renewal err=%v", stage, err)
+		}
+		if _, err := st.ReleaseWorkerClaim(ctx, id, "worker", core.WorkOrderRelease{SessionID: session}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+			t.Fatalf("%s stale release err=%v", stage, err)
+		}
+		if stage == core.StageImplement {
+			if _, err := service.SubmitForReview(ctx, id, session); err == nil {
+				t.Fatal("expired implementation session submitted")
+			}
+		} else if _, err := service.SubmitVerdict(ctx, id, session, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "stale"}); err == nil {
+			t.Fatal("expired review session submitted verdict")
+		}
+	}
+}
+
 func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()

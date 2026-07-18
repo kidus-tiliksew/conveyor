@@ -2,7 +2,7 @@
 
 **Specification — v1.24**
 **Date:** July 18, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), worker-attempt recovery is bounded and audited (§21.21), portable GitHub review projection plus headless-worker reliability are defined by §21.22, and terminal review-round recovery is defined by §21.23
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), worker-attempt recovery is bounded and audited (§21.21), portable GitHub review projection plus headless-worker reliability are defined by §21.22, terminal review-round retry is defined by §21.23, and reconnect-safe workers plus interrupted-seat recovery are defined by §21.24
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -2037,4 +2037,50 @@ normal dispatch and aggregation behavior unchanged:
 
 ---
 
-*End of specification. v1.24 accepted July 18, 2026; all prior amendments remain in force, and §21.23 adds audited full-round recovery for terminal timed-out review panels. Subsequent changes proceed by amendment with version bumps.*
+### 21.24 v1.25 — Reconnect-safe workers and interrupted review-seat recovery (July 18, 2026)
+
+Operational evidence showed that a short control-plane restart terminated the
+foreground worker, while a host scheduling gap could make child authority
+ambiguous. Review seats whose claims expired were left queued but suppressed,
+which is different from the terminal timed-out panel handled by §21.23. This
+amendment refines §§21.13, 21.21, and 21.23 without weakening the fail-closed
+lease boundary:
+
+1. **Idle workers reconnect.** Configuration, heartbeat, and polling transport
+   failures plus retryable 5xx responses use interruptible bounded exponential
+   backoff with jitter. Saved enrollment credentials are reused. Revoked or
+   invalid credentials, non-retryable responses, and structurally invalid
+   configuration remain terminal with actionable errors.
+2. **Active renewal uses the known lease.** A transient renewal failure is
+   retried only before the current lease's safety margin. A successful renewal
+   retains the same child and attempt. A terminal response, scheduler gap, or
+   unresolved request at the safety boundary stops the child and permanently
+   abandons local authority; neither reconnect nor best-effort release grants
+   it back.
+3. **Reconciliation is server-authoritative.** After uncertain authority the
+   worker stops the child, then reads the durable claim state through the
+   worker-authenticated reconciliation operation. Expired sessions remain
+   rejected for renewal, release, implementation submission, and review
+   verdict submission.
+4. **Interrupted seats recover in place.** A workspace-authorized operation
+   identifies the latest review round and atomically requeues only incomplete,
+   unclaimed, retry-suppressed seats. Completed work orders and their verdicts
+   are retained. This does not replace §21.23's full new-round retry for a
+   terminal `timed_out` panel.
+5. **Round recovery is idempotent and audited.** A workspace-wide request ID
+   binds the task and round. Exact retries return the original result;
+   divergent or concurrent conflicting requests fail closed. Round and
+   seat-level events record actor, workspace, request, prior/resulting state,
+   recovered seats, and retained completed seats in memory and PostgreSQL.
+6. **Operators see serviceability.** Task and workspace views report required
+   harness health, latest heartbeat/disconnection context, and whether queued
+   work never started or was interrupted. Exactly one **Recover interrupted
+   review round** action appears when eligible seats exist and no conflicting
+   active attempt does.
+7. **Sleep prevention remains optional.** Durable service-manager operation is
+   documented. macOS `caffeinate` may be used intentionally, but Conveyor does
+   not force wakefulness and correctness never depends on a platform sleep API.
+
+---
+
+*End of specification. v1.25 accepted July 18, 2026; all prior amendments remain in force, and §21.24 adds reconnect-safe workers plus audited same-round recovery for interrupted review seats. Subsequent changes proceed by amendment with version bumps.*

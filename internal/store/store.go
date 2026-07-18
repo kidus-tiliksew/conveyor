@@ -79,6 +79,7 @@ type Store interface {
 	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error
 	RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
+	RecoverInterruptedReviewRound(ctx context.Context, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
@@ -212,11 +213,79 @@ func reviewLifecycleEventMatches(order core.WorkOrder, event core.Event) bool {
 // index plus narrow review lifecycle diagnostics. Full job and event histories
 // are still loaded only for one selected task.
 type ActivityMarker struct {
-	TaskID            string
-	LatestStage       core.Stage
-	LastEventAt       time.Time
-	ReviewDiagnostics []ReviewVerdictDiagnostic
-	ReviewRecovery    *ReviewRecoveryState
+	TaskID                    string
+	LatestStage               core.Stage
+	LastEventAt               time.Time
+	ReviewDiagnostics         []ReviewVerdictDiagnostic
+	ReviewRecovery            *ReviewRecoveryState
+	InterruptedReviewRecovery *InterruptedReviewRecoveryState
+}
+
+// InterruptedReviewRecoveryState describes only the latest round's incomplete
+// seats whose worker attempts expired or were retry-suppressed. Completed seats
+// remain authoritative and are never recreated (spec §21.24).
+type InterruptedReviewRecoveryState struct {
+	Needed         bool             `json:"needed"`
+	ReviewRound    int              `json:"review_round"`
+	Reason         string           `json:"reason"`
+	EligibleOrders []core.WorkOrder `json:"eligible_orders"`
+	RetainedOrders []core.WorkOrder `json:"retained_orders"`
+}
+
+type InterruptedReviewRecoveryRequest struct {
+	TaskID    string
+	RequestID string
+	Round     int
+}
+
+type InterruptedReviewRecoveryResult struct {
+	RequestID       string           `json:"request_id"`
+	TaskID          string           `json:"task_id"`
+	ReviewRound     int              `json:"review_round"`
+	RecoveredOrders []core.WorkOrder `json:"recovered_orders"`
+	RetainedOrders  []core.WorkOrder `json:"retained_orders"`
+}
+
+type memoryInterruptedReviewRecovery struct {
+	Workspace string
+	Request   InterruptedReviewRecoveryRequest
+	Result    InterruptedReviewRecoveryResult
+}
+
+func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReviewRecoveryState {
+	latest := 0
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewRound > latest {
+			latest = order.ReviewRound
+		}
+	}
+	if latest == 0 {
+		return nil
+	}
+	state := &InterruptedReviewRecoveryState{Needed: true, ReviewRound: latest, Reason: "latest review round has interrupted seats whose claims are no longer authorized"}
+	for _, order := range orders {
+		if order.Stage != core.StageReview || order.ReviewRound != latest {
+			continue
+		}
+		if order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
+			return nil
+		}
+		if order.State == core.WorkOrderTimedOut || order.State == core.WorkOrderStale {
+			return nil
+		}
+		if order.State == core.WorkOrderQueued && order.RetrySuppressed && order.SessionID == "" && order.WorkerID == "" {
+			state.EligibleOrders = append(state.EligibleOrders, order)
+		}
+		if order.State == core.WorkOrderCompleted {
+			state.RetainedOrders = append(state.RetainedOrders, order)
+		}
+	}
+	if len(state.EligibleOrders) == 0 {
+		return nil
+	}
+	sort.Slice(state.EligibleOrders, func(i, j int) bool { return state.EligibleOrders[i].ReviewSeat < state.EligibleOrders[j].ReviewSeat })
+	sort.Slice(state.RetainedOrders, func(i, j int) bool { return state.RetainedOrders[i].ReviewSeat < state.RetainedOrders[j].ReviewSeat })
+	return state
 }
 
 // ReviewRecoveryState is the actionable projection of a latest review round
@@ -288,21 +357,22 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder) *ReviewRecoveryState {
 
 func NewMemory() Store {
 	return &memory{
-		tasks:         map[string]core.Task{},
-		jobs:          map[string][]core.Job{},
-		events:        map[string][]core.Event{},
-		interventions: map[string][]core.Intervention{},
-		transcripts:   map[string]core.Transcript{},
-		specs:         map[string][]core.SpecVersion{},
-		workOrders:    map[string]core.WorkOrder{},
-		publications:  map[string]core.ReviewPublication{},
-		github:        map[string]core.GitHubLifecycle{},
-		features:      map[string]core.Feature{},
-		artifacts:     map[memoryArtifactKey]memoryArtifact{},
-		pairings:      map[string]core.WorkerPairing{},
-		workers:       map[string]core.Worker{},
-		recoveries:    map[string]struct{}{},
-		reviewRetries: map[string]memoryReviewRoundRetry{},
+		tasks:                       map[string]core.Task{},
+		jobs:                        map[string][]core.Job{},
+		events:                      map[string][]core.Event{},
+		interventions:               map[string][]core.Intervention{},
+		transcripts:                 map[string]core.Transcript{},
+		specs:                       map[string][]core.SpecVersion{},
+		workOrders:                  map[string]core.WorkOrder{},
+		publications:                map[string]core.ReviewPublication{},
+		github:                      map[string]core.GitHubLifecycle{},
+		features:                    map[string]core.Feature{},
+		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
+		pairings:                    map[string]core.WorkerPairing{},
+		workers:                     map[string]core.Worker{},
+		recoveries:                  map[string]struct{}{},
+		reviewRetries:               map[string]memoryReviewRoundRetry{},
+		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 	}
 }
 
@@ -318,25 +388,26 @@ type memoryArtifactKey struct {
 }
 
 type memory struct {
-	mu            sync.RWMutex
-	tasks         map[string]core.Task
-	jobs          map[string][]core.Job
-	events        map[string][]core.Event
-	interventions map[string][]core.Intervention
-	transcripts   map[string]core.Transcript
-	specs         map[string][]core.SpecVersion
-	workOrders    map[string]core.WorkOrder
-	publications  map[string]core.ReviewPublication
-	github        map[string]core.GitHubLifecycle
-	features      map[string]core.Feature
-	artifacts     map[memoryArtifactKey]memoryArtifact
-	pairings      map[string]core.WorkerPairing
-	workers       map[string]core.Worker
-	recoveries    map[string]struct{}
-	reviewRetries map[string]memoryReviewRoundRetry
-	nextEventID   int64
-	nextReviewID  int64
-	taskLocks     sync.Map
+	mu                          sync.RWMutex
+	tasks                       map[string]core.Task
+	jobs                        map[string][]core.Job
+	events                      map[string][]core.Event
+	interventions               map[string][]core.Intervention
+	transcripts                 map[string]core.Transcript
+	specs                       map[string][]core.SpecVersion
+	workOrders                  map[string]core.WorkOrder
+	publications                map[string]core.ReviewPublication
+	github                      map[string]core.GitHubLifecycle
+	features                    map[string]core.Feature
+	artifacts                   map[memoryArtifactKey]memoryArtifact
+	pairings                    map[string]core.WorkerPairing
+	workers                     map[string]core.Worker
+	recoveries                  map[string]struct{}
+	reviewRetries               map[string]memoryReviewRoundRetry
+	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
+	nextEventID                 int64
+	nextReviewID                int64
+	taskLocks                   sync.Map
 }
 
 func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
@@ -457,6 +528,10 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
+	now := time.Now().UTC()
+	if ok {
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
 		return core.WorkOrder{}, ErrWorkerUnauthorized
 	}
@@ -466,7 +541,6 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 	if order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, ErrWorkerUnauthorized
 	}
-	now := time.Now().UTC()
 	expires := now.Add(lease)
 	if !order.ExecutionDeadline.IsZero() && expires.After(order.ExecutionDeadline) {
 		expires = order.ExecutionDeadline
@@ -482,10 +556,13 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
+	now := time.Now().UTC()
+	if ok {
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, ErrWorkerUnauthorized
 	}
-	now := time.Now().UTC()
 	clearActiveAttempt(&order)
 	order.State = core.WorkOrderQueued
 	order.LastAttemptOutcome = release.Outcome
@@ -1022,6 +1099,63 @@ func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryR
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
 	m.reviewRetries[key] = memoryReviewRoundRetry{Workspace: workspace, Request: request, Result: result}
+	return result, nil
+}
+
+func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	key := request.RequestID
+	if prior, ok := m.interruptedReviewRecoveries[key]; ok {
+		if prior.Workspace != workspace || prior.Request != request {
+			return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", ErrReviewRetryConflict, request.RequestID)
+		}
+		return prior.Result, nil
+	}
+	task, ok := m.tasks[request.TaskID]
+	if !ok || task.Workspace != workspace {
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("task %s not found", request.TaskID)
+	}
+	now := time.Now().UTC()
+	var taskOrders []core.WorkOrder
+	for id, order := range m.workOrders {
+		if order.TaskID != request.TaskID || order.Stage != core.StageReview {
+			continue
+		}
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+		m.workOrders[id] = order
+		taskOrders = append(taskOrders, order)
+	}
+	recovery := InterruptedReviewRecoveryNeeded(taskOrders)
+	if recovery == nil || recovery.ReviewRound != request.Round {
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
+	}
+	result := InterruptedReviewRecoveryResult{RequestID: request.RequestID, TaskID: request.TaskID, ReviewRound: request.Round, RetainedOrders: append([]core.WorkOrder(nil), recovery.RetainedOrders...)}
+	actor := ActorFromContext(ctx)
+	for _, eligible := range recovery.EligibleOrders {
+		order := m.workOrders[eligible.ID]
+		priorOutcome := order.LastAttemptOutcome
+		order.LastAttemptOutcome = ""
+		order.RetrySuppressed = false
+		order.AutomaticRetryCount = 0
+		order.NextRetryAt = time.Time{}
+		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
+		order.RedispatchCount++
+		order.UpdatedAt, order.Claimable = now, true
+		m.workOrders[order.ID] = order
+		result.RecoveredOrders = append(result.RecoveredOrders, order)
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: order.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": order.State, "outcome": "recovered"}), At: now})
+	}
+	for _, retained := range recovery.RetainedOrders {
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed"}), At: now})
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now})
+	m.interruptedReviewRecoveries[key] = memoryInterruptedReviewRecovery{Workspace: workspace, Request: request, Result: result}
 	return result, nil
 }
 
@@ -1814,6 +1948,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		}
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
+		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(ordersByTask[id])
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })

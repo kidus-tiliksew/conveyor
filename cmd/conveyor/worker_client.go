@@ -2,15 +2,47 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
+
+type workerHTTPError struct {
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (e *workerHTTPError) Error() string {
+	if e.Message == "" {
+		return e.Status
+	}
+	return e.Status + ": " + e.Message
+}
+
+// transientWorkerError is deliberately narrow: authentication, conflicts,
+// malformed responses, and invalid configuration must fail closed instead of
+// disappearing into the reconnect loop (spec §21.24).
+func transientWorkerError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var response *workerHTTPError
+	if errors.As(err, &response) {
+		return response.StatusCode >= 500 && response.StatusCode <= 599
+	}
+	var network net.Error
+	return errors.As(err, &network)
+}
 
 type workerListResponse struct {
 	Workers               []core.Worker `json:"workers"`
@@ -46,41 +78,88 @@ func (c *client) enrollWorker(pairing, name string) (workerservice.Enrollment, e
 }
 
 func (c *client) workerConfig(credential string) (workerservice.WorkerConfig, error) {
+	return c.workerConfigContext(context.Background(), credential)
+}
+func (c *client) workerConfigContext(ctx context.Context, credential string) (workerservice.WorkerConfig, error) {
 	var result workerservice.WorkerConfig
-	err := c.workerDo(http.MethodGet, "/v1/worker/config", nil, &result, credential)
+	err := c.workerDoContext(ctx, http.MethodGet, "/v1/worker/config", nil, &result, credential)
 	return result, err
 }
 func (c *client) heartbeatWorker(credential string, probes []core.HarnessProbe) (core.Worker, error) {
+	return c.heartbeatWorkerContext(context.Background(), credential, probes)
+}
+func (c *client) heartbeatWorkerContext(ctx context.Context, credential string, probes []core.HarnessProbe) (core.Worker, error) {
 	var result core.Worker
 	payload, _ := json.Marshal(map[string]any{"probes": probes})
-	err := c.workerDo(http.MethodPost, "/v1/worker/heartbeat", payload, &result, credential)
+	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/heartbeat", payload, &result, credential)
 	return result, err
 }
 func (c *client) listWorkerOrders(credential string) ([]workerservice.DispatchOrder, error) {
+	return c.listWorkerOrdersContext(context.Background(), credential)
+}
+func (c *client) listWorkerOrdersContext(ctx context.Context, credential string) ([]workerservice.DispatchOrder, error) {
 	var result []workerservice.DispatchOrder
-	err := c.workerDo(http.MethodGet, "/v1/worker/work-orders", nil, &result, credential)
+	err := c.workerDoContext(ctx, http.MethodGet, "/v1/worker/work-orders", nil, &result, credential)
 	return result, err
 }
 func (c *client) claimWorkerOrder(credential, id, session, clientToken string) (core.WorkOrder, error) {
+	return c.claimWorkerOrderContext(context.Background(), credential, id, session, clientToken)
+}
+func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, session, clientToken string) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	payload, _ := json.Marshal(map[string]any{"session_id": session, "client_token": clientToken, "lease_seconds": int64(workerservice.DefaultClaimLease.Seconds())})
-	err := c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/claim", payload, &result, credential)
+	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/claim", payload, &result, credential)
 	return result, err
 }
 func (c *client) renewWorkerOrder(credential, id, sessionID string) (core.WorkOrder, error) {
+	return c.renewWorkerOrderContext(context.Background(), credential, id, sessionID)
+}
+func (c *client) renewWorkerOrderContext(ctx context.Context, credential, id, sessionID string) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	payload, _ := json.Marshal(map[string]string{"session_id": sessionID})
-	err := c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", payload, &result, credential)
+	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", payload, &result, credential)
+	return result, err
+}
+func (c *client) reconcileWorkerOrderContext(ctx context.Context, credential, id, sessionID string) (workerservice.ClaimReconciliation, error) {
+	result, err := c.reconcileWorkerOrderReadOnlyContext(ctx, credential, id, sessionID)
+	var response *workerHTTPError
+	if (errors.As(err, &response) && response.StatusCode == http.StatusNotFound) || (err == nil && result.WorkOrder.ID == "") {
+		// Compatibility for older control planes during rolling upgrades. The
+		// renew response is still server-authoritative and retains stale-session
+		// rejection; new servers use the read-only reconciliation endpoint.
+		order, renewErr := c.renewWorkerOrderContext(ctx, credential, id, sessionID)
+		if renewErr != nil {
+			return result, renewErr
+		}
+		result.WorkOrder = order
+		result.Authorized = order.State == core.WorkOrderClaimed
+		result.Reason = "legacy control plane confirmed the active claim by renewal"
+		return result, nil
+	}
+	return result, err
+}
+
+func (c *client) reconcileWorkerOrderReadOnlyContext(ctx context.Context, credential, id, sessionID string) (workerservice.ClaimReconciliation, error) {
+	var result workerservice.ClaimReconciliation
+	path := "/v1/worker/work-orders/" + id + "/reconcile?session_id=" + url.QueryEscape(sessionID)
+	err := c.workerDoContext(ctx, http.MethodGet, path, nil, &result, credential)
 	return result, err
 }
 func (c *client) releaseWorkerOrder(credential, id string, release core.WorkOrderRelease) error {
+	return c.releaseWorkerOrderContext(context.Background(), credential, id, release)
+}
+func (c *client) releaseWorkerOrderContext(ctx context.Context, credential, id string, release core.WorkOrderRelease) error {
 	payload, _ := json.Marshal(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus})
 	var ignored core.WorkOrder
-	return c.workerDo(http.MethodPost, "/v1/worker/work-orders/"+id+"/release", payload, &ignored, credential)
+	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/release", payload, &ignored, credential)
 }
 
 func (c *client) workerDo(method, path string, body []byte, out any, credential string) error {
-	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
+	return c.workerDoContext(context.Background(), method, path, body, out, credential)
+}
+
+func (c *client) workerDoContext(ctx context.Context, method, path string, body []byte, out any, credential string) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -95,12 +174,12 @@ func (c *client) workerDo(method, path string, body []byte, out any, credential 
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
+		return fmt.Errorf("worker API transport: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(message))
+		return &workerHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Message: string(bytes.TrimSpace(message))}
 	}
 	if resp.StatusCode == http.StatusNoContent || out == nil {
 		return nil

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -69,5 +70,59 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	}
 	if response := call(http.MethodPost, "/v1/worker/heartbeat", `{"probes":[]}`, enrollment.Credential); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked heartbeat status=%d", response.Code)
+	}
+}
+
+func TestWorkerClaimReconciliationIsReadOnlyAndServerAuthoritative(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	cfg := &config.Config{Workspace: "demo"}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider}
+	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "reconcile-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "reconcile-task", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		id      string
+		session string
+		lease   time.Duration
+	}{
+		{id: "active", session: "active-session", lease: time.Minute},
+		{id: "expired", session: "expired-session", lease: time.Nanosecond},
+	} {
+		if err = st.CreateJob(ctx, core.Job{ID: fixture.id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: fixture.id, TaskID: task.ID, JobID: fixture.id, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.ClaimWorkOrder(ctx, fixture.id, core.WorkOrderClaim{SessionID: fixture.session, ClientToken: fixture.id + "-token", WorkerID: enrollment.Worker.ID, ClaimantID: enrollment.Worker.ID, Lease: fixture.lease, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(st)
+	server.Workspace, server.ConfigProvider, server.WorkOrders, server.Workers = "demo", provider, orders, workers
+	call := func(id, session string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/v1/worker/work-orders/"+id+"/reconcile?session_id="+session, nil)
+		request.Header.Set("Authorization", "Bearer "+enrollment.Credential)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if active := call("active", "active-session"); active.Code != http.StatusOK || !strings.Contains(active.Body.String(), `"authorized":true`) {
+		t.Fatalf("active status=%d body=%s", active.Code, active.Body.String())
+	}
+	if expired := call("expired", "expired-session"); expired.Code != http.StatusOK || !strings.Contains(expired.Body.String(), `"authorized":false`) || !strings.Contains(expired.Body.String(), `"state":"queued"`) {
+		t.Fatalf("expired status=%d body=%s", expired.Code, expired.Body.String())
 	}
 }

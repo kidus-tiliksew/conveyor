@@ -9,7 +9,7 @@ import { Button } from '../ui/button'
 function recoveryOrder(item: ActivityItem) {
   return [...(item.work_orders ?? [])]
     .reverse()
-    .find((order) => order.state === 'queued' && (order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
+    .find((order) => order.state === 'queued' && !(order.stage === 'review' && (order.review_round ?? 0) > 0) && (order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
 }
 
 export function hasWorkerRecovery(item: ActivityItem) {

@@ -150,6 +150,7 @@ export interface ActivitySummary {
   needs_attention: boolean
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
+  interrupted_review_recovery?: InterruptedReviewRecoveryState
 }
 
 export interface ReviewRecoveryState {
@@ -166,6 +167,22 @@ export interface ReviewRoundRetryResult {
   new_round: number
   pr_head: string
   work_orders: WorkOrder[]
+}
+
+export interface InterruptedReviewRecoveryState {
+  needed: boolean
+  review_round: number
+  reason: string
+  eligible_orders: WorkOrder[]
+  retained_orders: WorkOrder[]
+}
+
+export interface InterruptedReviewRecoveryResult {
+  request_id: string
+  task_id: string
+  review_round: number
+  recovered_orders: WorkOrder[]
+  retained_orders: WorkOrder[]
 }
 
 export interface ReviewVerdictDiagnostic {
@@ -285,6 +302,7 @@ export interface WorkspaceConfigDocument {
 export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
 export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
 export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string }
+export interface TaskWorkerStatus { available: boolean; required_harnesses: string[]; reason: string; last_heartbeat_at?: string; last_heartbeat_age?: string; queue_context: 'never_started' | 'interrupted' }
 
 export interface VersionedWorkspaceConfig {
   document: WorkspaceConfigDocument
@@ -310,6 +328,8 @@ export interface ActivityItem {
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
+  interrupted_review_recovery?: InterruptedReviewRecoveryState
+  worker_status?: TaskWorkerStatus
 }
 
 export interface WorkOrder {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,132 @@ func TestWorkerLaunchPromptDoesNotGiveReviewOrdersImplementationInstructions(t *
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("review prompt is missing %q: %s", required, prompt)
 		}
+	}
+}
+
+func TestRunWorkerReconnectsAcrossRetryableControlPlaneFailures(t *testing.T) {
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "saved-enrollment-credential")
+	var mu sync.Mutex
+	counts := map[string]int{}
+	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{
+		Workspace: "demo",
+		Harnesses: []config.Harness{{Name: "codex", Command: []string{"true"}, ProbeCommand: []string{"true"}, ProbeTimeoutText: "1s"}},
+		Execution: config.ExecutionPolicy{ImplementConcurrency: 1, ReviewConcurrency: 1},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		attempt := counts[r.URL.Path]
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer saved-enrollment-credential" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if attempt == 1 {
+			http.Error(w, "restarting", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/worker/config":
+			_ = json.NewEncoder(w).Encode(document)
+		case "/v1/worker/heartbeat":
+			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker-1"})
+		case "/v1/worker/work-orders":
+			_ = json.NewEncoder(w).Encode([]workerservice.DispatchOrder{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	policy := workerReconnectPolicy{Initial: time.Millisecond, Maximum: 4 * time.Millisecond, Jitter: func(delay time.Duration) time.Duration { return delay }}
+	if err := runWorkerWithPolicy(t.Context(), &client{base: server.URL, workspace: "demo"}, "", "test", true, policy); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{"/v1/worker/config", "/v1/worker/heartbeat", "/v1/worker/work-orders"} {
+		if counts[path] < 2 {
+			t.Fatalf("%s attempts=%d want reconnect", path, counts[path])
+		}
+	}
+}
+
+func TestRunWorkerTreatsRevokedCredentialAsTerminalAndCancellationInterruptsBackoff(t *testing.T) {
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "revoked")
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	policy := workerReconnectPolicy{Initial: time.Second, Maximum: time.Second, Jitter: func(delay time.Duration) time.Duration { return delay }}
+	err := runWorkerWithPolicy(t.Context(), &client{base: server.URL, workspace: "demo"}, "", "test", true, policy)
+	server.Close()
+	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized") || requests != 1 {
+		t.Fatalf("terminal revoked credential err=%v requests=%d", err, requests)
+	}
+
+	retrying := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "restarting", http.StatusServiceUnavailable)
+	}))
+	defer retrying.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runWorkerWithPolicy(ctx, &client{base: retrying.URL, workspace: "demo"}, "", "test", true, policy)
+	}()
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if err = <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation err=%v", err)
+	}
+}
+
+func TestWorkerTransportClassificationIncludesRefusalTimeoutAndRetryableStatus(t *testing.T) {
+	c := &client{base: "http://127.0.0.1:1", workspace: "demo"}
+	_, err := c.workerConfigContext(t.Context(), "credential")
+	if !transientWorkerError(err) {
+		t.Fatalf("connection refusal not transient: %v", err)
+	}
+	if !transientWorkerError(&workerHTTPError{StatusCode: 503, Status: "503 Service Unavailable"}) {
+		t.Fatal("503 not transient")
+	}
+	if transientWorkerError(&workerHTTPError{StatusCode: 401, Status: "401 Unauthorized"}) {
+		t.Fatal("401 classified transient")
+	}
+	if !transientWorkerError(context.DeadlineExceeded) {
+		t.Fatal("request timeout not transient")
+	}
+}
+
+func TestRenewWorkerClaimRetriesWithinLeaseAndFailsClosedAfterGap(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "brief outage", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Second)})
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, workspace: "demo"}
+	renewed, err := renewWorkerClaimUntil(t.Context(), c, "credential", "order", "session", time.Now().Add(750*time.Millisecond))
+	if err != nil || calls != 2 || renewed.ID != "order" {
+		t.Fatalf("brief outage renewed=%+v calls=%d err=%v", renewed, calls, err)
+	}
+
+	calls = 0
+	if _, err = renewWorkerClaimUntil(t.Context(), c, "credential", "order", "session", time.Now().Add(-time.Millisecond)); !errors.Is(err, errWorkerClaimAuthorityLost) || calls != 0 {
+		t.Fatalf("wake-like gap calls=%d err=%v", calls, err)
+	}
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		http.Error(w, "late response", http.StatusServiceUnavailable)
+	}))
+	defer slow.Close()
+	_, err = renewWorkerClaimUntil(t.Context(), &client{base: slow.URL, workspace: "demo"}, "credential", "order", "session", time.Now().Add(40*time.Millisecond))
+	if !errors.Is(err, errWorkerClaimAuthorityLost) {
+		t.Fatalf("outage beyond lease err=%v", err)
 	}
 }
 

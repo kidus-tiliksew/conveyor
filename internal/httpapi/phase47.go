@@ -76,6 +76,33 @@ func (s *Server) retryReviewRound(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) recoverInterruptedReviewRound(w http.ResponseWriter, r *http.Request) {
+	if s.WorkOrders == nil {
+		http.Error(w, "work-order service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.RequestID == "" {
+		request.RequestID = r.Header.Get("X-Idempotency-Key")
+	}
+	if strings.TrimSpace(request.RequestID) == "" {
+		http.Error(w, "interrupted review recovery request_id is required", http.StatusBadRequest)
+		return
+	}
+	result, err := s.WorkOrders.RecoverInterruptedReviewRound(r.Context(), chi.URLParam(r, "id"), request.RequestID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 type requirementNode struct {
 	Feature core.Feature       `json:"feature"`
 	Tasks   []core.Task        `json:"tasks"`
