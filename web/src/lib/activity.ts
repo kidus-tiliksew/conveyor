@@ -87,6 +87,168 @@ export type TimelineEntry =
   | { type: 'note'; at: string; key: string; title: string; detail?: string; href?: string; alarm?: boolean }
   | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
+  | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
+
+// One review round rendered as a single deliberating body (spec §21.12
+// change 4): seats inside one card instead of N sibling job cards. A seat is
+// a review work order plus whatever exists of its job and verdict.
+export type PanelSeatStatus =
+  | 'waiting'
+  | 'deliberating'
+  | 'verdict'
+  | 'stale'
+  | 'timed_out'
+  | 'failed'
+  | 'cancelled'
+
+export interface PanelSeatReview {
+  verdict: 'approve' | 'changes_requested'
+  summary: string
+  feedback: string
+  at: string
+}
+
+export interface PanelSeat {
+  seat: number
+  order: WorkOrder
+  job?: Job
+  model: string
+  status: PanelSeatStatus
+  review?: PanelSeatReview
+}
+
+export interface PanelResolution {
+  verdict: 'approve' | 'changes_requested'
+  summary?: string
+  at: string
+  bounce?: number
+}
+
+// Group review work orders carrying seat assignments into panel entries.
+// Rounds ≥ 1 aggregate as one panel; round 0 predates rounds and aggregates
+// per order (matching store.aggregateReviewRound), so each forms a
+// single-seat panel. Everything a panel absorbs — its jobs, its orders, its
+// per-seat and aggregate review events, the synthetic round intervention —
+// is suppressed from the flat timeline to keep the story told once.
+interface PanelIndex {
+  panels: Extract<TimelineEntry, { type: 'panel' }>[]
+  jobIds: Set<string>
+  orderIds: Set<string>
+  rounds: Set<number>
+}
+
+function isPanelReviewEvent(payload: Record<string, unknown>, index: PanelIndex): boolean {
+  const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
+  if (round !== undefined && round > 0) return index.rounds.has(round)
+  const reviews = Array.isArray(payload.reviews) ? payload.reviews : []
+  return reviews.some((review) =>
+    typeof (review as Record<string, unknown>)?.review_work_order_id === 'string' &&
+    index.orderIds.has((review as Record<string, unknown>).review_work_order_id as string))
+}
+
+function buildReviewPanels(item: ActivityItem): PanelIndex {
+  const index: PanelIndex = { panels: [], jobIds: new Set(), orderIds: new Set(), rounds: new Set() }
+  const seatOrders = (item.work_orders ?? []).filter(
+    (order) => order.stage === 'review' && (order.review_seat ?? 0) > 0,
+  )
+  if (seatOrders.length === 0) return index
+
+  const groups = new Map<string, { round: number; orders: WorkOrder[] }>()
+  for (const order of seatOrders) {
+    const round = order.review_round ?? 0
+    const key = round > 0 ? `panel-${round}` : `panel-0-${order.id}`
+    const group = groups.get(key) ?? { round, orders: [] }
+    group.orders.push(order)
+    groups.set(key, group)
+  }
+
+  const jobsById = new Map(item.jobs.map((job) => [job.id, job]))
+  const reviewByOrder = new Map<string, PanelSeatReview>()
+  const reviewByJob = new Map<string, PanelSeatReview>()
+  const resolutionByRound = new Map<number, PanelResolution>()
+  const resolutionByOrder = new Map<string, PanelResolution>()
+  const bounceByRound = new Map<number, number>()
+  for (const event of item.events) {
+    const payload = event.payload ?? {}
+    if (event.kind === 'review.completed') {
+      const review: PanelSeatReview = {
+        verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+        summary: typeof payload.summary === 'string' ? payload.summary : '',
+        feedback: typeof payload.feedback === 'string' ? payload.feedback : '',
+        at: event.at,
+      }
+      if (typeof payload.review_work_order_id === 'string') reviewByOrder.set(payload.review_work_order_id, review)
+      // Older events carry no order id; the event's job is the review job.
+      if (event.job_id) reviewByJob.set(event.job_id, review)
+    }
+    if (event.kind === 'review.round_completed') {
+      const resolution: PanelResolution = {
+        verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+        summary: typeof payload.summary === 'string' ? payload.summary : undefined,
+        at: event.at,
+      }
+      const round = typeof payload.review_round === 'number' ? payload.review_round : 0
+      if (round > 0) resolutionByRound.set(round, resolution)
+      for (const review of Array.isArray(payload.reviews) ? payload.reviews : []) {
+        const orderID = (review as Record<string, unknown>)?.review_work_order_id
+        if (typeof orderID === 'string') resolutionByOrder.set(orderID, resolution)
+      }
+    }
+    if (event.kind === 'pipeline.bounced' && typeof payload.review_round === 'number' && typeof payload.count === 'number') {
+      bounceByRound.set(payload.review_round, payload.count)
+    }
+  }
+
+  for (const [key, group] of groups) {
+    const seats: PanelSeat[] = group.orders
+      .slice()
+      .sort((a, b) => (a.review_seat ?? 0) - (b.review_seat ?? 0))
+      .map((order) => {
+        const job = jobsById.get(order.job_id)
+        const review = reviewByOrder.get(order.id) ?? reviewByJob.get(order.job_id)
+        index.jobIds.add(order.job_id)
+        index.orderIds.add(order.id)
+        return {
+          seat: order.review_seat ?? 0,
+          order,
+          job,
+          model: order.model || order.required_model || job?.model_tier || '—',
+          status: seatStatus(order, job, review),
+          review,
+        }
+      })
+    if (group.round > 0) index.rounds.add(group.round)
+    const resolution = group.round > 0 ? resolutionByRound.get(group.round) : resolutionByOrder.get(group.orders[0].id)
+    if (resolution && resolution.verdict === 'changes_requested') {
+      resolution.bounce = bounceByRound.get(group.round)
+    }
+    index.panels.push({
+      type: 'panel',
+      at: group.orders.reduce((min, order) => (order.queue_entered_at < min ? order.queue_entered_at : min), group.orders[0].queue_entered_at),
+      key,
+      round: group.round,
+      seats,
+      resolution,
+    })
+  }
+  return index
+}
+
+function seatStatus(order: WorkOrder, job: Job | undefined, review?: PanelSeatReview): PanelSeatStatus {
+  if (review) return 'verdict'
+  switch (order.state) {
+    case 'queued':
+      return 'waiting'
+    case 'stale':
+      return 'stale'
+    case 'timed_out':
+      return 'timed_out'
+    case 'cancelled':
+      return 'cancelled'
+    default:
+      return job?.state === 'failed' ? 'failed' : 'deliberating'
+  }
+}
 
 function jobSummary(job: Job, events: TaskEvent[]): string {
   // Prefer the harness's own narration (job.summary), then the structured
@@ -120,7 +282,7 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
   }
 }
 
-function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
+function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
     case 'work_order.child_failed':
@@ -141,8 +303,8 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
         detail: typeof payload.url === 'string' ? payload.url : undefined,
         href: typeof payload.url === 'string' ? payload.url : undefined,
       }
-    // Review jobs already render the outcome and feedback in their Code review
-    // cards. Keep the underlying audit events, but do not duplicate these two
+    // Review cards and panels already render outcome, feedback, and bounce
+    // context. Keep the audit events, but do not duplicate these two semantic
     // review-transition records as standalone timeline notes.
     case 'pipeline.bounced':
     case 'review.completed':
@@ -171,6 +333,8 @@ function noteFor(event: TaskEvent): Omit<Extract<TimelineEntry, { type: 'note' }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
     case 'review.round_completed':
+      // The panel card's resolution banner is this event, rendered richer.
+      if (isPanelReviewEvent(payload, panels)) return undefined
       return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
 	case 'work_order.released':
 		return {
@@ -258,10 +422,12 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
 // decision, in wall-clock order. This is the audit log rendered as a story.
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 	const entries: TimelineEntry[] = []
+	const panels = buildReviewPanels(item)
+	entries.push(...panels.panels)
 	const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
 	const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
 	for (const job of item.jobs) {
-		if (!job.started_at) continue
+		if (!job.started_at || panels.jobIds.has(job.id)) continue
 		const order = orderByJob.get(job.id)
 		let summary = jobSummary(job, item.events)
 		if (order?.progress && genericSummaries.has(summary)) summary = order.progress
@@ -271,11 +437,12 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 		entries.push({ type: 'job', at: job.started_at, job, summary, model, order })
   }
   for (const order of item.work_orders ?? []) {
+    if (panels.orderIds.has(order.id)) continue
     const entry = orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
-    const note = noteFor(event)
+    const note = noteFor(event, panels)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
 	for (const diagnostic of item.review_diagnostics ?? []) {
@@ -294,6 +461,11 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 		})
 	}
   for (const intervention of item.interventions) {
+    // The synthetic redirect a panel bounce records (actor "review:round:N")
+    // duplicates the panel card's merged notes — the audit row stays in the
+    // API, the story is told once here.
+    const roundActor = /^review:round:(\d+)$/.exec(intervention.actor_id)
+    if (roundActor && (panels.rounds.has(Number(roundActor[1])) || (Number(roundActor[1]) === 0 && panels.orderIds.size > 0))) continue
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
   return entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())

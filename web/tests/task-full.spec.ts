@@ -10,10 +10,13 @@ function activity(taskId: string, overflowing: boolean) {
 		],
 		events: [
 			{ id: 1, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human', payload: { version: 1 }, at: '2026-07-15T11:59:00Z' },
-			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
-			{ id: 3, task_id: taskId, kind: 'pull_request.opened', actor_id: 'system', actor_role: 'system', payload: { url: 'https://example.test/pull/1' }, at: '2026-07-15T12:01:30Z' },
-			{ id: 4, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
-			{ id: 5, task_id: taskId, kind: 'pipeline.bounced', actor_id: 'system', actor_role: 'system', payload: { count: 1, reason_code: 'changes_requested', feedback: 'Changes guidance remains visible.' }, at: '2026-07-15T12:04:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'reviews-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { review_work_order_id: 'reviews-review-1-seat-1', review_round: 1, verdict: 'approve', summary: 'Seat one approved', feedback: 'Approved guidance remains visible.', review_seat: 1, reviewer_model: 'gpt-review', required_effort: 'high', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 3, task_id: taskId, kind: 'review.completed', actor_id: 'legacy-worker', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Legacy duplicate', feedback: 'This standalone duplicate stays hidden.' }, at: '2026-07-15T12:01:15Z' },
+			{ id: 4, task_id: taskId, kind: 'pull_request.opened', actor_id: 'system', actor_role: 'system', payload: { url: 'https://example.test/pull/1' }, at: '2026-07-15T12:01:30Z' },
+			// Deliberately no review_work_order_id: seat matching must fall back
+			// to the event's job id for older payloads.
+			{ id: 5, task_id: taskId, job_id: 'reviews-review-1-seat-2', kind: 'review.completed', actor_id: 'worker-2', actor_role: 'runner', payload: { verdict: 'changes_requested', summary: 'Seat two requested changes', feedback: 'Changes guidance remains visible.', review_seat: 2, reviewer_model: 'claude-review', required_effort: '', model_enforcement: 'worker-pinned' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 6, task_id: taskId, kind: 'pipeline.bounced', actor_id: 'system', actor_role: 'system', payload: { count: 1, reason_code: 'changes_requested', feedback: 'Changes guidance remains visible.' }, at: '2026-07-15T12:04:00Z' },
 		],
 		work_orders: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
@@ -29,7 +32,7 @@ function activity(taskId: string, overflowing: boolean) {
 		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'review-retry' ? {
 		jobs: [
-			{ id: 'review-retry-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
+			{ id: 'review-retry-review-1-seat-1', task_id: taskId, stage: 'review', state: 'done', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
 			{ id: 'review-retry-review-1-seat-2', task_id: taskId, stage: 'review', state: 'failed', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
 		],
 		events: [{ id: 1, task_id: taskId, job_id: 'review-retry-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Historical approval', feedback: 'Round one feedback remains visible.', review_round: 1, review_seat: 1 }, at: createdAt }],
@@ -209,31 +212,33 @@ test('short full-screen task content does not create a nested vertical scrollbar
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
 })
 
-test('review cards replace duplicate review and bounce activity notes', async ({ page }) => {
+test('review panel replaces duplicate review and bounce activity notes', async ({ page }) => {
 	await page.goto('/tasks/reviews/full')
 
-	const approvedCard = page.locator('article').filter({ hasText: 'Seat one approved' })
-	await expect(approvedCard.getByText('Reviewer feedback: Approved guidance remains visible.')).toBeVisible()
-	await expect(approvedCard.getByText('Seat 1')).toBeVisible()
-	await expect(approvedCard.getByText('Effort high')).toBeVisible()
-	await expect(approvedCard.getByText('worker-pinned')).toBeVisible()
+	// One panel card, not one card per seat (spec §21.12 change 4).
+	const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+	await expect(panel).toHaveCount(1)
 
-	const changesCard = page.locator('article').filter({ hasText: 'Seat two requested changes' })
-	await expect(changesCard.getByText('Reviewer feedback: Changes guidance remains visible.')).toBeVisible()
-	await expect(changesCard.getByText('Seat 2')).toBeVisible()
-	await expect(changesCard.getByText('worker-pinned')).toBeVisible()
-	await expect(changesCard.getByText(/^Effort /)).toHaveCount(0)
-	await expect(page.getByText('Code review', { exact: true })).toHaveCount(2)
+	// Both seats resolve their verdicts — including the seat whose
+	// review.completed event carries no review_work_order_id.
+	await expect(panel.getByText('Approved', { exact: true })).toBeVisible()
+	await expect(panel.getByText('Changes', { exact: true })).toBeVisible()
+	await expect(panel.getByText('pinned', { exact: true })).toHaveCount(2)
+	await expect(panel.getByText('2 of 2 verdicts in')).toBeVisible()
 
+	// Feedback from every seat stays visible, attributed in the merged notes.
+	await expect(panel.getByText('Approved guidance remains visible.')).toBeVisible()
+	await expect(panel.getByText('Changes guidance remains visible.')).toBeVisible()
+
+	// The per-seat audit events fold into the panel — no duplicate rows.
 	await expect(page.getByText(/^Independent review:/)).toHaveCount(0)
 	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
 
 	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
-	await expect(timelineRows).toHaveCount(4)
+	await expect(timelineRows).toHaveCount(3)
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
-	await expect(timelineRows.nth(1)).toContainText('Seat one approved')
+	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
 	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
-	await expect(timelineRows.nth(3)).toContainText('Seat two requested changes')
 })
 
 test('review verdict diagnostics distinguish active and expired missing submissions', async ({ page }) => {
