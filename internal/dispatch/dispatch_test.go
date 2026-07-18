@@ -783,6 +783,121 @@ func TestResolvedSpecGateIsIndependentFromManualMode(t *testing.T) {
 	}
 }
 
+func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "spec-revision", Workspace: "demo", Repo: "api", Title: "Revise policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "# First spec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	firstJob := core.Job{ID: "spec-revision-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+	if err = st.CreateJob(ctx, firstJob); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &sequenceAgent{outputs: []string{"# Revised spec\n\n## Intent\nCorrect the workflow.\n\n## Non-goals\nNone.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Requested changes require another approval.\n  verify: test\n  ref: internal/dispatch/dispatch_test.go\n```"}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"spec":      {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+		"implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour},
+	}}}
+	d := New(st, cfg, agent)
+	d.Pack = bundle
+
+	intervention := core.Intervention{TaskID: task.ID, JobID: firstJob.ID, Action: core.InterventionRedirect, ReasonCode: "spec-changes", Comment: "Revise the contract."}
+	if err = st.CreateIntervention(ctx, intervention); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.HandleIntervention(ctx, task, firstJob, intervention); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != core.TaskQueued || current.NextStage != core.StageSpec || current.RecoveryStage != "" {
+		t.Fatalf("after requested changes=%+v", current)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("requested changes created implementation orders=%+v err=%v", orders, err)
+	}
+
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err = st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("revised spec ok=%t err=%v", ok, err)
+	}
+	if revised.Version != first.Version+1 || revised.Approved || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+		t.Fatalf("revised spec=%+v task=%+v", revised, current)
+	}
+	orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("unapproved revision created implementation orders=%+v err=%v", orders, err)
+	}
+
+	latestJob, ok, err := st.GetLatestJob(ctx, task.ID)
+	if err != nil || !ok || latestJob.Stage != core.StageSpec {
+		t.Fatalf("latest spec job=%+v ok=%t err=%v", latestJob, ok, err)
+	}
+	if err = d.HandleIntervention(ctx, current, latestJob, core.Intervention{Action: core.InterventionApprove, ReasonCode: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+		t.Fatalf("after revised approval=%+v", current)
+	}
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement {
+		t.Fatalf("approved revision implementation orders=%+v err=%v", orders, err)
+	}
+
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirectAt, revisionAt, implementationAt := -1, -1, -1
+	for i, event := range events {
+		switch event.Kind {
+		case "intervention.redirect":
+			redirectAt = i
+		case "spec.version_created":
+			if redirectAt >= 0 && i > redirectAt {
+				revisionAt = i
+			}
+		case "work_order.created":
+			if revisionAt >= 0 && i > revisionAt {
+				implementationAt = i
+			}
+		}
+	}
+	if redirectAt < 0 || revisionAt <= redirectAt || implementationAt <= revisionAt {
+		t.Fatalf("workflow history redirect=%d revision=%d implementation=%d events=%+v", redirectAt, revisionAt, implementationAt, events)
+	}
+}
+
 func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

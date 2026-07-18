@@ -1,6 +1,6 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.24**
+**Specification — v1.25**
 **Date:** July 18, 2026
 **Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), worker-attempt recovery is bounded and audited (§21.21), portable GitHub review projection plus headless-worker reliability are defined by §21.22, terminal review-round retry is defined by §21.23, and reconnect-safe workers plus interrupted-seat recovery are defined by §21.24
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.

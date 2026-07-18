@@ -446,6 +446,9 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
 	for (const diagnostic of item.review_diagnostics ?? []) {
+		// Active claims already appear as deliberating seats in the review panel.
+		// Keep the diagnostic in the API, but do not repeat it in the timeline.
+		if (diagnostic.status === 'claimed_without_verdict') continue
 		const seat = diagnostic.review_seat ? `seat ${diagnostic.review_seat}` : 'review seat'
 		entries.push({
 			type: 'note',

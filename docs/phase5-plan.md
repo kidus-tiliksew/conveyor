@@ -1,10 +1,11 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.24),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.25),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion and transport rules are clarified by §21.14
 and §21.20; worker-attempt recovery is fixed by §21.21, portable review
-publication by §21.22, and terminal review-round recovery by §21.23. These are
+publication by §21.22, terminal review-round recovery by §21.23, and
+reconnect-safe worker plus interrupted-seat recovery by §21.24. These are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit

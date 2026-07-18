@@ -659,7 +659,12 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if target == "" {
 			target = latest.Stage
 		}
-		if latest.Stage == core.StageReview {
+		if latest.Stage == core.StageSpec {
+			// RecoveryStage identifies where approval continues, so a spec gate
+			// normally points at implementation. Requested changes instead reopen
+			// the existing spec workflow and require a newly approved revision.
+			target = core.StageSpec
+		} else if latest.Stage == core.StageReview {
 			target = core.StageImplement
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, target, "")
