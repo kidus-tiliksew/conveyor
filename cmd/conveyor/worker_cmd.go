@@ -134,7 +134,60 @@ type childResult struct {
 	err   error
 }
 
+type workerReconnectPolicy struct {
+	Initial time.Duration
+	Maximum time.Duration
+	Jitter  func(time.Duration) time.Duration
+}
+
+var defaultWorkerReconnectPolicy = workerReconnectPolicy{
+	Initial: 250 * time.Millisecond,
+	Maximum: 5 * time.Second,
+	Jitter: func(delay time.Duration) time.Duration {
+		// Jitter is operational rather than security-sensitive. Derive a bounded
+		// +/-20% offset without introducing process-global pseudo-random state.
+		span := delay / 5
+		if span <= 0 {
+			return delay
+		}
+		offset := time.Duration(time.Now().UnixNano()%int64(2*span+1)) - span
+		return delay + offset
+	},
+}
+
+func (p workerReconnectPolicy) wait(ctx context.Context, delay time.Duration) error {
+	if p.Jitter != nil {
+		delay = p.Jitter(delay)
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (p workerReconnectPolicy) next(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		delay = p.Initial
+	}
+	next := delay * 2
+	if next > p.Maximum {
+		return p.Maximum
+	}
+	return next
+}
+
 func runWorker(ctx context.Context, c *client, pairing, name string, once bool) error {
+	return runWorkerWithPolicy(ctx, c, pairing, name, once, defaultWorkerReconnectPolicy)
+}
+
+func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy) error {
 	saved, err := loadOrEnrollWorker(c, pairing, name)
 	if err != nil {
 		return err
@@ -147,19 +200,33 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 	completions := make(chan childResult, 1024)
 	started := false
 	var mu sync.Mutex
+	retryDelay := reconnect.Initial
 	for {
-		document, err := c.workerConfig(credential)
+		document, err := c.workerConfigContext(ctx, credential)
 		if err != nil {
-			return err
+			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "load worker configuration", err); retryErr != nil {
+				return retryErr
+			}
+			continue
+		}
+		if err = validateWorkerConfig(document); err != nil {
+			return fmt.Errorf("invalid worker configuration: %w", err)
 		}
 		probes := probeWorkerConfig(ctx, document)
-		if _, err = c.heartbeatWorker(credential, probes); err != nil {
-			return err
+		if _, err = c.heartbeatWorkerContext(ctx, credential, probes); err != nil {
+			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat worker", err); retryErr != nil {
+				return retryErr
+			}
+			continue
 		}
-		orders, err := c.listWorkerOrders(credential)
+		orders, err := c.listWorkerOrdersContext(ctx, credential)
 		if err != nil {
-			return err
+			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "poll work orders", err); retryErr != nil {
+				return retryErr
+			}
+			continue
 		}
+		retryDelay = reconnect.Initial
 		implementLimit := document.Execution.ImplementConcurrency
 		if implementLimit < 1 {
 			implementLimit = 1
@@ -217,6 +284,47 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+func waitForWorkerReconnect(ctx context.Context, reconnect workerReconnectPolicy, delay *time.Duration, operation string, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !transientWorkerError(err) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if reconnect.Initial <= 0 || reconnect.Maximum < reconnect.Initial {
+		return fmt.Errorf("invalid worker reconnect policy")
+	}
+	fmt.Fprintf(os.Stderr, "worker reconnect: %s failed transiently: %v; retrying\n", operation, err)
+	if waitErr := reconnect.wait(ctx, *delay); waitErr != nil {
+		return waitErr
+	}
+	*delay = reconnect.next(*delay)
+	return nil
+}
+
+func validateWorkerConfig(document workerservice.WorkerConfig) error {
+	if strings.TrimSpace(document.Workspace) == "" {
+		return fmt.Errorf("workspace is required")
+	}
+	validate := func(harness config.Harness) error {
+		if strings.TrimSpace(harness.Name) == "" || len(harness.Command) == 0 || len(harness.ProbeCommand) == 0 {
+			return fmt.Errorf("harness %q requires name, command, and probe_command", harness.Name)
+		}
+		return nil
+	}
+	for _, harness := range document.Harnesses {
+		if err := validate(harness); err != nil {
+			return err
+		}
+	}
+	for _, target := range document.ActiveHarnesses {
+		if err := validate(target.Harness); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func probeHarnesses(ctx context.Context, harnesses []config.Harness) []core.HarnessProbe {
@@ -307,11 +415,15 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		return fmt.Errorf("generate worker client token: %w", err)
 	}
 	sessionID := "worker-" + session
-	if _, err := c.claimWorkerOrder(credential, item.Order.ID, sessionID, clientToken); err != nil {
+	claimed, err := c.claimWorkerOrderContext(ctx, credential, item.Order.ID, sessionID, clientToken)
+	if err != nil {
 		return err
 	}
+	leaseExpiresAt := claimed.LeaseExpiresAt
 	release := func(outcome, reason string, exitStatus *int) error {
-		return c.releaseWorkerOrder(credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus})
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus})
 	}
 	directory, err := os.MkdirTemp("", "conveyor-worker-")
 	if err != nil {
@@ -361,6 +473,7 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 	go func() { done <- command.Wait() }()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	claimFinalized := false
 	for {
 		select {
 		case waitErr := <-done:
@@ -383,12 +496,13 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 				_ = release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
 				return waitErr
 			}
-			renewed, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID)
-			if renewErr != nil {
+			reconciled, reconcileErr := reconcileWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			if reconcileErr != nil {
 				_ = release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
-				return fmt.Errorf("confirm work-order completion: %w", renewErr)
+				return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
 			}
-			if renewed.State == core.WorkOrderClaimed {
+			renewed := reconciled.WorkOrder
+			if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
 				reason := "harness exited before completing work order"
 				if item.Order.Stage == core.StageReview {
 					reason = "harness exited without terminal verdict submission"
@@ -402,23 +516,133 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 				return errors.New(reason)
 			}
 			if renewed.State != core.WorkOrderSubmitted && renewed.State != core.WorkOrderCompleted {
-				return fmt.Errorf("harness exited with work order in unexpected state %s", renewed.State)
+				return fmt.Errorf("harness exited without authorized completion; server reports %s (%s)", renewed.State, reconciled.Reason)
 			}
 			// A successful review verdict submission is authoritative even when
 			// the review child subsequently reports a non-zero exit.
 			return nil
 		case <-ticker.C:
-			if _, renewErr := c.renewWorkerOrder(credential, item.Order.ID, sessionID); renewErr != nil {
+			if claimFinalized {
+				continue
+			}
+			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			if renewErr != nil {
 				_ = command.Process.Kill()
 				<-done
-				release(core.WorkOrderOutcomeReleased, "claim renewal failed: "+renewErr.Error(), nil)
+				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, _ = c.reconcileWorkerOrderReadOnlyContext(reconcileCtx, credential, item.Order.ID, sessionID)
+				cancel()
 				return renewErr
 			}
+			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
+				claimFinalized = true
+				continue
+			}
+			if renewed.State != core.WorkOrderClaimed {
+				_ = command.Process.Kill()
+				<-done
+				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+			}
+			leaseExpiresAt = renewed.LeaseExpiresAt
 		case <-ctx.Done():
 			_ = command.Process.Kill()
 			<-done
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
+		}
+	}
+}
+
+var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
+
+func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {
+	safetyDeadline := leaseExpiresAt.Add(-2 * time.Second)
+	delay := 250 * time.Millisecond
+	for {
+		if ctx.Err() != nil {
+			return workerservice.ClaimReconciliation{}, ctx.Err()
+		}
+		requestDeadline := time.Now().Add(5 * time.Second)
+		if safetyDeadline.After(time.Now()) && safetyDeadline.Before(requestDeadline) {
+			requestDeadline = safetyDeadline
+		}
+		requestCtx, cancel := context.WithDeadline(ctx, requestDeadline)
+		result, err := c.reconcileWorkerOrderContext(requestCtx, credential, orderID, sessionID)
+		cancel()
+		if err == nil {
+			return result, nil
+		}
+		if !transientWorkerError(err) {
+			return workerservice.ClaimReconciliation{}, err
+		}
+		if !time.Now().Before(safetyDeadline) {
+			return workerservice.ClaimReconciliation{}, errWorkerClaimAuthorityLost
+		}
+		wait := delay
+		if remaining := time.Until(safetyDeadline); wait > remaining {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return workerservice.ClaimReconciliation{}, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+	}
+}
+
+func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (core.WorkOrder, error) {
+	if leaseExpiresAt.IsZero() {
+		return core.WorkOrder{}, errWorkerClaimAuthorityLost
+	}
+	safetyMargin := 2 * time.Second
+	remaining := time.Until(leaseExpiresAt)
+	if smaller := remaining / 5; smaller > 0 && smaller < safetyMargin {
+		safetyMargin = smaller
+	}
+	safetyDeadline := leaseExpiresAt.Add(-safetyMargin)
+	delay := 250 * time.Millisecond
+	for {
+		if ctx.Err() != nil {
+			return core.WorkOrder{}, ctx.Err()
+		}
+		if !time.Now().Before(safetyDeadline) {
+			return core.WorkOrder{}, errWorkerClaimAuthorityLost
+		}
+		requestCtx, cancel := context.WithDeadline(ctx, safetyDeadline)
+		renewed, err := c.renewWorkerOrderContext(requestCtx, credential, orderID, sessionID)
+		cancel()
+		if err == nil {
+			return renewed, nil
+		}
+		if !transientWorkerError(err) {
+			return core.WorkOrder{}, fmt.Errorf("renew worker claim: %w", err)
+		}
+		remaining = time.Until(safetyDeadline)
+		if remaining <= 0 {
+			return core.WorkOrder{}, errWorkerClaimAuthorityLost
+		}
+		wait := delay
+		if wait > remaining {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return core.WorkOrder{}, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
 		}
 	}
 }

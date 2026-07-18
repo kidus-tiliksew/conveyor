@@ -43,6 +43,16 @@ function activity(taskId: string, overflowing: boolean) {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
 		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'interrupted-review' ? {
+		jobs: [
+			{ id: 'interrupted-review-review-1-seat-1', task_id: taskId, stage: 'review', state: 'done', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
+			{ id: 'interrupted-review-review-1-seat-2', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
+		],
+		events: [{ id: 1, task_id: taskId, job_id: 'interrupted-review-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Completed verdict', feedback: 'Retain this verdict.', review_round: 1, review_seat: 1 }, at: createdAt }],
+		work_orders: [
+			{ id: 'interrupted-review-review-1-seat-1', task_id: taskId, job_id: 'interrupted-review-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'interrupted-review-review-1-seat-2', task_id: taskId, job_id: 'interrupted-review-review-1-seat-2', stage: 'review', state: 'queued', claimable: false, review_round: 1, review_seat: 2, last_attempt_outcome: 'expired', retry_suppressed: true, required_harness: 'claude', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : taskId === 'review-retry' ? {
 		jobs: [
 			{ id: 'review-retry-review-1-seat-1', task_id: taskId, stage: 'review', state: 'done', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
@@ -99,6 +109,21 @@ function activity(taskId: string, overflowing: boolean) {
 			prior_round: 1,
 			reason: 'latest review round is terminal after a reviewer timed out',
 			timed_out_orders: reviewActivity.work_orders?.filter((order) => order.state === 'timed_out') ?? [],
+		} : undefined,
+		interrupted_review_recovery: taskId === 'interrupted-review' ? {
+			needed: true,
+			review_round: 1,
+			reason: 'latest review round has interrupted seats whose claims are no longer authorized',
+			eligible_orders: reviewActivity.work_orders?.filter((order) => order.state === 'queued') ?? [],
+			retained_orders: reviewActivity.work_orders?.filter((order) => order.state === 'completed') ?? [],
+		} : undefined,
+		worker_status: taskId === 'interrupted-review' ? {
+			available: false,
+			required_harnesses: ['claude'],
+			reason: 'no healthy worker can serve the task\'s required harnesses; last heartbeat was 2m ago',
+			last_heartbeat_at: createdAt,
+			last_heartbeat_age: '2m0s',
+			queue_context: 'interrupted',
 		} : undefined,
   }
 }
@@ -170,6 +195,25 @@ test('timed-out review round exposes a reasoned full-round retry and preserves h
 	await expect.poll(() => retryRequest).toContain('request_id')
 	expect(retryRequest).toContain('corrected current harness configuration')
 	await expect(page.getByText('Review round 2 is queued with 2 seats.')).toBeVisible()
+})
+
+test('interrupted review round offers one same-round recovery and retains completed verdicts', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let recoveryRequest = ''
+	await page.route('**/v1/tasks/*/review-round/recover*', async (route) => {
+		recoveryRequest = route.request().postData() ?? ''
+		await route.fulfill({ json: { request_id: 'recover-1', task_id: 'interrupted-review', review_round: 1, recovered_orders: [{ id: 'seat-2' }], retained_orders: [{ id: 'seat-1' }] } })
+	})
+	await page.goto('/tasks/interrupted-review/full')
+	await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
+	await expect(page.getByText(/This work was interrupted/)).toBeVisible()
+	await expect(page.getByText(/completed verdict retained/)).toBeVisible()
+	await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
+	const action = page.getByRole('button', { name: 'Recover interrupted review round' })
+	await expect(action).toHaveCount(1)
+	await action.click()
+	await expect.poll(() => recoveryRequest).toContain('request_id')
+	await expect(page.getByText(/Recovered 1 interrupted seat; 1 completed verdict retained/)).toBeVisible()
 })
 
 test('timeout timeline and duration use the execution deadline', async ({ page }) => {

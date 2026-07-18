@@ -145,6 +145,48 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
 }
 
+func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
+	}
+	if _, err := s.Store.GetTask(ctx, taskID); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	recovery := store.InterruptedReviewRecoveryNeeded(orders)
+	if recovery == nil {
+		// The store owns durable idempotency and may still return the original
+		// result after recovered seats have since been claimed.
+		recovery = &store.InterruptedReviewRecoveryState{ReviewRound: latestReviewRound(orders)}
+	}
+	if recovery.ReviewRound == 0 {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no interrupted review round", store.ErrReviewRetryConflict, taskID)
+	}
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	timeout := cfg.WorkOrderQueueTimeout
+	if timeout <= 0 {
+		timeout = config.DefaultWorkOrderQueueTimeout
+	}
+	return s.Store.RecoverInterruptedReviewRound(ctx, store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound}, timeout)
+}
+
+func latestReviewRound(orders []core.WorkOrder) int {
+	latest := 0
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewRound > latest {
+			latest = order.ReviewRound
+		}
+	}
+	return latest
+}
+
 // RetryReviewRound starts a new full panel after the latest immutable review
 // round terminally timed out. The current PR head and workspace configuration
 // are verified before the store performs the atomic/idempotent transition.

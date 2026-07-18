@@ -45,6 +45,23 @@ type Enrollment struct {
 	Credential string      `json:"credential"`
 }
 
+// ClaimReconciliation is a read-only server-authoritative view used after a
+// scheduler gap or ambiguous release. Authorized is never inferred locally.
+type ClaimReconciliation struct {
+	WorkOrder  core.WorkOrder `json:"work_order"`
+	Authorized bool           `json:"authorized"`
+	Reason     string         `json:"reason"`
+}
+
+type TaskWorkerStatus struct {
+	Available         bool      `json:"available"`
+	RequiredHarnesses []string  `json:"required_harnesses"`
+	Reason            string    `json:"reason"`
+	LastHeartbeatAt   time.Time `json:"last_heartbeat_at,omitempty"`
+	LastHeartbeatAge  string    `json:"last_heartbeat_age,omitempty"`
+	QueueContext      string    `json:"queue_context"`
+}
+
 type DispatchOrder struct {
 	Order            core.WorkOrder `json:"work_order"`
 	Task             core.Task      `json:"task"`
@@ -269,6 +286,76 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 		}
 	}
 	return false, "no live worker reports every routed harness healthy"
+}
+
+func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) TaskWorkerStatus {
+	status := TaskWorkerStatus{Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
+	required := map[string]bool{}
+	var activeOrders []core.WorkOrder
+	for _, order := range orders {
+		if order.TaskID != task.ID || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) {
+			continue
+		}
+		activeOrders = append(activeOrders, order)
+		if order.RequiredHarness != "" {
+			required[order.RequiredHarness] = true
+		}
+		if order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.LastFailureAt.IsZero() {
+			status.QueueContext = "interrupted"
+		}
+	}
+	if len(required) == 0 {
+		stage := task.NextStage
+		if route, ok := cfg.Routing.Stages[string(stage)]; ok && route.Harness != "" {
+			required[route.Harness] = true
+		}
+	}
+	for harness := range required {
+		status.RequiredHarnesses = append(status.RequiredHarnesses, harness)
+	}
+	sort.Strings(status.RequiredHarnesses)
+	workers, err := s.Store.ListWorkers(ctx)
+	if err != nil {
+		status.Reason = err.Error()
+		return status
+	}
+	now := s.now()
+	for _, worker := range workers {
+		if worker.LastSeenAt.After(status.LastHeartbeatAt) {
+			status.LastHeartbeatAt = worker.LastSeenAt
+		}
+		if !worker.Live(now) {
+			continue
+		}
+		healthy := true
+		for _, order := range activeOrders {
+			if ok, _ := s.workerHealthyForOrder(worker, cfg, order); !ok {
+				healthy = false
+				break
+			}
+		}
+		if healthy && len(activeOrders) == 0 {
+			healthy, _ = workerHealthyForRoutes(worker, cfg, now)
+		}
+		if healthy {
+			status.Available = true
+			status.Reason = "healthy worker available"
+			break
+		}
+	}
+	if !status.LastHeartbeatAt.IsZero() {
+		age := now.Sub(status.LastHeartbeatAt)
+		if age < 0 {
+			age = 0
+		}
+		status.LastHeartbeatAge = age.Round(time.Second).String()
+		if !status.Available {
+			status.Reason += "; last heartbeat was " + status.LastHeartbeatAge + " ago"
+		}
+	} else if !status.Available {
+		status.Reason += "; no enrolled worker has heartbeated"
+	}
+	return status
 }
 
 func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Time) (bool, string) {
@@ -572,6 +659,26 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 	}
 	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, sessionID, DefaultClaimLease)
 }
+
+func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, sessionID string) (ClaimReconciliation, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return ClaimReconciliation{}, fmt.Errorf("session_id is required")
+	}
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return ClaimReconciliation{}, err
+	}
+	authorized := order.WorkerID == worker.ID && order.SessionID == sessionID &&
+		order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(s.now())
+	reason := "session is no longer the active lease owner"
+	if authorized {
+		reason = "session owns the active claim"
+	} else if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
+		reason = "work order already reached a durable terminal handoff"
+	}
+	return ClaimReconciliation{WorkOrder: order, Authorized: authorized, Reason: reason}, nil
+}
+
 func (s *Service) Release(ctx context.Context, worker core.Worker, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	if strings.TrimSpace(release.SessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")

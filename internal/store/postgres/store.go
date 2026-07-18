@@ -878,8 +878,9 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	for i, row := range rows {
 		result[i] = store.ActivityMarker{
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
-			ReviewDiagnostics: store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
-			ReviewRecovery:    store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
+			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
+			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
+			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(ordersByTask[row.TaskID]),
 		}
 	}
 	return result, nil
@@ -1249,6 +1250,115 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 		return store.ReviewRoundRetryResult{}, err
 	}
 	return store.ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}, nil
+}
+
+func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store.InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- commit below owns the outcome
+	workspaceID := workspace(ctx)
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:interrupted-review-request:"+request.RequestID); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	var priorWorkspace, priorTask string
+	var priorRound int
+	var priorJSON []byte
+	err = tx.QueryRow(ctx, `SELECT workspace_id,task_id,review_round,result_json FROM interrupted_review_recoveries WHERE request_id=$1`, request.RequestID).Scan(&priorWorkspace, &priorTask, &priorRound, &priorJSON)
+	if err == nil {
+		if priorWorkspace != workspaceID || priorTask != request.TaskID || priorRound != request.Round {
+			return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", store.ErrReviewRetryConflict, request.RequestID)
+		}
+		var prior store.InterruptedReviewRecoveryResult
+		if err = json.Unmarshal(priorJSON, &prior); err != nil {
+			return store.InterruptedReviewRecoveryResult{}, err
+		}
+		return prior, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:interrupted-review-task:"+workspaceID+":"+request.TaskID); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	var latest int
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(review_round),0) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review'`, workspaceID, request.TaskID).Scan(&latest); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	if latest == 0 || latest != request.Round {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching latest review round", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3 ORDER BY review_seat FOR UPDATE", workspaceID, request.TaskID, request.Round)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	var roundOrders []core.WorkOrder
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			rows.Close()
+			return store.InterruptedReviewRecoveryResult{}, scanErr
+		}
+		roundOrders = append(roundOrders, order)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	rows.Close()
+	recovery := store.InterruptedReviewRecoveryNeeded(roundOrders)
+	if recovery == nil || recovery.ReviewRound != request.Round {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	now := time.Now().UTC()
+	result := store.InterruptedReviewRecoveryResult{RequestID: request.RequestID, TaskID: request.TaskID, ReviewRound: request.Round, RetainedOrders: append([]core.WorkOrder(nil), recovery.RetainedOrders...)}
+	actor := store.ActorFromContext(ctx)
+	q := s.queries.WithTx(tx)
+	for _, eligible := range recovery.EligibleOrders {
+		priorOutcome := eligible.LastAttemptOutcome
+		eligible.LastAttemptOutcome = ""
+		eligible.RetrySuppressed = false
+		eligible.AutomaticRetryCount = 0
+		eligible.NextRetryAt = time.Time{}
+		eligible.QueueEnteredAt, eligible.QueueDeadline = now, now.Add(queueTimeout)
+		eligible.RedispatchCount++
+		eligible.UpdatedAt, eligible.Claimable = now, true
+		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+		if updateErr != nil {
+			return store.InterruptedReviewRecoveryResult{}, updateErr
+		}
+		if command.RowsAffected() != 1 {
+			return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: review seat %d changed concurrently", store.ErrReviewRetryConflict, eligible.ReviewSeat)
+		}
+		result.RecoveredOrders = append(result.RecoveredOrders, eligible)
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: eligible.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": eligible.ReviewSeat, "work_order_id": eligible.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": eligible.State, "outcome": "recovered"}), At: now}); err != nil {
+			return store.InterruptedReviewRecoveryResult{}, err
+		}
+	}
+	for _, retained := range recovery.RetainedOrders {
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed"}), At: now}); err != nil {
+			return store.InterruptedReviewRecoveryResult{}, err
+		}
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now}); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO interrupted_review_recoveries (workspace_id,request_id,task_id,review_round,actor_id,result_json,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, workspaceID, request.RequestID, request.TaskID, request.Round, actor.ID, resultJSON, now); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	return result, nil
 }
 
 func reviewRoundOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string, round int) ([]core.WorkOrder, error) {

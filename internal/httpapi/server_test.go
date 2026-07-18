@@ -235,6 +235,62 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "interrupted-review-http", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for seat, order := range []core.WorkOrder{
+		{State: core.WorkOrderCompleted},
+		{State: core.WorkOrderQueued, RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired},
+	} {
+		id := fmt.Sprintf("%s-review-1-seat-%d", task.ID, seat+1)
+		order.ID, order.TaskID, order.JobID, order.Stage, order.ReviewRound, order.ReviewSeat = id, task.ID, id, core.StageReview, 1, seat+1
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace, server.ConfigProvider = "token", "demo", provider
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	call := func(token, requestID string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review-round/recover?workspace_id=demo", strings.NewReader(fmt.Sprintf(`{"request_id":%q}`, requestID)))
+		request.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("", "recover-1"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", response.Code)
+	}
+	first := call("token", "recover-1")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"review_round":1`) || !strings.Contains(first.Body.String(), `"recovered_orders"`) || !strings.Contains(first.Body.String(), `"retained_orders"`) {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	if duplicate := call("token", "recover-1"); duplicate.Code != http.StatusOK || duplicate.Body.String() != first.Body.String() {
+		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	if conflict := call("token", "recover-2"); conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	activity := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK || strings.Contains(activity.Body.String(), `"interrupted_review_recovery"`) {
+		t.Fatalf("recovery action remained visible status=%d body=%s", activity.Code, activity.Body.String())
+	}
+}
+
 func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()

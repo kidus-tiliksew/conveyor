@@ -11,6 +11,8 @@ import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
 import { WorkOrderRecoveryCard } from './work-order-recovery-card'
 import { ReviewRoundRetryCard } from './review-round-retry-card'
+import { InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
+import { WorkerStatusCard } from './worker-status-card'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // The task detail sheet (spec §13.3): the costed event history plus review
@@ -74,6 +76,8 @@ function SheetBody({ item }: { item: ActivityItem }) {
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {reviewable && <ReviewPanel item={item} />}
+      <WorkerStatusCard item={item} />
+      <InterruptedReviewRecoveryCard item={item} />
       <ReviewRoundRetryCard item={item} />
       <WorkOrderRecoveryCard item={item} />
       {canRedispatch(item) && <RedispatchCard item={item} />}

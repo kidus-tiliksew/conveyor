@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/claim", s.claimWorkerOrder)
+		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
@@ -102,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
@@ -545,27 +547,30 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 type reviewItem struct {
-	Task              core.Task                       `json:"task"`
-	Jobs              []core.Job                      `json:"jobs"`
-	Events            []core.Event                    `json:"events"`
-	Interventions     []core.Intervention             `json:"interventions"`
-	CheckoutCommand   string                          `json:"checkout_command,omitempty"`
-	CheckoutAvailable bool                            `json:"checkout_available"`
-	CheckoutGuidance  string                          `json:"checkout_guidance"`
-	NeedsAttention    bool                            `json:"needs_attention"`
-	Spec              *core.SpecVersion               `json:"spec,omitempty"`
-	WorkOrders        []core.WorkOrder                `json:"work_orders"`
-	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
-	ReviewRecovery    *store.ReviewRecoveryState      `json:"review_recovery,omitempty"`
+	Task                      core.Task                             `json:"task"`
+	Jobs                      []core.Job                            `json:"jobs"`
+	Events                    []core.Event                          `json:"events"`
+	Interventions             []core.Intervention                   `json:"interventions"`
+	CheckoutCommand           string                                `json:"checkout_command,omitempty"`
+	CheckoutAvailable         bool                                  `json:"checkout_available"`
+	CheckoutGuidance          string                                `json:"checkout_guidance"`
+	NeedsAttention            bool                                  `json:"needs_attention"`
+	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
+	WorkOrders                []core.WorkOrder                      `json:"work_orders"`
+	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
+	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
+	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
+	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
 }
 
 type activityItem struct {
-	Task              core.Task                       `json:"task"`
-	LatestStage       core.Stage                      `json:"latest_stage,omitempty"`
-	LastEventAt       time.Time                       `json:"last_event_at"`
-	NeedsAttention    bool                            `json:"needs_attention"`
-	ReviewDiagnostics []store.ReviewVerdictDiagnostic `json:"review_diagnostics,omitempty"`
-	ReviewRecovery    *store.ReviewRecoveryState      `json:"review_recovery,omitempty"`
+	Task                      core.Task                             `json:"task"`
+	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
+	LastEventAt               time.Time                             `json:"last_event_at"`
+	NeedsAttention            bool                                  `json:"needs_attention"`
+	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
+	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
+	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
 }
 
 func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
@@ -594,14 +599,15 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 	items := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
 		marker := markerByTask[task.ID]
-		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil {
+		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil {
 			continue
 		}
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil,
-			ReviewDiagnostics: marker.ReviewDiagnostics,
-			ReviewRecovery:    marker.ReviewRecovery,
+			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil,
+			ReviewDiagnostics:         marker.ReviewDiagnostics,
+			ReviewRecovery:            marker.ReviewRecovery,
+			InterruptedReviewRecovery: marker.InterruptedReviewRecovery,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -647,14 +653,23 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		workOrders = []core.WorkOrder{}
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
+	var workerStatus *workerservice.TaskWorkerStatus
+	if s.Workers != nil && s.ConfigProvider != nil && task.Mode == core.TaskModeAuto {
+		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
+			status := s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
+			workerStatus = &status
+		}
+	}
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:    task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil,
-		Spec:              specPointer,
-		WorkOrders:        workOrders,
-		ReviewDiagnostics: store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
-		ReviewRecovery:    store.ReviewRecoveryNeeded(workOrders),
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil,
+		Spec:                      specPointer,
+		WorkOrders:                workOrders,
+		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
+		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders),
+		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(workOrders),
+		WorkerStatus:              workerStatus,
 	})
 }
 
