@@ -28,16 +28,15 @@ func newClient() *client {
 	return &client{base: base, token: os.Getenv("CONVEYOR_API_TOKEN"), workspace: workspaceFlag}
 }
 
-func (c *client) createTask(title, body, repo, base string) (core.Task, error) {
-	return c.createTaskWithMode(title, body, repo, base, "", nil, nil)
+func (c *client) createTask(body, repo, base string) (core.Task, error) {
+	return c.createTaskWithMode(body, repo, base, "", nil, nil)
 }
 
-func (c *client) createTaskWithLevel(title, body, repo, base string, level core.EscalationLevel) (core.Task, error) {
+func (c *client) createTaskWithLevel(body, repo, base string, level core.EscalationLevel) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
 	payload, _ := json.Marshal(map[string]string{
-		"title":       title,
 		"body":        body,
 		"repo":        repo,
 		"base_branch": base,
@@ -49,11 +48,11 @@ func (c *client) createTaskWithLevel(title, body, repo, base string, level core.
 	return t, err
 }
 
-func (c *client) createTaskWithMode(title, body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
+func (c *client) createTaskWithMode(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
-	payload := map[string]any{"title": title, "body": body, "repo": repo, "base_branch": base, "source": "cli"}
+	payload := map[string]any{"body": body, "repo": repo, "base_branch": base, "source": "cli"}
 	if mode != "" {
 		payload["mode"] = mode
 	}

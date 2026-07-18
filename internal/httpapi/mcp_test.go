@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +126,20 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 		if strings.Contains(string(data), `"required":null`) {
 			t.Fatalf("tool %v emits required:null", tool["name"])
 		}
+		if tool["name"] == "create_task" {
+			schema := tool["inputSchema"].(map[string]any)
+			properties := schema["properties"].(map[string]any)
+			if _, present := properties["title"]; present {
+				t.Fatalf("create_task still publishes a title field: %s", data)
+			}
+			bodyRequired := false
+			for _, field := range schema["required"].([]string) {
+				bodyRequired = bodyRequired || field == "body"
+			}
+			if !bodyRequired {
+				t.Fatalf("create_task does not require body: %s", data)
+			}
+		}
 	}
 }
 
@@ -161,13 +174,21 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	server.Workspace = "demo"
 	server.Repos = []string{"api"}
 	enqueued := 0
+	generated := 0
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) {
+		generated++
+		return "Triage this issue", nil
+	}
 	server.OnCreate = func(context.Context, string) { enqueued++ }
 	handler := server.Handler()
 
-	call := func(title string) (core.Task, bool, bool) {
+	call := func(taskBody string) (core.Task, bool, bool) {
 		t.Helper()
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"title":` + fmt.Sprintf("%q", title) + `,"body":"from an MCP issue","repo":"api","source":"mcp:test-issue","mode":"manual","spec_approval":true,"merge_approval":true,"idempotency_key":"issue-42"}}}`
-		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "create_task", "arguments": map[string]any{"body": taskBody, "repo": "api", "source": "mcp:test-issue", "mode": "manual", "spec_approval": true, "merge_approval": true, "idempotency_key": "issue-42"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(payload)))
 		request.Header.Set("Authorization", "Bearer operator-token")
 		request.Header.Set("X-Conveyor-Actor", "issue-triage-agent")
 		response := httptest.NewRecorder()
@@ -202,13 +223,13 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 		return result.Task, result.Created, false
 	}
 
-	first, created, failed := call("Triage this issue")
-	if failed || !created || first.State != core.TaskQueued || first.NextStage != core.StageTriage {
+	first, created, failed := call("from an MCP issue")
+	if failed || !created || first.Title != "Triage this issue" || first.State != core.TaskQueued || first.NextStage != core.StageTriage {
 		t.Fatalf("first task=%+v created=%t failed=%t", first, created, failed)
 	}
-	second, created, failed := call("Triage this issue")
-	if failed || created || second.ID != first.ID || enqueued != 1 {
-		t.Fatalf("retry task=%+v created=%t failed=%t enqueued=%d", second, created, failed, enqueued)
+	second, created, failed := call("from an MCP issue")
+	if failed || created || second.ID != first.ID || enqueued != 1 || generated != 1 {
+		t.Fatalf("retry task=%+v created=%t failed=%t enqueued=%d generated=%d", second, created, failed, enqueued, generated)
 	}
 	if _, _, failed = call("Different issue"); !failed {
 		t.Fatal("reusing the idempotency key for different input succeeded")
@@ -244,8 +265,9 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	}
 	server := NewServer(st)
 	server.Workspace, server.ConfigProvider, server.Workers = "demo", provider, workers
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Stable retry", nil }
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	arguments := map[string]any{"workspace_id": "demo", "title": "Stable retry", "repo": "api", "mode": "auto", "idempotency_key": "stable-policy"}
+	arguments := map[string]any{"workspace_id": "demo", "body": "Keep retry policy stable", "repo": "api", "mode": "auto", "idempotency_key": "stable-policy"}
 	firstResult, err := server.callMCPTool(request, "create_task", arguments)
 	if err != nil {
 		t.Fatal(err)
@@ -273,6 +295,12 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	conflict["spec_approval"] = false
 	if _, err = server.callMCPTool(request, "create_task", conflict); err == nil || !strings.Contains(err.Error(), "different task") {
 		t.Fatalf("explicit conflicting gate error=%v", err)
+	}
+
+	withTitle := maps.Clone(arguments)
+	withTitle["title"] = "Caller title"
+	if _, err = server.callMCPTool(request, "create_task", withTitle); err == nil || !strings.Contains(err.Error(), "must not be supplied") {
+		t.Fatalf("title input error=%v", err)
 	}
 }
 
