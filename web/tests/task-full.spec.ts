@@ -19,10 +19,24 @@ function activity(taskId: string, overflowing: boolean) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'timeout' ? {
+		jobs: [{ id: 'timeout-review', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'failed', started_at: '2026-07-15T12:00:00Z', ended_at: '2026-07-15T12:30:00Z' }],
+		events: [],
+		work_orders: [{ id: 'timeout-review', task_id: taskId, job_id: 'timeout-review', stage: 'review', state: 'timed_out', queue_entered_at: '2026-07-15T11:00:00Z', queue_deadline: '2026-07-16T11:00:00Z', execution_started_at: '2026-07-15T12:00:00Z', execution_deadline: '2026-07-15T12:30:00Z', updated_at: '2026-07-16T08:24:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'recovery' ? {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
 		work_orders: [{ id: 'recovery-review-1-seat-1', task_id: taskId, job_id: 'recovery-review-1-seat-1', stage: 'review', state: 'queued', claimable: false, last_attempt_outcome: 'child_failure', last_failure_message: 'harness exited: status 1', last_failure_exit_status: 1, last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'review-retry' ? {
+		jobs: [
+			{ id: 'review-retry-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
+			{ id: 'review-retry-review-1-seat-2', task_id: taskId, stage: 'review', state: 'failed', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
+		],
+		events: [{ id: 1, task_id: taskId, job_id: 'review-retry-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Historical approval', feedback: 'Round one feedback remains visible.', review_round: 1, review_seat: 1 }, at: createdAt }],
+		work_orders: [
+			{ id: 'review-retry-review-1-seat-1', task_id: taskId, job_id: 'review-retry-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'review-retry-review-1-seat-2', task_id: taskId, job_id: 'review-retry-review-1-seat-2', stage: 'review', state: 'timed_out', review_round: 1, review_seat: 2, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', execution_deadline: '2026-07-15T13:00:00Z', last_failure_message: 'review harness exhausted retries', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -63,6 +77,12 @@ function activity(taskId: string, overflowing: boolean) {
     },
 		work_orders: reviewActivity.work_orders,
 		review_diagnostics: reviewDiagnostics,
+		review_recovery: taskId === 'review-retry' ? {
+			needed: true,
+			prior_round: 1,
+			reason: 'latest review round is terminal after a reviewer timed out',
+			timed_out_orders: reviewActivity.work_orders?.filter((order) => order.state === 'timed_out') ?? [],
+		} : undefined,
   }
 }
 
@@ -111,6 +131,38 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let retryRequest = ''
+	await page.route('**/v1/tasks/*/review-round/retry*', async (route) => {
+		retryRequest = route.request().postData() ?? ''
+		await route.fulfill({ json: { request_id: 'retry-1', task_id: 'review-retry', prior_round: 1, new_round: 2, pr_head: 'abc', work_orders: [{ id: 'seat-1' }, { id: 'seat-2' }] } })
+	})
+	await page.goto('/tasks/review-retry/full')
+	await expect(page.getByText('Review round 1 needs operator attention')).toBeVisible()
+	await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+	await expect(page.getByText(/review harness exhausted retries/)).toBeVisible()
+	await expect(page.getByText(/Round one feedback remains visible/)).toBeVisible()
+	const retry = page.getByRole('button', { name: 'Retry review round' })
+	await expect(retry).toBeDisabled()
+	await page.getByLabel('Review retry reason').fill('Retry with the corrected current harness configuration')
+	await expect(retry).toBeEnabled()
+	await retry.click()
+	await expect.poll(() => retryRequest).toContain('request_id')
+	expect(retryRequest).toContain('corrected current harness configuration')
+	await expect(page.getByText('Review round 2 is queued with 2 seats.')).toBeVisible()
+})
+
+test('timeout timeline and duration use the execution deadline', async ({ page }) => {
+	await page.goto('/tasks/timeout/full')
+	const expectedDeadline = await page.evaluate(() => new Date('2026-07-15T12:30:00Z').toLocaleString('en', {
+		month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+	}))
+	const timeoutEntry = page.locator('li').filter({ hasText: 'Review — timed out' })
+	await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
+	await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {

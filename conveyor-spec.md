@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v1.22**
-**Date:** July 17, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), and worker-attempt recovery is bounded and audited (§21.21)
+**Specification — v1.24**
+**Date:** July 18, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met); execution settings are contextual (§21.18), provider-neutral reasoning effort is available for review seats and implementation (§21.19), harness MCP transport is explicit (§21.20), worker-attempt recovery is bounded and audited (§21.21), portable GitHub review projection plus headless-worker reliability are defined by §21.22, and terminal review-round recovery is defined by §21.23
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1945,4 +1945,96 @@ attempts; all other v1.21 decisions remain unchanged:
 
 ---
 
-*End of specification. v1.22 accepted July 17, 2026; all prior amendments remain in force, §21.20 adds explicit secret-safe harness MCP transport formats, and §21.21 adds attempt-scoped execution clocks, bounded durable child retry, atomic cleanup, and audited operator recovery. Subsequent changes proceed by amendment with version bumps.*
+### 21.22 v1.23 — Portable review publication and headless-worker reliability (July 18, 2026)
+
+Dogfooding exposed three avoidable self-hosting failures: GitHub Check Run
+writes require every deployment to provision a GitHub App; a headless Claude
+child can discover the Conveyor MCP server but stop for interactive tool
+approval; and a timeout observed after its deadline can inflate the displayed
+job duration. This amendment refines §21.12 change 5, §21.13, and §21.21 while
+leaving their durable internal review and retry decisions unchanged:
+
+1. **Portable GitHub publication is the default.** The factory publishes one
+   aggregate `Conveyor / Code review` commit status for the reviewed SHA plus
+   the existing deterministic PR comment. The status is `pending` until the
+   durable review-round aggregate exists, then `success` for unanimous approval
+   or `failure` for requested changes. A retry first compares the latest status
+   for that context and does not duplicate an identical projection. Historical
+   Check Run identifiers remain readable, but new default publications require
+   no GitHub App. A future optional Check Run projection may be added without
+   making it a prerequisite for self-hosted operation.
+
+2. **Internal state remains authoritative.** Commit-status or comment failure
+   cannot roll back a recorded verdict, bounce, or round aggregate. Publication
+   retries rebuild both projections from the durable event stream. A
+   fine-grained user token with commit-status and PR-comment permissions is a
+   valid default credential for an open-source deployment.
+
+3. **Headless harness permissions are launch data.** A non-interactive harness
+   command must pre-authorize the exact Conveyor MCP lifecycle tools it needs;
+   it must never depend on an operator answering a child-process permission
+   prompt. Provider-specific permission argv stays in the shell-free harness
+   command and is snapshotted with that command. The shipped Claude example
+   allows only the scoped `mcp__conveyor__*` server instead of bypassing all
+   permission checks.
+
+4. **Deadline time and observation time remain distinct.** When an execution
+   timeout is observed after its fixed deadline, the append-only transition is
+   still recorded at observation time, while the failed job's `ended_at` and
+   the timeout timeline marker use `execution_deadline`. UI duration therefore
+   reports the contracted execution window rather than control-plane polling or
+   downtime latency.
+
+---
+
+### 21.23 v1.24 — Audited recovery for terminal review rounds (July 18, 2026)
+
+A review panel can become permanently non-aggregatable when one immutable seat
+work order reaches terminal `timed_out`. Individual work-order redispatch and
+worker-attempt recovery do not apply to that state, while replacing a seat in
+the same round would violate the round/seat uniqueness and history contract.
+This amendment refines §§21.12, 21.13, 21.21, and 21.22 while leaving their
+normal dispatch and aggregation behavior unchanged:
+
+1. **Recovery retries the full panel as a new round.** An authenticated
+   operator may retry only when the latest review round contains a terminal
+   timed-out seat and no review round is active. The prior round, work orders,
+   verdicts, configuration snapshots, timeouts, and failures remain immutable.
+   Seat-only replacement and same-round attempt generations are not introduced.
+
+2. **The current implementation handoff is reverified.** Before mutation,
+   Conveyor resolves the current pull-request head and requires it to match the
+   last verified implementation handoff. A missing or changed head, a task
+   routed back to implementation, an active round, or any other incompatible
+   state fails closed without creating jobs or work orders.
+
+3. **Current configuration is snapshotted.** The next monotonically increasing
+   review round contains one queued work order for every seat in the current
+   workspace review panel. Each order snapshots the current model, harness,
+   effort, MCP transport, argv, and probe contract. No execution field is
+   copied from the timed-out seat.
+
+4. **The transition is scoped, atomic, and idempotent.** The operator supplies
+   a non-empty reason and a request ID bound to that workspace. Repeating the
+   exact request returns its original round; reusing the ID for another
+   workspace or any other different inputs is rejected. Task and request
+   serialization prevent concurrent requests from
+   creating duplicate active rounds or seat work orders. Memory and PostgreSQL
+   stores implement equivalent validation and transaction outcomes.
+
+5. **Recovery is visible and auditable.** Activity marks the stalled task as
+   needing operator attention and exposes the prior round, timed-out seats,
+   deadlines, and failure context. The dashboard labels the action **Retry
+   review round**, requires the operator reason, shows the new active round on
+   success, and retains historical results. The audit event records workspace,
+   task, actor, request ID, reason, verified PR head, prior round, new round,
+   and affected timed-out work orders.
+
+6. **Aggregation remains round-local.** Verdict and quorum evaluation uses
+   only work orders and completed-review events from the new round. Historical
+   approvals or requested changes remain visible but never satisfy a new seat
+   or change the new round's aggregate.
+
+---
+
+*End of specification. v1.24 accepted July 18, 2026; all prior amendments remain in force, and §21.23 adds audited full-round recovery for terminal timed-out review panels. Subsequent changes proceed by amendment with version bumps.*

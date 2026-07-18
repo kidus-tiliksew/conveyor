@@ -879,6 +879,7 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 		result[i] = store.ActivityMarker{
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
 			ReviewDiagnostics: store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
+			ReviewRecovery:    store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
 		}
 	}
 	return result, nil
@@ -1111,6 +1112,160 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
 	})
+}
+
+func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.PRHead = strings.TrimSpace(request.PRHead)
+	if request.RequestID == "" || request.Reason == "" || request.PRHead == "" {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id, reason, and verified PR head are required")
+	}
+	if len(jobs) == 0 || len(jobs) != len(orders) {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	workspaceID := workspace(ctx)
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:review-retry-request:"+request.RequestID); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	var storedWorkspace, storedTask, storedReason, storedHead, storedActor string
+	var storedPrior, storedNew int
+	err = tx.QueryRow(ctx, `SELECT workspace_id,task_id,reason,prior_round,new_round,pr_head,actor_id FROM review_round_retries WHERE request_id=$1`, request.RequestID).Scan(&storedWorkspace, &storedTask, &storedReason, &storedPrior, &storedNew, &storedHead, &storedActor)
+	if err == nil {
+		if storedWorkspace != workspaceID || storedTask != request.TaskID || storedReason != request.Reason || storedPrior != request.PriorRound || storedHead != request.PRHead {
+			return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", store.ErrReviewRetryConflict, request.RequestID)
+		}
+		created, loadErr := reviewRoundOrdersTx(ctx, tx, workspaceID, request.TaskID, storedNew)
+		if loadErr != nil {
+			return store.ReviewRoundRetryResult{}, loadErr
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+		return store.ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: storedPrior, NewRound: storedNew, PRHead: storedHead, WorkOrders: created}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:review-retry-task:"+workspaceID+":"+request.TaskID); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	q := s.queries.WithTx(tx)
+	before, err := q.GetTask(ctx, db.GetTaskParams{ID: request.TaskID, WorkspaceID: workspaceID})
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, notFound(err, "task %s", request.TaskID)
+	}
+	var latestRound, activeCount, timedOutCount int
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(review_round),0), count(*) FILTER (WHERE state IN ('queued','claimed','submitted')), count(*) FILTER (WHERE state='timed_out' AND review_round=(SELECT COALESCE(max(review_round),0) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review')) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review'`, workspaceID, request.TaskID).Scan(&latestRound, &activeCount, &timedOutCount); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	if latestRound == 0 || latestRound != request.PriorRound || timedOutCount == 0 || activeCount != 0 {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	newRound := request.PriorRound + 1
+	for i, job := range jobs {
+		order := orders[i]
+		if job.TaskID != request.TaskID || job.Stage != core.StageReview || order.TaskID != request.TaskID || order.JobID != job.ID || order.Stage != core.StageReview || order.ReviewRound != newRound || order.ReviewSeat != i+1 {
+			return store.ReviewRoundRetryResult{}, fmt.Errorf("invalid review retry member %d", i)
+		}
+	}
+	now := time.Now().UTC()
+	if core.TaskState(before.State) != core.TaskRunning {
+		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: request.TaskID, WorkspaceID: workspaceID, State: string(core.TaskRunning)}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": core.TaskRunning}), At: now}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+	}
+	created := make([]core.WorkOrder, 0, len(orders))
+	for i, job := range jobs {
+		if _, err = q.InsertJob(ctx, jobInsertParams(job)); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job), At: now}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+		order := orders[i]
+		if order.CreatedAt.IsZero() {
+			order.CreatedAt = now
+		}
+		if order.QueueEnteredAt.IsZero() {
+			order.QueueEnteredAt = order.CreatedAt
+		}
+		if order.QueueDeadline.IsZero() {
+			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+		}
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
+			id, workspace_id, task_id, job_id, stage, state, claimant_id,
+			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+			review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
+			automatic_retry_count, next_retry_at, retry_suppressed,
+			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
+			self_reported, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$15,$15)`,
+			order.ID, workspaceID, request.TaskID, job.ID, core.StageReview, core.WorkOrderQueued,
+			order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
+			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
+			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+		if err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+		created = append(created, order)
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+	}
+	actor := store.ActorFromContext(ctx)
+	if _, err = tx.Exec(ctx, `INSERT INTO review_round_retries (workspace_id,request_id,task_id,reason,prior_round,new_round,pr_head,actor_id,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, workspaceID, request.RequestID, request.TaskID, request.Reason, request.PriorRound, newRound, request.PRHead, actor.ID, now); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	timedOutOrders, err := reviewRoundOrdersTx(ctx, tx, workspaceID, request.TaskID, request.PriorRound)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	var timedOutIDs []string
+	for _, order := range timedOutOrders {
+		if order.State == core.WorkOrderTimedOut {
+			timedOutIDs = append(timedOutIDs, order.ID)
+		}
+	}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs}
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now}); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	return store.ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}, nil
+}
+
+func reviewRoundOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string, round int) ([]core.WorkOrder, error) {
+	rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3 ORDER BY review_seat", workspaceID, taskID, round)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.WorkOrder
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, order)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
@@ -1490,8 +1645,12 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 		return core.WorkOrder{}, err
 	}
 	if state == core.WorkOrderTimedOut {
+		endedAt := now
+		if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+			endedAt = order.ExecutionDeadline
+		}
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed', ended_at=COALESCE(ended_at,$1),
-			updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+			updated_at=$2 WHERE id=$3`, endedAt, now, order.JobID); err != nil {
 			return core.WorkOrder{}, err
 		}
 	}

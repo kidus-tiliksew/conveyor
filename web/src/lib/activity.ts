@@ -242,6 +242,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
     case 'timed_out':
       return {
         ...base,
+        at: order.execution_deadline ?? order.queue_entered_at,
         tone: 'alarm',
         title: `${stage} — timed out`,
         detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',

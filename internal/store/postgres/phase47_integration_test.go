@@ -130,12 +130,17 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || clockClaim.ExecutionStartedAt.IsZero() || clockClaim.ExecutionDeadline.Sub(clockClaim.ExecutionStartedAt) != time.Hour {
 		t.Fatalf("clock claim=%+v err=%v", clockClaim, err)
 	}
-	clockClaim.ExecutionDeadline = time.Now().Add(-time.Second)
+	deadline := time.Now().Add(-time.Second)
+	clockClaim.ExecutionDeadline = deadline
 	if err = st.UpdateWorkOrder(ctx, clockClaim); err != nil {
 		t.Fatal(err)
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	clockJobs, listErr := st.ListJobs(ctx, clockTaskID)
+	if listErr != nil || len(clockJobs) != 1 || clockJobs[0].EndedAt.Sub(deadline).Abs() > time.Millisecond {
+		t.Fatalf("timed-out job=%+v err=%v want ended_at=%s", clockJobs, listErr, deadline)
 	}
 	clockClaim.State = core.WorkOrderSubmitted
 	if err = st.UpdateWorkOrder(ctx, clockClaim); !errors.Is(err, store.ErrWorkOrderTimedOut) {

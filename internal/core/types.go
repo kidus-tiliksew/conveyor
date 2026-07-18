@@ -512,11 +512,13 @@ type ReviewPublication struct {
 	ModelEnforcement       string                 `json:"model_enforcement,omitempty"`
 	State                  ReviewPublicationState `json:"state"`
 	Attempts               int                    `json:"attempts"`
-	CheckRunID             int64                  `json:"check_run_id,omitempty"`
-	CommentID              int64                  `json:"comment_id,omitempty"`
-	LastError              string                 `json:"last_error,omitempty"`
-	CreatedAt              time.Time              `json:"created_at"`
-	UpdatedAt              time.Time              `json:"updated_at"`
+	// CheckRunID is retained for historical v1.22 publications. Portable v1.23
+	// commit-status publications leave it zero (spec §21.22).
+	CheckRunID int64     `json:"check_run_id,omitempty"`
+	CommentID  int64     `json:"comment_id,omitempty"`
+	LastError  string    `json:"last_error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // ReviewDecision is the atomic internal acceptance record for one completed

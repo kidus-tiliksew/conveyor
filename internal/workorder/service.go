@@ -145,6 +145,111 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
 }
 
+// RetryReviewRound starts a new full panel after the latest immutable review
+// round terminally timed out. The current PR head and workspace configuration
+// are verified before the store performs the atomic/idempotent transition.
+func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reason string) (store.ReviewRoundRetryResult, error) {
+	requestID = strings.TrimSpace(requestID)
+	reason = strings.TrimSpace(reason)
+	if requestID == "" || reason == "" {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id and operator reason are required")
+	}
+	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	// Durable audit data also provides a fast idempotent response after the new
+	// round becomes active and is no longer itself recovery-eligible.
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.round_retried" {
+			continue
+		}
+		var prior struct {
+			RequestID  string `json:"request_id"`
+			Reason     string `json:"reason"`
+			PriorRound int    `json:"prior_round"`
+			NewRound   int    `json:"new_round"`
+			PRHead     string `json:"pr_head"`
+		}
+		if json.Unmarshal(events[i].Payload, &prior) != nil || prior.RequestID != requestID {
+			continue
+		}
+		if prior.Reason != reason {
+			return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", store.ErrReviewRetryConflict, requestID)
+		}
+		orders, listErr := s.Store.ListTaskWorkOrders(ctx, taskID)
+		if listErr != nil {
+			return store.ReviewRoundRetryResult{}, listErr
+		}
+		var created []core.WorkOrder
+		for _, order := range orders {
+			if order.Stage == core.StageReview && order.ReviewRound == prior.NewRound {
+				created = append(created, order)
+			}
+		}
+		return store.ReviewRoundRetryResult{RequestID: requestID, TaskID: taskID, PriorRound: prior.PriorRound, NewRound: prior.NewRound, PRHead: prior.PRHead, WorkOrders: created}, nil
+	}
+	orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	recovery := store.ReviewRecoveryNeeded(orders)
+	if recovery == nil {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s does not have a terminal timed-out review round", store.ErrReviewRetryConflict, taskID)
+	}
+	if task.NextStage != core.StageReview {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s requires implementation handoff before another review", store.ErrReviewRetryConflict, taskID)
+	}
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	route, ok := cfg.Routing.Stages[string(core.StageReview)]
+	if !ok || route.Execution != config.ExecutionMCP {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires the current MCP review route")
+	}
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok || strings.TrimSpace(repo.GitHub) == "" {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("verified PR head is unavailable for repo %s", task.Repo)
+	}
+	reviewTarget := s.ReviewTarget
+	if reviewTarget == nil {
+		reviewTarget = github.ReviewTargetForBranch
+	}
+	target, err := reviewTarget(ctx, repo.GitHub, task.Branch)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("verify current PR head: %w", err)
+	}
+	recordedHead := ""
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
+		}
+		var opened struct {
+			HeadSHA string `json:"head_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &opened) == nil && opened.HeadSHA != "" {
+			recordedHead = opened.HeadSHA
+			break
+		}
+	}
+	if recordedHead == "" {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("verified implementation handoff PR head is unavailable")
+	}
+	if target.HeadSHA != recordedHead {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: PR head changed from %s to %s and requires implementation handoff", store.ErrReviewRetryConflict, recordedHead, target.HeadSHA)
+	}
+	jobs, newOrders, err := dispatch.BuildReviewRound(cfg, task, route, recovery.PriorRound+1)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	return s.Store.RetryReviewRound(ctx, store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}, jobs, newOrders)
+}
+
 func (s *Service) Get(ctx context.Context, id, session string) (Context, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {

@@ -149,6 +149,23 @@ export interface ActivitySummary {
   last_event_at: string
   needs_attention: boolean
   review_diagnostics?: ReviewVerdictDiagnostic[]
+  review_recovery?: ReviewRecoveryState
+}
+
+export interface ReviewRecoveryState {
+  needed: boolean
+  prior_round: number
+  reason: string
+  timed_out_orders: WorkOrder[]
+}
+
+export interface ReviewRoundRetryResult {
+  request_id: string
+  task_id: string
+  prior_round: number
+  new_round: number
+  pr_head: string
+  work_orders: WorkOrder[]
 }
 
 export interface ReviewVerdictDiagnostic {
@@ -292,6 +309,7 @@ export interface ActivityItem {
   spec?: SpecVersion
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
+  review_recovery?: ReviewRecoveryState
 }
 
 export interface WorkOrder {

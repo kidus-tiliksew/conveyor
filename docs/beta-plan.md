@@ -182,7 +182,7 @@ checkout untouched (spec §21.8). Suggested order:
    recorded on the intervention → independence labels:
    `reviewer_session`, `reviewer_model`, `same_model_as_implementer`). A
    completed verdict is recorded internally before a durable River job
-   publishes or updates the `Conveyor / Code review` Check Run and the single
+   publishes or updates the aggregate `Conveyor / Code review` commit status and the single
    Conveyor factory PR comment; GitHub retries cannot roll back the verdict or
    bounce decision. `await_review` remains authorized to the submitting
    implementation session after submission even when its claim lease expires.

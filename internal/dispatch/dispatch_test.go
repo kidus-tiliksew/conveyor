@@ -520,6 +520,20 @@ func TestReviewHistoryKeepsRequestedChangesAndResolution(t *testing.T) {
 	}
 }
 
+func TestReviewRoundStatusUsesAggregateVerdict(t *testing.T) {
+	pending := []core.Event{{Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_round": 2, "review_seat": 1, "verdict": "approve"})}}
+	if got := reviewRoundStatus(pending, 2, "approve"); got != "pending" {
+		t.Fatalf("pending panel status=%q", got)
+	}
+	completed := append(pending, core.Event{Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 2, "verdict": "changes_requested"})})
+	if got := reviewRoundStatus(completed, 2, "approve"); got != "failure" {
+		t.Fatalf("aggregate panel status=%q", got)
+	}
+	if got := reviewRoundStatus(completed, 1, "approve"); got != "pending" {
+		t.Fatalf("other round leaked into status=%q", got)
+	}
+}
+
 func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--

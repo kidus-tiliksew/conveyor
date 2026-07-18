@@ -19,12 +19,13 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired  = errors.New("workspace context is required")
-	ErrWorkspaceConflict  = errors.New("workspace id or name already exists")
-	ErrWorkOrderStale     = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut  = errors.New("work order execution deadline exceeded")
-	ErrPairingInvalid     = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized = errors.New("worker credential is invalid or revoked")
+	ErrWorkspaceRequired   = errors.New("workspace context is required")
+	ErrWorkspaceConflict   = errors.New("workspace id or name already exists")
+	ErrWorkOrderStale      = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut   = errors.New("work order execution deadline exceeded")
+	ErrReviewRetryConflict = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid      = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized  = errors.New("worker credential is invalid or revoked")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -77,6 +78,7 @@ type Store interface {
 
 	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error
+	RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
@@ -214,6 +216,74 @@ type ActivityMarker struct {
 	LatestStage       core.Stage
 	LastEventAt       time.Time
 	ReviewDiagnostics []ReviewVerdictDiagnostic
+	ReviewRecovery    *ReviewRecoveryState
+}
+
+// ReviewRecoveryState is the actionable projection of a latest review round
+// that cannot finish because at least one seat reached terminal timed_out.
+// Prior work orders remain immutable; recovery always creates a new round.
+type ReviewRecoveryState struct {
+	Needed         bool             `json:"needed"`
+	PriorRound     int              `json:"prior_round"`
+	Reason         string           `json:"reason"`
+	TimedOutOrders []core.WorkOrder `json:"timed_out_orders"`
+}
+
+type ReviewRoundRetryRequest struct {
+	TaskID     string
+	RequestID  string
+	Reason     string
+	PriorRound int
+	PRHead     string
+}
+
+type ReviewRoundRetryResult struct {
+	RequestID  string           `json:"request_id"`
+	TaskID     string           `json:"task_id"`
+	PriorRound int              `json:"prior_round"`
+	NewRound   int              `json:"new_round"`
+	PRHead     string           `json:"pr_head"`
+	WorkOrders []core.WorkOrder `json:"work_orders"`
+}
+
+type memoryReviewRoundRetry struct {
+	Workspace string
+	Request   ReviewRoundRetryRequest
+	Result    ReviewRoundRetryResult
+}
+
+// ReviewRecoveryNeeded derives the retry gate from the latest review round.
+// A round is terminal only when no seat is queued, claimed, or submitted.
+func ReviewRecoveryNeeded(orders []core.WorkOrder) *ReviewRecoveryState {
+	latest := 0
+	for _, order := range orders {
+		if order.Stage != core.StageReview {
+			continue
+		}
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
+			return nil
+		}
+		if order.ReviewRound > latest {
+			latest = order.ReviewRound
+		}
+	}
+	if latest == 0 {
+		return nil
+	}
+	state := &ReviewRecoveryState{Needed: true, PriorRound: latest, Reason: "latest review round is terminal after a reviewer timed out"}
+	for _, order := range orders {
+		if order.Stage != core.StageReview || order.ReviewRound != latest {
+			continue
+		}
+		switch order.State {
+		case core.WorkOrderTimedOut:
+			state.TimedOutOrders = append(state.TimedOutOrders, order)
+		}
+	}
+	if len(state.TimedOutOrders) == 0 {
+		return nil
+	}
+	return state
 }
 
 func NewMemory() Store {
@@ -232,6 +302,7 @@ func NewMemory() Store {
 		pairings:      map[string]core.WorkerPairing{},
 		workers:       map[string]core.Worker{},
 		recoveries:    map[string]struct{}{},
+		reviewRetries: map[string]memoryReviewRoundRetry{},
 	}
 }
 
@@ -262,6 +333,7 @@ type memory struct {
 	pairings      map[string]core.WorkerPairing
 	workers       map[string]core.Worker
 	recoveries    map[string]struct{}
+	reviewRetries map[string]memoryReviewRoundRetry
 	nextEventID   int64
 	nextReviewID  int64
 	taskLocks     sync.Map
@@ -864,6 +936,95 @@ func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []co
 	return nil
 }
 
+func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.PRHead = strings.TrimSpace(request.PRHead)
+	if request.RequestID == "" || request.Reason == "" || request.PRHead == "" {
+		return ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id, reason, and verified PR head are required")
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	key := request.RequestID
+	if prior, ok := m.reviewRetries[key]; ok {
+		if prior.Workspace != workspace || prior.Request != request {
+			return ReviewRoundRetryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", ErrReviewRetryConflict, request.RequestID)
+		}
+		return prior.Result, nil
+	}
+	task, ok := m.tasks[request.TaskID]
+	if !ok || (workspace != "" && task.Workspace != workspace) {
+		return ReviewRoundRetryResult{}, fmt.Errorf("task %s not found", request.TaskID)
+	}
+	if len(jobs) == 0 || len(jobs) != len(orders) {
+		return ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
+	}
+	now := time.Now().UTC()
+	var taskOrders []core.WorkOrder
+	for id, order := range m.workOrders {
+		if order.TaskID != request.TaskID || order.Stage != core.StageReview {
+			continue
+		}
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+		m.workOrders[id] = order
+		taskOrders = append(taskOrders, order)
+	}
+	recovery := ReviewRecoveryNeeded(taskOrders)
+	if recovery == nil || recovery.PriorRound != request.PriorRound {
+		return ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", ErrReviewRetryConflict, request.TaskID)
+	}
+	newRound := request.PriorRound + 1
+	for i, job := range jobs {
+		order := orders[i]
+		if job.TaskID != request.TaskID || job.Stage != core.StageReview || order.TaskID != request.TaskID || order.JobID != job.ID || order.Stage != core.StageReview || order.ReviewRound != newRound || order.ReviewSeat != i+1 {
+			return ReviewRoundRetryResult{}, fmt.Errorf("invalid review retry member %d", i)
+		}
+		if _, _, exists := m.findJobLocked(job.ID); exists {
+			return ReviewRoundRetryResult{}, fmt.Errorf("%w: job %s already exists", ErrReviewRetryConflict, job.ID)
+		}
+		if _, exists := m.workOrders[order.ID]; exists {
+			return ReviewRoundRetryResult{}, fmt.Errorf("%w: work order %s already exists", ErrReviewRetryConflict, order.ID)
+		}
+	}
+	if task.State != core.TaskRunning {
+		from := task.State
+		task.State = core.TaskRunning
+		m.tasks[request.TaskID] = task
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": core.TaskRunning}), At: now})
+	}
+	created := make([]core.WorkOrder, 0, len(orders))
+	for i, job := range jobs {
+		m.jobs[request.TaskID] = append(m.jobs[request.TaskID], job)
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job), At: now})
+		order := orders[i]
+		if order.CreatedAt.IsZero() {
+			order.CreatedAt = now
+		}
+		if order.QueueEnteredAt.IsZero() {
+			order.QueueEnteredAt = order.CreatedAt
+		}
+		if order.QueueDeadline.IsZero() {
+			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+		}
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		m.workOrders[order.ID] = order
+		created = append(created, order)
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
+	}
+	actor := ActorFromContext(ctx)
+	timedOutIDs := make([]string, 0, len(recovery.TimedOutOrders))
+	for _, order := range recovery.TimedOutOrders {
+		timedOutIDs = append(timedOutIDs, order.ID)
+	}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs}
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
+	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
+	m.reviewRetries[key] = memoryReviewRoundRetry{Workspace: workspace, Request: request, Result: result}
+	return result, nil
+}
+
 func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1083,7 +1244,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
 		if job, index, exists := m.findJobLocked(order.JobID); exists {
-			job.State, job.EndedAt = core.JobFailed, now
+			job.State, job.EndedAt = core.JobFailed, order.ExecutionDeadline
 			m.jobs[job.TaskID][index] = job
 		}
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(order), At: now})
@@ -1652,6 +1813,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 			marker.LastEventAt = events[len(events)-1].At
 		}
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
+		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })

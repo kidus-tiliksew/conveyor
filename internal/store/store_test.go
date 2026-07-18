@@ -172,7 +172,8 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired := stale
-	expired.ExecutionDeadline = time.Now().Add(-time.Second)
+	deadline := time.Now().Add(-time.Second)
+	expired.ExecutionDeadline = deadline
 	if err = st.UpdateWorkOrder(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +187,10 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	current, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || current.State != core.WorkOrderTimedOut {
 		t.Fatalf("current = %+v, err = %v", current, err)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || !jobs[0].EndedAt.Equal(deadline) {
+		t.Fatalf("timeout job=%+v err=%v want ended_at=%s", jobs, err, deadline)
 	}
 }
 

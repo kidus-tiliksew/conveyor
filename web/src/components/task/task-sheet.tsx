@@ -10,6 +10,7 @@ import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
 import { WorkOrderRecoveryCard } from './work-order-recovery-card'
+import { ReviewRoundRetryCard } from './review-round-retry-card'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // The task detail sheet (spec §13.3): the costed event history plus review
@@ -68,11 +69,12 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 }
 
 function SheetBody({ item }: { item: ActivityItem }) {
-  const reviewable = item.needs_attention || item.task.state === 'approved'
+  const reviewable = item.task.state === 'awaiting_human' || item.task.state === 'parked' || item.task.state === 'approved'
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {reviewable && <ReviewPanel item={item} />}
+      <ReviewRoundRetryCard item={item} />
       <WorkOrderRecoveryCard item={item} />
       {canRedispatch(item) && <RedispatchCard item={item} />}
       {item.spec && <SpecCard spec={item.spec} />}

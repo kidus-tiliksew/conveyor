@@ -49,9 +49,10 @@ issue is the same `#N`, so a successful merge closes the original issue.
 
 ## Review trail and resolutions
 
-Every review work order retains its own idempotent `Conveyor / Code review`
-Check Run. The existing factory PR comment is a deterministic aggregate of all
-single-review or panel-seat verdicts. Each entry identifies its review round,
+Each reviewed commit receives one idempotent aggregate `Conveyor / Code review`
+commit status. It remains pending until the round completes, then reports
+unanimous approval or requested changes. The existing factory PR comment is a
+deterministic aggregate of all single-review or panel-seat verdicts. Each entry identifies its review round,
 seat/work order, verdict, reason, and feedback. Requested changes remain in the
 history and are labelled `unresolved`, `resolved`, or `superseded` as later
 rounds arrive; a retry updates the same check/comment instead of duplicating
