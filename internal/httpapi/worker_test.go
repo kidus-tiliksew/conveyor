@@ -16,6 +16,66 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+func workerConfigHTTPFixture(t *testing.T) (*Server, workerservice.Enrollment, *config.Config) {
+	t.Helper()
+	st := store.NewMemory()
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider}
+	pairing, _, err := workers.IssuePairing(store.WithWorkspace(t.Context(), "demo"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "config-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = orders
+	server.Workers = workers
+	return server, enrollment, cfg
+}
+
+func getWorkerConfigHTTP(server *Server, credential string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, "/v1/worker/config", nil)
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func TestWorkerConfigHTTPRejectsMemoryBackendWithoutProvider(t *testing.T) {
+	server, enrollment, _ := workerConfigHTTPFixture(t)
+
+	response := getWorkerConfigHTTP(server, enrollment.Credential)
+	if response.Code != http.StatusNotImplemented || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" || !strings.Contains(response.Body.String(), "requires the Postgres database backend") {
+		t.Fatalf("config status=%d content-type=%q body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+}
+
+func TestWorkerConfigHTTPUsesConfiguredProvider(t *testing.T) {
+	server, enrollment, cfg := workerConfigHTTPFixture(t)
+	providerCalls := 0
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		providerCalls++
+		return cfg, nil
+	}
+
+	response := getWorkerConfigHTTP(server, enrollment.Credential)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
+	}
+	var workerConfig workerservice.WorkerConfig
+	if err := json.Unmarshal(response.Body.Bytes(), &workerConfig); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls != 1 || workerConfig.Workspace != "demo" || workerConfig.ActiveHarnesses == nil {
+		t.Fatalf("provider calls=%d config=%+v", providerCalls, workerConfig)
+	}
+}
+
 func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}}
