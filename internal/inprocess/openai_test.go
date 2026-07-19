@@ -1,10 +1,14 @@
 package inprocess
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/gif"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,18 +41,18 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&responseRequest); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.WriteString(w, `{"model":"gpt-5.6-luna","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
+			_, _ = io.WriteString(w, `{"model":"gpt-5.6-terra","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	}))
 	defer server.Close()
 	input := Input{Prompt: "analyze", Attachments: []Attachment{
-		{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: []byte("image-bytes")},
+		{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: append([]byte("\x89PNG\r\n\x1a\n"), []byte("image-bytes")...)},
 		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf", Kind: AttachmentDocument, Content: []byte("pdf-bytes")},
 		{ID: "audio-id", Name: "clip.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio-bytes")},
 	}}
-	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-luna", input)
+	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +63,71 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 			t.Fatalf("request missing %q: %s", expected, requestText)
 		}
 	}
-	for _, encodedBytes := range []string{base64.StdEncoding.EncodeToString([]byte("image-bytes")), base64.StdEncoding.EncodeToString([]byte("pdf-bytes"))} {
+	for _, encodedBytes := range []string{base64.StdEncoding.EncodeToString(input.Attachments[0].Content), base64.StdEncoding.EncodeToString([]byte("pdf-bytes"))} {
 		if !strings.Contains(requestText, encodedBytes) || strings.Contains(string(result.Transcript), encodedBytes) {
 			t.Fatalf("binary request/transcript contract failed for %q: request=%s transcript=%s", encodedBytes, requestText, result.Transcript)
 		}
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Model != "gpt-5.6-terra" || result.Diagnostic.AttachmentCount != 3 {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
+func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, model string
+		content     []byte
+		want        string
+		phase       string
+	}{
+		{name: "unsupported model", model: "text-only-test", content: append([]byte("\x89PNG\r\n\x1a\n"), 'x'), want: "capability validation", phase: "capability_validation"},
+		{name: "malformed image", model: "gpt-5.6-terra", content: []byte("not-png"), want: "does not match", phase: "attachment_validation"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+			defer server.Close()
+			result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), test.model, Input{
+				Prompt: "analyze", Attachments: []Attachment{{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: test.content}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) || calls != 0 {
+				t.Fatalf("error=%v calls=%d", err, calls)
+			}
+			if result.Diagnostic == nil || result.Diagnostic.Phase != test.phase || result.Diagnostic.Provider != "openai_responses" || len(result.Transcript) == 0 {
+				t.Fatalf("result = %+v", result)
+			}
+			if strings.Contains(string(result.Transcript), string(test.content)) {
+				t.Fatalf("transcript contains binary input: %s", result.Transcript)
+			}
+		})
+	}
+}
+
+func TestOpenAIRunRejectsAnimatedGIFBeforeProviderSubmission(t *testing.T) {
+	t.Parallel()
+	palette := color.Palette{color.Black, color.White}
+	frames := []*image.Paletted{
+		image.NewPaletted(image.Rect(0, 0, 1, 1), palette),
+		image.NewPaletted(image.Rect(0, 0, 1, 1), palette),
+	}
+	frames[1].Pix[0] = 1
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", Input{
+		Prompt: "analyze", Attachments: []Attachment{{ID: "animated", Name: "animated.gif", ContentType: "image/gif", Kind: AttachmentImage, Content: encoded.Bytes()}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "animated GIF") || calls != 0 {
+		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "attachment_validation" || len(result.Transcript) == 0 {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
@@ -115,21 +180,70 @@ func TestOpenAIRunRetriesTransientUpstreamFailures(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunRetriesRateLimits(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, `{"model":"gpt-5.6-terra","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
+	if err != nil || attempts != 3 || result.Output != "done" {
+		t.Fatalf("attempts=%d result=%+v err=%v", attempts, result, err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
+
+func TestOpenAIRunBoundsTransportRetriesAndPersistsDiagnostic(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return nil, fmt.Errorf("connection reset")
+	})}
+	result, err := (&OpenAI{APIKey: "sk-test", Client: httpClient, RetryDelay: time.Millisecond}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
+	if err == nil || attempts != 3 || result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != 3 || !result.Diagnostic.Retryable {
+		t.Fatalf("attempts=%d result=%+v err=%v", attempts, result, err)
+	}
+	if !strings.Contains(string(result.Transcript), "connection reset") || strings.Contains(string(result.Transcript), "sk-test") {
+		t.Fatalf("unsafe or incomplete transcript: %s", result.Transcript)
+	}
+}
+
 func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
 	t.Parallel()
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		attempts++
+		w.Header().Set("x-request-id", fmt.Sprintf("req-safe-%d", attempts))
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"code":"server_error","message":"temporary"}}`)
 	}))
 	defer server.Close()
 	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
-	_, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v", err)
 	}
 	if attempts != responsesMaxAttempts {
 		t.Fatalf("attempts = %d, want %d", attempts, responsesMaxAttempts)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != 3 || result.Diagnostic.UpstreamRequest != "req-safe-3" || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+	for _, expected := range []string{"req-safe-3", "server_error", "retry_exhausted"} {
+		if !strings.Contains(string(result.Transcript), expected) {
+			t.Fatalf("transcript missing %q: %s", expected, result.Transcript)
+		}
 	}
 }
 

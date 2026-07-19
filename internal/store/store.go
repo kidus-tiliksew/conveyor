@@ -1497,6 +1497,12 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
 	}
 	artifact.Workspace = workspace
+	if artifact.Role == "" {
+		artifact.Role = core.ArtifactRoleTaskContext
+	}
+	if !artifact.Role.Valid() {
+		return core.Artifact{}, fmt.Errorf("invalid artifact role %q", artifact.Role)
+	}
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
 	if artifact.CreatedAt.IsZero() {
@@ -1505,7 +1511,7 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
 	if existing, ok := m.artifacts[key]; ok {
 		for _, link := range existing.links {
-			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.Role == artifact.Role {
 				return link, nil
 			}
 		}
@@ -2026,6 +2032,22 @@ func (m *memory) UpsertTranscript(ctx context.Context, transcript core.Transcrip
 	}
 	if transcript.CreatedAt.IsZero() {
 		transcript.CreatedAt = time.Now().UTC()
+	}
+	if artifactID := strings.TrimPrefix(transcript.URI, "artifact://"); artifactID != transcript.URI {
+		task := m.tasks[job.TaskID]
+		key := memoryArtifactKey{workspace: task.Workspace, id: artifactID}
+		if artifact, exists := m.artifacts[key]; exists {
+			hasExplicitAudit := false
+			for _, link := range artifact.links {
+				hasExplicitAudit = hasExplicitAudit || link.TaskID == job.TaskID && link.Role == core.ArtifactRoleGeneratedAudit
+			}
+			for i := range artifact.links {
+				if !hasExplicitAudit && artifact.links[i].TaskID == job.TaskID && artifact.links[i].Role.ModelInputEligible() {
+					artifact.links[i].Role = core.ArtifactRoleGeneratedAudit
+				}
+			}
+			m.artifacts[key] = artifact
+		}
 	}
 	m.transcripts[transcript.JobID] = transcript
 	m.appendEventLocked(ctx, core.Event{

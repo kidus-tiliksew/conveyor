@@ -258,9 +258,73 @@ func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
 	if created.ID != again.ID {
 		t.Fatalf("dedupe failed")
 	}
+	if created.Role != core.ArtifactRoleTaskContext || !created.Role.ModelInputEligible() {
+		t.Fatalf("default artifact role = %q", created.Role)
+	}
 	_, content, err := st.GetArtifact(ctx, created.ID)
 	if err != nil || string(content) != "brief" {
 		t.Fatalf("content=%q err=%v", content, err)
+	}
+}
+
+func TestMemoryTranscriptProvenancePreservesAuditAndContextLinks(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(context.Background(), "demo")
+	st := NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "task", Workspace: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "job", TaskID: "task", Stage: core.StageTriage}); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"safe":"audit"}`)
+	contextArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "user.json", ContentType: "application/json", TaskID: "task"}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "job-transcript.json", ContentType: "application/json", Role: core.ArtifactRoleGeneratedAudit, TaskID: "task"}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextArtifact.ID != auditArtifact.ID {
+		t.Fatalf("content address changed across roles: %q != %q", contextArtifact.ID, auditArtifact.ID)
+	}
+	if err = st.UpsertTranscript(ctx, core.Transcript{JobID: "job", URI: "artifact://" + auditArtifact.ID}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[core.ArtifactRole]int{}
+	for _, artifact := range artifacts {
+		roles[artifact.Role]++
+	}
+	if roles[core.ArtifactRoleTaskContext] != 1 || roles[core.ArtifactRoleGeneratedAudit] != 1 {
+		t.Fatalf("roles = %+v artifacts=%+v", roles, artifacts)
+	}
+}
+
+func TestMemoryLegacyTranscriptLinkBecomesGeneratedAudit(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(context.Background(), "demo")
+	st := NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "task", Workspace: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "job", TaskID: "task", Stage: core.StageTriage}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "legacy-transcript.json", ContentType: "application/json", TaskID: "task"}, []byte("legacy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.UpsertTranscript(ctx, core.Transcript{JobID: "job", URI: "artifact://" + artifact.ID}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := st.ListArtifacts(ctx)
+	if err != nil || len(artifacts) != 1 || artifacts[0].Role != core.ArtifactRoleGeneratedAudit || artifacts[0].Role.ModelInputEligible() {
+		t.Fatalf("artifacts=%+v err=%v", artifacts, err)
 	}
 }
 
