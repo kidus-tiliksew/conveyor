@@ -1064,6 +1064,37 @@ func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	}
 }
 
+func TestTaskActivityNormalizesWorkerHarnessesAndOmitsTerminalStatus(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	for _, task := range []core.Task{
+		{ID: "queued-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskQueued},
+		{ID: "merged-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskMerged},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.Workers = &workerservice.Service{Store: st}
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo"}, nil
+	}
+
+	queued := httptest.NewRecorder()
+	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
+	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) {
+		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
+	}
+
+	merged := httptest.NewRecorder()
+	server.Handler().ServeHTTP(merged, httptest.NewRequest(http.MethodGet, "/v1/tasks/merged-auto/activity?workspace_id=demo", nil))
+	if merged.Code != http.StatusOK || bytes.Contains(merged.Body.Bytes(), []byte(`"worker_status"`)) {
+		t.Fatalf("merged activity status=%d body=%s", merged.Code, merged.Body.String())
+	}
+}
+
 func TestReviewUsesLatestJobWithoutLoadingHistory(t *testing.T) {
 	base := store.NewMemory()
 	task := core.Task{ID: "review-latest", State: core.TaskAwaiting}

@@ -654,7 +654,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	var workerStatus *workerservice.TaskWorkerStatus
-	if s.Workers != nil && s.ConfigProvider != nil && task.Mode == core.TaskModeAuto {
+	if s.Workers != nil && s.ConfigProvider != nil && task.Mode == core.TaskModeAuto && task.State != core.TaskMerged && task.State != core.TaskClosed {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
 			status := s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 			workerStatus = &status
