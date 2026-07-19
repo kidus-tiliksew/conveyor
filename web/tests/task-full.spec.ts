@@ -181,6 +181,26 @@ test.beforeEach(async ({ page }) => {
   await mockTaskAPIs(page)
 })
 
+test('task detail headers show the task name while routes and API lookup keep using the task ID', async ({ page }) => {
+	const fullTaskID = 'full-header-id'
+	const fullActivity = page.waitForRequest((request) => new URL(request.url()).pathname === `/v1/tasks/${fullTaskID}/activity`)
+	await page.goto(`/tasks/${fullTaskID}/full`)
+	await fullActivity
+	const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+	await expect(fullHeader).toContainText('Short task')
+	await expect(fullHeader).not.toContainText(fullTaskID)
+	expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
+
+	const sheetTaskID = 'sheet-header-id'
+	const sheetActivity = page.waitForRequest((request) => new URL(request.url()).pathname === `/v1/tasks/${sheetTaskID}/activity`)
+	await page.goto(`/tasks/${sheetTaskID}`)
+	await sheetActivity
+	const sheetHeader = page.locator('header').filter({ has: page.getByRole('button', { name: 'Close panel' }) })
+	await expect(sheetHeader).toContainText('Short task')
+	await expect(sheetHeader).not.toContainText(sheetTaskID)
+	expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
+})
+
 test('new task detail tolerates a null work-order list from the API', async ({ page }) => {
 	await page.goto('/tasks/no-orders/full')
 	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()

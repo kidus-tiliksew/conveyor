@@ -24,7 +24,7 @@ export function TaskFullPage() {
             <ArrowLeft />
           </Button>
         </Link>
-        <span className="mr-auto font-mono text-xs text-muted">{taskId}</span>
+        <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
         <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
       </header>
