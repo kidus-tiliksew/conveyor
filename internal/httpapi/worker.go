@@ -137,6 +137,10 @@ func (s *Server) heartbeatWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getWorkerConfig(w http.ResponseWriter, r *http.Request) {
+	if s.ConfigProvider == nil {
+		http.Error(w, "worker configuration requires the Postgres database backend", http.StatusNotImplemented)
+		return
+	}
 	cfg, err := s.ConfigProvider(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
