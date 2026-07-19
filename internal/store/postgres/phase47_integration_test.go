@@ -283,3 +283,77 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatalf("atomic publication=%+v err=%v", stored, getErr)
 	}
 }
+
+func TestArtifactRolePersistenceIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	ctx := context.Background()
+	st, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "artifact-role-" + core.NewTaskID()
+	ctx = store.WithWorkspace(ctx, workspace)
+	cfg := &config.Config{Workspace: workspace, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Model: "gpt-5.6-terra", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
+	}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "api", Title: "Artifact roles", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	task.Branch = "conveyor/artifact-role-" + task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-triage-1", TaskID: task.ID, Stage: core.StageTriage, State: core.JobFailed, StartedAt: time.Now(), EndedAt: time.Now()}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"safe":"shared"}`)
+	contextArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "user.json", ContentType: "application/json", TaskID: task.ID}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "transcript.json", ContentType: "application/json", Role: core.ArtifactRoleGeneratedAudit, TaskID: task.ID}, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextArtifact.ID != auditArtifact.ID {
+		t.Fatalf("content address changed across roles")
+	}
+	if err = st.UpsertTranscript(ctx, core.Transcript{JobID: job.ID, URI: "artifact://" + auditArtifact.ID}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[core.ArtifactRole]int{}
+	for _, artifact := range artifacts {
+		roles[artifact.Role]++
+	}
+	if roles[core.ArtifactRoleTaskContext] != 1 || roles[core.ArtifactRoleGeneratedAudit] != 1 {
+		t.Fatalf("roles=%+v artifacts=%+v", roles, artifacts)
+	}
+
+	legacyJob := core.Job{ID: task.ID + "-triage-2", TaskID: task.ID, Stage: core.StageTriage, State: core.JobFailed, StartedAt: time.Now(), EndedAt: time.Now()}
+	if err = st.CreateJob(ctx, legacyJob); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := st.CreateArtifact(ctx, core.Artifact{Name: "legacy.json", ContentType: "application/json", TaskID: task.ID}, []byte("legacy transcript"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.UpsertTranscript(ctx, core.Transcript{JobID: legacyJob.ID, URI: "artifact://" + legacy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err = st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.ID == legacy.ID && artifact.Role != core.ArtifactRoleGeneratedAudit {
+			t.Fatalf("legacy transcript role = %q", artifact.Role)
+		}
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -314,7 +315,11 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
 	input, err := d.buildStageInput(ctx, task.NextStage, task)
 	if err != nil {
-		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "artifact.context_failed", Payload: core.JSONPayload(map[string]string{"stage": string(task.NextStage), "error": err.Error()})})
+		attachmentCount, attachmentTypes := d.modelInputArtifactSummary(ctx, task)
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "artifact.context_failed", Payload: core.JSONPayload(map[string]any{
+			"stage": task.NextStage, "phase": "attachment_preparation", "provider": "openai_responses", "model": route.Model,
+			"attachment_count": attachmentCount, "attachment_types": attachmentTypes, "error": err.Error(),
+		})})
 		return err
 	}
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
@@ -332,7 +337,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	if len(result.Transcript) != 0 {
 		sum := sha256.Sum256(result.Transcript)
 		id := fmt.Sprintf("%x", sum)
-		artifact, artifactErr := d.Store.CreateArtifact(ctx, core.Artifact{ID: id, Workspace: task.Workspace, Name: job.ID + "-transcript.json", ContentType: "application/json", SizeBytes: int64(len(result.Transcript)), TaskID: task.ID}, result.Transcript)
+		artifact, artifactErr := d.Store.CreateArtifact(ctx, core.Artifact{ID: id, Workspace: task.Workspace, Name: job.ID + "-transcript.json", ContentType: "application/json", SizeBytes: int64(len(result.Transcript)), Role: core.ArtifactRoleGeneratedAudit, TaskID: task.ID}, result.Transcript)
 		if artifactErr == nil {
 			_ = d.Store.UpsertTranscript(ctx, core.Transcript{JobID: job.ID, URI: "artifact://" + artifact.ID, RedactionStats: result.Redactions, CreatedAt: time.Now().UTC()})
 		}
@@ -340,7 +345,11 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	if runErr != nil {
 		job.State = core.JobFailed
 		_ = d.Store.UpdateJob(ctx, job)
-		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.failed", Payload: core.JSONPayload(map[string]string{"error": runErr.Error()})})
+		failure := map[string]any{"error": runErr.Error()}
+		if result.Diagnostic != nil {
+			failure["diagnostic"] = result.Diagnostic
+		}
+		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.failed", Payload: core.JSONPayload(failure)})
 		return d.transition(ctx, task.ID, core.TaskAwaiting, "", task.NextStage)
 	}
 	job.State = core.JobDone
@@ -348,6 +357,25 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		return err
 	}
 	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
+}
+
+func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, task core.Task) (int, []string) {
+	artifacts, err := d.Store.ListArtifacts(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	types := []string{}
+	for _, artifact := range artifacts {
+		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
+			continue
+		}
+		if !artifact.Role.ModelInputEligible() {
+			continue
+		}
+		types = append(types, strings.ToLower(strings.TrimSpace(artifact.ContentType)))
+	}
+	sort.Strings(types)
+	return len(types), types
 }
 
 func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task core.Task) (inprocess.Input, error) {
@@ -420,6 +448,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task
 	totalBytes := 0
 	for _, artifact := range artifacts {
 		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
+			continue
+		}
+		if !artifact.Role.ModelInputEligible() {
 			continue
 		}
 		if seen[artifact.ID] {

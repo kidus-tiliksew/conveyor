@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react'
 import { AlertTriangle, Check, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
+import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
 import { buildTimeline, type PanelSeat, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
@@ -465,6 +466,7 @@ function providerLogo(model: string): { svg: string; className?: string } | unde
   if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai')) return { svg: openaiIcon, className: 'text-foreground' }
   if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
   if (/gemini|google/.test(name)) return { svg: geminiIcon }
+  if (/grok|xai|x\.ai/.test(name)) return { svg: grokIcon, className: 'text-foreground' }
   return undefined
 }
 

@@ -418,7 +418,7 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 	sum := sha256.Sum256(content)
 	artifactID := fmt.Sprintf("%x", sum)
 	task, _ := s.Store.GetTask(ctx, order.TaskID)
-	artifact, err := s.Store.CreateArtifact(ctx, core.Artifact{ID: artifactID, Workspace: task.Workspace, Name: order.ID + "-self-reported-transcript.txt", ContentType: "text/plain", SizeBytes: int64(len(content)), TaskID: task.ID}, content)
+	artifact, err := s.Store.CreateArtifact(ctx, core.Artifact{ID: artifactID, Workspace: task.Workspace, Name: order.ID + "-self-reported-transcript.txt", ContentType: "text/plain", SizeBytes: int64(len(content)), Role: core.ArtifactRoleGeneratedAudit, TaskID: task.ID}, content)
 	if err != nil {
 		return core.Artifact{}, err
 	}

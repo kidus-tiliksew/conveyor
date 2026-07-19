@@ -275,8 +275,16 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
       return job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.'
     case 'running':
       return 'In progress.'
-    case 'failed':
+    case 'failed': {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const event = events[i]
+        if (event.job_id !== job.id) continue
+        if (event.kind === 'job.failed' && typeof event.payload?.error === 'string' && event.payload.error) {
+          return event.payload.error
+        }
+      }
       return 'The job failed before producing a summary.'
+    }
     default:
       return 'Completed.'
   }
