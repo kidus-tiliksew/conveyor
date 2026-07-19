@@ -290,7 +290,7 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 }
 
 func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) TaskWorkerStatus {
-	status := TaskWorkerStatus{Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
+	status := TaskWorkerStatus{RequiredHarnesses: []string{}, Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
 	required := map[string]bool{}
 	var activeOrders []core.WorkOrder
 	for _, order := range orders {

@@ -140,6 +140,11 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			last_heartbeat_at: createdAt,
 			last_heartbeat_age: '2m0s',
 			queue_context: 'interrupted',
+		} : taskId === 'null-worker-status' ? {
+			available: false,
+			required_harnesses: null,
+			reason: 'no healthy worker can serve the task\'s required harnesses',
+			queue_context: 'never_started',
 		} : undefined,
   }
 }
@@ -156,7 +161,7 @@ async function mockTaskAPIs(page: Page) {
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])
       if (taskId === 'live-scroll') liveActivityRequests++
-      await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate', liveActivityRequests > 1 ? 19 : 18) })
+	  await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate', liveActivityRequests > 1 ? 19 : 18) })
       return
     }
 		if (url.pathname === '/v1/activity') {
@@ -204,6 +209,13 @@ test('task detail headers show the task name while routes and API lookup keep us
 test('new task detail tolerates a null work-order list from the API', async ({ page }) => {
 	await page.goto('/tasks/no-orders/full')
 	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
+	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
+})
+
+test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
+	await page.goto('/tasks/null-worker-status/full')
+	await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
+	await expect(page.getByText('Required harnesses: not yet routed.')).toBeVisible()
 	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 

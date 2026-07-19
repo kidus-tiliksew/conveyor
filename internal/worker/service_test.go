@@ -125,6 +125,18 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	}
 }
 
+func TestTaskAvailabilityReturnsEmptyRequiredHarnessesAsArray(t *testing.T) {
+	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
+		store.WithWorkspace(t.Context(), "demo"),
+		&config.Config{Workspace: "demo"},
+		core.Task{ID: "unrouted-task", Workspace: "demo", Mode: core.TaskModeAuto},
+		nil,
+	)
+	if status.RequiredHarnesses == nil || len(status.RequiredHarnesses) != 0 {
+		t.Fatalf("required harnesses = %#v, want non-nil empty slice", status.RequiredHarnesses)
+	}
+}
+
 func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
