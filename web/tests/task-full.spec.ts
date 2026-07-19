@@ -1,12 +1,25 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
+let emitLiveScrollEvent = () => {}
 
-function activity(taskId: string, overflowing: boolean) {
+function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 	const specContent = taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
-	const reviewActivity = taskId === 'reviews' ? {
+	const reviewActivity = taskId === 'live-scroll' ? {
+		jobs: [],
+		events: Array.from({ length: liveEventCount }, (_, index) => ({
+			id: index + 1,
+			task_id: taskId,
+			kind: 'spec.version_created',
+			actor_id: 'system',
+			actor_role: 'system' as const,
+			payload: { version: index + 1 },
+			at: `2026-07-15T12:00:${String(index).padStart(2, '0')}Z`,
+		})),
+		work_orders: [],
+	} : taskId === 'reviews' ? {
 		jobs: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:02:00Z', ended_at: '2026-07-15T12:03:00Z' },
@@ -132,13 +145,18 @@ function activity(taskId: string, overflowing: boolean) {
 }
 
 async function mockTaskAPIs(page: Page) {
+  let liveActivityRequests = 0
+  let releaseLiveStream = () => {}
+  const liveStreamRelease = new Promise<void>((resolve) => { releaseLiveStream = resolve })
+  emitLiveScrollEvent = releaseLiveStream
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])
-      await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate') })
+      if (taskId === 'live-scroll') liveActivityRequests++
+      await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate', liveActivityRequests > 1 ? 19 : 18) })
       return
     }
 		if (url.pathname === '/v1/activity') {
@@ -147,6 +165,11 @@ async function mockTaskAPIs(page: Page) {
 			return
 		}
     if (url.pathname.endsWith('/events/stream')) {
+      if (url.pathname.includes('/live-scroll/')) {
+        await liveStreamRelease
+        await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+        return
+      }
       await route.fulfill({ status: 204 })
       return
     }
@@ -384,6 +407,24 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 	await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 	await expect(gate).toBeInViewport()
 	await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('new task events scroll only the timeline container to the newest event', async ({ page }) => {
+	await page.goto('/tasks/live-scroll')
+
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
+	await expect(timeline.getByText('Spec v18 drafted')).toBeVisible()
+	await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+	await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(0)
+
+	emitLiveScrollEvent()
+
+	const newest = timeline.getByText('Spec v19 drafted')
+	await expect(newest).toBeVisible()
+	await expect(newest).toBeInViewport()
+	await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
+	await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
 })
 
 test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
