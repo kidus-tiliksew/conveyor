@@ -43,7 +43,7 @@ Suggested order:
    placeholder-free adapter argv appended only when a seat requests that
    exact effort (§21.19); `mcp_transport` is `json_file` or the secret-free
    `toml_override` (§21.20), or the non-secret `environment` attachment
-   contract (§21.28); `probe_command` is standalone and accepts no placeholders.
+   contract (§21.29); `probe_command` is standalone and accepts no placeholders.
    Placeholders substitute as whole elements and invalid field/placeholder
    combinations are rejected at write time — under the standard §21.3
    mechanics: validated writes, `config.updated` events, hot reload. The

@@ -292,7 +292,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(page.getByText(/^Independent review:/)).toHaveCount(0)
 	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
 
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows).toHaveCount(3)
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
 	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
@@ -310,7 +310,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
 	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
 	await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows).toHaveCount(4)
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
 	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
@@ -334,7 +334,7 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 
 	// The gate is the timeline's last entry — the decision point where the
 	// story currently ends.
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows.last().getByRole('region', { name: 'Human gate' })).toBeVisible()
 
 	// A reviewable task opens scrolled to the gate: the long description

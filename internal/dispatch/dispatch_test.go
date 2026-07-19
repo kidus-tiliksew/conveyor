@@ -578,16 +578,15 @@ func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, 
 type sequenceAgent struct {
 	outputs []string
 	next    int
-	costUSD float64
 }
 
 func (agent *sequenceAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
 	output := agent.outputs[agent.next]
 	agent.next++
-	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10, CostUSD: agent.costUSD}, nil
+	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10}, nil
 }
 
-func TestHighInProcessUsageDoesNotGatePipeline(t *testing.T) {
+func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := store.NewMemory()
@@ -599,9 +598,9 @@ func TestHighInProcessUsageDoesNotGatePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"automatability\":1,\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}, costUSD: 20_000}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"automatability\":1,\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "gpt-5.4", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+		"triage": {Model: "gpt-newly-configured", Execution: config.ExecutionInProcess, Timeout: time.Minute},
 	}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
@@ -613,7 +612,7 @@ func TestHighInProcessUsageDoesNotGatePipeline(t *testing.T) {
 		t.Fatalf("task=%+v err=%v", current, err)
 	}
 	job, ok, err := st.GetLatestJob(ctx, task.ID)
-	if err != nil || !ok || job.State != core.JobDone || job.CostUSD != 20_000 {
+	if err != nil || !ok || job.State != core.JobDone || job.CostUSD != nil || job.TokensIn != 20 || job.TokensOut != 10 {
 		t.Fatalf("job=%+v ok=%t err=%v", job, ok, err)
 	}
 }

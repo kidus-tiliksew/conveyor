@@ -676,6 +676,40 @@ func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	}
 }
 
+func TestListJobsOmitsInProcessCostAndKeepsWorkerCost(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "job-cost-wire", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	reportedCost := 1.25
+	for _, job := range []core.Job{
+		{ID: "in-process", TaskID: task.ID, Runner: "in-process", TokensIn: 17, TokensOut: 3, State: core.JobDone},
+		{ID: "worker", TaskID: task.ID, Runner: "external", CostUSD: &reportedCost, State: core.JobDone},
+	} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := httptest.NewRecorder()
+	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/jobs", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var jobs []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 || jobs[0]["id"] != "in-process" || jobs[0]["cost_usd"] != nil || jobs[0]["tokens_in"] != float64(17) || jobs[0]["tokens_out"] != float64(3) {
+		t.Fatalf("in-process wire job = %+v", jobs)
+	}
+	if jobs[1]["id"] != "worker" || jobs[1]["cost_usd"] != reportedCost {
+		t.Fatalf("worker wire job = %+v", jobs)
+	}
+}
+
 func TestDashboardIsEmbedded(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewServer(store.NewMemory()).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tasks/example", nil))

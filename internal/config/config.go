@@ -804,7 +804,7 @@ func validateHarness(h Harness, index int) error {
 }
 
 // ValidateHarness applies the same transport-aware durable contract to worker
-// snapshots immediately before probing or launch (spec §21.28 changes 2, 5).
+// snapshots immediately before probing or launch (spec §21.29 changes 2, 5).
 func ValidateHarness(h Harness) error {
 	return validateHarness(h, 0)
 }

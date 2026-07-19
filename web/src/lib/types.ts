@@ -83,7 +83,7 @@ export interface Job {
   runner: string
   pack_version?: string
   confinement: string
-  cost_usd: number
+  cost_usd?: number | null
   tokens_in: number
   tokens_out: number
   state: JobState
