@@ -7,6 +7,10 @@ import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
+export function hasReviewRoundRetry(item: ActivityItem) {
+  return item.review_recovery?.needed === true
+}
+
 export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   const recovery = item.review_recovery
   const token = useOperatorToken()

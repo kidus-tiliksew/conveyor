@@ -1,6 +1,10 @@
 import { CircleCheck, TriangleAlert } from 'lucide-react'
 import type { ActivityItem } from '../../lib/types'
 
+export function hasWorkerAlert(item: ActivityItem) {
+  return item.worker_status != null && !item.worker_status.available
+}
+
 export function WorkerStatusCard({ item }: { item: ActivityItem }) {
   const status = item.worker_status
   if (!status || status.available) return null

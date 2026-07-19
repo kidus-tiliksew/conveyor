@@ -81,7 +81,7 @@ function activity(taskId: string, overflowing: boolean) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-      state: 'running',
+      state: taskId === 'gate' ? 'awaiting_human' : 'running',
       next_stage: 'implement',
       created_at: createdAt,
     },
@@ -135,7 +135,7 @@ async function mockTaskAPIs(page: Page) {
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])
-      await route.fulfill({ json: activity(taskId, taskId === 'overflowing') })
+      await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate') })
       return
     }
 		if (url.pathname === '/v1/activity') {
@@ -322,6 +322,33 @@ test('active review claim diagnostics stay in the review panel instead of standa
 	await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
 	await expect(page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })).toHaveCount(1)
 	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
+})
+
+test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
+	await page.goto('/tasks/gate/full')
+
+	await expect(page.getByRole('heading', { name: 'Event timeline' })).toBeVisible()
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate).toHaveCount(1)
+	await expect(gate.getByText('Your review, please')).toBeVisible()
+
+	// The gate is the timeline's last entry — the decision point where the
+	// story currently ends.
+	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	await expect(timelineRows.last().getByRole('region', { name: 'Human gate' })).toBeVisible()
+
+	// A reviewable task opens scrolled to the gate: the long description
+	// overflows the content region, yet the gate is in view without scrolling.
+	const content = page.getByRole('region', { name: 'Task content' })
+	await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+	await expect(gate).toBeInViewport()
+	await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
+	await page.goto('/tasks/gate')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate).toBeInViewport()
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {

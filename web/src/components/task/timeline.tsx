@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { AlertTriangle, Check, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
@@ -7,25 +8,71 @@ import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
+import { RedispatchCard, canRedispatch } from './redispatch-card'
+import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-card'
+import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
+import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
+import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
 
-// The costed event timeline (spec §13.3 element 2): the audit log rendered
-// as a story — one entry per stage execution, with cost, duration, and the
-// harness/model/auth mode that ran it, interleaved with pipeline incidents
-// and every recorded decision.
+// The gate dot pulses — the timeline's one "waiting on you" signal — in the
+// gate card's own tone.
+const gateDots: Record<GateTone, string> = {
+  positive: 'bg-positive',
+  neutral: 'bg-primary',
+  alarm: 'bg-attention-dot',
+}
+
+// The costed event timeline (spec §13.3 elements 2 and 3): the audit log
+// rendered as a story — one entry per stage execution, with cost, duration,
+// and the harness/model/auth mode that ran it, interleaved with pipeline
+// incidents and every recorded decision. Anything actionable "now" — status
+// alerts, recovery actions, and the human gate itself — renders as the live
+// tail: cause sits directly above prompt, and a recorded decision resolves
+// in place into its intervention entry.
 export function Timeline({ item }: { item: ActivityItem }) {
   const entries = buildTimeline(item)
+  const showGate = isReviewable(item.task)
+  const gateRef = useRef<HTMLLIElement>(null)
+
+  // Reviewable tasks open scrolled to the gate — the decision point — not
+  // the top of a story the reviewer has often already read.
+  useEffect(() => {
+    if (showGate) gateRef.current?.scrollIntoView({ block: 'end' })
+  }, [item.task.id, showGate])
+
+  const tail = [
+    hasWorkerAlert(item) && { key: 'worker-alert', dot: 'bg-attention-dot', card: <WorkerStatusCard item={item} /> },
+    hasInterruptedReviewRecovery(item) && { key: 'interrupted-review', dot: 'bg-attention-dot', card: <InterruptedReviewRecoveryCard item={item} /> },
+    hasReviewRoundRetry(item) && { key: 'review-retry', dot: 'bg-attention-dot', card: <ReviewRoundRetryCard item={item} /> },
+    hasWorkerRecovery(item) && { key: 'order-recovery', dot: 'bg-attention-dot', card: <WorkOrderRecoveryCard item={item} /> },
+    canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
+  ].filter((entry) => entry !== false)
+
   return (
     <section aria-label="Costed event timeline">
       <div className="mb-4 flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold tracking-tight">Event history</h2>
+        <h2 className="text-sm font-semibold tracking-tight">Event timeline</h2>
         <span className="font-mono text-[11px] text-faint">{item.events.length} audit events</span>
       </div>
       <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
         {entries.map((entry) => (
           <TimelineRow key={keyFor(entry)} entry={entry} />
         ))}
-        {entries.length === 0 && (
+        {entries.length === 0 && tail.length === 0 && !showGate && (
           <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
+        )}
+        {tail.map(({ key, dot, card }) => (
+          <li key={key} className="relative pl-7">
+            <TimelineDot className={dot} />
+            {card}
+          </li>
+        ))}
+        {showGate && (
+          <li ref={gateRef} className="relative pl-7">
+            <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.task, item.events)])} />
+            <ReviewPanel item={item} />
+          </li>
         )}
       </ol>
     </section>
