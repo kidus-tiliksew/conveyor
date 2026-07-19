@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -265,6 +267,118 @@ func TestRunWorkerTreatsRevokedCredentialAsTerminalAndCancellationInterruptsBack
 	time.AfterFunc(20*time.Millisecond, cancel)
 	if err = <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation err=%v", err)
+	}
+}
+
+func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "worker-credential")
+	pidFile := filepath.Join(t.TempDir(), "harness.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+	claimed := make(chan struct{}, 1)
+	released := make(chan core.WorkOrderRelease, 1)
+	completeRelease := make(chan struct{})
+	var completeReleaseOnce sync.Once
+	finishRelease := func() { completeReleaseOnce.Do(func() { close(completeRelease) }) }
+	defer finishRelease()
+	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{
+		Workspace: "demo",
+		Harnesses: []config.Harness{{
+			Name: "helper", Command: []string{"true"}, ProbeCommand: []string{"true"}, ProbeTimeoutText: "1s",
+		}},
+		Execution: config.ExecutionPolicy{ImplementConcurrency: 1, ReviewConcurrency: 1},
+	}}
+	item := workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement},
+		Harness: config.Harness{
+			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel"},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer worker-credential" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/worker/config":
+			_ = json.NewEncoder(w).Encode(document)
+		case "/v1/worker/heartbeat":
+			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker-1"})
+		case "/v1/worker/work-orders":
+			_ = json.NewEncoder(w).Encode([]workerservice.DispatchOrder{item})
+		case "/v1/worker/work-orders/shutdown-active-child/claim":
+			claimed <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{
+				ID: item.Order.ID, State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute),
+			})
+		case "/v1/worker/work-orders/shutdown-active-child/release":
+			var release core.WorkOrderRelease
+			if err := json.NewDecoder(r.Body).Decode(&release); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			released <- release
+			<-completeRelease
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runWorkerWithPolicy(ctx, &client{base: server.URL, workspace: "demo"}, "", "test", false, defaultWorkerReconnectPolicy)
+	}()
+	<-claimed
+	var pid int
+	deadline := time.Now().Add(2 * time.Second)
+	for pid == 0 && time.Now().Before(deadline) {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			pid, err = strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if pid == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if pid == 0 {
+		t.Fatal("harness child did not start")
+	}
+	cancel()
+	select {
+	case release := <-released:
+		if release.Outcome != core.WorkOrderOutcomeCancelled || release.Reason != "worker shutting down" {
+			t.Fatalf("release=%+v", release)
+		}
+	case err := <-done:
+		t.Fatalf("worker returned before releasing active child claim: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("active child claim was not released")
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatalf("harness child %d is still running after worker shutdown", pid)
+	}
+	select {
+	case err = <-done:
+		t.Fatalf("worker returned before claim release completed: %v", err)
+	default:
+	}
+	finishRelease()
+	select {
+	case err = <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("worker shutdown error=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not return after child cleanup completed")
 	}
 }
 
@@ -955,6 +1069,11 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 		os.Exit(7)
 	case "cancel":
+		if pidFile := os.Getenv("CONVEYOR_FAKE_HARNESS_PID_FILE"); pidFile != "" {
+			if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		time.Sleep(30 * time.Second)
 	}
 }
