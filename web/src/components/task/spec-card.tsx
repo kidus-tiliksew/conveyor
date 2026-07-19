@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -21,11 +21,46 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
 // The spec review card (spec §13.3 element 3): rendered markdown plus the
 // acceptance-criteria checklist. Human-verify criteria surface as explicit
 // checkboxes rather than being pretend-verified (§4.1 rule 2).
-export function SpecCard({ spec, collapsible = true }: { spec: SpecVersion; collapsible?: boolean }) {
+export function SpecCard({
+  spec,
+  collapsible = true,
+  overflowExpandable = false,
+}: {
+  spec: SpecVersion
+  collapsible?: boolean
+  overflowExpandable?: boolean
+}) {
   const [collapsed, setCollapsed] = useState(false)
+  const [contentExpanded, setContentExpanded] = useState(false)
+  const [hasOverflow, setHasOverflow] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const viewportID = useId()
   const expanded = !collapsible || !collapsed
+  const overflowExpanded = !overflowExpandable || contentExpanded
   const prose = useMemo(() => spec.content.replace(machineBlock, ''), [spec.content])
   const criteria = spec.acceptance ?? []
+
+  useLayoutEffect(() => {
+    if (!overflowExpandable || !expanded) {
+      setHasOverflow(false)
+      return
+    }
+
+    const viewport = viewportRef.current
+    if (!viewport || contentExpanded) return
+    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(viewport)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    return () => observer.disconnect()
+  }, [contentExpanded, expanded, overflowExpandable, prose, spec.acceptance, spec.decomposition])
+
+  const toggleCollapsed = () => {
+    if (!collapsed) setContentExpanded(false)
+    setCollapsed(!collapsed)
+  }
 
   return (
     <Card>
@@ -33,7 +68,7 @@ export function SpecCard({ spec, collapsible = true }: { spec: SpecVersion; coll
         {collapsible ? (
           <button
             type="button"
-            onClick={() => setCollapsed((value) => !value)}
+            onClick={toggleCollapsed}
             aria-expanded={expanded}
             className="flex items-center gap-2 text-left"
           >
@@ -58,38 +93,67 @@ export function SpecCard({ spec, collapsible = true }: { spec: SpecVersion; coll
       </CardHeader>
       {expanded && (
         <CardContent className="py-4">
-          <div className="markdown">
-            <Markdown remarkPlugins={[remarkGfm]}>{prose}</Markdown>
+          <div className="relative">
+            <div
+              id={viewportID}
+              ref={viewportRef}
+              className={cn(overflowExpandable && !contentExpanded && 'max-h-96 overflow-hidden')}
+            >
+              <div>
+                <div className="markdown">
+                  <Markdown remarkPlugins={[remarkGfm]}>{prose}</Markdown>
+                </div>
+                {criteria.length > 0 && (
+                  <div className="mt-5 border-t border-border pt-4">
+                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                      Acceptance criteria
+                      <span className="ml-2 font-mono text-faint">{criteria.length}</span>
+                    </h4>
+                    <ul className="space-y-2">
+                      {criteria.map((criterion) => (
+                        <CriterionRow key={criterion.id} criterion={criterion} />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(spec.decomposition?.length ?? 0) > 0 && (
+                  <div className="mt-5 border-t border-border pt-4">
+                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">Decomposition</h4>
+                    <ul className="space-y-2">
+                      {spec.decomposition!.map((item) => (
+                        <li key={item.id} className="flex items-baseline gap-2 text-sm">
+                          <Badge variant="mono">{item.id}</Badge>
+                          <span className="text-foreground/85">{item.summary}</span>
+                          <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
+                            {item.repo}
+                            {item.depends_on?.length ? ` ← ${item.depends_on.join(', ')}` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+            {hasOverflow && !overflowExpanded && (
+              <div
+                aria-hidden="true"
+                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-14"
+                data-spec-overflow-shadow
+              />
+            )}
           </div>
-          {criteria.length > 0 && (
-            <div className="mt-5 border-t border-border pt-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-                Acceptance criteria
-                <span className="ml-2 font-mono text-faint">{criteria.length}</span>
-              </h4>
-              <ul className="space-y-2">
-                {criteria.map((criterion) => (
-                  <CriterionRow key={criterion.id} criterion={criterion} />
-                ))}
-              </ul>
-            </div>
-          )}
-          {(spec.decomposition?.length ?? 0) > 0 && (
-            <div className="mt-5 border-t border-border pt-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">Decomposition</h4>
-              <ul className="space-y-2">
-                {spec.decomposition!.map((item) => (
-                  <li key={item.id} className="flex items-baseline gap-2 text-sm">
-                    <Badge variant="mono">{item.id}</Badge>
-                    <span className="text-foreground/85">{item.summary}</span>
-                    <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
-                      {item.repo}
-                      {item.depends_on?.length ? ` ← ${item.depends_on.join(', ')}` : ''}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {hasOverflow && (
+            <button
+              type="button"
+              aria-controls={viewportID}
+              aria-expanded={overflowExpanded}
+              className="mx-auto mt-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              onClick={() => setContentExpanded((value) => !value)}
+            >
+              {overflowExpanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+              {overflowExpanded ? 'Show less' : 'Show more'}
+            </button>
           )}
         </CardContent>
       )}
