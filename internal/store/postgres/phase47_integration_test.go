@@ -62,20 +62,53 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
 		t.Fatal(err)
 	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 0 {
+		t.Fatalf("state-only retry events=%d err=%v", count, countErr)
+	}
 	storedLifecycle, ok, err = st.GetGitHubLifecycle(ctx, task.ID)
 	if err != nil || !ok || storedLifecycle.CreateAttempts != 1 || storedLifecycle.ReconcileMisses != 2 {
 		t.Fatalf("reconciliation lifecycle=%+v ok=%t err=%v", storedLifecycle, ok, err)
+	}
+	storedLifecycle.LastError = "GitHub returned 503"
+	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 1 {
+		t.Fatalf("real retry events=%d err=%v", count, countErr)
 	}
 	storedLifecycle.State = core.GitHubPublicationPublished
 	storedLifecycle.CreateState = core.GitHubCreateConfirmed
 	storedLifecycle.ReconcileMisses = 0
 	storedLifecycle.IssueNumber = 42
 	storedLifecycle.IssueURL = "https://github.com/acme/api/issues/42"
+	storedLifecycle.LastError = ""
 	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
 		t.Fatal(err)
 	}
 	if hydrated, getErr := st.GetTask(ctx, task.ID); getErr != nil || hydrated.GitHub == nil || hydrated.GitHub.IssueNumber != 42 || hydrated.GitHub.CreateState != core.GitHubCreateConfirmed || hydrated.GitHub.CreateAttempts != 1 || hydrated.GitHub.ReconcileMisses != 0 {
 		t.Fatalf("hydrated task=%+v err=%v", hydrated, getErr)
+	}
+	failedTask := task
+	failedTask.ID = core.NewTaskID()
+	failedTask.IntakeKey = ""
+	failedTask.Branch = "conveyor/integration-" + failedTask.ID
+	if err = st.CreateTask(ctx, failedTask); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: failedTask.ID, Repository: "acme/api", SpecVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	failedLifecycle, failedOK, failedErr := st.GetGitHubLifecycle(ctx, failedTask.ID)
+	if failedErr != nil || !failedOK {
+		t.Fatalf("failed lifecycle ok=%t err=%v", failedOK, failedErr)
+	}
+	failedLifecycle.State = core.GitHubPublicationFailed
+	failedLifecycle.LastError = "GitHub rejected publication"
+	if err = st.UpdateGitHubLifecycle(ctx, failedLifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if count, countErr := st.CountEvents(ctx, failedTask.ID, "github_issue.publication_failed"); countErr != nil || count != 1 {
+		t.Fatalf("failed events=%d err=%v", count, countErr)
 	}
 	duplicate := task
 	duplicate.ID = core.NewTaskID()
