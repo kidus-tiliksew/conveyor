@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -33,6 +34,19 @@ func (agent *capturingInputAgent) Run(_ context.Context, _ string, input inproce
 	agent.calls++
 	agent.input = input
 	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.8,\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
+}
+
+type failingTranscriptAgent struct {
+	attachmentCounts []int
+}
+
+func (agent *failingTranscriptAgent) Run(_ context.Context, model string, input inprocess.Input) (inprocess.Result, error) {
+	agent.attachmentCounts = append(agent.attachmentCounts, len(input.Attachments))
+	attempt := len(agent.attachmentCounts)
+	return inprocess.Result{
+		Transcript: []byte(fmt.Sprintf(`{"attempt":%d}`, attempt)),
+		Diagnostic: &inprocess.Diagnostic{Phase: "retry_exhausted", Provider: "openai_responses", Model: model, AttachmentCount: len(input.Attachments), Attempts: 3, HTTPStatus: 500, Retryable: true},
+	}, errors.New("provider retry exhausted")
 }
 
 type artifactContextFailureStore struct {
@@ -101,6 +115,57 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	}
 	if !foundLargeText || kinds[inprocess.AttachmentDocument] != 2 || kinds[inprocess.AttachmentImage] != 1 || kinds[inprocess.AttachmentAudio] != 1 {
 		t.Fatalf("kinds=%+v foundLargeText=%t", kinds, foundLargeText)
+	}
+}
+
+func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "artifact-retry", Workspace: "demo", Repo: "api", Title: "Retry safely", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "original.png", ContentType: "image/png", TaskID: task.ID}, []byte("original-user-image")); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &failingTranscriptAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt-5.6-terra", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 0 {
+			if err = st.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageTriage, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !reflect.DeepEqual(agent.attachmentCounts, []int{1, 1}) {
+		t.Fatalf("attachment counts grew across retry: %v", agent.attachmentCounts)
+	}
+	artifacts, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[core.ArtifactRole]int{}
+	for _, artifact := range artifacts {
+		roles[artifact.Role]++
+	}
+	if roles[core.ArtifactRoleTaskContext] != 1 || roles[core.ArtifactRoleGeneratedAudit] != 2 {
+		t.Fatalf("artifact roles = %+v artifacts=%+v", roles, artifacts)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		transcript, transcriptErr := st.GetTranscript(ctx, fmt.Sprintf("%s-triage-%d", task.ID, attempt))
+		if transcriptErr != nil || !strings.HasPrefix(transcript.URI, "artifact://") {
+			t.Fatalf("attempt %d transcript=%+v err=%v", attempt, transcript, transcriptErr)
+		}
 	}
 }
 
@@ -175,13 +240,29 @@ func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 			current, getErr := base.GetTask(ctx, task.ID)
 			events, eventErr := base.ListEvents(ctx, task.ID)
 			contextFailures := 0
+			var diagnostic struct {
+				Phase           string   `json:"phase"`
+				Provider        string   `json:"provider"`
+				Model           string   `json:"model"`
+				AttachmentCount int      `json:"attachment_count"`
+				AttachmentTypes []string `json:"attachment_types"`
+			}
 			for _, event := range events {
 				if event.Kind == "artifact.context_failed" {
 					contextFailures++
+					if json.Unmarshal(event.Payload, &diagnostic) != nil {
+						t.Fatalf("invalid diagnostic payload: %s", event.Payload)
+					}
 				}
 			}
 			if getErr != nil || eventErr != nil || current.State != core.TaskQueued || contextFailures != 1 {
 				t.Fatalf("task=%+v events=%+v errors=%v/%v", current, events, getErr, eventErr)
+			}
+			if diagnostic.Phase != "attachment_preparation" || diagnostic.Provider != "openai_responses" || diagnostic.Model != "gpt" {
+				t.Fatalf("diagnostic = %+v", diagnostic)
+			}
+			if !test.listErr && (diagnostic.AttachmentCount != 1 || len(diagnostic.AttachmentTypes) != 1 || diagnostic.AttachmentTypes[0] != test.contentType) {
+				t.Fatalf("attachment summary = %+v", diagnostic)
 			}
 		})
 	}
