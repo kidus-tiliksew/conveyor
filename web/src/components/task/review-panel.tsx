@@ -13,9 +13,23 @@ import { Textarea } from '../ui/input'
 // leads with what the pipeline is waiting for and one context-matched primary
 // action. Amber stays reserved for states that are genuinely stuck; a clean
 // approval reads as good news. Reason codes are auto-derived per action
-// (see contracts.ts) — the comment is the operator's signal.
+// (see contracts.ts) — the comment is the operator's signal. The card renders
+// as the event timeline's live tail (§13.3 element 3): the decision point is
+// where the story currently ends, and acting on it resolves in place into
+// the recorded intervention entry.
 
-type GateTone = 'positive' | 'neutral' | 'alarm'
+export type GateTone = 'positive' | 'neutral' | 'alarm'
+
+// Whether the task is holding at a human gate — the gate card renders (and
+// the timeline opens scrolled to it) only in these states.
+export function isReviewable(task: Task): boolean {
+  return task.state === 'awaiting_human' || task.state === 'parked' || task.state === 'approved'
+}
+
+// The gate's tone, exposed so the timeline can tint the rail dot to match.
+export function gateTone(task: Task, events: TaskEvent[]): GateTone {
+  return gateFor(task, events).tone
+}
 type GatePrimary = 'merge' | 'approve' | 'redirect'
 
 interface Gate {

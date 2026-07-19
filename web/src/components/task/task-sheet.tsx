@@ -4,19 +4,14 @@ import type { ActivityItem } from '../../lib/types'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
-import { ReviewPanel } from './review-panel'
-import { RedispatchCard, canRedispatch } from './redispatch-card'
 import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
-import { WorkOrderRecoveryCard } from './work-order-recovery-card'
-import { ReviewRoundRetryCard } from './review-round-retry-card'
-import { InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
-import { WorkerStatusCard } from './worker-status-card'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
-// The task detail sheet (spec §13.3): the costed event history plus review
-// actions, opened over the board so the reviewer never loses list context.
+// The task detail sheet (spec §13.3): the costed event timeline — which
+// carries the review actions as its live tail — opened over the board so the
+// reviewer never loses list context.
 export function TaskSheet({ taskId }: { taskId: string }) {
   const navigate = useNavigate()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
@@ -71,16 +66,9 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 }
 
 function SheetBody({ item }: { item: ActivityItem }) {
-  const reviewable = item.task.state === 'awaiting_human' || item.task.state === 'parked' || item.task.state === 'approved'
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      {reviewable && <ReviewPanel item={item} />}
-      <WorkerStatusCard item={item} />
-      <InterruptedReviewRecoveryCard item={item} />
-      <ReviewRoundRetryCard item={item} />
-      <WorkOrderRecoveryCard item={item} />
-      {canRedispatch(item) && <RedispatchCard item={item} />}
       {item.spec && <SpecCard spec={item.spec} />}
       <Timeline item={item} />
     </div>

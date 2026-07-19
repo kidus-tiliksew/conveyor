@@ -6,6 +6,10 @@ import type { ActivityItem } from '../../lib/types'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 
+export function hasInterruptedReviewRecovery(item: ActivityItem) {
+  return item.interrupted_review_recovery?.needed === true
+}
+
 export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) {
   const recovery = item.interrupted_review_recovery
   const token = useOperatorToken()
