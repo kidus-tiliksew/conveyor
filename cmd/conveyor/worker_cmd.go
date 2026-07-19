@@ -189,6 +189,8 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 	return runWorkerWithPolicy(ctx, c, pairing, name, once, defaultWorkerReconnectPolicy)
 }
 
+const workerShutdownGracePeriod = 10 * time.Second
+
 func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy) error {
 	saved, err := loadOrEnrollWorker(c, pairing, name)
 	if err != nil {
@@ -202,6 +204,12 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 	completions := make(chan childResult, 1024)
 	started := false
 	var mu sync.Mutex
+	var children sync.WaitGroup
+	defer func() {
+		if ctx.Err() != nil {
+			waitForWorkerChildren(&children, workerShutdownGracePeriod)
+		}
+	}()
 	retryDelay := reconnect.Initial
 	for {
 		document, err := c.workerConfigContext(ctx, credential)
@@ -262,7 +270,9 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 			mu.Unlock()
 			counts[item.Order.Stage]++
 			started = true
+			children.Add(1)
 			go func(order workerservice.DispatchOrder) {
+				defer children.Done()
 				err := runHarnessChild(ctx, c, credential, order)
 				completions <- childResult{stage: order.Order.Stage, err: err}
 				mu.Lock()
@@ -285,6 +295,20 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 			}
 		case <-time.After(5 * time.Second):
 		}
+	}
+}
+
+func waitForWorkerChildren(children *sync.WaitGroup, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		children.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
