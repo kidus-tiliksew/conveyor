@@ -144,7 +144,7 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
 }
 
 function TimelineRow({ entry }: { entry: TimelineEntry }) {
-  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} order={entry.order} />
+  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} tone={entry.tone} order={entry.order} />
   if (entry.type === 'panel') return <PanelEntry entry={entry} />
   if (entry.type === 'order') {
     return (
@@ -425,20 +425,22 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
 // The job footer keeps the operator-facing facts — duration and model — and
 // tucks the audit numbers (tokens, cost) behind a hover on the model chip.
 // Harness, auth mode, confinement, and actor plumbing stay in the API.
-function JobEntry({ job, summary, model, order }: { job: Job; summary: string; model: string; order?: WorkOrder }) {
+function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: string; model: string; tone: Extract<TimelineEntry, { type: 'job' }>['tone']; order?: WorkOrder }) {
 	if (!job.started_at) return null
 	const running = job.state === 'running'
+	const warning = tone === 'warning'
   return (
     <li className="relative pl-7">
       <TimelineDot
         className={cn(
           'bg-edge',
-          job.state === 'done' && 'bg-positive',
+          job.state === 'done' && !warning && 'bg-positive',
+          warning && 'bg-attention-dot',
           job.state === 'failed' && 'bg-failure',
           running && 'animate-pulse bg-primary',
         )}
       />
-      <article className="rounded-lg border border-border bg-card">
+      <article className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
             {stageLabels[job.stage] ?? job.stage}
