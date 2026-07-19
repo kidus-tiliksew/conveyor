@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/riverqueue/river v0.30.2
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.30.2
 	github.com/spf13/cobra v1.10.2

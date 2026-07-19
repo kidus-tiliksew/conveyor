@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -62,6 +64,7 @@ type StageRoute struct {
 type Harness struct {
 	Name                  string              `yaml:"name" json:"name"`
 	MCPTransport          string              `yaml:"mcp_transport" json:"mcp_transport"`
+	MCPAttachment         string              `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
 	Command               []string            `yaml:"command" json:"command"`
 	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
 	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
@@ -76,7 +79,10 @@ const (
 	// {mcp_config} argv element (spec §21.20).
 	MCPTransportJSONFile     = "json_file"
 	MCPTransportTOMLOverride = "toml_override"
+	MCPTransportEnvironment  = "environment"
 )
+
+var mcpAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
 // model is always pinned; Harness optionally overrides the workspace review
@@ -493,6 +499,7 @@ func normalize(c *Config, path string) (*Config, error) {
 		if harness.MCPTransport == "" {
 			harness.MCPTransport = MCPTransportJSONFile
 		}
+		harness.MCPAttachment = strings.TrimSpace(harness.MCPAttachment)
 		harnesses[harness.Name] = *harness
 		if err := validateHarness(*harness, i); err != nil {
 			return nil, err
@@ -741,15 +748,33 @@ func validateHarness(h Harness, index int) error {
 	if len(h.Command) == 0 {
 		return fmt.Errorf("harnesses[%d].command is required", index)
 	}
-	if h.MCPTransport != MCPTransportJSONFile && h.MCPTransport != MCPTransportTOMLOverride {
-		return fmt.Errorf("harnesses[%d].mcp_transport must be %q or %q", index, MCPTransportJSONFile, MCPTransportTOMLOverride)
+	if h.MCPTransport != MCPTransportJSONFile && h.MCPTransport != MCPTransportTOMLOverride && h.MCPTransport != MCPTransportEnvironment {
+		return fmt.Errorf("harnesses[%d].mcp_transport must be %q, %q, or %q", index, MCPTransportJSONFile, MCPTransportTOMLOverride, MCPTransportEnvironment)
 	}
 	counts, err := field("command", h.Command, map[string]bool{"{prompt}": true, "{mcp_config}": true})
 	if err != nil {
 		return err
 	}
-	if counts["{prompt}"] != 1 || counts["{mcp_config}"] != 1 {
-		return fmt.Errorf("harnesses[%d].command must contain exactly one {prompt} and one {mcp_config}", index)
+	if counts["{prompt}"] != 1 {
+		return fmt.Errorf("harnesses[%d].command must contain exactly one {prompt}", index)
+	}
+	if h.MCPTransport == MCPTransportEnvironment {
+		if counts["{mcp_config}"] != 0 {
+			return fmt.Errorf("harnesses[%d].command must not contain {mcp_config} for environment transport", index)
+		}
+		if !mcpAttachmentPattern.MatchString(h.MCPAttachment) {
+			return fmt.Errorf("harnesses[%d].mcp_attachment must be a non-secret MCP server name for environment transport", index)
+		}
+		if environmentHarnessContainsRuntimeValue(h) {
+			return fmt.Errorf("harnesses[%d] environment transport fields must not contain runtime Conveyor credentials or addresses", index)
+		}
+	} else {
+		if counts["{mcp_config}"] != 1 {
+			return fmt.Errorf("harnesses[%d].command must contain exactly one {mcp_config} for %s transport", index, h.MCPTransport)
+		}
+		if h.MCPAttachment != "" {
+			return fmt.Errorf("harnesses[%d].mcp_attachment is only valid for environment transport", index)
+		}
 	}
 	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
 		return err
@@ -776,6 +801,54 @@ func validateHarness(h Harness, index int) error {
 		return fmt.Errorf("harnesses[%d].probe_timeout must be a positive duration", index)
 	}
 	return nil
+}
+
+// ValidateHarness applies the same transport-aware durable contract to worker
+// snapshots immediately before probing or launch (spec §21.28 changes 2, 5).
+func ValidateHarness(h Harness) error {
+	return validateHarness(h, 0)
+}
+
+func environmentHarnessContainsRuntimeValue(h Harness) bool {
+	forbidden := func(value string) bool {
+		upper := strings.ToUpper(value)
+		if strings.Contains(upper, "CONVEYOR_ADDR") ||
+			strings.Contains(upper, "CONVEYOR_API_TOKEN") ||
+			strings.Contains(upper, "CONVEYOR_SESSION_ID") ||
+			strings.Contains(upper, "CONVEYOR_CLIENT_TOKEN") ||
+			strings.Contains(upper, "BEARER ") {
+			return true
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return false
+		}
+		if parsed.User != nil {
+			return true
+		}
+		for name := range parsed.Query() {
+			name = strings.ToUpper(name)
+			if strings.Contains(name, "TOKEN") || strings.Contains(name, "SECRET") || strings.Contains(name, "KEY") || strings.Contains(name, "AUTH") {
+				return true
+			}
+		}
+		return false
+	}
+	if forbidden(h.MCPAttachment) {
+		return true
+	}
+	groups := [][]string{h.Command, h.ModelArgs, h.DefaultModelSentinels, h.ProbeCommand}
+	for _, args := range h.EffortArgs {
+		groups = append(groups, args)
+	}
+	for _, values := range groups {
+		for _, value := range values {
+			if forbidden(value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validEffort(effort string) bool {

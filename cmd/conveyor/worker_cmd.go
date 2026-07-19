@@ -312,6 +312,11 @@ func validateWorkerConfig(document workerservice.WorkerConfig) error {
 		if strings.TrimSpace(harness.Name) == "" || len(harness.Command) == 0 || len(harness.ProbeCommand) == 0 {
 			return fmt.Errorf("harness %q requires name, command, and probe_command", harness.Name)
 		}
+		if harness.MCPTransport == config.MCPTransportEnvironment {
+			if err := config.ValidateHarness(harness); err != nil {
+				return fmt.Errorf("harness %q has an invalid environment MCP attachment", harness.Name)
+			}
+		}
 		return nil
 	}
 	for _, harness := range document.Harnesses {
@@ -458,9 +463,32 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 		_ = release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
+	childAddress := c.base
+	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
+		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
+	}
+	childEnv := isolatedChildEnvironment(os.Environ(), map[string]string{
+		"CONVEYOR_API_TOKEN":     credential,
+		"CONVEYOR_ADDR":          childAddress,
+		"CONVEYOR_WORKSPACE":     c.workspace,
+		"CONVEYOR_WORK_ORDER_ID": item.Order.ID,
+		"CONVEYOR_SESSION_ID":    sessionID,
+		"CONVEYOR_CLIENT_TOKEN":  clientToken,
+	})
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
+		return fmt.Errorf("resolve worker directory: %w", err)
+	}
+	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
+		if err = validateGrokEnvironmentAttachment(ctx, item.Harness, childEnv, workingDirectory); err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "environment MCP readiness failed", nil)
+			return err
+		}
+	}
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	command.Env = append(os.Environ(), "CONVEYOR_API_TOKEN="+credential, "CONVEYOR_ADDR="+c.base, "CONVEYOR_WORKSPACE="+c.workspace, "CONVEYOR_WORK_ORDER_ID="+item.Order.ID, "CONVEYOR_SESSION_ID="+sessionID)
+	command.Env = childEnv
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -665,9 +693,28 @@ func prepareMCPConfig(directory, base, credential, transport string) (string, er
 		return configPath, nil
 	case config.MCPTransportTOMLOverride:
 		return "mcp_servers.conveyor={url=" + strconv.Quote(endpoint) + ", bearer_token_env_var=\"CONVEYOR_API_TOKEN\"}", nil
+	case config.MCPTransportEnvironment:
+		return "", nil
 	default:
 		return "", fmt.Errorf("unsupported MCP transport %q", transport)
 	}
+}
+
+func isolatedChildEnvironment(base []string, values map[string]string) []string {
+	result := make([]string, 0, len(base)+len(values))
+	for _, entry := range base {
+		name, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, replaced := values[name]; replaced {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for _, name := range []string{"CONVEYOR_API_TOKEN", "CONVEYOR_ADDR", "CONVEYOR_WORKSPACE", "CONVEYOR_WORK_ORDER_ID", "CONVEYOR_SESSION_ID", "CONVEYOR_CLIENT_TOKEN"} {
+		result = append(result, name+"="+values[name])
+	}
+	return result
 }
 
 func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) string {

@@ -67,6 +67,37 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 	if strings.Contains(override, "worker-secret") || !strings.Contains(override, `bearer_token_env_var="CONVEYOR_API_TOKEN"`) || !strings.Contains(override, `url="http://127.0.0.1:8080/mcp"`) {
 		t.Fatalf("unsafe or invalid TOML override: %s", override)
 	}
+
+	environment, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportEnvironment)
+	if err != nil || environment != "" {
+		t.Fatalf("environment transport generated config %q: %v", environment, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("environment transport wrote a generated file: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
+	env := isolatedChildEnvironment([]string{"PATH=/bin", "CONVEYOR_API_TOKEN=stale", "CONVEYOR_SESSION_ID=stale"}, map[string]string{
+		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+	})
+	for name, want := range map[string]string{
+		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+	} {
+		if got := environmentValue(env, name); got != want {
+			t.Fatalf("%s=%q want=%q", name, got, want)
+		}
+	}
+	other := isolatedChildEnvironment(env, map[string]string{
+		"CONVEYOR_API_TOKEN": "other-token", "CONVEYOR_ADDR": "other-endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "other-order", "CONVEYOR_SESSION_ID": "other-session", "CONVEYOR_CLIENT_TOKEN": "other-client",
+	})
+	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
+		t.Fatalf("concurrent child environments shared launch identity")
+	}
 }
 
 func TestCodexParsesGeneratedMCPOverride(t *testing.T) {

@@ -202,6 +202,11 @@ func TestHarnessFingerprintCanonicalizesEmptyArguments(t *testing.T) {
 	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
 		t.Fatal("different MCP transports produced the same fingerprint")
 	}
+	changed = base
+	changed.MCPAttachment = "conveyor"
+	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
+		t.Fatal("different MCP attachment identities produced the same fingerprint")
+	}
 }
 
 func TestLegacyHarnessSnapshotDefaultsToJSONFileTransport(t *testing.T) {

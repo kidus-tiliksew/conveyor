@@ -94,6 +94,7 @@ func HarnessFingerprint(harness config.Harness) string {
 	data, _ := json.Marshal(struct {
 		Name                  string              `json:"name"`
 		MCPTransport          string              `json:"mcp_transport"`
+		MCPAttachment         string              `json:"mcp_attachment"`
 		Command               []string            `json:"command"`
 		ModelArgs             []string            `json:"model_args"`
 		DefaultModelSentinels []string            `json:"default_model_sentinels"`
@@ -101,7 +102,7 @@ func HarnessFingerprint(harness config.Harness) string {
 		ProbeCommand          []string            `json:"probe_command"`
 		ProbeTimeout          string              `json:"probe_timeout"`
 	}{
-		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: canonicalArgs(harness.Command),
+		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: canonicalArgs(harness.Command),
 		ModelArgs: canonicalArgs(harness.ModelArgs), DefaultModelSentinels: canonicalArgs(harness.DefaultModelSentinels),
 		EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand), ProbeTimeout: harness.ProbeTimeoutText,
 	})
@@ -543,7 +544,7 @@ func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 		transport = config.MCPTransportJSONFile
 	}
 	return config.Harness{
-		Name: snapshot.Name, MCPTransport: transport, Command: append([]string(nil), snapshot.Command...),
+		Name: snapshot.Name, MCPTransport: transport, MCPAttachment: snapshot.MCPAttachment, Command: append([]string(nil), snapshot.Command...),
 		ModelArgs:             append([]string(nil), snapshot.ModelArgs...),
 		DefaultModelSentinels: append([]string(nil), snapshot.DefaultModelSentinels...),
 		EffortArgs:            cloneEffortArgs(snapshot.EffortArgs),
@@ -582,7 +583,7 @@ func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
 		return false
 	}
 	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: harness.Command, ModelArgs: harness.ModelArgs,
 		DefaultModelSentinels: harness.DefaultModelSentinels,
 		EffortArgs:            harness.EffortArgs, Effort: route.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
@@ -634,7 +635,7 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 		return false
 	}
 	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, MCPTransport: harness.MCPTransport, Command: harness.Command, ModelArgs: harness.ModelArgs,
+		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: harness.Command, ModelArgs: harness.ModelArgs,
 		DefaultModelSentinels: harness.DefaultModelSentinels,
 		EffortArgs:            harness.EffortArgs, Effort: seat.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,

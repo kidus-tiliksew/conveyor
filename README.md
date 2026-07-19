@@ -227,6 +227,14 @@ the child-only `CONVEYOR_API_TOKEN` environment variable and never places the
 credential value in argv (spec §21.20). Existing documents without the field
 normalize to `json_file`.
 
+Use `mcp_transport: environment` for Grok Build and set the non-secret
+`mcp_attachment` to the intended Grok MCP server name. This transport requires
+one `{prompt}` and forbids `{mcp_config}`. Before either an implementation or
+review model turn, the worker verifies the effective `config.toml` entry and
+runs Grok's no-model-turn MCP doctor using the isolated child environment; a
+missing, stale, compatible-but-token-bearing, or unhealthy registration blocks
+launch. See [docs/grok-build.md](docs/grok-build.md) for setup and repair.
+
 Stage routes contain only model, timeout, and execution mode. Conveyor retains
 token and USD usage as audit telemetry, but it has no allocation, remaining
 balance, or usage-based execution gate (spec §21.6).
