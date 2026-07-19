@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { AlertTriangle, Check, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
@@ -33,7 +33,22 @@ const gateDots: Record<GateTone, string> = {
 export function Timeline({ item }: { item: ActivityItem }) {
   const entries = buildTimeline(item)
   const showGate = isReviewable(item.task)
+  const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
+  const renderedEventsRef = useRef({ taskId: item.task.id, count: item.events.length, lastId: item.events.at(-1)?.id })
+
+  // A refetch replaces the activity item after the event nodes render. Keep
+  // the task detail's own scroll region pinned to the newest appended event,
+  // while leaving both initial-load and page-level scroll positions alone.
+  useLayoutEffect(() => {
+    const previous = renderedEventsRef.current
+    const current = { taskId: item.task.id, count: item.events.length, lastId: item.events.at(-1)?.id }
+    renderedEventsRef.current = current
+    if (previous.taskId !== current.taskId || current.count < previous.count || current.lastId === previous.lastId) return
+
+    const container = scrollableAncestor(timelineRef.current)
+    if (container) container.scrollTop = container.scrollHeight
+  }, [item.task.id, item.events])
 
   // Reviewable tasks open scrolled to the gate — the decision point — not
   // the top of a story the reviewer has often already read.
@@ -50,7 +65,7 @@ export function Timeline({ item }: { item: ActivityItem }) {
   ].filter((entry) => entry !== false)
 
   return (
-    <section aria-label="Execution event timeline">
+    <section ref={timelineRef} aria-label="Execution event timeline">
       <div className="mb-4 flex items-baseline justify-between">
         <h2 className="text-sm font-semibold tracking-tight">Event timeline</h2>
         <span className="font-mono text-[11px] text-faint">{item.events.length} audit events</span>
@@ -77,6 +92,13 @@ export function Timeline({ item }: { item: ActivityItem }) {
       </ol>
     </section>
   )
+}
+
+function scrollableAncestor(element: HTMLElement | null): HTMLElement | null {
+  for (let candidate = element?.parentElement ?? null; candidate; candidate = candidate.parentElement) {
+    if (/^(auto|scroll)$/.test(getComputedStyle(candidate).overflowY)) return candidate
+  }
+  return null
 }
 
 // Audit entries keep the wire action; the display label matches the gate UI
