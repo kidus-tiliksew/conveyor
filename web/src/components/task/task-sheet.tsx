@@ -69,7 +69,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      {item.spec && <SpecCard spec={item.spec} />}
+      {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable />}
       <Timeline item={item} />
     </div>
   )

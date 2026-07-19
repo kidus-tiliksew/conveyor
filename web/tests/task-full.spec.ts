@@ -3,6 +3,9 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 const createdAt = '2026-07-15T12:00:00Z'
 
 function activity(taskId: string, overflowing: boolean) {
+	const specContent = taskId === 'long-spec'
+		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
+		: '## Specification\n\nRegression marker at the bottom of the task content.'
 	const reviewActivity = taskId === 'reviews' ? {
 		jobs: [
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z' },
@@ -94,7 +97,7 @@ function activity(taskId: string, overflowing: boolean) {
     spec: {
       task_id: taskId,
       version: 1,
-      content: '## Specification\n\nRegression marker at the bottom of the task content.',
+      content: specContent,
       acceptance_count: 0,
       acceptance: [],
       decomposition: [],
@@ -270,6 +273,44 @@ test('short full-screen task content does not create a nested vertical scrollbar
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
 })
 
+test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {
+	await page.goto('/tasks/long-spec')
+
+	const toggle = page.getByRole('button', { name: 'Show more' })
+	await expect(toggle).toBeVisible()
+	await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+	const viewportID = await toggle.getAttribute('aria-controls')
+	expect(viewportID).toBeTruthy()
+	const viewport = page.locator(`#${viewportID}`)
+	await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+	await expect(page.locator('[data-spec-overflow-shadow]')).toBeVisible()
+	await expect(page.getByText('Long spec ending marker.')).not.toBeInViewport()
+
+	await toggle.click()
+	const collapse = page.getByRole('button', { name: 'Show less' })
+	await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+	await expect(page.locator('[data-spec-overflow-shadow]')).toHaveCount(0)
+	await expect.poll(() => viewport.evaluate((element) => element.scrollHeight === element.clientHeight)).toBe(true)
+
+	await collapse.click()
+	await expect(page.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
+	await expect(page.locator('[data-spec-overflow-shadow]')).toBeVisible()
+	await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+})
+
+test('short side-view specs and full-page specs remain unbounded', async ({ page }) => {
+	await page.goto('/tasks/short')
+	await expect(page.getByRole('button', { name: /Show (more|less)/ })).toHaveCount(0)
+	await expect(page.locator('[data-spec-overflow-shadow]')).toHaveCount(0)
+
+	await page.goto('/tasks/long-spec/full')
+	await expect(page.getByRole('button', { name: /Show (more|less)/ })).toHaveCount(0)
+	await expect(page.locator('[data-spec-overflow-shadow]')).toHaveCount(0)
+	const marker = page.getByText('Long spec ending marker.')
+	await marker.scrollIntoViewIfNeeded()
+	await expect(marker).toBeVisible()
+})
+
 test('review panel replaces duplicate review and bounce activity notes', async ({ page }) => {
 	await page.goto('/tasks/reviews/full')
 
@@ -292,7 +333,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(page.getByText(/^Independent review:/)).toHaveCount(0)
 	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
 
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows).toHaveCount(3)
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
 	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
@@ -310,7 +351,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
 	await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
 	await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows).toHaveCount(4)
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
 	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
@@ -334,7 +375,7 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 
 	// The gate is the timeline's last entry — the decision point where the
 	// story currently ends.
-	const timelineRows = page.getByRole('region', { name: 'Costed event timeline' }).locator('ol > li')
+	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
 	await expect(timelineRows.last().getByRole('region', { name: 'Human gate' })).toBeVisible()
 
 	// A reviewable task opens scrolled to the gate: the long description
