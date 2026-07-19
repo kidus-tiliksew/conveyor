@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -63,7 +64,7 @@ type OpenAI struct {
 }
 
 const (
-	responsesMaxAttempts = 3
+	responsesMaxAttempts = 6
 	responsesRetryDelay  = 2 * time.Second
 )
 
@@ -126,7 +127,10 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	}
 	// A transient upstream failure (network error, 429, 5xx) would otherwise
 	// halt the pipeline at the human gate with zero tokens generated, so it
-	// retries a bounded number of times before the job fails.
+	// retries a bounded number of times before the job fails. The schedule is
+	// exponential with jitter (base 2s: ~2s, 4s, 8s, 16s, 32s) so the window
+	// spans over a minute and rides out upstream 500 bursts; stage routes
+	// carry far longer timeouts and bound total time through ctx.
 	var raw []byte
 	var statusCode int
 	var status string
@@ -137,14 +141,16 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		if !transient || try >= responsesMaxAttempts {
 			break
 		}
-		delay := client.RetryDelay
-		if delay <= 0 {
-			delay = responsesRetryDelay
+		base := client.RetryDelay
+		if base <= 0 {
+			base = responsesRetryDelay
 		}
+		delay := base << (try - 1)
+		delay += rand.N(delay/2 + 1)
 		select {
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
-		case <-time.After(time.Duration(try) * delay):
+		case <-time.After(delay):
 		}
 	}
 	if err != nil {

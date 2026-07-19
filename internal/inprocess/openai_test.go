@@ -128,8 +128,8 @@ func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v", err)
 	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
+	if attempts != responsesMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, responsesMaxAttempts)
 	}
 }
 
