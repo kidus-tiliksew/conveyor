@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/gif"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -283,8 +284,8 @@ func validateImageInputs(model string, attachments []Attachment) (string, error)
 			continue
 		}
 		hasImage = true
-		if !validImageSignature(attachment.ContentType, attachment.Content) {
-			return "attachment_validation", fmt.Errorf("OpenAI Responses image preparation failed for model %q: artifact %s (%s) does not match its declared image media type", model, attachment.ID, attachment.ContentType)
+		if err := validateImageContent(attachment.ContentType, attachment.Content); err != nil {
+			return "attachment_validation", fmt.Errorf("OpenAI Responses image preparation failed for model %q: artifact %s (%s): %w", model, attachment.ID, attachment.ContentType, err)
 		}
 	}
 	if hasImage && !supportsImageInput(model) {
@@ -303,20 +304,34 @@ func supportsImageInput(model string) bool {
 	return false
 }
 
-func validImageSignature(contentType string, content []byte) bool {
+func validateImageContent(contentType string, content []byte) error {
 	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	validSignature := false
 	switch contentType {
 	case "image/png":
-		return len(content) >= 8 && bytes.Equal(content[:8], []byte("\x89PNG\r\n\x1a\n"))
+		validSignature = len(content) >= 8 && bytes.Equal(content[:8], []byte("\x89PNG\r\n\x1a\n"))
 	case "image/jpeg":
-		return len(content) >= 3 && content[0] == 0xff && content[1] == 0xd8 && content[2] == 0xff
+		validSignature = len(content) >= 3 && content[0] == 0xff && content[1] == 0xd8 && content[2] == 0xff
 	case "image/gif":
-		return len(content) >= 6 && (string(content[:6]) == "GIF87a" || string(content[:6]) == "GIF89a")
+		validSignature = len(content) >= 6 && (string(content[:6]) == "GIF87a" || string(content[:6]) == "GIF89a")
+		if validSignature {
+			decoded, err := gif.DecodeAll(bytes.NewReader(content))
+			if err != nil {
+				return fmt.Errorf("invalid GIF image: %w", err)
+			}
+			if len(decoded.Image) != 1 {
+				return fmt.Errorf("animated GIF images are not supported by the OpenAI Responses image-input contract")
+			}
+		}
 	case "image/webp":
-		return len(content) >= 12 && string(content[:4]) == "RIFF" && string(content[8:12]) == "WEBP"
+		validSignature = len(content) >= 12 && string(content[:4]) == "RIFF" && string(content[8:12]) == "WEBP"
 	default:
-		return false
+		return fmt.Errorf("unsupported image media type")
 	}
+	if !validSignature {
+		return fmt.Errorf("content does not match its declared image media type")
+	}
+	return nil
 }
 
 func providerErrorCode(raw []byte) string {

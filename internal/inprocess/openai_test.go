@@ -1,10 +1,14 @@
 package inprocess
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/gif"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +102,32 @@ func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t 
 				t.Fatalf("transcript contains binary input: %s", result.Transcript)
 			}
 		})
+	}
+}
+
+func TestOpenAIRunRejectsAnimatedGIFBeforeProviderSubmission(t *testing.T) {
+	t.Parallel()
+	palette := color.Palette{color.Black, color.White}
+	frames := []*image.Paletted{
+		image.NewPaletted(image.Rect(0, 0, 1, 1), palette),
+		image.NewPaletted(image.Rect(0, 0, 1, 1), palette),
+	}
+	frames[1].Pix[0] = 1
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", Input{
+		Prompt: "analyze", Attachments: []Attachment{{ID: "animated", Name: "animated.gif", ContentType: "image/gif", Kind: AttachmentImage, Content: encoded.Bytes()}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "animated GIF") || calls != 0 {
+		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "attachment_validation" || len(result.Transcript) == 0 {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
