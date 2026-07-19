@@ -41,6 +41,51 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryGitHubLifecycleOnlyEmitsActivityForOutcomesAndRealRetries(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(context.Background(), "test")
+	st := NewMemory()
+	task := core.Task{ID: "github-lifecycle-events", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, ok, err := st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("lifecycle ok=%t err=%v", ok, err)
+	}
+	lifecycle.State = core.GitHubPublicationRetrying
+	lifecycle.Attempts = 1
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.CreateState = core.GitHubCreateReconciling
+	lifecycle.CreateAttempts = 1
+	lifecycle.LastError = "   "
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 0 {
+		t.Fatalf("state-only retry events=%d err=%v", count, countErr)
+	}
+	lifecycle.LastError = "GitHub returned 503"
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 1 {
+		t.Fatalf("real retry events=%d err=%v", count, countErr)
+	}
+	lifecycle.State = core.GitHubPublicationFailed
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_failed"); countErr != nil || count != 1 {
+		t.Fatalf("failed events=%d err=%v", count, countErr)
+	}
+}
+
 func TestReviewVerdictDiagnosticsDistinguishClaimedExpiredAndReleased(t *testing.T) {
 	now := time.Now().UTC()
 	claimed := core.WorkOrder{
