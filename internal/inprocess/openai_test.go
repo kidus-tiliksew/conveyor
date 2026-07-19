@@ -110,14 +110,19 @@ func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t 
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 			defer server.Close()
+			serverURL, _ := url.Parse(server.URL)
+			hostname := serverURL.Hostname()
 			result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), test.model, Input{
 				Prompt: "analyze", Attachments: []Attachment{{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: test.content}},
 			})
-			if err == nil || !strings.Contains(err.Error(), test.want) || calls != 0 {
+			if err == nil || !strings.Contains(err.Error(), "Responses API ("+hostname+")") || !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), server.URL) || calls != 0 {
 				t.Fatalf("error=%v calls=%d", err, calls)
 			}
-			if result.Diagnostic == nil || result.Diagnostic.Phase != test.phase || result.Diagnostic.Provider != "openai_responses" || len(result.Transcript) == 0 {
+			if result.Diagnostic == nil || result.Diagnostic.Phase != test.phase || result.Diagnostic.Provider != "openai_responses" || result.Diagnostic.Endpoint != hostname || len(result.Transcript) == 0 {
 				t.Fatalf("result = %+v", result)
+			}
+			if strings.Contains(string(result.Transcript), server.URL) {
+				t.Fatalf("transcript contains full endpoint URL: %s", result.Transcript)
 			}
 			if strings.Contains(string(result.Transcript), string(test.content)) {
 				t.Fatalf("transcript contains binary input: %s", result.Transcript)

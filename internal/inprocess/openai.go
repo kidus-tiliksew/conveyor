@@ -97,7 +97,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		diagnostic.Phase = "client_validation"
 		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: CONVEYOR_API_KEY is required for in-process stages", endpointHost, model)
 	}
-	if phase, err := validateImageInputs(model, input.Attachments); err != nil {
+	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
 		requestValue := map[string]any{"model": model, "attachment_summary": diagnostic, "store": false}
 		transcript, stats, redactErr := client.auditEnvelope(requestValue, map[string]any{"diagnostic": diagnostic})
@@ -294,7 +294,7 @@ func responseEndpointHost(endpoint string) string {
 	return parsed.Hostname()
 }
 
-func validateImageInputs(model string, attachments []Attachment) (string, error) {
+func validateImageInputs(model, endpoint string, attachments []Attachment) (string, error) {
 	hasImage := false
 	for _, attachment := range attachments {
 		if attachment.Kind != AttachmentImage {
@@ -302,11 +302,11 @@ func validateImageInputs(model string, attachments []Attachment) (string, error)
 		}
 		hasImage = true
 		if err := validateImageContent(attachment.ContentType, attachment.Content); err != nil {
-			return "attachment_validation", fmt.Errorf("OpenAI Responses image preparation failed for model %q: artifact %s (%s): %w", model, attachment.ID, attachment.ContentType, err)
+			return "attachment_validation", fmt.Errorf("Responses API (%s) image preparation failed for model %q: artifact %s (%s): %w", endpoint, model, attachment.ID, attachment.ContentType, err)
 		}
 	}
 	if hasImage && !supportsImageInput(model) {
-		return "capability_validation", fmt.Errorf("OpenAI Responses image capability validation failed: configured model %q is not in Conveyor's image-capable model families; choose an explicitly image-capable configured model or remove the image attachment", model)
+		return "capability_validation", fmt.Errorf("Responses API (%s) image capability validation failed: configured model %q is not in Conveyor's image-capable model families; choose an explicitly image-capable configured model or remove the image attachment", endpoint, model)
 	}
 	return "", nil
 }
