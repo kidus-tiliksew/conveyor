@@ -24,7 +24,6 @@ type Result struct {
 	Model      string
 	TokensIn   int64
 	TokensOut  int64
-	CostUSD    float64
 	Transcript []byte
 	Redactions core.RedactionStats
 }
@@ -175,11 +174,8 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			} `json:"content"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens       int64 `json:"input_tokens"`
-			OutputTokens      int64 `json:"output_tokens"`
-			InputTokenDetails struct {
-				CachedTokens int64 `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -196,11 +192,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if output.Len() == 0 {
 		return Result{Transcript: transcript, Redactions: stats}, fmt.Errorf("Responses API returned no output_text")
 	}
-	cost, err := estimateOpenAICost(decoded.Model, decoded.Usage.InputTokens, decoded.Usage.InputTokenDetails.CachedTokens, decoded.Usage.OutputTokens)
-	if err != nil {
-		return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats}, err
-	}
-	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, CostUSD: cost, Transcript: transcript, Redactions: stats}, nil
+	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats}, nil
 }
 
 func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachment Attachment) (string, error) {
@@ -254,38 +246,4 @@ func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachmen
 		return "", fmt.Errorf("transcription returned no text")
 	}
 	return decoded.Text, nil
-}
-
-type tokenPrice struct{ input, cached, output float64 }
-
-// Prices are standard-processing USD per million text tokens published on
-// July 19, 2026. Keeping the catalog explicit makes an unknown model fail
-// closed instead of silently disabling the USD breaker.
-func estimateOpenAICost(model string, input, cached, output int64) (float64, error) {
-	prices := []struct {
-		prefix string
-		price  tokenPrice
-	}{
-		{"gpt-5.6-sol", tokenPrice{input: 5, cached: .5, output: 30}},
-		{"gpt-5.6-terra", tokenPrice{input: 2.5, cached: .25, output: 15}},
-		{"gpt-5.6-luna", tokenPrice{input: 1, cached: .1, output: 6}},
-		{"gpt-5.4-pro", tokenPrice{input: 30, cached: 30, output: 180}},
-		{"gpt-5.4-mini", tokenPrice{input: .75, cached: .075, output: 4.5}},
-		{"gpt-5.4-nano", tokenPrice{input: .2, cached: .02, output: 1.25}},
-		{"gpt-5.4", tokenPrice{input: 2.5, cached: .25, output: 15}},
-	}
-	for _, item := range prices {
-		if model == item.prefix || strings.HasPrefix(model, item.prefix+"-") {
-			if cached < 0 || cached > input {
-				return 0, fmt.Errorf("invalid cached token count %d for %d input tokens", cached, input)
-			}
-			inputMultiplier, outputMultiplier := 1.0, 1.0
-			if (item.prefix == "gpt-5.4" || item.prefix == "gpt-5.4-pro") && input > 272_000 {
-				inputMultiplier, outputMultiplier = 2, 1.5
-			}
-			uncached := input - cached
-			return (float64(uncached)*item.price.input*inputMultiplier + float64(cached)*item.price.cached*inputMultiplier + float64(output)*item.price.output*outputMultiplier) / 1_000_000, nil
-		}
-	}
-	return 0, fmt.Errorf("no in-process token price registered for model %q", model)
 }

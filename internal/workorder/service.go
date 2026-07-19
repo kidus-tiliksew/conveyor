@@ -399,7 +399,7 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 	if ok && job.ID == order.JobID {
 		job.TokensIn = tokensIn
 		job.TokensOut = tokensOut
-		job.CostUSD = cost
+		job.CostUSD = &cost
 		_ = s.Store.UpdateJob(ctx, job)
 	}
 	return order, nil
@@ -636,7 +636,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	}
 	job.State = core.JobDone
 	job.EndedAt = time.Now().UTC()
-	job.CostUSD = order.CostUSD
+	job.CostUSD = &order.CostUSD
 	job.TokensIn = order.TokensIn
 	job.TokensOut = order.TokensOut
 	if err = s.Store.UpdateJob(ctx, job); err != nil {

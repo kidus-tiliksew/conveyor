@@ -23,8 +23,8 @@ const gateDots: Record<GateTone, string> = {
   alarm: 'bg-attention-dot',
 }
 
-// The costed event timeline (spec §13.3 elements 2 and 3): the audit log
-// rendered as a story — one entry per stage execution, with cost, duration,
+// The execution event timeline (spec §13.3 elements 2 and 3): the audit log
+// rendered as a story — one entry per stage execution, with usage, duration,
 // and the harness/model/auth mode that ran it, interleaved with pipeline
 // incidents and every recorded decision. Anything actionable "now" — status
 // alerts, recovery actions, and the human gate itself — renders as the live
@@ -50,7 +50,7 @@ export function Timeline({ item }: { item: ActivityItem }) {
   ].filter((entry) => entry !== false)
 
   return (
-    <section aria-label="Costed event timeline">
+    <section aria-label="Execution event timeline">
       <div className="mb-4 flex items-baseline justify-between">
         <h2 className="text-sm font-semibold tracking-tight">Event timeline</h2>
         <span className="font-mono text-[11px] text-faint">{item.events.length} audit events</span>
@@ -190,7 +190,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
   // Reviewer feedback surfaces as each verdict lands — not held until the
   // round settles — so nothing a reviewer wrote is ever invisible.
   const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
-  const spendUSD = seats.reduce((sum, seat) => sum + (seat.job?.cost_usd || seat.order.cost_usd || 0), 0)
+  const spendUSD = seats.reduce((sum, seat) => sum + (displayedCostUSD(seat.job, seat.order.cost_usd) ?? 0), 0)
   const gradient = ringGradient(seats)
   const single = seats[0]
   return (
@@ -302,7 +302,7 @@ function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
       <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
-          costUSD={seat.job?.cost_usd || seat.order.cost_usd}
+          costUSD={displayedCostUSD(seat.job, seat.order.cost_usd)}
           tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
           tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
           note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
@@ -430,7 +430,7 @@ function JobEntry({ job, summary, model, order }: { job: Job; summary: string; m
         <p className="whitespace-pre-line px-4 py-3 text-sm leading-6 text-foreground/85">{summary}</p>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <ModelChip model={model} costUSD={job.cost_usd} tokensIn={job.tokens_in} tokensOut={job.tokens_out} />
+          <ModelChip model={model} costUSD={displayedCostUSD(job)} tokensIn={job.tokens_in} tokensOut={job.tokens_out} />
         </div>
       </article>
     </li>
@@ -446,11 +446,16 @@ function providerLogo(model: string): { svg: string; className?: string } | unde
   return undefined
 }
 
-function ModelChip({ model, costUSD, tokensIn, tokensOut, note }: { model: string; costUSD: number; tokensIn: number; tokensOut: number; note?: string }) {
+function displayedCostUSD(job: Job | undefined, fallback?: number): number | undefined {
+  if (job?.runner === 'in-process') return undefined
+  return job?.cost_usd ?? fallback
+}
+
+function ModelChip({ model, costUSD, tokensIn, tokensOut, note }: { model: string; costUSD?: number | null; tokensIn: number; tokensOut: number; note?: string }) {
   const logo = providerLogo(model)
   const usage = [
     tokensIn + tokensOut > 0 ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out` : undefined,
-    costUSD > 0 ? usd(costUSD) : undefined,
+    costUSD != null && costUSD > 0 ? usd(costUSD) : undefined,
     note,
   ]
     .filter(Boolean)

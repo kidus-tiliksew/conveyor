@@ -423,7 +423,7 @@ type InsertJobParams struct {
 	Runner          string             `json:"runner"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
-	CostUsd         float64            `json:"cost_usd"`
+	CostUsd         pgtype.Float8      `json:"cost_usd"`
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`
@@ -979,7 +979,7 @@ type UpdateJobParams struct {
 	Runner          string             `json:"runner"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
-	CostUsd         float64            `json:"cost_usd"`
+	CostUsd         pgtype.Float8      `json:"cost_usd"`
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`

@@ -203,7 +203,7 @@ type Job struct {
 	Runner      string    `json:"runner"`
 	PackVersion string    `json:"pack_version,omitempty"`
 	Confinement string    `json:"confinement"`
-	CostUSD     float64   `json:"cost_usd"`
+	CostUSD     *float64  `json:"cost_usd,omitempty"`
 	TokensIn    int64     `json:"tokens_in"`
 	TokensOut   int64     `json:"tokens_out"`
 	State       JobState  `json:"state"`
