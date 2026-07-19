@@ -1,11 +1,29 @@
 package redact
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestWriterRedactsExactValuesSplitAcrossWritesAndFlush(t *testing.T) {
+	secret := "child-only-runtime-value"
+	var destination bytes.Buffer
+	writer := &Writer{Destination: &destination, Redactor: New([]string{secret})}
+	for _, part := range []string{"token=child-only-", "runtime-value\nsession=child-only-", "runtime-value"} {
+		if _, err := writer.Write([]byte(part)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if output := destination.String(); strings.Contains(output, secret) || strings.Count(output, exactPlaceholder) != 2 {
+		t.Fatalf("stream output=%q", output)
+	}
+}
 
 func TestRedactsExactAndEncodedInjectedValues(t *testing.T) {
 	secret := `pa$$ word/with?punctuation`

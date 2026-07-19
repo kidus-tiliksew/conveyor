@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -156,12 +157,39 @@ func (r *Redactor) walk(value any, stats *Stats) any {
 type Writer struct {
 	Destination io.Writer
 	Redactor    *Redactor
+
+	mu      sync.Mutex
+	pending string
 }
 
-func (w Writer) Write(p []byte) (int, error) {
-	clean, _ := w.Redactor.Redact(string(p))
+func (w *Writer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending += string(p)
+	boundary := strings.LastIndexByte(w.pending, '\n')
+	if boundary < 0 {
+		return len(p), nil
+	}
+	ready := w.pending[:boundary+1]
+	w.pending = w.pending[boundary+1:]
+	clean, _ := w.Redactor.Redact(ready)
 	if _, err := io.WriteString(w.Destination, clean); err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// Flush emits a final unterminated line. Callers invoke it only after the
+// source process has stopped writing, so exact values split across writes are
+// still redacted without persisting a buffer of runtime values.
+func (w *Writer) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.pending == "" {
+		return nil
+	}
+	clean, _ := w.Redactor.Redact(w.pending)
+	w.pending = ""
+	_, err := io.WriteString(w.Destination, clean)
+	return err
 }

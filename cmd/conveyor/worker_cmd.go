@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
 )
@@ -411,6 +413,10 @@ func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessPro
 }
 
 func runHarnessChild(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder) error {
+	return runHarnessChildWithOutput(ctx, c, credential, item, os.Stdout, os.Stderr)
+}
+
+func runHarnessChildWithOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, stdout, stderr io.Writer) error {
 	session, err := randomHex(16)
 	if err != nil {
 		return fmt.Errorf("generate worker session: %w", err)
@@ -486,8 +492,15 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 			return err
 		}
 	}
+	outputRedactor := redact.New([]string{credential, childAddress, sessionID, clientToken})
+	redactedStdout := &redact.Writer{Destination: stdout, Redactor: outputRedactor}
+	redactedStderr := &redact.Writer{Destination: stderr, Redactor: outputRedactor}
+	defer func() {
+		_ = redactedStdout.Flush()
+		_ = redactedStderr.Flush()
+	}()
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	command.Stdout, command.Stderr = redactedStdout, redactedStderr
 	command.Env = childEnv
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
