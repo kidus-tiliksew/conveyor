@@ -32,6 +32,24 @@ func TestJobJSONOmitsZeroEndedAt(t *testing.T) {
 	}
 }
 
+func TestJobJSONKeepsMissingCostDistinctFromReportedZero(t *testing.T) {
+	inProcess, err := json.Marshal(Job{ID: "in-process", Runner: "in-process", TokensIn: 17, TokensOut: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(inProcess), "cost_usd") || !strings.Contains(string(inProcess), `"tokens_in":17`) || !strings.Contains(string(inProcess), `"tokens_out":3`) {
+		t.Fatalf("in-process job wire contract = %s", inProcess)
+	}
+	reportedZero := 0.0
+	worker, err := json.Marshal(Job{ID: "worker", Runner: "external", CostUSD: &reportedZero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(worker), `"cost_usd":0`) {
+		t.Fatalf("worker job omitted reported cost: %s", worker)
+	}
+}
+
 func TestQueuedWorkOrderJSONOmitsExecutionAndLeaseClocks(t *testing.T) {
 	now := time.Now().UTC()
 	data, err := json.Marshal(WorkOrder{ID: "queued", State: WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)})

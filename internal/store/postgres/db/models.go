@@ -66,6 +66,16 @@ type GithubLifecycle struct {
 	ReconcileMisses   int32              `json:"reconcile_misses"`
 }
 
+type InterruptedReviewRecovery struct {
+	WorkspaceID string             `json:"workspace_id"`
+	RequestID   string             `json:"request_id"`
+	TaskID      string             `json:"task_id"`
+	ReviewRound int32              `json:"review_round"`
+	ActorID     string             `json:"actor_id"`
+	ResultJson  []byte             `json:"result_json"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Intervention struct {
 	ID         int64              `json:"id"`
 	TaskID     string             `json:"task_id"`
@@ -87,7 +97,7 @@ type Job struct {
 	Runner          string             `json:"runner"`
 	PackVersion     string             `json:"pack_version"`
 	ConfinementTier string             `json:"confinement_tier"`
-	CostUsd         float64            `json:"cost_usd"`
+	CostUsd         pgtype.Float8      `json:"cost_usd"`
 	TokensIn        int64              `json:"tokens_in"`
 	TokensOut       int64              `json:"tokens_out"`
 	State           string             `json:"state"`

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func TestMigrationVersion(t *testing.T) {
@@ -92,10 +94,30 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 25 {
 		t.Fatalf("interrupted review recovery migration version = %d, err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/026_remove_inprocess_cost.sql")
+	if err != nil || version != 26 {
+		t.Fatalf("in-process cost removal migration version = %d, err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
 		}
+	}
+}
+
+func TestJobCostPersistenceKeepsMissingDistinctFromReportedZero(t *testing.T) {
+	inProcess := jobInsertParams(core.Job{ID: "in-process", Runner: "in-process"})
+	if inProcess.CostUsd.Valid {
+		t.Fatalf("in-process cost unexpectedly valid: %+v", inProcess.CostUsd)
+	}
+	reportedZero := 0.0
+	worker := jobInsertParams(core.Job{ID: "worker", Runner: "external", CostUSD: &reportedZero})
+	if !worker.CostUsd.Valid || worker.CostUsd.Float64 != 0 {
+		t.Fatalf("worker-reported zero was not preserved: %+v", worker.CostUsd)
+	}
+	roundTrip := jobFromDB(db.Job{ID: "worker", Runner: "external", CostUsd: worker.CostUsd})
+	if roundTrip.CostUSD == nil || *roundTrip.CostUSD != 0 {
+		t.Fatalf("worker-reported zero round trip = %+v", roundTrip.CostUSD)
 	}
 }
 

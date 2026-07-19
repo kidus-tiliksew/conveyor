@@ -74,20 +74,16 @@ func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 			t.Fatalf("unexpected request %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"model":"gpt-5.6-luna","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":17,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}},"debug":"%s"}`, key)
+		fmt.Fprintf(w, `{"model":"gpt-newly-configured","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":17,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}},"debug":"%s"}`, key)
 	}))
 	defer server.Close()
 
-	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-newly-configured", Input{Prompt: "work"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Output != "done" || result.TokensIn != 17 || result.TokensOut != 3 {
 		t.Fatalf("result = %+v", result)
-	}
-	wantCost := (15*1.0 + 2*.1 + 3*6.0) / 1_000_000
-	if result.CostUSD != wantCost {
-		t.Fatalf("cost = %.9f, want %.9f", result.CostUSD, wantCost)
 	}
 	if strings.Contains(string(result.Transcript), key) || result.Redactions.Total() == 0 {
 		t.Fatalf("unredacted transcript: %s", result.Transcript)
@@ -152,37 +148,5 @@ func TestOpenAIRunDoesNotRetryClientErrors(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
-	}
-}
-
-func TestEstimateOpenAICostGPT56Tiers(t *testing.T) {
-	t.Parallel()
-	cost, err := estimateOpenAICost("gpt-5.6-terra", 15_621, 0, 3_599)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := (15_621*2.5 + 3_599*15.0) / 1_000_000
-	if cost != want {
-		t.Fatalf("terra cost = %f, want %f", cost, want)
-	}
-	cost, err = estimateOpenAICost("gpt-5.6-sol", 1_000, 500, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want = (500*5.0 + 500*.5 + 100*30.0) / 1_000_000
-	if cost != want {
-		t.Fatalf("sol cost = %f, want %f", cost, want)
-	}
-}
-
-func TestEstimateOpenAICostLongContextMultiplier(t *testing.T) {
-	t.Parallel()
-	cost, err := estimateOpenAICost("gpt-5.4-2026-03-05", 300_000, 0, 10_000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := (300_000*2.5*2 + 10_000*15*1.5) / 1_000_000
-	if cost != want {
-		t.Fatalf("cost = %f, want %f", cost, want)
 	}
 }
