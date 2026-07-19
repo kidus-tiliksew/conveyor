@@ -72,13 +72,17 @@ export function fetchWorkspaceConfig(token: string) {
 	return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
     const result = await response.json() as VersionedWorkspaceConfig
+    const review = result.document.review ?? { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] }
+    const setups = result.document.setups?.length ? result.document.setups : [{ name: 'default', execution_settings: result.document.execution_settings, review }]
     return {
       ...result,
       document: {
         ...result.document,
         harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
-        review: result.document.review ?? { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] },
+        review,
+        setups,
+        default_setup: result.document.default_setup || setups[0].name,
       },
     }
   })
@@ -121,6 +125,7 @@ export interface CreateTaskInput {
   mode?: TaskMode
   spec_approval?: boolean
   merge_approval?: boolean
+  setup?: string
 }
 
 export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); const result = await response.json() as WorkerList; return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) } }

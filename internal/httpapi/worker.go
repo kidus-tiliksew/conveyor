@@ -104,7 +104,12 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	available, reason := s.Workers.AutoAvailable(r.Context(), cfg)
-	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "auto_available": available, "auto_unavailable_reason": reason})
+	serviceability := make(map[string]any, len(cfg.Setups))
+	for _, setup := range cfg.Setups {
+		setupAvailable, setupReason := s.Workers.AutoAvailableForSetup(r.Context(), cfg, setup)
+		serviceability[setup.Name] = map[string]any{"auto_available": setupAvailable, "auto_unavailable_reason": setupReason}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "auto_available": available, "auto_unavailable_reason": reason, "setup_serviceability": serviceability})
 }
 
 func (s *Server) revokeWorker(w http.ResponseWriter, r *http.Request) {

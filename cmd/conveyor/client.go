@@ -49,10 +49,17 @@ func (c *client) createTaskWithLevel(body, repo, base string, level core.Escalat
 }
 
 func (c *client) createTaskWithMode(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
+	return c.createTaskWithSetup(body, repo, base, mode, specApproval, mergeApproval, "")
+}
+
+func (c *client) createTaskWithSetup(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
 	payload := map[string]any{"body": body, "repo": repo, "base_branch": base, "source": "cli"}
+	if setup != "" {
+		payload["setup"] = setup
+	}
 	if mode != "" {
 		payload["mode"] = mode
 	}

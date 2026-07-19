@@ -13,8 +13,8 @@ database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
-# Canonical contextual settings (spec §21.18). The legacy routing block below
-# remains during the compatibility period but cannot override these values.
+# Default-setup projection for older clients (spec §21.27). The setup block
+# below is authoritative; this and routing remain readable compatibility data.
 execution_settings:
   control_plane:
     triage: {model: gpt-5.6-luna, timeout: 20m}
@@ -85,6 +85,29 @@ review:
       harness: local-agent
     - model: claude-opus-4.1
       harness: local-agent
+
+# Named execution contracts are the authoritative v1.28 shape. The matching
+# top-level execution_settings/review fields above are emitted as the default
+# setup projection for older clients (spec §21.27 change 2).
+default_setup: default
+setups:
+  - name: default
+    execution_settings:
+      control_plane:
+        triage: {model: gpt-5.6-luna, timeout: 20m}
+        spec: {model: gpt-5.6-luna, timeout: 30m}
+      implementation:
+        harness: local-agent
+        model_policy: harness_default
+        effort: high
+        timeout: 4h
+      review:
+        execution: mcp
+        timeout: 1h
+    review:
+      seats:
+        - {model: gpt-5.6, harness: local-agent}
+        - {model: claude-opus-4.1, harness: local-agent}
 
 # Adapter-level review effort excerpt (spec §21.19). Implementation effort uses
 # the same harness mappings through execution_settings.implementation (spec

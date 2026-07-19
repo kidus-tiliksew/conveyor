@@ -310,7 +310,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 }
 
 func configDiff(before, after config.WorkspaceDocument) []string {
-	sections := make([]string, 0, 7)
+	sections := make([]string, 0, 9)
 	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
@@ -329,6 +329,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Review, after.Review) {
 		sections = append(sections, "review")
+	}
+	if !reflect.DeepEqual(before.Setups, after.Setups) || before.DefaultSetup != after.DefaultSetup {
+		sections = append(sections, "setups")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")
@@ -2505,22 +2508,31 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
 		Mode: string(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int32(task.PolicyVersion),
-		BaseBranch:    task.BaseBranch, Branch: task.Branch, State: string(task.State),
+		SetupName:     task.SetupName, SetupContract: setupContractJSON(task.SetupContract),
+		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
 	}
 }
 
 func taskFromDB(task db.Task) core.Task {
+	var setup config.ExecutionSetup
+	_ = json.Unmarshal(task.SetupContract, &setup)
 	return core.Task{
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
 		Mode: core.TaskMode(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int(task.PolicyVersion),
-		BaseBranch:    task.BaseBranch, Branch: task.Branch,
+		SetupName:     task.SetupName, SetupContract: setup,
+		BaseBranch: task.BaseBranch, Branch: task.Branch,
 		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: task.FeatureID.String,
 		CreatedAt: task.CreatedAt.Time,
 	}
+}
+
+func setupContractJSON(setup config.ExecutionSetup) []byte {
+	data, _ := json.Marshal(setup)
+	return data
 }
 
 func specFromDB(spec db.TaskSpec) core.SpecVersion {

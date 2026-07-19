@@ -8,11 +8,13 @@ import (
 )
 
 type WorkspaceInfo struct {
-	Workspace  string           `json:"workspace"`
-	MaxBounces int              `json:"max_bounces"`
-	Database   string           `json:"database"`
-	Repos      []config.Repo    `json:"repos"`
-	Routing    []WorkspaceRoute `json:"routing"`
+	Workspace    string                  `json:"workspace"`
+	MaxBounces   int                     `json:"max_bounces"`
+	Database     string                  `json:"database"`
+	Repos        []config.Repo           `json:"repos"`
+	Routing      []WorkspaceRoute        `json:"routing"`
+	Setups       []config.ExecutionSetup `json:"setups"`
+	DefaultSetup string                  `json:"default_setup"`
 }
 type WorkspaceRoute struct {
 	Stage     string               `json:"stage"`
@@ -22,7 +24,7 @@ type WorkspaceRoute struct {
 }
 
 func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
-	info := &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...)}
+	info := &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...), Setups: append([]config.ExecutionSetup(nil), cfg.Setups...), DefaultSetup: cfg.DefaultSetup}
 	stages := make([]string, 0, len(cfg.Routing.Stages))
 	for stage := range cfg.Routing.Stages {
 		stages = append(stages, stage)

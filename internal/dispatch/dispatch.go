@@ -111,6 +111,9 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if task.NextStage == "" {
 		return nil
 	}
+	if task.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(task.SetupContract)
+	}
 	route, ok := cfg.Routing.Stages[string(task.NextStage)]
 	if !ok {
 		return fmt.Errorf("no route for stage %s", task.NextStage)
@@ -160,6 +163,10 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round int) ([]core.Job, []core.WorkOrder, error) {
 	if cfg == nil || round <= 0 {
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
+	}
+	if task.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(task.SetupContract)
+		route = cfg.Routing.Stages["review"]
 	}
 	now := time.Now().UTC()
 	queueTimeout := cfg.WorkOrderQueueTimeout

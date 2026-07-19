@@ -210,7 +210,7 @@ func TestOpenAIRunBoundsTransportRetriesAndPersistsDiagnostic(t *testing.T) {
 		return nil, fmt.Errorf("connection reset")
 	})}
 	result, err := (&OpenAI{APIKey: "sk-test", Client: httpClient, RetryDelay: time.Millisecond}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
-	if err == nil || attempts != 3 || result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != 3 || !result.Diagnostic.Retryable {
+	if err == nil || attempts != responsesMaxAttempts || result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != responsesMaxAttempts || !result.Diagnostic.Retryable {
 		t.Fatalf("attempts=%d result=%+v err=%v", attempts, result, err)
 	}
 	if !strings.Contains(string(result.Transcript), "connection reset") || strings.Contains(string(result.Transcript), "sk-test") {
@@ -237,10 +237,11 @@ func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
 	if attempts != responsesMaxAttempts {
 		t.Fatalf("attempts = %d, want %d", attempts, responsesMaxAttempts)
 	}
-	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != 3 || result.Diagnostic.UpstreamRequest != "req-safe-3" || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
+	wantRequestID := fmt.Sprintf("req-safe-%d", responsesMaxAttempts)
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.UpstreamRequest != wantRequestID || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
 		t.Fatalf("diagnostic = %+v", result.Diagnostic)
 	}
-	for _, expected := range []string{"req-safe-3", "server_error", "retry_exhausted"} {
+	for _, expected := range []string{wantRequestID, "server_error", "retry_exhausted"} {
 		if !strings.Contains(string(result.Transcript), expected) {
 			t.Fatalf("transcript missing %q: %s", expected, result.Transcript)
 		}

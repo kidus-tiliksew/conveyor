@@ -158,6 +158,35 @@ func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 	}
 }
 
+func TestAutoHealthIsScopedToSelectedSetup(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	harness := func(name string) config.Harness {
+		return config.Harness{Name: name, Command: []string{name, "{prompt}", "{mcp_config}"}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
+	}
+	setup := func(name, harnessName string) config.ExecutionSetup {
+		return config.ExecutionSetup{Name: name, ExecutionSettings: config.ContextualExecutionSettings{
+			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
+			Implementation: config.ImplementationSettings{Harness: harnessName, Model: "model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionInProcess, TimeoutText: "1h", FallbackModel: "review"},
+		}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "review"}}}}
+	}
+	good, broken := setup("good", "codex"), setup("broken", "claude")
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{good, broken}, DefaultSetup: good.Name}
+	worker := core.Worker{ID: "setup-worker", Workspace: "demo", Name: "setup", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: false}}, CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Now: func() time.Time { return now }}
+	if available, reason := service.AutoAvailableForSetup(ctx, cfg, good); !available {
+		t.Fatalf("good setup unavailable: %s", reason)
+	}
+	if available, _ := service.AutoAvailableForSetup(ctx, cfg, broken); available {
+		t.Fatal("broken setup became available because an unrelated setup was healthy")
+	}
+}
+
 func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()

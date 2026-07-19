@@ -43,6 +43,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
+	req.Setup = strings.TrimSpace(req.Setup)
 	intakeKey = strings.TrimSpace(intakeKey)
 	if strings.TrimSpace(req.Body) == "" {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "body is required"}
@@ -85,6 +86,15 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		repos = current.RepoNames()
 		workspace = current.Workspace
 	}
+	var selectedSetup config.ExecutionSetup
+	if current != nil {
+		var ok bool
+		selectedSetup, ok = current.Setup(req.Setup)
+		if !ok {
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown setup " + req.Setup}
+		}
+		req.Setup = selectedSetup.Name
+	}
 	explicitMode := req.Mode != ""
 	fellBack := false
 	var specApproval, mergeApproval bool
@@ -108,7 +118,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		mergeApproval = *req.MergeApproval
 	}
 	if req.Mode == core.TaskModeAuto && s.Workers != nil && current != nil {
-		available, reason := s.Workers.AutoAvailable(ctx, current)
+		available, reason := s.Workers.AutoAvailableForSetup(ctx, current, selectedSetup)
 		if !available && explicitMode {
 			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "auto mode unavailable: " + reason}
 		}
@@ -132,7 +142,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if s.GenerateTaskTitle == nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}
 	}
-	generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo})
+	generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo, SetupName: req.Setup, SetupContract: selectedSetup})
 	if err != nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("generate task title: %v", err)}
 	}
@@ -154,6 +164,8 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		SpecApproval:  specApproval,
 		MergeApproval: mergeApproval,
 		PolicyVersion: 1,
+		SetupName:     req.Setup,
+		SetupContract: selectedSetup,
 		Repo:          req.Repo,
 		BaseBranch:    req.BaseBranch,
 		Branch:        gitx.BranchName(id),
@@ -175,7 +187,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}
 	if fellBack {
-		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.auto_fallback", Payload: core.JSONPayload(map[string]string{"requested": "workspace-default-auto", "resolved": "manual", "reason": "worker-or-routed-harness-unhealthy"})})
+		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.auto_fallback", Payload: core.JSONPayload(map[string]string{"requested": "workspace-default-auto", "resolved": "manual", "reason": "worker-or-routed-harness-unhealthy", "setup": task.SetupName})})
 	}
 	if initialState == core.TaskQueued && s.OnCreate != nil {
 		s.OnCreate(ctx, id)
@@ -185,6 +197,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 
 func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
+		return false
+	}
+	if req.Setup != "" && task.SetupName != req.Setup {
 		return false
 	}
 	if req.Mode == "" && req.Level != "" {
