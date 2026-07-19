@@ -2512,7 +2512,7 @@ func jobInsertParams(job core.Job) db.InsertJobParams {
 		ID: job.ID, TaskID: job.TaskID, Stage: string(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
-		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
+		CostUsd: nullableFloat(job.CostUSD), TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
 		StartedAt: nullableTimestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 	}
@@ -2523,7 +2523,7 @@ func jobUpdateParams(job core.Job, workspace string) db.UpdateJobParams {
 		ID: job.ID, Stage: string(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, ConfinementTier: job.Confinement,
-		CostUsd: job.CostUSD, TokensIn: job.TokensIn,
+		CostUsd: nullableFloat(job.CostUSD), TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: string(job.State),
 		StartedAt: nullableTimestamp(job.StartedAt), EndedAt: nullableTimestamp(job.EndedAt),
 		WorkspaceID: workspace,
@@ -2535,7 +2535,7 @@ func jobFromDB(job db.Job) core.Job {
 		ID: job.ID, TaskID: job.TaskID, Stage: core.Stage(job.Stage), Harness: job.Harness,
 		ModelTier: job.ModelTier, AuthMode: job.AuthMode, Runner: job.Runner,
 		PackVersion: job.PackVersion, Confinement: job.ConfinementTier,
-		CostUSD: job.CostUsd, TokensIn: job.TokensIn,
+		CostUSD: floatPointer(job.CostUsd), TokensIn: job.TokensIn,
 		TokensOut: job.TokensOut, State: core.JobState(job.State),
 		StartedAt: job.StartedAt.Time, EndedAt: nullableTime(job.EndedAt),
 	}
@@ -2576,6 +2576,21 @@ func nullableTimestamp(value time.Time) pgtype.Timestamptz {
 		return pgtype.Timestamptz{}
 	}
 	return timestamp(value)
+}
+
+func nullableFloat(value *float64) pgtype.Float8 {
+	if value == nil {
+		return pgtype.Float8{}
+	}
+	return pgtype.Float8{Float64: *value, Valid: true}
+}
+
+func floatPointer(value pgtype.Float8) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	result := value.Float64
+	return &result
 }
 
 func nullableTime(value pgtype.Timestamptz) time.Time {

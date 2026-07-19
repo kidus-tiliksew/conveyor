@@ -328,7 +328,6 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	job.EndedAt = time.Now().UTC()
 	job.TokensIn = result.TokensIn
 	job.TokensOut = result.TokensOut
-	job.CostUSD = result.CostUSD
 	if len(result.Transcript) != 0 {
 		sum := sha256.Sum256(result.Transcript)
 		id := fmt.Sprintf("%x", sum)
