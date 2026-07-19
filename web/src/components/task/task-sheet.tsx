@@ -21,7 +21,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   return (
     <Sheet onClose={close} label="Task detail">
       <header className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
-        <span className="mr-auto font-mono text-xs text-muted">{taskId}</span>
+        <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
         <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
         <Link to="/tasks/$taskId/full" params={{ taskId }} aria-label="Open full task page">
@@ -69,7 +69,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      {item.spec && <SpecCard spec={item.spec} />}
+      {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable />}
       <Timeline item={item} />
     </div>
   )

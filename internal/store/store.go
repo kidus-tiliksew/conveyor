@@ -1660,13 +1660,18 @@ func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHu
 	}
 	lifecycle.UpdatedAt = time.Now().UTC()
 	m.github[lifecycle.TaskID] = lifecycle
-	kind := "github_issue.publication_retry"
-	if lifecycle.State == core.GitHubPublicationPublished {
+	var kind string
+	switch {
+	case lifecycle.State == core.GitHubPublicationPublished:
 		kind = "github_issue.publication_published"
-	} else if lifecycle.State == core.GitHubPublicationFailed {
+	case lifecycle.State == core.GitHubPublicationFailed:
 		kind = "github_issue.publication_failed"
+	case lifecycle.State == core.GitHubPublicationRetrying && strings.TrimSpace(lifecycle.LastError) != "":
+		kind = "github_issue.publication_retry"
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: lifecycle.TaskID, Kind: kind, Payload: core.JSONPayload(lifecycle)})
+	if kind != "" {
+		m.appendEventLocked(ctx, core.Event{TaskID: lifecycle.TaskID, Kind: kind, Payload: core.JSONPayload(lifecycle)})
+	}
 	return nil
 }
 

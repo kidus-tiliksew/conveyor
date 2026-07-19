@@ -730,11 +730,17 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		if command.RowsAffected() != 1 {
 			return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)
 		}
-		kind := "github_issue.publication_retry"
-		if lifecycle.State == core.GitHubPublicationPublished {
+		var kind string
+		switch {
+		case lifecycle.State == core.GitHubPublicationPublished:
 			kind = "github_issue.publication_published"
-		} else if lifecycle.State == core.GitHubPublicationFailed {
+		case lifecycle.State == core.GitHubPublicationFailed:
 			kind = "github_issue.publication_failed"
+		case lifecycle.State == core.GitHubPublicationRetrying && strings.TrimSpace(lifecycle.LastError) != "":
+			kind = "github_issue.publication_retry"
+		}
+		if kind == "" {
+			return nil
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: lifecycle.TaskID, Kind: kind, Payload: core.JSONPayload(lifecycle)})
 	})
