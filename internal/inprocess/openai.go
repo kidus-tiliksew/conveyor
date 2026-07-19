@@ -58,7 +58,15 @@ type OpenAI struct {
 	APIKey  string
 	BaseURL string
 	Client  *http.Client
+	// RetryDelay overrides the transient-failure backoff base; zero uses the
+	// default. Tests set it to keep retries fast.
+	RetryDelay time.Duration
 }
+
+const (
+	responsesMaxAttempts = 3
+	responsesRetryDelay  = 2 * time.Second
+)
 
 func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Result, error) {
 	if strings.TrimSpace(client.APIKey) == "" {
@@ -95,22 +103,51 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	requestInput := []map[string]any{{"role": "user", "content": content}}
 	auditInput := []map[string]any{{"role": "user", "content": auditContent}}
 	body, _ := json.Marshal(map[string]any{"model": model, "input": requestInput, "store": false})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/responses", bytes.NewReader(body))
-	if err != nil {
-		return Result{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+client.APIKey)
-	req.Header.Set("Content-Type", "application/json")
 	httpClient := client.Client
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 2 * time.Hour}
 	}
-	response, err := httpClient.Do(req)
-	if err != nil {
-		return Result{}, err
+	attempt := func() ([]byte, int, string, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/responses", bytes.NewReader(body))
+		if err != nil {
+			return nil, 0, "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+client.APIKey)
+		req.Header.Set("Content-Type", "application/json")
+		response, err := httpClient.Do(req)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		defer response.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(response.Body, 32<<20))
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return raw, response.StatusCode, response.Status, nil
 	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 32<<20))
+	// A transient upstream failure (network error, 429, 5xx) would otherwise
+	// halt the pipeline at the human gate with zero tokens generated, so it
+	// retries a bounded number of times before the job fails.
+	var raw []byte
+	var statusCode int
+	var status string
+	var err error
+	for try := 1; ; try++ {
+		raw, statusCode, status, err = attempt()
+		transient := err != nil || statusCode == http.StatusTooManyRequests || statusCode >= 500
+		if !transient || try >= responsesMaxAttempts {
+			break
+		}
+		delay := client.RetryDelay
+		if delay <= 0 {
+			delay = responsesRetryDelay
+		}
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		case <-time.After(time.Duration(try) * delay):
+		}
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -125,8 +162,8 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if redactErr != nil {
 		return Result{}, redactErr
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return Result{Transcript: transcript, Redactions: stats}, fmt.Errorf("OpenAI Responses API returned %s", response.Status)
+	if statusCode < 200 || statusCode >= 300 {
+		return Result{Transcript: transcript, Redactions: stats}, fmt.Errorf("OpenAI Responses API returned %s", status)
 	}
 	var decoded struct {
 		Model  string `json:"model"`
@@ -222,13 +259,15 @@ func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachmen
 type tokenPrice struct{ input, cached, output float64 }
 
 // Prices are standard-processing USD per million text tokens published on
-// July 14, 2026. Keeping the catalog explicit makes an unknown model fail
+// July 19, 2026. Keeping the catalog explicit makes an unknown model fail
 // closed instead of silently disabling the USD breaker.
 func estimateOpenAICost(model string, input, cached, output int64) (float64, error) {
 	prices := []struct {
 		prefix string
 		price  tokenPrice
 	}{
+		{"gpt-5.6-sol", tokenPrice{input: 5, cached: .5, output: 30}},
+		{"gpt-5.6-terra", tokenPrice{input: 2.5, cached: .25, output: 15}},
 		{"gpt-5.6-luna", tokenPrice{input: 1, cached: .1, output: 6}},
 		{"gpt-5.4-pro", tokenPrice{input: 30, cached: 30, output: 180}},
 		{"gpt-5.4-mini", tokenPrice{input: .75, cached: .075, output: 4.5}},

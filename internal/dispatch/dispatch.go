@@ -384,6 +384,33 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
 		}
 	}
+	if stage == core.StageSpec {
+		// A spec-gate redirect reopens this stage, so the regeneration must see
+		// the declined revision and the reviewer's comments — the same feedback
+		// the MCP work-order context already threads to implementing agents.
+		spec, exists, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
+		if getErr != nil {
+			return inprocess.Input{}, getErr
+		}
+		if exists {
+			fmt.Fprintf(&prompt, "\n# Prior specification revision v%d (declined at the human gate)\n\nProduce the next revision of this document; do not start over.\n\n%s\n", spec.Version, spec.Content)
+		}
+		interventions, listErr := d.Store.ListInterventions(ctx, task.ID)
+		if listErr != nil {
+			return inprocess.Input{}, listErr
+		}
+		wroteHeader := false
+		for _, item := range interventions {
+			if item.Action != core.InterventionRedirect || strings.TrimSpace(item.Comment) == "" {
+				continue
+			}
+			if !wroteHeader {
+				prompt.WriteString("\n# Human gate feedback\n\nApply every correction below to the next revision. Where feedback conflicts with the task body or the prior revision, the feedback wins.\n")
+				wroteHeader = true
+			}
+			fmt.Fprintf(&prompt, "\n---\n\n%s\n", item.Comment)
+		}
+	}
 	artifacts, err := d.Store.ListArtifacts(ctx)
 	if err != nil {
 		return inprocess.Input{}, fmt.Errorf("list context artifacts for task %s: %w", task.ID, err)

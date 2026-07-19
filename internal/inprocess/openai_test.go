@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
@@ -93,6 +94,84 @@ func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 	}
 	if !strings.Contains(string(result.Transcript), `"text":"work"`) {
 		t.Fatalf("request missing from transcript: %s", result.Transcript)
+	}
+}
+
+func TestOpenAIRunRetriesTransientUpstreamFailures(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = io.WriteString(w, `{"model":"gpt-5.6-luna","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || result.Output != "done" {
+		t.Fatalf("attempts=%d output=%q", attempts, result.Output)
+	}
+}
+
+func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	_, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("err = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestOpenAIRunDoesNotRetryClientErrors(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	_, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("err = %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestEstimateOpenAICostGPT56Tiers(t *testing.T) {
+	t.Parallel()
+	cost, err := estimateOpenAICost("gpt-5.6-terra", 15_621, 0, 3_599)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := (15_621*2.5 + 3_599*15.0) / 1_000_000
+	if cost != want {
+		t.Fatalf("terra cost = %f, want %f", cost, want)
+	}
+	cost, err = estimateOpenAICost("gpt-5.6-sol", 1_000, 500, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = (500*5.0 + 500*.5 + 100*30.0) / 1_000_000
+	if cost != want {
+		t.Fatalf("sol cost = %f, want %f", cost, want)
 	}
 }
 

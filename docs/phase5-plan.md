@@ -1,11 +1,12 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.27),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.28),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion and transport rules are clarified by §21.14
 and §21.20; worker-attempt recovery is fixed by §21.21, portable review
-publication by §21.22, terminal review-round recovery by §21.23, and
-reconnect-safe worker plus interrupted-seat recovery by §21.26. These are
+publication by §21.22, terminal review-round recovery by §21.23,
+reconnect-safe worker plus interrupted-seat recovery by §21.26, and
+execution setups by §21.27. These are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
@@ -144,6 +145,61 @@ two recorded verdicts with enforced labels; one `changes_requested` verdict
 bounces the task with merged feedback delivered to the waiting implementer;
 unanimous approval advances to merge.
 
+## Phase 5.2.1 — Execution setups
+
+*Proves: per-task-class execution contracts without per-task free-form
+overrides (§21.27). Depends on 5.1 (harness registry, modes, health
+gating) and 5.2 (panel seats); parallelizable with everything after —
+config, intake, and UI work with one dispatch-logic change.*
+
+Suggested order:
+
+1. **Setup schema + normalization** (data-only, unblocks the rest):
+   workspace config gains `setups: [{name, execution_settings, review}]`
+   plus `default_setup`, under the standard §21.3 mechanics (validated
+   writes, `config.updated`, hot reload). Normalization folds a v1.27
+   document's top-level `execution_settings`/`review` into a single setup
+   named `default`; legacy top-level fields stay readable as a projection
+   of the default setup (§21.18 change 2 pattern, extended). Each setup
+   validates independently under the existing §21.18–§21.20 rules against
+   the shared harness registry; harness delete-protection extends to
+   references from any setup. The workspace must always retain ≥1 setup
+   and a valid `default_setup`.
+2. **Intake selection + freeze:** REST `createTaskReq` and MCP
+   `create_task` gain optional `setup`; unset resolves to `default_setup`;
+   unknown name is 400 / MCP error, never a silent fallback. The resolved
+   setup is normalized and persisted **by value** on the task at intake
+   (the §21.13 change 7 rule extended from mode/gates), so later setup
+   edits, renames, and deletes never touch in-flight tasks. Task records
+   carry the setup name for display plus the frozen contract for dispatch.
+3. **Dispatch sourcing:** implementation dispatch and `BuildReviewRound`
+   read harness/model/effort/timeout from the task's frozen setup instead
+   of the workspace singleton. Work-order snapshots, claim validation,
+   self-review guard, and enforcement labels are mechanically unchanged
+   (§21.27 change 5) — this step is a sourcing swap, not a protocol
+   change.
+4. **Setup-scoped health gating:** the Auto-availability check and
+   intake-time auto→manual fallback evaluate the harness set required by
+   the *task's* setup (implementation harness + effective seat harnesses;
+   `in_process` review exempt) rather than one workspace-wide route set.
+   An unrelated setup's broken harness must not disable Auto for tasks
+   that don't use it. Serviceability reporting becomes per-setup; the
+   fallback event records which setup's requirements failed.
+5. **Operator surface:** Workspace UI setup manager — create, duplicate,
+   edit, set default, delete — rendering the existing contextual layout
+   per setup; task intake (UI, CLI `conveyor task new --setup`, REST, MCP)
+   gains a setup selector defaulting to the workspace default, composition
+   shown as secondary detail (tooltip/expand), not inline jargon; task
+   detail shows the frozen setup name and composition.
+
+**Exit criterion:** two setups with different implementation harnesses and
+panels; tasks created under each run end-to-end under their own contract
+with correctly labeled seats; editing a setup mid-flight changes nothing
+for the in-flight task; breaking one setup's harness disables Auto only
+for tasks selecting that setup, with the other setup's Auto unaffected; a
+v1.27 single-config workspace upgrades with byte-for-byte identical
+behavior as setup `default`.
+
 ## Phase 5.3 — GitHub coordination
 
 *Proves: the task's trail is legible on GitHub alone (§21.12 change 5).
@@ -246,7 +302,8 @@ original autonomous loop completed.*
   should be filed as a Conveyor task and run through the Beta pipeline —
   the worker should be the factory's own product before it is the factory's
   own dispatcher.
-- **Parallelization:** 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6.
+- **Parallelization:** 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6; 5.2.1
+  (setups) follows 5.2 and runs parallel with any of 5.3–5.5.
 - **Honesty labels are load-bearing:** `dispatch: worker`,
   `model_enforcement`, and `confinement: none` are the operator's view into
   what the automation actually guarantees. They are not optional polish.

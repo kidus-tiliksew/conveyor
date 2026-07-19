@@ -104,6 +104,39 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	}
 }
 
+func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "spec-feedback", Workspace: "demo", Repo: "api", Title: "Revise the spec", Mode: core.TaskModeAuto, PolicyVersion: 1, SpecApproval: true, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "# Declined draft\n\nOld intent."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, ActorID: "operator", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "spec_stale", Comment: "Target v1.28, not v1.27."}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	_ = dispatcher.DispatchNow(ctx, task.ID)
+	if agent.calls != 1 {
+		t.Fatalf("calls = %d, want 1", agent.calls)
+	}
+	for _, expected := range []string{"# Prior specification revision v1", "Old intent.", "# Human gate feedback", "Target v1.28, not v1.27."} {
+		if !strings.Contains(agent.input.Prompt, expected) {
+			t.Fatalf("spec prompt missing %q:\n%s", expected, agent.input.Prompt)
+		}
+	}
+}
+
 func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
