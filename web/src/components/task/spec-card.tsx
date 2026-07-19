@@ -37,7 +37,12 @@ export function SpecCard({
   const viewportID = useId()
   const expanded = !collapsible || !collapsed
   const overflowExpanded = !overflowExpandable || contentExpanded
-  const prose = useMemo(() => spec.content.replace(machineBlock, ''), [spec.content])
+  // Agent-authored prose sometimes runs a sentence straight into a heading with
+  // a single newline; markdown needs a blank line for the `#` to render as one.
+  const prose = useMemo(
+    () => spec.content.replace(machineBlock, '').replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2'),
+    [spec.content],
+  )
   const criteria = spec.acceptance ?? []
 
   useLayoutEffect(() => {
@@ -138,22 +143,24 @@ export function SpecCard({
             {hasOverflow && !overflowExpanded && (
               <div
                 aria-hidden="true"
-                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-14"
+                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-24"
                 data-spec-overflow-shadow
               />
             )}
           </div>
           {hasOverflow && (
-            <button
-              type="button"
-              aria-controls={viewportID}
-              aria-expanded={overflowExpanded}
-              className="mx-auto mt-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-              onClick={() => setContentExpanded((value) => !value)}
-            >
-              {overflowExpanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
-              {overflowExpanded ? 'Show less' : 'Show more'}
-            </button>
+            <div className="-mx-4 -mb-4 mt-4 border-t border-border">
+              <button
+                type="button"
+                aria-controls={viewportID}
+                aria-expanded={overflowExpanded}
+                className="flex w-full items-center justify-center gap-1.5 rounded-b-md py-2 text-xs font-medium text-primary hover:bg-primary-soft focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                onClick={() => setContentExpanded((value) => !value)}
+              >
+                {overflowExpanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+                {overflowExpanded ? 'Show less' : 'Show more'}
+              </button>
+            </div>
           )}
         </CardContent>
       )}
