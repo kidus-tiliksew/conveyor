@@ -46,6 +46,36 @@ Artifacts are content-addressed and limited to 25 MiB per upload. This is
 appropriate for context files and dogfood scale, not large binaries. Object
 storage is intentionally outside the accepted pre-Beta scope.
 
+Artifact links carry a durable semantic role. `task_context` identifies
+operator- or user-supplied context that an in-process stage may receive;
+`generated_audit` and `generated_output` remain task/workspace-owned and
+downloadable but are never model inputs. In particular, successful, failed,
+and self-reported transcripts keep their existing content-addressed,
+redacted audit path without accumulating on retries or human redirects.
+Migration 027 classifies historical artifact-backed transcripts from their
+existing transcript/job/task relationship, while retaining unclassified
+historical attachments as task context.
+
+## In-process image and failure diagnostics
+
+OpenAI Responses requests send supported PNG, JPEG, non-animated GIF, and WEBP
+artifacts as Base64 data URLs in `input_image.image_url`; images are never sent
+as generic `input_file` parts. Conveyor validates the declared image format and
+the configured model family before provider submission. The configured GPT-5.6
+family, including `gpt-5.6-luna` and `gpt-5.6-terra`, is explicitly
+image-capable. Other documented vision families are recognized in the
+in-process capability table; an unknown or unsupported model fails locally
+with an actionable diagnostic. Conveyor does not silently switch models.
+
+Durable failure evidence identifies the phase (`attachment_preparation`,
+`attachment_validation`, `client_validation`, `capability_validation`,
+`provider_response`, `retry_exhausted`, or `response_validation`) and records
+safe provider/model, attachment type/count, attempt count, HTTP status,
+provider code, and upstream request ID fields when available. Credentials,
+authorization headers, and binary attachment bytes are omitted and the
+transcript still passes through normal redaction. Transport failures, HTTP 429
+responses, and retryable 5xx responses retain the bounded three-attempt policy.
+
 ## Mechanical verification is repository-owned
 
 Conveyor opens the pull request and audits review, but repository CI performs

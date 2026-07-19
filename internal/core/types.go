@@ -561,16 +561,41 @@ type Feature struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type ArtifactRole string
+
+const (
+	// ArtifactRoleTaskContext is durable user-supplied context that may be
+	// attached to in-process model requests.
+	ArtifactRoleTaskContext ArtifactRole = "task_context"
+	// ArtifactRoleGeneratedAudit is Conveyor-generated evidence that remains
+	// downloadable and task-owned, but must never become model input.
+	ArtifactRoleGeneratedAudit ArtifactRole = "generated_audit"
+	// ArtifactRoleGeneratedOutput reserves the same fail-closed input behavior
+	// for future task-linked pipeline outputs that are not audit transcripts.
+	ArtifactRoleGeneratedOutput ArtifactRole = "generated_output"
+)
+
+func (r ArtifactRole) Valid() bool {
+	return r == ArtifactRoleTaskContext || r == ArtifactRoleGeneratedAudit || r == ArtifactRoleGeneratedOutput
+}
+
+func (r ArtifactRole) ModelInputEligible() bool {
+	// Empty is the compatibility value for artifacts created by an older
+	// in-memory process. Persisted links are backfilled by migration 027.
+	return r == "" || r == ArtifactRoleTaskContext
+}
+
 type Artifact struct {
-	ID          string    `json:"id"` // sha256 content address
-	Workspace   string    `json:"workspace"`
-	Name        string    `json:"name"`
-	ContentType string    `json:"content_type"`
-	SizeBytes   int64     `json:"size_bytes"`
-	TaskID      string    `json:"task_id,omitempty"`
-	FeatureID   string    `json:"feature_id,omitempty"`
-	DownloadURL string    `json:"download_url,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string       `json:"id"` // sha256 content address
+	Workspace   string       `json:"workspace"`
+	Name        string       `json:"name"`
+	ContentType string       `json:"content_type"`
+	SizeBytes   int64        `json:"size_bytes"`
+	Role        ArtifactRole `json:"role"`
+	TaskID      string       `json:"task_id,omitempty"`
+	FeatureID   string       `json:"feature_id,omitempty"`
+	DownloadURL string       `json:"download_url,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
 }
 
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on

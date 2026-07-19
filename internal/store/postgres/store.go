@@ -954,7 +954,7 @@ func (s *Store) UpsertTranscript(ctx context.Context, transcript core.Transcript
 	if transcript.CreatedAt.IsZero() {
 		transcript.CreatedAt = time.Now().UTC()
 	}
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		job, err := q.GetJob(ctx, db.GetJobParams{ID: transcript.JobID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "job %s", transcript.JobID)
@@ -965,6 +965,18 @@ func (s *Store) UpsertTranscript(ctx context.Context, transcript core.Transcript
 			CreatedAt:      timestamp(transcript.CreatedAt),
 		}); err != nil {
 			return err
+		}
+		if artifactID := strings.TrimPrefix(transcript.URI, "artifact://"); artifactID != transcript.URI {
+			if _, err := tx.Exec(ctx, `UPDATE artifact_links legacy
+				SET role=$1
+				WHERE legacy.workspace_id=$2 AND legacy.artifact_id=$3 AND legacy.task_id=$4 AND legacy.role=$5
+				  AND NOT EXISTS (
+					SELECT 1 FROM artifact_links explicit
+					WHERE explicit.workspace_id=legacy.workspace_id AND explicit.artifact_id=legacy.artifact_id
+					  AND explicit.task_id=legacy.task_id AND explicit.role=$1
+				  )`, core.ArtifactRoleGeneratedAudit, workspace(ctx), artifactID, job.TaskID, core.ArtifactRoleTaskContext); err != nil {
+				return err
+			}
 		}
 		return insertEvent(ctx, q, core.Event{
 			TaskID: job.TaskID, JobID: job.ID, Kind: "transcript.persisted",
@@ -2333,6 +2345,12 @@ func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string)
 }
 
 func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	if artifact.Role == "" {
+		artifact.Role = core.ArtifactRoleTaskContext
+	}
+	if !artifact.Role.Valid() {
+		return core.Artifact{}, fmt.Errorf("invalid artifact role %q", artifact.Role)
+	}
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
 	if artifact.CreatedAt.IsZero() {
@@ -2361,7 +2379,7 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 		if !belongs {
 			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", workspace(ctx))
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO artifact_links (workspace_id,artifact_id,task_id,feature_id) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,'')) ON CONFLICT DO NOTHING`, workspace(ctx), artifact.ID, artifact.TaskID, artifact.FeatureID)
+		_, err = tx.Exec(ctx, `INSERT INTO artifact_links (workspace_id,artifact_id,task_id,feature_id,role) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5) ON CONFLICT DO NOTHING`, workspace(ctx), artifact.ID, artifact.TaskID, artifact.FeatureID, artifact.Role)
 		if err != nil {
 			return core.Artifact{}, err
 		}
@@ -2375,7 +2393,7 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID)
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
@@ -2385,12 +2403,13 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'')
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.feature_id,'')
 		FROM artifacts a
 		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
 		WHERE a.workspace_id=$1 AND a.id=$2
 		  AND (($3 <> '' AND l.task_id=$3) OR ($4 <> '' AND l.feature_id=$4))
-		LIMIT 1`, workspace(ctx), id, taskID, featureID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID)
+		ORDER BY l.role
+		LIMIT 1`, workspace(ctx), id, taskID, featureID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
@@ -2398,7 +2417,7 @@ func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID
 }
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id`, workspace(ctx))
+	rows, err := s.pool.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id,l.role`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -2406,7 +2425,7 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	var result []core.Artifact
 	for rows.Next() {
 		var artifact core.Artifact
-		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.TaskID, &artifact.FeatureID); err != nil {
+		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID); err != nil {
 			return nil, err
 		}
 		result = append(result, artifact)
