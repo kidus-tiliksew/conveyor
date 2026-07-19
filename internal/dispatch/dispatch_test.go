@@ -712,6 +712,21 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 	}
 }
 
+func TestHarnessSnapshotPreservesEnvironmentAttachmentIdentity(t *testing.T) {
+	cfg := &config.Config{Harnesses: []config.Harness{{
+		Name: "grok", MCPTransport: config.MCPTransportEnvironment, MCPAttachment: "conveyor",
+		Command: []string{"grok", "--single", "{prompt}"}, ProbeCommand: []string{"grok", "--version"}, ProbeTimeoutText: "30s",
+	}}}
+	snapshot, ok := reviewHarnessSnapshot(cfg, "grok")
+	if !ok || snapshot.MCPTransport != config.MCPTransportEnvironment || snapshot.MCPAttachment != "conveyor" {
+		t.Fatalf("environment snapshot=%+v ok=%v", snapshot, ok)
+	}
+	cfg.Harnesses[0].MCPAttachment = "replacement"
+	if snapshot.MCPAttachment != "conveyor" {
+		t.Fatalf("hot reload mutated attachment identity: %+v", snapshot)
+	}
+}
+
 func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

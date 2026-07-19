@@ -67,6 +67,37 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 	if strings.Contains(override, "worker-secret") || !strings.Contains(override, `bearer_token_env_var="CONVEYOR_API_TOKEN"`) || !strings.Contains(override, `url="http://127.0.0.1:8080/mcp"`) {
 		t.Fatalf("unsafe or invalid TOML override: %s", override)
 	}
+
+	environment, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportEnvironment)
+	if err != nil || environment != "" {
+		t.Fatalf("environment transport generated config %q: %v", environment, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("environment transport wrote a generated file: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
+	env := isolatedChildEnvironment([]string{"PATH=/bin", "CONVEYOR_API_TOKEN=stale", "CONVEYOR_SESSION_ID=stale"}, map[string]string{
+		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+	})
+	for name, want := range map[string]string{
+		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+	} {
+		if got := environmentValue(env, name); got != want {
+			t.Fatalf("%s=%q want=%q", name, got, want)
+		}
+	}
+	other := isolatedChildEnvironment(env, map[string]string{
+		"CONVEYOR_API_TOKEN": "other-token", "CONVEYOR_ADDR": "other-endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "other-order", "CONVEYOR_SESSION_ID": "other-session", "CONVEYOR_CLIENT_TOKEN": "other-client",
+	})
+	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
+		t.Fatalf("concurrent child environments shared launch identity")
+	}
 }
 
 func TestCodexParsesGeneratedMCPOverride(t *testing.T) {
@@ -509,8 +540,10 @@ func TestWorkerSlowProbeHelper(t *testing.T) {
 
 func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 	t.Setenv("CONVEYOR_FAKE_HARNESS", "1")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_EMIT_ENV", "1")
 	var mu sync.Mutex
 	sessions := map[string]string{}
+	clientTokens := map[string]string{}
 	states := map[string]core.WorkOrderState{}
 	called := map[string]int{}
 	releases := 0
@@ -565,10 +598,12 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 		switch action {
 		case "claim":
 			var claim struct {
-				SessionID string `json:"session_id"`
+				SessionID   string `json:"session_id"`
+				ClientToken string `json:"client_token"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&claim)
 			sessions[orderID] = claim.SessionID
+			clientTokens[orderID] = claim.ClientToken
 			states[orderID] = core.WorkOrderClaimed
 		case "renew":
 		case "release":
@@ -583,17 +618,32 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 
 	c := &client{base: server.URL, workspace: "demo"}
 	harness := config.Harness{Name: "fake", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}}
+	outputs := map[core.Stage]string{}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
 		orderID := "fake-" + string(stage)
 		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: orderID, Stage: stage}, Harness: harness, Model: "fake-model"}
-		if err := runHarnessChild(t.Context(), c, "worker-credential", item); err != nil {
+		var stdout, stderr bytes.Buffer
+		if err := runHarnessChildWithOutput(t.Context(), c, "worker-credential", item, &stdout, &stderr); err != nil {
 			t.Fatalf("%s child: %v", stage, err)
 		}
+		outputs[stage] = stdout.String() + stderr.String()
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if states["fake-implement"] != core.WorkOrderSubmitted || states["fake-review"] != core.WorkOrderCompleted || called["get_work_order"] != 2 || called["submit_for_review"] != 1 || called["submit_review_verdict"] != 1 || releases != 0 {
 		t.Fatalf("states=%+v called=%+v releases=%d", states, called, releases)
+	}
+	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
+		orderID := "fake-" + string(stage)
+		output := outputs[stage]
+		for _, sensitive := range []string{"worker-credential", server.URL, sessions[orderID], clientTokens[orderID]} {
+			if sensitive != "" && strings.Contains(output, sensitive) {
+				t.Fatalf("%s child output leaked runtime value: %q", stage, output)
+			}
+		}
+		if strings.Count(output, "[REDACTED:exact]") < 4 {
+			t.Fatalf("%s child output was not fully redacted: %q", stage, output)
+		}
 	}
 }
 
@@ -809,8 +859,9 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		defer cancel()
 		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "classified-" + mode, Stage: core.StageReview}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}}}
 		done := make(chan error, 1)
+		var stdout, stderr bytes.Buffer
 		go func() {
-			done <- runHarnessChild(ctx, &client{base: server.URL, workspace: "demo"}, "worker-credential", item)
+			done <- runHarnessChildWithOutput(ctx, &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr)
 		}()
 		<-claimed
 		if mode == "cancel" {
@@ -819,6 +870,12 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		}
 		if err := <-done; err == nil {
 			t.Fatal("child unexpectedly succeeded")
+		}
+		if mode == "exit" {
+			output := stdout.String() + stderr.String()
+			if strings.Contains(output, "worker-credential") || strings.Contains(output, server.URL) || strings.Count(output, "[REDACTED:exact]") < 4 {
+				t.Fatalf("failed child leaked runtime output: %q", output)
+			}
 		}
 		select {
 		case release := <-released:
@@ -834,6 +891,59 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	t.Run("cancellation", func(t *testing.T) { test(t, "cancel", core.WorkOrderOutcomeCancelled, nil) })
 }
 
+func TestRunHarnessChildReadinessFailureReleasesClaimWithoutStartingModel(t *testing.T) {
+	grok := filepath.Join(t.TempDir(), "grok")
+	if err := os.WriteFile(grok, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan core.WorkOrderRelease, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed})
+		case "release":
+			var request core.WorkOrderRelease
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			released <- request
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("CONVEYOR_CLIENT_TOKEN", "parent-client-token")
+	harness := config.Harness{
+		Name: "grok", MCPTransport: config.MCPTransportEnvironment, MCPAttachment: "conveyor",
+		Command: []string{grok, "{prompt}"}, ProbeCommand: []string{grok, "--version"}, ProbeTimeoutText: "1s",
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "readiness-failure", Stage: core.StageImplement}, Harness: harness,
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "readiness inspection failed") {
+		t.Fatalf("readiness error=%v", err)
+	}
+	select {
+	case release := <-released:
+		if release.Outcome != core.WorkOrderOutcomeReleased || release.Reason != "environment MCP readiness failed" {
+			t.Fatalf("release=%+v", release)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness failure did not release the claim")
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 || os.Getenv("CONVEYOR_CLIENT_TOKEN") != "parent-client-token" {
+		t.Fatalf("readiness failure leaked output or mutated parent launch state")
+	}
+}
+
 func TestWorkerLifecycleHelper(t *testing.T) {
 	if len(os.Args) < 2 {
 		return
@@ -841,6 +951,8 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := os.Args[len(os.Args)-1]
 	switch mode {
 	case "exit":
+		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
+		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 		os.Exit(7)
 	case "cancel":
 		time.Sleep(30 * time.Second)
@@ -853,6 +965,10 @@ func TestWorkerHarnessHelper(t *testing.T) {
 	}
 	if len(os.Args) < 3 {
 		t.Fatal("missing prompt and MCP config arguments")
+	}
+	if os.Getenv("CONVEYOR_FAKE_HARNESS_EMIT_ENV") == "1" {
+		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
+		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 	}
 	prompt, configPath := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
 	session, orderID := os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_WORK_ORDER_ID")

@@ -330,6 +330,7 @@ const (
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	MCPTransport          string              `json:"mcp_transport"`
+	MCPAttachment         string              `json:"mcp_attachment,omitempty"`
 	Command               []string            `json:"command"`
 	ModelArgs             []string            `json:"model_args,omitempty"`
 	DefaultModelSentinels []string            `json:"default_model_sentinels,omitempty"`

@@ -244,7 +244,8 @@ export interface WorkspaceConfigRoute {
 
 export interface WorkspaceHarness {
   name: string
-  mcp_transport: 'json_file' | 'toml_override'
+  mcp_transport: 'json_file' | 'toml_override' | 'environment'
+  mcp_attachment?: string
   command: string[]
   model_args?: string[]
   default_model_sentinels?: string[]

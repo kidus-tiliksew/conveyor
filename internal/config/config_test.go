@@ -225,6 +225,55 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestEnvironmentHarnessRequiresNonSecretAttachmentAndTransportAwarePlaceholders(t *testing.T) {
+	valid := Harness{
+		Name: "grok", MCPTransport: MCPTransportEnvironment, MCPAttachment: "conveyor",
+		Command:   []string{"grok", "--single", "{prompt}", "--permission-mode", "bypassPermissions", "--no-plan"},
+		ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--reasoning-effort", "high"}},
+		ProbeCommand: []string{"grok", "--version"}, ProbeTimeoutText: "30s",
+	}
+	if err := ValidateHarness(valid); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Harness)
+		want   string
+	}{
+		{"environment config placeholder", func(h *Harness) { h.Command = append(h.Command, "{mcp_config}") }, "must not contain"},
+		{"missing attachment", func(h *Harness) { h.MCPAttachment = "" }, "mcp_attachment"},
+		{"URL attachment", func(h *Harness) { h.MCPAttachment = "https://example.test/mcp" }, "mcp_attachment"},
+		{"runtime token in command", func(h *Harness) { h.Command = append(h.Command, "CONVEYOR_API_TOKEN") }, "runtime Conveyor"},
+		{"token-bearing endpoint", func(h *Harness) { h.Command = append(h.Command, "https://example.test/mcp?token=persisted") }, "runtime Conveyor"},
+		{"runtime address in effort", func(h *Harness) { h.EffortArgs = map[string][]string{"high": {"${CONVEYOR_ADDR}"}} }, "runtime Conveyor"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			candidate.Command = append([]string(nil), valid.Command...)
+			candidate.EffortArgs = map[string][]string{"high": append([]string(nil), valid.EffortArgs["high"]...)}
+			test.mutate(&candidate)
+			if err := ValidateHarness(candidate); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+
+	for _, transport := range []string{MCPTransportJSONFile, MCPTransportTOMLOverride} {
+		legacy := valid
+		legacy.MCPTransport = transport
+		legacy.MCPAttachment = ""
+		legacy.Command = []string{"agent", "{prompt}", "{mcp_config}"}
+		if err := ValidateHarness(legacy); err != nil {
+			t.Fatalf("%s compatibility: %v", transport, err)
+		}
+		legacy.Command = []string{"agent", "{prompt}"}
+		if err := ValidateHarness(legacy); err == nil || !strings.Contains(err.Error(), "exactly one {mcp_config}") {
+			t.Fatalf("%s missing placeholder error=%v", transport, err)
+		}
+	}
+}
+
 func TestMultipleHarnessesRequireExplicitWorkerRoute(t *testing.T) {
 	base := validConfig()
 	document := base.WorkspaceDocument()

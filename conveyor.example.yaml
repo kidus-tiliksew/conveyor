@@ -111,10 +111,22 @@ review:
 #     probe_timeout: 10s
 #     effort_args:
 #       high: [--effort, high]
+#   - name: grok
+#     mcp_transport: environment
+#     mcp_attachment: conveyor
+#     command: [grok, --single, "{prompt}", --permission-mode, bypassPermissions, --no-plan]
+#     model_args: [--model, "{model}"]
+#     probe_command: [grok, --version]
+#     probe_timeout: 30s
+#     effort_args:
+#       low: [--reasoning-effort, low]
+#       medium: [--reasoning-effort, medium]
+#       high: [--reasoning-effort, high]
 # review:
 #   seats:
 #     - {model: gpt-5.6-sol, harness: codex, effort: high}
 #     - {model: claude-opus-4-8, harness: claude, effort: high}
+#     - {model: grok-build, harness: grok, effort: high}
 
 repos:
   - name: api
