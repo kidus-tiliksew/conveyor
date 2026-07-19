@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ type Result struct {
 type Diagnostic struct {
 	Phase           string   `json:"phase"`
 	Provider        string   `json:"provider"`
+	Endpoint        string   `json:"endpoint"`
 	Model           string   `json:"model"`
 	AttachmentCount int      `json:"attachment_count"`
 	AttachmentTypes []string `json:"attachment_types,omitempty"`
@@ -85,16 +87,17 @@ const (
 )
 
 func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Result, error) {
-	diagnostic := requestDiagnostic(model, input.Attachments)
-	if strings.TrimSpace(client.APIKey) == "" {
-		diagnostic.Phase = "client_validation"
-		return Result{Diagnostic: &diagnostic}, fmt.Errorf("OpenAI Responses client validation failed for model %q: CONVEYOR_API_KEY is required for in-process stages", model)
-	}
 	endpoint := strings.TrimRight(client.BaseURL, "/")
 	if endpoint == "" {
 		endpoint = "https://api.openai.com/v1"
 	}
-	if phase, err := validateImageInputs(model, input.Attachments); err != nil {
+	endpointHost := responseEndpointHost(endpoint)
+	diagnostic := requestDiagnostic(model, endpointHost, input.Attachments)
+	if strings.TrimSpace(client.APIKey) == "" {
+		diagnostic.Phase = "client_validation"
+		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: CONVEYOR_API_KEY is required for in-process stages", endpointHost, model)
+	}
+	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
 		requestValue := map[string]any{"model": model, "attachment_summary": diagnostic, "store": false}
 		transcript, stats, redactErr := client.auditEnvelope(requestValue, map[string]any{"diagnostic": diagnostic})
@@ -211,7 +214,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		if redactErr != nil {
 			return Result{Diagnostic: &diagnostic}, redactErr
 		}
-		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("OpenAI Responses request for model %q exhausted %d attempts after a transport failure: %w", model, attempts, err)
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) request for model %q exhausted %d attempts after a transport failure: %w", endpointHost, model, attempts, err)
 	}
 	var responseValue any
 	if json.Unmarshal(raw, &responseValue) != nil {
@@ -238,7 +241,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		if diagnostic.ProviderCode != "" {
 			details += " provider_code=" + diagnostic.ProviderCode
 		}
-		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("OpenAI Responses %s for model %q after %d attempt(s): %s%s", diagnostic.Phase, model, attempts, status, details)
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, status, details)
 	}
 	var decoded struct {
 		Model  string `json:"model"`
@@ -274,16 +277,24 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
 }
 
-func requestDiagnostic(model string, attachments []Attachment) Diagnostic {
+func requestDiagnostic(model, endpoint string, attachments []Attachment) Diagnostic {
 	types := make([]string, 0, len(attachments))
 	for _, attachment := range attachments {
 		types = append(types, string(attachment.Kind)+":"+strings.ToLower(strings.TrimSpace(attachment.ContentType)))
 	}
 	sort.Strings(types)
-	return Diagnostic{Phase: "request_preparation", Provider: "openai_responses", Model: model, AttachmentCount: len(attachments), AttachmentTypes: types}
+	return Diagnostic{Phase: "request_preparation", Provider: "openai_responses", Endpoint: endpoint, Model: model, AttachmentCount: len(attachments), AttachmentTypes: types}
 }
 
-func validateImageInputs(model string, attachments []Attachment) (string, error) {
+func responseEndpointHost(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func validateImageInputs(model, endpoint string, attachments []Attachment) (string, error) {
 	hasImage := false
 	for _, attachment := range attachments {
 		if attachment.Kind != AttachmentImage {
@@ -291,11 +302,11 @@ func validateImageInputs(model string, attachments []Attachment) (string, error)
 		}
 		hasImage = true
 		if err := validateImageContent(attachment.ContentType, attachment.Content); err != nil {
-			return "attachment_validation", fmt.Errorf("OpenAI Responses image preparation failed for model %q: artifact %s (%s): %w", model, attachment.ID, attachment.ContentType, err)
+			return "attachment_validation", fmt.Errorf("Responses API (%s) image preparation failed for model %q: artifact %s (%s): %w", endpoint, model, attachment.ID, attachment.ContentType, err)
 		}
 	}
 	if hasImage && !supportsImageInput(model) {
-		return "capability_validation", fmt.Errorf("OpenAI Responses image capability validation failed: configured model %q is not in Conveyor's image-capable model families; choose an explicitly image-capable configured model or remove the image attachment", model)
+		return "capability_validation", fmt.Errorf("Responses API (%s) image capability validation failed: configured model %q is not in Conveyor's image-capable model families; choose an explicitly image-capable configured model or remove the image attachment", endpoint, model)
 	}
 	return "", nil
 }
@@ -362,6 +373,7 @@ func (client *OpenAI) auditEnvelope(request, response any) ([]byte, core.Redacti
 }
 
 func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachment Attachment) (string, error) {
+	endpointHost := responseEndpointHost(endpoint)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	header := make(textproto.MIMEHeader)
@@ -400,7 +412,7 @@ func (client *OpenAI) transcribe(ctx context.Context, endpoint string, attachmen
 		return "", err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("OpenAI transcription API returned %s", response.Status)
+		return "", fmt.Errorf("Transcription API (%s) returned %s", endpointHost, response.Status)
 	}
 	var decoded struct {
 		Text string `json:"text"`
