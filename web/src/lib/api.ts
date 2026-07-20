@@ -10,7 +10,6 @@ import type {
   WorkspaceRecord,
   RequirementNode,
   Artifact,
-  TaskMode,
   WorkerList,
   WorkOrder,
 } from './types'
@@ -122,7 +121,7 @@ export interface CreateTaskInput {
   body: string
   repo: string
   base_branch?: string
-  mode?: TaskMode
+  hold?: boolean
   spec_approval?: boolean
   merge_approval?: boolean
   setup?: string
@@ -150,6 +149,18 @@ export async function redispatchTask(taskId: string, token: string) {
 	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`), {
     method: 'POST',
     headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<Task>
+}
+
+// Toggle the per-task hold (spec §21.31): while held, workers never claim
+// the task's work orders; operator-attached agents may claim explicitly.
+export async function setTaskHold(taskId: string, token: string, hold: boolean) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/hold`), {
+    method: 'PUT',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ hold }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<Task>

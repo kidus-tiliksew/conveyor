@@ -10,14 +10,14 @@ import { Field } from './field'
 // expands into the §21.18 contextual layout. Edits write into
 // document.setups[index]; the top-level execution_settings/review projection
 // is kept in sync while the setup is the workspace default.
-export function SetupCard({ document, setup, index, expanded, onToggle, autoAvailable, autoReason, setDraft, onDuplicate, onDelete }: {
+export function SetupCard({ document, setup, index, expanded, onToggle, workerReady, workerReason, setDraft, onDuplicate, onDelete }: {
   document: WorkspaceConfigDocument
   setup: ExecutionSetup
   index: number
   expanded: boolean
   onToggle: () => void
-  autoAvailable: boolean
-  autoReason?: string
+  workerReady: boolean
+  workerReason?: string
   setDraft: (value: WorkspaceConfigDocument) => void
   onDuplicate: () => void
   onDelete: () => void
@@ -69,8 +69,8 @@ export function SetupCard({ document, setup, index, expanded, onToggle, autoAvai
         <span className="text-sm font-semibold">{setup.name}</span>
         {isDefault && <Badge variant="accent">Default</Badge>}
         <span className="flex items-center gap-1.5 text-xs text-muted">
-          <span className={cn('size-1.5 rounded-full', autoAvailable ? 'bg-positive' : 'bg-attention-dot')} />
-          {autoAvailable ? 'Ready for Auto' : `Manual only${autoReason ? ` — ${autoReason}` : ''}`}
+          <span className={cn('size-1.5 rounded-full', workerReady ? 'bg-positive' : 'bg-attention-dot')} />
+          {workerReady ? 'Worker ready' : `Worker can't serve${workerReason ? ` — ${workerReason}` : ''}`}
         </span>
         <ChevronRight className={cn('ml-auto size-4 shrink-0 text-faint transition-transform', expanded && 'rotate-90')} />
       </button>

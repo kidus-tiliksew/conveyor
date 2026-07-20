@@ -57,7 +57,9 @@ Suggested order:
    exactly like `model_enforcement`. No per-task harness override.
    Registry editor on the Workspace page. No adapter interface; §5.1 stays
    retired.
-2. **Execution modes + gate toggles:** task-level `mode: auto | manual`;
+2. **Execution modes + gate toggles** *(modes subsequently removed by spec
+   §21.31 — one queue, workers claim what they can serve, per-task hold as
+   the reservation; the gate toggles stand)*: task-level `mode: auto | manual`;
    workspace toggles for spec approval and merge approval with per-task
    override (Auto + both gates on is the shipped default); legacy L0–L3
    display mapping per §21.13 change 7 (L3 ≈ Manual; L2 ≈ Auto + both
@@ -104,7 +106,8 @@ Suggested order:
    audited recovery are the backstop when a worker dies outright.
    `conveyord --worker-retry-delay` and `--worker-retry-max` configure the
    bounded delay window; startup rejects a maximum below the initial delay.
-5. **Health-gated Auto:** Auto offered only while a worker holds a live
+5. **Health-gated Auto** *(gating made advisory by spec §21.31; the
+   lease/probe serviceability reporting stands)*: Auto offered only while a worker holds a live
    liveness lease and **every harness referenced by the applicable
    implement/review routes** probes healthy (§21.13 change 3; an
    `in_process` review route is exempt) — an unrelated healthy harness

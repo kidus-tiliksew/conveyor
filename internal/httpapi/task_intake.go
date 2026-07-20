@@ -57,8 +57,10 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if req.Level != "" && req.Level != core.L0 && req.Level != core.L1 && req.Level != core.L2 && req.Level != core.L3 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "level must be L0, L1, L2, or L3"}
 	}
+	// Deprecated §21.31 change 6 input: mode is accepted through the v1.33
+	// window, mapping manual→hold and auto→no-op, but never persisted.
 	if req.Mode != "" && !req.Mode.Valid() {
-		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "mode must be auto or manual"}
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "mode is deprecated and must be auto or manual when supplied"}
 	}
 	if len(intakeKey) > 200 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "idempotency_key must be at most 200 characters"}
@@ -95,39 +97,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		}
 		req.Setup = selectedSetup.Name
 	}
-	explicitMode := req.Mode != ""
-	fellBack := false
-	var specApproval, mergeApproval bool
-	if req.Mode == "" && req.Level != "" {
-		req.Mode, specApproval, mergeApproval = core.LegacyPolicy(req.Level)
-	} else if current != nil {
-		if req.Mode == "" {
-			req.Mode = core.TaskMode(current.Execution.DefaultMode)
-		}
-		specApproval, mergeApproval = current.Execution.SpecApproval, current.Execution.MergeApproval
-	} else {
-		if req.Mode == "" {
-			req.Mode = core.TaskModeAuto
-		}
-		specApproval, mergeApproval = true, true
-	}
-	if req.SpecApproval != nil {
-		specApproval = *req.SpecApproval
-	}
-	if req.MergeApproval != nil {
-		mergeApproval = *req.MergeApproval
-	}
-	if req.Mode == core.TaskModeAuto && s.Workers != nil && current != nil {
-		available, reason := s.Workers.AutoAvailableForSetup(ctx, current, selectedSetup)
-		if !available && explicitMode {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "auto mode unavailable: " + reason}
-		}
-		if !available {
-			req.Mode = core.TaskModeManual
-			fellBack = true
-		}
-	}
-	req.Level = core.LegacyLevel(req.Mode, specApproval, mergeApproval)
+	// §21.31: no mode axis, no intake-time health gating — serviceability is
+	// advisory and orders queue openly. Hold is the only reservation input.
+	hold, specApproval, mergeApproval := resolvedIntakePolicy(req, current)
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
 	}
@@ -160,7 +132,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		Title:         title,
 		Body:          req.Body,
 		Level:         req.Level,
-		Mode:          req.Mode,
+		Hold:          hold,
 		SpecApproval:  specApproval,
 		MergeApproval: mergeApproval,
 		PolicyVersion: 1,
@@ -170,7 +142,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		BaseBranch:    req.BaseBranch,
 		Branch:        gitx.BranchName(id),
 		State:         initialState,
-		NextStage:     core.InitialStage(req.Level),
+		NextStage:     core.StageTriage,
 		CreatedAt:     time.Now().UTC(),
 	}
 	if err := s.Store.CreateTask(ctx, task); err != nil {
@@ -186,13 +158,39 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		}
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}
-	if fellBack {
-		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.auto_fallback", Payload: core.JSONPayload(map[string]string{"requested": "workspace-default-auto", "resolved": "manual", "reason": "worker-or-routed-harness-unhealthy", "setup": task.SetupName})})
+	if req.Mode != "" {
+		// Deprecated usage is recorded, never persisted on the task (§21.31 change 6).
+		_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.mode.deprecated", Payload: core.JSONPayload(map[string]any{"mode": req.Mode, "mapped_hold": req.Mode == core.TaskModeManual})})
 	}
 	if initialState == core.TaskQueued && s.OnCreate != nil {
 		s.OnCreate(ctx, id)
 	}
 	return taskCreateResult{Task: task, Created: true}, nil
+}
+
+// resolvedIntakePolicy maps the request onto the three §21.31 policy
+// decisions: hold, spec approval, merge approval. A legacy escalation level
+// or deprecated mode contributes through its accepted mapping; explicit gate
+// overrides win last.
+func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool, bool) {
+	hold := req.Hold || req.Mode == core.TaskModeManual
+	var specApproval, mergeApproval bool
+	if req.Mode == "" && req.Level != "" {
+		var legacyHold bool
+		legacyHold, specApproval, mergeApproval = core.LegacyPolicy(req.Level)
+		hold = hold || legacyHold
+	} else if current != nil {
+		specApproval, mergeApproval = current.Execution.SpecApproval, current.Execution.MergeApproval
+	} else {
+		specApproval, mergeApproval = true, true
+	}
+	if req.SpecApproval != nil {
+		specApproval = *req.SpecApproval
+	}
+	if req.MergeApproval != nil {
+		mergeApproval = *req.MergeApproval
+	}
+	return hold, specApproval, mergeApproval
 }
 
 func sameIntakeRequest(task core.Task, req createTaskReq) bool {
@@ -202,17 +200,7 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	if req.Setup != "" && task.SetupName != req.Setup {
 		return false
 	}
-	if req.Mode == "" && req.Level != "" {
-		mode, specApproval, mergeApproval := core.LegacyPolicy(req.Level)
-		if req.SpecApproval != nil {
-			specApproval = *req.SpecApproval
-		}
-		if req.MergeApproval != nil {
-			mergeApproval = *req.MergeApproval
-		}
-		return task.Mode == mode && task.SpecApproval == specApproval && task.MergeApproval == mergeApproval
-	}
-	if req.Mode != "" && task.Mode != req.Mode {
+	if (req.Hold || req.Mode == core.TaskModeManual) && !task.Hold {
 		return false
 	}
 	if req.SpecApproval != nil && task.SpecApproval != *req.SpecApproval {
@@ -220,6 +208,18 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	}
 	if req.MergeApproval != nil && task.MergeApproval != *req.MergeApproval {
 		return false
+	}
+	if req.Mode == "" && req.Level != "" {
+		legacyHold, specApproval, mergeApproval := core.LegacyPolicy(req.Level)
+		if req.SpecApproval == nil && task.SpecApproval != specApproval {
+			return false
+		}
+		if req.MergeApproval == nil && task.MergeApproval != mergeApproval {
+			return false
+		}
+		if legacyHold && !task.Hold {
+			return false
+		}
 	}
 	return true
 }

@@ -28,7 +28,6 @@ export type JobState =
   | 'failed'
 
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
-export type TaskMode = 'auto' | 'manual'
 
 export interface GitHubLifecycle {
   task_id: string
@@ -57,7 +56,9 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  mode: TaskMode
+  // Legacy historical record (spec §21.31); behavior is governed by hold.
+  mode?: string
+  hold?: boolean
   spec_approval: boolean
   merge_approval: boolean
   policy_version: number
@@ -265,7 +266,6 @@ export interface WorkspaceReviewSeat {
 }
 
 export interface ExecutionPolicy {
-  default_mode: TaskMode
   spec_approval: boolean
   merge_approval: boolean
   implement_concurrency: number

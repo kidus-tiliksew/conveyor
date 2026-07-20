@@ -39,7 +39,7 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	defer srv.Close()
 
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
-	if _, err := c.createTaskWithSetup("fix it", "api", "main", "", nil, nil, "backend"); err != nil {
+	if _, err := c.createTaskWithSetup("fix it", "api", "main", false, "", nil, nil, "backend"); err != nil {
 		t.Fatal(err)
 	}
 }

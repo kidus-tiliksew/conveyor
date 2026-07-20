@@ -105,6 +105,7 @@ func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
 	var repo, base, body, mode, setup, specGate, mergeGate string
+	var hold bool
 	newCmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a task",
@@ -118,7 +119,7 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithSetup(body, repo, base, core.TaskMode(mode), specApproval, mergeApproval, setup)
+			t, err := newClient().createTaskWithSetup(body, repo, base, hold, core.TaskMode(mode), specApproval, mergeApproval, setup)
 			if err != nil {
 				return err
 			}
@@ -129,7 +130,9 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
-	newCmd.Flags().StringVar(&mode, "mode", "", "execution mode: auto or manual (defaults to workspace policy)")
+	newCmd.Flags().BoolVar(&hold, "hold", false, "reserve the task from the worker daemon; claim it yourself (spec §21.31)")
+	newCmd.Flags().StringVar(&mode, "mode", "", "deprecated (spec §21.31): manual maps to --hold, auto is a no-op")
+	_ = newCmd.Flags().MarkDeprecated("mode", "use --hold; execution modes were removed by spec §21.31")
 	newCmd.Flags().StringVar(&setup, "setup", "", "named execution setup (defaults to workspace default)")
 	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")

@@ -1,8 +1,11 @@
-import { ExternalLink, GitBranch, GitPullRequest } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { ExternalLink, GitBranch, GitPullRequest, Hand } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
+import { setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
+import { useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { CopyButton } from '../ui/copy-button'
 
@@ -31,7 +34,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         >
           {taskStateLabels[item.task.state] ?? item.task.state}
         </Badge>
-        <Badge variant="mono" className="capitalize">{item.task.mode || 'manual'}</Badge>
+        <HoldControl item={item} />
         {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
@@ -108,6 +111,34 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 
       <Checkout item={item} variant={variant} />
     </div>
+  )
+}
+
+// Per-task hold toggle (spec §21.31): while held, the worker daemon never
+// claims this task's work orders — you attach an agent and claim explicitly.
+function HoldControl({ item }: { item: ActivityItem }) {
+  const token = useOperatorToken()
+  const queryClient = useQueryClient()
+  const toggle = useMutation({
+    mutationFn: () => setTaskHold(item.task.id, token, !item.task.hold),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['activity'] }),
+  })
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  if (!token || terminal) return item.task.hold ? <Badge variant="mono">Held</Badge> : null
+  return (
+    <button
+      type="button"
+      disabled={toggle.isPending}
+      onClick={() => toggle.mutate()}
+      title={item.task.hold ? 'Held — your worker won’t claim this task. Click to release it back to the queue.' : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium leading-4 transition-colors disabled:opacity-40 [&_svg]:size-3',
+        item.task.hold ? 'border-primary/40 bg-primary-soft text-primary' : 'border-border bg-surface text-muted hover:text-foreground',
+      )}
+    >
+      <Hand />
+      {item.task.hold ? 'Held' : 'Hold'}
+    </button>
   )
 }
 

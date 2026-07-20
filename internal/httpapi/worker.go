@@ -168,7 +168,7 @@ func (s *Server) listWorkerOrders(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	orders, err := s.Workers.ListAuto(r.Context(), worker)
+	orders, err := s.Workers.ListClaimable(r.Context(), worker)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -191,7 +191,7 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	order, err := s.Workers.ClaimAuto(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
+	order, err := s.Workers.ClaimForWorker(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

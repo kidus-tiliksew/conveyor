@@ -3,17 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
 import { createTask, fetchWorkers } from '../../lib/api'
-import type { TaskMode } from '../../lib/types'
-import { cn } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { Sheet } from '../ui/sheet'
-
-const modes: Array<{ mode: TaskMode; hint: string }> = [
-  { mode: 'auto', hint: 'An enrolled healthy worker may claim and run this task.' },
-  { mode: 'manual', hint: 'Only an operator-attached MCP agent claims work.' },
-]
+import { Switch } from '../ui/switch'
 
 const descriptionScaffold = `Context — where this lives, links to prior work…
 
@@ -39,7 +33,7 @@ export function TaskCreateSheet() {
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
-  const [mode, setMode] = useState<TaskMode | ''>('')
+  const [hold, setHold] = useState(false)
   const [setup, setSetup] = useState('')
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
@@ -59,7 +53,7 @@ export function TaskCreateSheet() {
         body: body.trim(),
         repo: repoName,
         ...(setupName ? { setup: setupName } : {}),
-        ...(mode ? { mode } : {}),
+        ...(hold ? { hold } : {}),
         ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
         ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
         ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
@@ -131,31 +125,16 @@ export function TaskCreateSheet() {
           {selectedSetup && <details className="mt-2 text-xs text-muted"><summary className="cursor-pointer">Composition</summary><p className="mt-1 font-mono">Implement: {selectedSetup.execution_settings.implementation.harness} · {selectedSetup.execution_settings.implementation.model || 'harness default'}</p><p className="font-mono">Review: {selectedSetup.review.seats.map((seat) => `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</p></details>}
         </Field>
 
-        <Field label="Execution mode" hint="Leave Workspace default selected to use the persisted workspace policy.">
-          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Execution mode">
-            <button type="button" role="radio" aria-checked={mode === ''} onClick={() => setMode('')} className={cn('rounded-md border p-3 text-left transition-colors', mode === '' ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge')}><span className="text-sm font-semibold">Workspace default</span><span className="mt-0.5 block text-xs leading-5 text-muted">Falls back to Manual if Auto is unhealthy.</span></button>
-            {modes.map((entry) => (
-              <button
-                key={entry.mode}
-                type="button"
-                role="radio"
-                aria-checked={mode === entry.mode}
-                disabled={entry.mode === 'auto' && !autoAvailable}
-                onClick={() => setMode(entry.mode)}
-                className={cn(
-                  'rounded-md border p-3 text-left transition-colors',
-                  entry.mode === 'auto' && !autoAvailable && 'cursor-not-allowed opacity-50',
-                  mode === entry.mode ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
-                )}
-              >
-                <span className={cn('font-mono text-sm font-semibold capitalize', mode === entry.mode ? 'text-primary' : 'text-foreground')}>
-                  {entry.mode}
-                </span>
-                <span className="mt-0.5 block text-xs leading-5 text-muted">{entry.hint}</span>
-              </button>
-            ))}
+        {/* Per-task hold (spec §21.31): reservation from the worker, not a mode. */}
+        <Field label="Hold">
+          <div className="flex items-center gap-3 rounded-md border border-border p-3">
+            <Switch aria-label="Hold for hands-on work" checked={hold} onChange={setHold} />
+            <div>
+              <p className="text-sm font-medium">Hold for hands-on work</p>
+              <p className="text-xs leading-5 text-muted">Your worker won't claim this task; you attach an agent and claim it yourself. You can release the hold at any time.</p>
+            </div>
           </div>
-          {!autoAvailable && <p className="mt-2 text-xs text-muted">Auto is unavailable for {setupName || 'this setup'}: {setupHealth?.auto_unavailable_reason ?? workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}</p>}
+          {!autoAvailable && !hold && <p className="mt-2 text-xs text-attention">No worker can run {setupName || 'this setup'} right now — {setupHealth?.auto_unavailable_reason ?? workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}. The task will queue until a worker is available or you claim it manually.</p>}
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">

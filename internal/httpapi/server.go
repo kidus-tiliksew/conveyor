@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
+			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
@@ -164,6 +165,30 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		s.OnCreate(r.Context(), id)
 	}
 	writeJSON(w, http.StatusAccepted, t)
+}
+
+// setTaskHold toggles the §21.31 per-task reservation: while held, workers
+// never claim the task's work orders. Hold is deliberately mutable after
+// intake (§21.31 change 5) and every toggle is audited by the store.
+func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Hold *bool `json:"hold"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Hold == nil {
+		http.Error(w, "hold is required", http.StatusBadRequest)
+		return
+	}
+	task, err := s.Store.SetTaskHold(r.Context(), id, *req.Hold)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
 }
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
@@ -349,7 +374,8 @@ type createTaskReq struct {
 	BaseBranch    string               `json:"base_branch"`
 	Source        string               `json:"source"`
 	Level         core.EscalationLevel `json:"level"`
-	Mode          core.TaskMode        `json:"mode"`
+	Mode          core.TaskMode        `json:"mode"` // deprecated §21.31: manual→hold, auto→no-op
+	Hold          bool                 `json:"hold"`
 	SpecApproval  *bool                `json:"spec_approval,omitempty"`
 	MergeApproval *bool                `json:"merge_approval,omitempty"`
 	Setup         string               `json:"setup,omitempty"`
@@ -655,7 +681,9 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	var workerStatus *workerservice.TaskWorkerStatus
-	if s.Workers != nil && s.ConfigProvider != nil && task.Mode == core.TaskModeAuto && task.State != core.TaskMerged && task.State != core.TaskClosed {
+	// Worker status is advisory serviceability (§21.31); held tasks are the
+	// operator's to claim, so no worker availability is reported for them.
+	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && task.State != core.TaskMerged && task.State != core.TaskClosed {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
 			status := s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 			workerStatus = &status
