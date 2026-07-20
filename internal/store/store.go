@@ -92,6 +92,7 @@ type Store interface {
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error)
+	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
@@ -1347,6 +1348,35 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 		m.jobs[job.TaskID][index] = job
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now})
+	return order, nil
+}
+
+// RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
+// of an unclaimed queued or stale order on queue re-entry (spec §21.32). The
+// active-attempt snapshot stays immutable: claimed orders are rejected.
+func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
+	if snapshot == nil || snapshot.Name == "" {
+		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	now := time.Now().UTC()
+	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
+		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)
+	}
+	if order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != snapshot.Name {
+		return core.WorkOrder{}, fmt.Errorf("work order %s does not pin harness %s", id, snapshot.Name)
+	}
+	previous := order.RequiredHarnessConfig
+	order.RequiredHarnessConfig = snapshot
+	order.UpdatedAt = now
+	m.workOrders[id] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "harness": snapshot.Name, "previous_command": previous.Command, "command": snapshot.Command}), At: now})
 	return order, nil
 }
 

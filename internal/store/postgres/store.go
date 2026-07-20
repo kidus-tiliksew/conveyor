@@ -1718,6 +1718,45 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 	return order, nil
 }
 
+// RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
+// of an unclaimed queued or stale order on queue re-entry (spec §21.32). The
+// active-attempt snapshot stays immutable: claimed orders are rejected.
+func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
+	if snapshot == nil || snapshot.Name == "" {
+		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
+		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)
+	}
+	if order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != snapshot.Name {
+		return core.WorkOrder{}, fmt.Errorf("work order %s does not pin harness %s", id, snapshot.Name)
+	}
+	now := time.Now().UTC()
+	previous := order.RequiredHarnessConfig
+	order, err = scanWorkOrder(tx.QueryRow(ctx, "UPDATE work_orders SET required_harness_config=$1, updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING "+workOrderColumns,
+		harnessSnapshotJSON(snapshot), now, workspace(ctx), id))
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "harness": snapshot.Name, "previous_command": previous.Command, "command": snapshot.Command}), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return order, nil
+}
+
 func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {

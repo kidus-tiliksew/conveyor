@@ -745,5 +745,33 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	if release.AutomaticRetryLimit <= 0 {
 		release.AutomaticRetryLimit = DefaultRetryLimit
 	}
-	return s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, release)
+	order, err := s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, release)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
+}
+
+// refreshReleasedHarnessSnapshot re-resolves a released order's pinned harness
+// snapshot from the current registry so the next attempt launches the
+// operator's current definition (spec §21.32). Best-effort: the release above
+// already committed, and retaining the prior snapshot is the explicit
+// fallback.
+func (s *Service) refreshReleasedHarnessSnapshot(ctx context.Context, order core.WorkOrder) core.WorkOrder {
+	if order.RequiredHarnessConfig == nil || s.ConfigProvider == nil {
+		return order
+	}
+	cfg, err := s.ConfigProvider(ctx)
+	if err != nil {
+		return order
+	}
+	snapshot, changed := core.RefreshedHarnessSnapshot(cfg.Harnesses, order.RequiredHarnessConfig)
+	if !changed {
+		return order
+	}
+	refreshed, err := s.Store.RefreshWorkOrderHarnessSnapshot(ctx, order.ID, snapshot)
+	if err != nil {
+		return order
+	}
+	return refreshed
 }

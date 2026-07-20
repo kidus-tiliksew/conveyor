@@ -347,6 +347,82 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 	}
 }
 
+func TestRedispatchRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "snapshot-refresh")
+	order.RequiredHarness = "claude"
+	order.RequiredHarnessConfig = &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
+	order.QueueDeadline = time.Now().Add(-time.Second)
+	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{
+			WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout,
+			Routing:               config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}},
+			Harnesses:             []config.Harness{{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}},
+		}, nil
+	}
+	redispatched, err := service.Redispatch(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redispatched.State != core.WorkOrderQueued || redispatched.RequiredHarnessConfig == nil ||
+		!strings.Contains(strings.Join(redispatched.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
+		t.Fatalf("redispatched = %+v", redispatched)
+	}
+	refreshEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.harness_refreshed")
+	if refreshEvents != 1 {
+		t.Fatalf("harness refresh events = %d", refreshEvents)
+	}
+}
+
+func TestRedispatchRetainsSnapshotWhenHarnessRemovedOrEffortUnsupported(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		effort    string
+		harnesses []config.Harness
+	}{
+		{name: "removed", harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "exec", "{prompt}", "{mcp_config}"}}}},
+		{name: "effort-unsupported", effort: "high", harnesses: []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, st, service, order := newLifecycleService(t, "snapshot-retain-"+tc.name)
+			pinned := &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}, Effort: tc.effort}
+			if tc.effort != "" {
+				pinned.EffortArgs = map[string][]string{tc.effort: {"--effort", tc.effort}}
+				pinned.EffortArgv = []string{"--effort", tc.effort}
+			}
+			order.RequiredHarness = "claude"
+			order.RequiredHarnessConfig = pinned
+			order.QueueDeadline = time.Now().Add(-time.Second)
+			if err := st.UpdateWorkOrder(ctx, order); err != nil {
+				t.Fatal(err)
+			}
+			service.ConfigProvider = func(context.Context) (*config.Config, error) {
+				return &config.Config{
+					WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout,
+					Routing:               config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}},
+					Harnesses:             tc.harnesses,
+				}, nil
+			}
+			redispatched, err := service.Redispatch(ctx, order.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if redispatched.RequiredHarnessConfig == nil || strings.Contains(strings.Join(redispatched.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
+				t.Fatalf("snapshot should be retained, got %+v", redispatched.RequiredHarnessConfig)
+			}
+			refreshEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.harness_refreshed")
+			if refreshEvents != 0 {
+				t.Fatalf("harness refresh events = %d", refreshEvents)
+			}
+		})
+	}
+}
+
 func newLifecycleService(t *testing.T, id string) (context.Context, store.Store, *Service, core.WorkOrder) {
 	t.Helper()
 	ctx := context.Background()

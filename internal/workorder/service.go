@@ -127,6 +127,7 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
+	s.refreshQueuedHarnessSnapshot(ctx, cfg, id)
 	return s.Store.RedispatchWorkOrder(ctx, id, timeout)
 }
 
@@ -142,7 +143,25 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
+	s.refreshQueuedHarnessSnapshot(ctx, cfg, id)
 	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
+}
+
+// refreshQueuedHarnessSnapshot re-resolves an operator-recovered order's pinned
+// harness snapshot from the current registry before it re-enters the queue
+// (spec §21.32). Best-effort: retaining the prior snapshot is the explicit
+// fallback, and the recovery transition that follows reports the authoritative
+// state errors.
+func (s *Service) refreshQueuedHarnessSnapshot(ctx context.Context, cfg *config.Config, id string) {
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return
+	}
+	snapshot, changed := core.RefreshedHarnessSnapshot(cfg.Harnesses, order.RequiredHarnessConfig)
+	if !changed {
+		return
+	}
+	_, _ = s.Store.RefreshWorkOrderHarnessSnapshot(ctx, id, snapshot)
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {

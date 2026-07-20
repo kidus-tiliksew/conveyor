@@ -112,6 +112,43 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "refresh-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "refresh-task-implement-1", TaskID: "refresh-task", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	pinned := &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "worker-refresh", Workspace: "demo", Name: "refresh", CredentialHash: "hash", CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Harnesses: []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}}}, nil
+	}}
+	released, err := service.Release(ctx, worker, "refresh-task-implement-1", core.WorkOrderRelease{SessionID: "session-r", Reason: "harness exited", Outcome: core.WorkOrderOutcomeChildFailure})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.RequiredHarnessConfig == nil || !strings.Contains(strings.Join(released.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
+		t.Fatalf("released snapshot = %+v", released.RequiredHarnessConfig)
+	}
+	refreshEvents, err := st.CountEvents(ctx, "refresh-task", "work_order.harness_refreshed")
+	if err != nil || refreshEvents != 1 {
+		t.Fatalf("harness refresh events = %d err=%v", refreshEvents, err)
+	}
+}
+
 func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")

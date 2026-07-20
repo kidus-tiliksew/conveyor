@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -325,7 +326,8 @@ const (
 // HarnessSnapshot is the immutable worker execution contract captured for a
 // implementation or review order when it is created. Workspace hot reloads
 // must not alter an in-flight command, model arguments, effort arguments, or
-// health probe (spec §21.19).
+// health probe (spec §21.19); on queue re-entry the server re-resolves the
+// snapshot from the current registry (spec §21.32).
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	MCPTransport          string              `json:"mcp_transport"`
@@ -338,6 +340,57 @@ type HarnessSnapshot struct {
 	EffortArgv            []string            `json:"effort_argv,omitempty"`
 	ProbeCommand          []string            `json:"probe_command"`
 	ProbeTimeoutText      string              `json:"probe_timeout"`
+}
+
+// RefreshedHarnessSnapshot re-resolves a pinned harness snapshot against the
+// current registry for an order re-entering the queue (spec §21.32). The
+// pinned effort is preserved; the refresh is refused — retaining the prior
+// snapshot — when the name is gone, the pinned effort is no longer declared,
+// or the current definition is already identical.
+func RefreshedHarnessSnapshot(harnesses []config.Harness, prior *HarnessSnapshot) (*HarnessSnapshot, bool) {
+	if prior == nil || prior.Name == "" {
+		return nil, false
+	}
+	for _, harness := range harnesses {
+		if harness.Name != prior.Name {
+			continue
+		}
+		next := &HarnessSnapshot{
+			Name:                  harness.Name,
+			MCPTransport:          harness.MCPTransport,
+			MCPAttachment:         harness.MCPAttachment,
+			Command:               append([]string(nil), harness.Command...),
+			ModelArgs:             append([]string(nil), harness.ModelArgs...),
+			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
+			EffortArgs:            cloneEffortArgs(harness.EffortArgs),
+			Effort:                prior.Effort,
+			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
+			ProbeTimeoutText:      harness.ProbeTimeoutText,
+		}
+		if prior.Effort != "" {
+			argv := harness.EffortArgs[prior.Effort]
+			if len(argv) == 0 {
+				return nil, false
+			}
+			next.EffortArgv = append([]string(nil), argv...)
+		}
+		if reflect.DeepEqual(next, prior) {
+			return nil, false
+		}
+		return next, true
+	}
+	return nil, false
+}
+
+func cloneEffortArgs(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for effort, args := range source {
+		result[effort] = append([]string(nil), args...)
+	}
+	return result
 }
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
