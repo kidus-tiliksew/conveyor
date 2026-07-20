@@ -19,6 +19,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -38,7 +39,9 @@ type Server struct {
 	// committed (spec §4, §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
-	OnMerge func(context.Context, core.Task) error
+	OnMerge          func(context.Context, core.Task) error
+	OnMergeReadiness func(context.Context, core.Task) (dispatch.MergeReadiness, error)
+	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
 	Workspace string
 	// BearerToken authenticates mutating requests (spec §17.3). An empty
@@ -107,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/feature", s.assignTaskFeature)
 			r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
@@ -364,6 +368,24 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (s *Server) fixMergeConflict(w http.ResponseWriter, r *http.Request) {
+	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if s.OnConflictFix == nil {
+		http.Error(w, "merge conflict dispatch is not configured", http.StatusNotImplemented)
+		return
+	}
+	order, err := s.OnConflictFix(r.Context(), task)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, order)
+}
+
 func reviewable(state core.TaskState) bool {
 	return state == core.TaskAwaiting || state == core.TaskParked || state == core.TaskApproved
 }
@@ -588,6 +610,7 @@ type reviewItem struct {
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
 	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
+	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 }
 
 type activityItem struct {
@@ -681,6 +704,20 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	var workerStatus *workerservice.TaskWorkerStatus
+	var mergeReadiness *dispatch.MergeReadiness
+	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
+		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
+		if readinessErr != nil {
+			// The merge action must never render without a successful gate-facing
+			// readiness read (spec §21.30 change 1).
+			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
+			return
+		}
+		mergeReadiness = &readiness
+		if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
+			task = refreshed
+		}
+	}
 	// Worker status is advisory serviceability (§21.31); held tasks are the
 	// operator's to claim, so no worker availability is reported for them.
 	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && task.State != core.TaskMerged && task.State != core.TaskClosed {
@@ -699,6 +736,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders),
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(workOrders),
 		WorkerStatus:              workerStatus,
+		MergeReadiness:            mergeReadiness,
 	})
 }
 

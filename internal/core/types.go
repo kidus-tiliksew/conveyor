@@ -98,31 +98,37 @@ const (
 
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
-	ID            string                `json:"id"`
-	Workspace     string                `json:"workspace"`
-	Source        string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
-	IntakeKey     string                `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
-	Title         string                `json:"title"`
-	Body          string                `json:"body"`  // free-form description; becomes part of the prompt
-	Class         string                `json:"class"` // bug | feature | chore
-	Level         EscalationLevel       `json:"level"`
-	Mode          TaskMode              `json:"mode,omitempty"` // legacy historical record (spec §21.31); never read for behavior
-	Hold          bool                  `json:"hold,omitempty"` // reservation from the worker daemon (spec §21.31)
-	SpecApproval  bool                  `json:"spec_approval"`
-	MergeApproval bool                  `json:"merge_approval"`
-	PolicyVersion int                   `json:"policy_version"`
-	SetupName     string                `json:"setup"`
-	SetupContract config.ExecutionSetup `json:"setup_contract"`
-	Repo          string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
-	BaseBranch    string                `json:"base_branch"`
-	Branch        string                `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
-	State         TaskState             `json:"state"`
-	NextStage     Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
-	RecoveryStage Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID  string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
-	FeatureID     string                `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
-	GitHub        *GitHubLifecycle      `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
-	CreatedAt     time.Time             `json:"created_at"`
+	ID                 string                `json:"id"`
+	Workspace          string                `json:"workspace"`
+	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
+	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
+	Title              string                `json:"title"`
+	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
+	Class              string                `json:"class"` // bug | feature | chore
+	Level              EscalationLevel       `json:"level"`
+	Mode               TaskMode              `json:"mode,omitempty"` // legacy historical record (spec §21.31); never read for behavior
+	Hold               bool                  `json:"hold,omitempty"` // reservation from the worker daemon (spec §21.31)
+	SpecApproval       bool                  `json:"spec_approval"`
+	MergeApproval      bool                  `json:"merge_approval"`
+	PolicyVersion      int                   `json:"policy_version"`
+	SetupName          string                `json:"setup"`
+	SetupContract      config.ExecutionSetup `json:"setup_contract"`
+	ReviewedHeadSHA    string                `json:"reviewed_head_sha,omitempty"`
+	ApprovedHeadSHA    string                `json:"approved_head_sha,omitempty"`
+	ApprovalStale      bool                  `json:"approval_stale,omitempty"`
+	RefreshBaselineSHA string                `json:"refresh_baseline_sha,omitempty"`
+	RefreshHeadSHA     string                `json:"refresh_head_sha,omitempty"`
+	RefreshReviewScope string                `json:"refresh_review_scope,omitempty"`
+	Repo               string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch         string                `json:"base_branch"`
+	Branch             string                `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
+	State              TaskState             `json:"state"`
+	NextStage          Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage      Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID       string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	FeatureID          string                `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
+	GitHub             *GitHubLifecycle      `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
+	CreatedAt          time.Time             `json:"created_at"`
 }
 
 type GitHubPublicationState string
@@ -351,6 +357,11 @@ type WorkOrder struct {
 	WorkerID              string           `json:"worker_id,omitempty"`
 	ReviewRound           int              `json:"review_round,omitempty"`
 	ReviewSeat            int              `json:"review_seat,omitempty"`
+	ReasonCode            string           `json:"reason_code,omitempty"`
+	ReviewKind            string           `json:"review_kind,omitempty"`
+	ReviewScope           string           `json:"review_scope,omitempty"`
+	BaselineSHA           string           `json:"baseline_sha,omitempty"`
+	HeadSHA               string           `json:"head_sha,omitempty"`
 	RequiredModel         string           `json:"required_model,omitempty"`
 	RequiredHarness       string           `json:"required_harness,omitempty"`
 	RequiredEffort        string           `json:"required_effort,omitempty"`
@@ -533,6 +544,10 @@ type ReviewDecision struct {
 	SameModelAsImplementer string
 	ReviewRound            int
 	ReviewSeat             int
+	ReviewKind             string
+	ReviewScope            string
+	BaselineSHA            string
+	HeadSHA                string
 	RequiredModel          string
 	RequiredHarness        string
 	RequiredEffort         string

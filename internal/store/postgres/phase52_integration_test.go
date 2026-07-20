@@ -51,7 +51,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	}
 	orders := []core.WorkOrder{
 		{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
-		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, Effort: "high", ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, ReviewKind: "refresh", ReviewScope: "delta", BaselineSHA: "approved-head", HeadSHA: "new-head", RequiredModel: "claude-review", RequiredHarness: "claude", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, Effort: "high", ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 	}
 	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
@@ -64,11 +64,26 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" || persisted.RequiredEffort != "high" || persisted.RequiredHarnessConfig.EffortArgs["high"][1] != "high" {
+	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" || persisted.RequiredEffort != "high" || persisted.RequiredHarnessConfig.EffortArgs["high"][1] != "high" || persisted.ReviewKind != "refresh" || persisted.ReviewScope != "delta" || persisted.BaselineSHA != "approved-head" || persisted.HeadSHA != "new-head" {
 		t.Fatalf("restarted harness snapshot=%+v err=%v", persisted, getErr)
 	}
 	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || persisted.SetupName != frozenSetup.Name || !reflect.DeepEqual(persisted.SetupContract, frozenSetup) {
 		t.Fatalf("restarted setup contract=%+v err=%v", persisted.SetupContract, getErr)
+	}
+	if err = restarted.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "new-head", config.RefreshReviewDelta, "head-changed"); err != nil {
+		t.Fatal(err)
+	}
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || !persisted.ApprovalStale || persisted.RefreshBaselineSHA != "approved-head" || persisted.RefreshHeadSHA != "new-head" || persisted.RefreshReviewScope != config.RefreshReviewDelta {
+		t.Fatalf("stale approval=%+v err=%v", persisted, getErr)
+	}
+	if err = restarted.SkipTaskRefresh(ctx, task.ID, "new-head", "clean-update"); err != nil {
+		t.Fatal(err)
+	}
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || persisted.ApprovalStale || persisted.ApprovedHeadSHA != "new-head" {
+		t.Fatalf("skipped refresh=%+v err=%v", persisted, getErr)
 	}
 	st = restarted
 	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "phase52", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: now.Add(time.Minute), CreatedAt: now}

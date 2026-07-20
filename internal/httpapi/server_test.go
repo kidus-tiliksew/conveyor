@@ -14,6 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -864,6 +865,26 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 		if !bytes.Contains(response.Body.Bytes(), expected) {
 			t.Fatalf("activity body does not contain %s: %s", expected, response.Body.String())
 		}
+	}
+}
+
+func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "readiness-error", State: core.TaskApproved, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		return dispatch.MergeReadiness{}, fmt.Errorf("github unavailable")
+	}
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/readiness-error/activity", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "resolve merge readiness") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

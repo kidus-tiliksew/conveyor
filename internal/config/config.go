@@ -164,7 +164,14 @@ type ExecutionSetup struct {
 	Name              string                      `yaml:"name" json:"name"`
 	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
 	Review            ReviewPanel                 `yaml:"review" json:"review"`
+	RefreshReview     string                      `yaml:"refresh_review,omitempty" json:"refresh_review"`
 }
+
+const (
+	RefreshReviewDelta = "delta"
+	RefreshReviewFull  = "full"
+	RefreshReviewNone  = "none"
+)
 
 type WorkspaceDocument struct {
 	Workspace                 string                       `yaml:"workspace" json:"workspace"`
@@ -449,7 +456,7 @@ func normalize(c *Config, path string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		setups = []ExecutionSetup{{Name: "default", ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review}}
+		setups = []ExecutionSetup{{Name: "default", ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review, RefreshReview: RefreshReviewDelta}}
 		defaultSetup = "default"
 	} else if len(setups) == 0 {
 		return nil, fmt.Errorf("setups must contain at least one setup")
@@ -470,6 +477,13 @@ func normalize(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("duplicate setup name %q", setup.Name)
 		}
 		names[setup.Name] = struct{}{}
+		setup.RefreshReview = strings.TrimSpace(setup.RefreshReview)
+		if setup.RefreshReview == "" {
+			setup.RefreshReview = RefreshReviewDelta
+		}
+		if setup.RefreshReview != RefreshReviewDelta && setup.RefreshReview != RefreshReviewFull && setup.RefreshReview != RefreshReviewNone {
+			return nil, fmt.Errorf("setup %q: refresh_review must be delta, full, or none", setup.Name)
+		}
 		candidate := *c
 		candidate.Setups = nil
 		candidate.DefaultSetup = ""
@@ -480,7 +494,7 @@ func normalize(c *Config, path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("setup %q: %w", setup.Name, err)
 		}
-		normalizedSetup := ExecutionSetup{Name: setup.Name, ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review}
+		normalizedSetup := ExecutionSetup{Name: setup.Name, ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review, RefreshReview: setup.RefreshReview}
 		normalizedSetups = append(normalizedSetups, normalizedSetup)
 		if setup.Name == defaultSetup {
 			defaultConfig = normalized
@@ -838,7 +852,7 @@ func (c *Config) Setup(name string) (ExecutionSetup, bool) {
 			settings = contextualExecutionSettings(c.Routing)
 		}
 		if settings != nil {
-			return ExecutionSetup{Name: "default", ExecutionSettings: *settings, Review: c.Review}, true
+			return ExecutionSetup{Name: "default", ExecutionSettings: *settings, Review: c.Review, RefreshReview: RefreshReviewDelta}, true
 		}
 	}
 	return ExecutionSetup{}, false

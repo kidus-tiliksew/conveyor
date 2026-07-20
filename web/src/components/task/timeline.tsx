@@ -86,7 +86,7 @@ export function Timeline({ item }: { item: ActivityItem }) {
         ))}
         {showGate && (
           <li ref={gateRef} className="relative pl-7">
-            <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.task, item.events)])} />
+			<TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])} />
             <ReviewPanel item={item} />
           </li>
         )}
