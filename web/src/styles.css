@@ -120,6 +120,10 @@ button, input, textarea, select { font: inherit; }
    here and rendered structurally by the acceptance checklist instead. */
 .markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
+/* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
+   narrow side task panel instead of forcing phantom horizontal scroll, without
+   changing the full-page task view's markdown (task 260720-710669, AC-2/AC-3). */
+.task-sheet-body .markdown { overflow-wrap: break-word; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   color: var(--color-foreground);
   font-weight: 600;
