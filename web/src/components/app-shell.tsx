@@ -92,8 +92,8 @@ function IconRail() {
     void navigate({ to: '/' })
   }
   return (
-    <div className="flex w-14 shrink-0 flex-col items-center gap-1.5 border-r border-border bg-rail py-3">
-      <div className="flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto">
+    <nav aria-label="Workspaces" className="flex w-14 shrink-0 flex-col items-center border-r border-border bg-rail py-3">
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-6 overflow-y-auto py-1">
         {(workspaces ?? []).map((item) => (
           <button
             key={item.id}
@@ -103,24 +103,25 @@ function IconRail() {
             aria-current={item.id === selected ? 'true' : undefined}
             onClick={() => switchTo(item.id)}
             className={cn(
-              'grid size-10 shrink-0 place-items-center rounded-md text-xs font-semibold transition-colors',
+              'grid size-8 shrink-0 place-items-center rounded-[9px] text-xs font-semibold tracking-[-0.01em] transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary',
               item.id === selected
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted hover:bg-rail-raised hover:text-foreground',
+                ? 'bg-workspace-active text-workspace-active-foreground ring-2 ring-workspace-active-ring ring-offset-[3px] ring-offset-rail'
+                : 'bg-workspace-tile text-workspace-tile-foreground hover:bg-workspace-tile-hover hover:text-foreground',
             )}
           >
             {initials(item.name || item.id)}
           </button>
         ))}
+        <Link
+          to="/workspaces/new"
+          title="Add workspace"
+          aria-label="Add workspace"
+          className="grid size-8 shrink-0 place-items-center rounded-[9px] text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary"
+        >
+          <Plus className="size-5" aria-hidden="true" />
+        </Link>
       </div>
-      <Link
-        to="/workspaces/new"
-        aria-label="Create workspace"
-        className="grid size-10 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-rail-raised hover:text-foreground"
-      >
-        <Plus className="size-5" />
-      </Link>
-    </div>
+    </nav>
   )
 }
 
