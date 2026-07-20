@@ -261,9 +261,16 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		diagnostic.Phase = "response_validation"
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("decode Responses API result for model %q: %w", model, err)
 	}
+	lastMessage := -1
+	for index := len(decoded.Output) - 1; index >= 0; index-- {
+		if decoded.Output[index].Type == "message" {
+			lastMessage = index
+			break
+		}
+	}
 	var output strings.Builder
-	for _, item := range decoded.Output {
-		for _, part := range item.Content {
+	if lastMessage >= 0 {
+		for _, part := range decoded.Output[lastMessage].Content {
 			if part.Type == "output_text" {
 				output.WriteString(part.Text)
 			}

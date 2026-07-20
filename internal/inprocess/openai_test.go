@@ -184,6 +184,53 @@ func TestOpenAIRunMetersUsageAndRedactsTranscript(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunUsesOnlyFinalMessageOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		output   string
+		want     string
+		preamble string
+	}{
+		{
+			name:     "earlier message is progress narration",
+			output:   `[{"type":"message","content":[{"type":"output_text","text":"I will inspect..."}]},{"type":"message","content":[{"type":"output_text","text":"# Title\n\n## Intent..."}]}]`,
+			want:     "# Title\n\n## Intent...",
+			preamble: "I will inspect...",
+		},
+		{
+			name:   "all text parts in final message are joined",
+			output: `[{"type":"message","content":[{"type":"output_text","text":"first "},{"type":"tool_call","text":"ignored"},{"type":"output_text","text":"second"}]}]`,
+			want:   "first second",
+		},
+		{
+			name:   "single message remains unchanged",
+			output: `[{"type":"message","content":[{"type":"output_text","text":"opening prose without a heading"}]}]`,
+			want:   "opening prose without a heading",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"model":"gpt-5.6-terra","output":%s,"usage":{"input_tokens":1,"output_tokens":1}}`, test.output)
+			}))
+			defer server.Close()
+
+			result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Output != test.want {
+				t.Fatalf("output = %q, want %q", result.Output, test.want)
+			}
+			if test.preamble != "" && !strings.Contains(string(result.Transcript), test.preamble) {
+				t.Fatalf("transcript lost earlier message: %s", result.Transcript)
+			}
+		})
+	}
+}
+
 func TestOpenAIRunRetriesTransientUpstreamFailures(t *testing.T) {
 	t.Parallel()
 	attempts := 0
