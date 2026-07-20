@@ -6,6 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -470,4 +471,70 @@ repos:
 
 func validConfig() *Config {
 	return &Config{Workspace: "demo", PackDir: ".", MaxBounces: 2, Database: Database{Backend: "memory"}, Routing: Routing{Stages: map[string]StageRoute{"triage": {Model: "gpt", TimeoutText: "20m", Execution: ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "30m", Execution: ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "4h", Execution: ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: ExecutionMCP}}}, Repos: []Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+}
+
+func TestExecutionSetupsNormalizeLegacyAndProjectDefault(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Setups = nil
+	document.DefaultSetup = ""
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, base, "legacy-v1.27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.DefaultSetup != "default" || len(parsed.Setups) != 1 || parsed.Setups[0].Name != "default" {
+		t.Fatalf("legacy setup normalization = %+v default=%q", parsed.Setups, parsed.DefaultSetup)
+	}
+	projected := parsed.WorkspaceDocument()
+	if projected.ExecutionSettings == nil || *projected.ExecutionSettings != parsed.Setups[0].ExecutionSettings || !reflect.DeepEqual(projected.Review, parsed.Setups[0].Review) {
+		t.Fatalf("legacy projection diverged: document=%+v setup=%+v", projected, parsed.Setups[0])
+	}
+}
+
+func TestExecutionSetupsValidateEveryHarnessReferenceAndDefault(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	harness := func(name string) Harness {
+		return Harness{Name: name, MCPTransport: MCPTransportJSONFile, Command: []string{name, "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s"}
+	}
+	settings := func(harnessName, model string) ContextualExecutionSettings {
+		return ContextualExecutionSettings{
+			ControlPlane:   ControlPlaneSettings{Triage: ModelTimeoutSettings{Model: "gpt-control", TimeoutText: "20m"}, Spec: ModelTimeoutSettings{Model: "gpt-control", TimeoutText: "30m"}},
+			Implementation: ImplementationSettings{Harness: harnessName, Model: model, ModelPolicy: ModelPolicyExplicit, TimeoutText: "2h"},
+			Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "1h"},
+		}
+	}
+	document.Harnesses = []Harness{harness("codex"), harness("claude")}
+	document.Setups = []ExecutionSetup{
+		{Name: "backend", ExecutionSettings: settings("codex", "gpt-backend"), Review: ReviewPanel{Seats: []ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}},
+		{Name: "frontend", ExecutionSettings: settings("claude", "claude-ui"), Review: ReviewPanel{Seats: []ReviewSeat{{Model: "claude-review", Harness: "claude"}}}},
+	}
+	document.DefaultSetup = "backend"
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "setups")
+	if err != nil || parsed.ExecutionSettings.Implementation.Model != "gpt-backend" || parsed.Review.Seats[0].Model != "gpt-review" {
+		t.Fatalf("parsed=%+v err=%v", parsed, err)
+	}
+	document.Harnesses = document.Harnesses[:1]
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "setups"); err == nil || !strings.Contains(err.Error(), `setup "frontend"`) || !strings.Contains(err.Error(), `unknown harness "claude"`) {
+		t.Fatalf("deleted referenced harness error=%v", err)
+	}
+	document.Harnesses = []Harness{harness("codex"), harness("claude")}
+	document.DefaultSetup = "missing"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "setups"); err == nil || !strings.Contains(err.Error(), "default_setup") {
+		t.Fatalf("invalid default error=%v", err)
+	}
+	document.Setups = []ExecutionSetup{}
+	document.DefaultSetup = ""
+	raw, _ = yaml.Marshal(document)
+	raw = append(raw, []byte("setups: []\n")...)
+	if _, err = ParseWorkspaceDocument(raw, base, "setups"); err == nil || !strings.Contains(err.Error(), "at least one setup") {
+		t.Fatalf("empty setups error=%v", err)
+	}
 }

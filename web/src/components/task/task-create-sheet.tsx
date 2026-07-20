@@ -34,18 +34,23 @@ export function TaskCreateSheet() {
   const { data: workspace } = useWorkspace()
   const repos = workspace?.repos ?? []
   const workerHealth = useQuery({ queryKey: ['workers', token, workspace?.workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace?.workspace), refetchInterval: 5000 })
-  const autoAvailable = workerHealth.data?.auto_available === true
+  const setups = workspace?.setups ?? []
 
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
   const [mode, setMode] = useState<TaskMode | ''>('')
+  const [setup, setSetup] = useState('')
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [files, setFiles] = useState<File[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
   const repoName = repo || repos[0]?.name || ''
+  const setupName = setup || workspace?.default_setup || setups[0]?.name || ''
+  const selectedSetup = setups.find((entry) => entry.name === setupName)
+  const setupHealth = workerHealth.data?.setup_serviceability?.[setupName]
+  const autoAvailable = setupHealth?.auto_available ?? workerHealth.data?.auto_available === true
   const close = () => void navigate({ to: '/' })
 
   const mutation = useMutation({
@@ -53,6 +58,7 @@ export function TaskCreateSheet() {
       const task = await createTask(token, {
         body: body.trim(),
         repo: repoName,
+        ...(setupName ? { setup: setupName } : {}),
         ...(mode ? { mode } : {}),
         ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
         ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
@@ -118,6 +124,13 @@ export function TaskCreateSheet() {
           </Field>
         </div>
 
+        <Field label="Execution setup" hint="Choose a prepared execution contract; its details are captured on this task.">
+          <Select aria-label="Execution setup" value={setupName} onChange={(event) => setSetup(event.target.value)}>
+            {setups.map((entry) => <option key={entry.name} value={entry.name}>{entry.name}{entry.name === workspace?.default_setup ? ' (default)' : ''}</option>)}
+          </Select>
+          {selectedSetup && <details className="mt-2 text-xs text-muted"><summary className="cursor-pointer">Composition</summary><p className="mt-1 font-mono">Implement: {selectedSetup.execution_settings.implementation.harness} · {selectedSetup.execution_settings.implementation.model || 'harness default'}</p><p className="font-mono">Review: {selectedSetup.review.seats.map((seat) => `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</p></details>}
+        </Field>
+
         <Field label="Execution mode" hint="Leave Workspace default selected to use the persisted workspace policy.">
           <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Execution mode">
             <button type="button" role="radio" aria-checked={mode === ''} onClick={() => setMode('')} className={cn('rounded-md border p-3 text-left transition-colors', mode === '' ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge')}><span className="text-sm font-semibold">Workspace default</span><span className="mt-0.5 block text-xs leading-5 text-muted">Falls back to Manual if Auto is unhealthy.</span></button>
@@ -142,7 +155,7 @@ export function TaskCreateSheet() {
               </button>
             ))}
           </div>
-          {!autoAvailable && <p className="mt-2 text-xs text-muted">Auto is unavailable: {workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}</p>}
+          {!autoAvailable && <p className="mt-2 text-xs text-muted">Auto is unavailable for {setupName || 'this setup'}: {setupHealth?.auto_unavailable_reason ?? workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}</p>}
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">

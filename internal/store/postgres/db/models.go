@@ -23,6 +23,7 @@ type ArtifactLink struct {
 	ArtifactID  string      `json:"artifact_id"`
 	TaskID      pgtype.Text `json:"task_id"`
 	FeatureID   pgtype.Text `json:"feature_id"`
+	Role        string      `json:"role"`
 }
 
 type Event struct {
@@ -180,6 +181,8 @@ type Task struct {
 	SpecApproval    bool               `json:"spec_approval"`
 	MergeApproval   bool               `json:"merge_approval"`
 	PolicyVersion   int32              `json:"policy_version"`
+	SetupName       string             `json:"setup_name"`
+	SetupContract   []byte             `json:"setup_contract"`
 }
 
 type TaskSpec struct {

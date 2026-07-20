@@ -32,6 +32,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           {taskStateLabels[item.task.state] ?? item.task.state}
         </Badge>
         <Badge variant="mono" className="capitalize">{item.task.mode || 'manual'}</Badge>
+        {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
       </div>
@@ -66,6 +67,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
         <Fact label="Gates" value={`spec ${item.task.spec_approval ? 'human' : 'auto'} · merge ${item.task.merge_approval ? 'human' : 'auto'}`} />
+        {item.task.setup_contract?.name && <Fact label="Frozen setup" value={<details><summary className="cursor-pointer font-mono">{item.task.setup_contract.name}</summary><span className="block font-mono text-[11px]">Implement: {item.task.setup_contract.execution_settings.implementation.harness} · {item.task.setup_contract.execution_settings.implementation.model || 'harness default'}</span><span className="block font-mono text-[11px]">Review: {item.task.setup_contract.review.seats.map((seat) => `${seat.harness || item.task.setup_contract.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</span></details>} />}
         <Fact
           label="Verification"
           value={

@@ -352,6 +352,7 @@ type createTaskReq struct {
 	Mode          core.TaskMode        `json:"mode"`
 	SpecApproval  *bool                `json:"spec_approval,omitempty"`
 	MergeApproval *bool                `json:"merge_approval,omitempty"`
+	Setup         string               `json:"setup,omitempty"`
 }
 
 func (req *createTaskReq) UnmarshalJSON(data []byte) error {

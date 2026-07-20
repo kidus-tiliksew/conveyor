@@ -104,7 +104,7 @@ func configCmd() *cobra.Command {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, body, mode, specGate, mergeGate string
+	var repo, base, body, mode, setup, specGate, mergeGate string
 	newCmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a task",
@@ -118,7 +118,7 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithMode(body, repo, base, core.TaskMode(mode), specApproval, mergeApproval)
+			t, err := newClient().createTaskWithSetup(body, repo, base, core.TaskMode(mode), specApproval, mergeApproval, setup)
 			if err != nil {
 				return err
 			}
@@ -130,6 +130,7 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
 	newCmd.Flags().StringVar(&mode, "mode", "", "execution mode: auto or manual (defaults to workspace policy)")
+	newCmd.Flags().StringVar(&setup, "setup", "", "named execution setup (defaults to workspace default)")
 	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
 

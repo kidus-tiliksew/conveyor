@@ -83,7 +83,7 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
 }
 
 export type TimelineEntry =
-  | { type: 'job'; at: string; job: Job; summary: string; model: string; order?: WorkOrder }
+  | { type: 'job'; at: string; job: Job; summary: string; model: string; tone: 'default' | 'warning'; order?: WorkOrder }
   | { type: 'note'; at: string; key: string; title: string; detail?: string; href?: string; alarm?: boolean }
   | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
@@ -250,9 +250,7 @@ function seatStatus(order: WorkOrder, job: Job | undefined, review?: PanelSeatRe
   }
 }
 
-function jobSummary(job: Job, events: TaskEvent[]): string {
-  // Prefer the harness's own narration (job.summary), then the structured
-  // stage outputs, then a state-derived fallback.
+function preferredJobSummary(job: Job, events: TaskEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]
     if (event.job_id !== job.id) continue
@@ -270,6 +268,35 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
       return [event.payload.summary, feedback ? `Reviewer feedback: ${feedback}` : undefined].filter(Boolean).join('\n\n')
     }
   }
+  return undefined
+}
+
+const outputInvalidKinds = new Set(['triage.output_invalid', 'spec.output_invalid', 'review.output_invalid'])
+
+function rejectedOutputEvent(job: Job, events: TaskEvent[]): TaskEvent | undefined {
+  if (job.state !== 'done' || preferredJobSummary(job, events) !== undefined) return undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event.job_id === job.id && outputInvalidKinds.has(event.kind)) return event
+  }
+  return undefined
+}
+
+function jobSummary(job: Job, events: TaskEvent[]): string {
+  // Prefer the harness's own narration (job.summary), then accepted structured
+  // stage outputs, then a job-specific output rejection and state fallback.
+  const preferred = preferredJobSummary(job, events)
+  if (preferred !== undefined) return preferred
+
+  const rejected = rejectedOutputEvent(job, events)
+  if (rejected) {
+    const error = typeof rejected.payload?.error === 'string' ? rejected.payload.error.trim() : ''
+    const punctuation = error && !/[.!?]$/.test(error) ? '.' : ''
+    return error
+      ? `Output rejected by the pipeline — ${error}${punctuation} Retrying with this feedback.`
+      : 'Output rejected by the pipeline. Retrying with this feedback.'
+  }
+
   switch (job.state) {
     case 'pending':
       return job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.'
@@ -317,8 +344,18 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'pipeline.bounced':
     case 'review.completed':
       return undefined
-    case 'pipeline.bounce_limit':
-      return { title: 'Review check-in — paused after the configured rounds', alarm: true }
+    case 'pipeline.bounce_limit': {
+      const source = typeof payload.source === 'string' ? payload.source.trim() : ''
+      const sourceLabel = outputInvalidKinds.has(source)
+        ? `${source.slice(0, source.indexOf('.'))} output validation`
+        : source
+      const maximum = typeof payload.max_bounces === 'number' ? `maximum ${payload.max_bounces} bounces` : ''
+      return {
+        title: 'Review check-in — paused after the configured rounds',
+        detail: sourceLabel ? [`Source: ${sourceLabel}`, maximum].filter(Boolean).join(' · ') : undefined,
+        alarm: true,
+      }
+    }
     case 'job.timeout':
       return {
         title: 'Wall-clock timeout',
@@ -442,7 +479,8 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 		// BYOA jobs carry a placeholder tier; the work order knows the model
 		// the operator's agent actually ran.
 		const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
-		entries.push({ type: 'job', at: job.started_at, job, summary, model, order })
+		const tone = rejectedOutputEvent(job, item.events) ? 'warning' : 'default'
+		entries.push({ type: 'job', at: job.started_at, job, summary, model, tone, order })
   }
   for (const order of item.work_orders ?? []) {
     if (panels.orderIds.has(order.id)) continue

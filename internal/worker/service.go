@@ -276,6 +276,27 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 }
 
 func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, string) {
+	setup, ok := cfg.Setup("")
+	if ok {
+		return s.AutoAvailableForSetup(ctx, cfg, setup)
+	}
+	return s.autoAvailableForConfig(ctx, cfg)
+}
+
+// AutoAvailableForSetup evaluates only the harnesses required by one setup.
+// A broken harness in an unrelated setup must not disable Auto (spec §21.27).
+func (s *Service) AutoAvailableForSetup(ctx context.Context, cfg *config.Config, setup config.ExecutionSetup) (bool, string) {
+	if setup.Name == "" {
+		var ok bool
+		setup, ok = cfg.Setup("")
+		if !ok {
+			return false, "workspace has no valid default setup"
+		}
+	}
+	return s.autoAvailableForConfig(ctx, cfg.WithSetup(setup))
+}
+
+func (s *Service) autoAvailableForConfig(ctx context.Context, cfg *config.Config) (bool, string) {
 	workers, err := s.Store.ListWorkers(ctx)
 	if err != nil {
 		return false, err.Error()
@@ -290,6 +311,9 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 }
 
 func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) TaskWorkerStatus {
+	if task.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(task.SetupContract)
+	}
 	status := TaskWorkerStatus{RequiredHarnesses: []string{}, Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
 	required := map[string]bool{}
 	var activeOrders []core.WorkOrder
@@ -306,9 +330,10 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 		}
 	}
 	if len(required) == 0 {
-		stage := task.NextStage
-		if route, ok := cfg.Routing.Stages[string(stage)]; ok && route.Harness != "" {
-			required[route.Harness] = true
+		if setupHarnesses, setupErr := requiredHarnesses(cfg); setupErr == nil {
+			for name := range setupHarnesses {
+				required[name] = true
+			}
 		}
 	}
 	for harness := range required {
@@ -437,10 +462,14 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 		if getErr != nil || task.Mode != core.TaskModeAuto {
 			continue
 		}
-		if healthy, _ := s.workerHealthyForOrder(worker, cfg, order); !healthy {
+		orderCfg := cfg
+		if task.SetupContract.Name != "" {
+			orderCfg = cfg.WithSetup(task.SetupContract)
+		}
+		if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
 			continue
 		}
-		harness, ok := harnessForOrder(cfg, order)
+		harness, ok := harnessForOrder(orderCfg, order)
 		if !ok {
 			continue
 		}
@@ -472,15 +501,18 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
-		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
-	}
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	if task.Mode != core.TaskModeAuto {
 		return core.WorkOrder{}, fmt.Errorf("worker may claim Auto tasks only")
+	}
+	if task.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(task.SetupContract)
+	}
+	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
+		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
 	}
 	harness, ok := harnessForOrder(cfg, order)
 	if !ok {

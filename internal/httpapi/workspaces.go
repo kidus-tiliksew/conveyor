@@ -33,6 +33,8 @@ type createWorkspaceDocument struct {
 	Repos                     *[]config.Repo                      `json:"repos,omitempty"`
 	Harnesses                 *[]config.Harness                   `json:"harnesses,omitempty"`
 	Review                    *config.ReviewPanel                 `json:"review,omitempty"`
+	Setups                    *[]config.ExecutionSetup            `json:"setups,omitempty"`
+	DefaultSetup              *string                             `json:"default_setup,omitempty"`
 	Execution                 *config.ExecutionPolicy             `json:"execution,omitempty"`
 }
 
@@ -116,6 +118,10 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.ExecutionSettings != nil {
 			document.ExecutionSettings = partial.ExecutionSettings
+			if partial.Setups == nil {
+				document.Setups = nil
+				document.DefaultSetup = ""
+			}
 		}
 		if partial.Routing != nil {
 			document.Routing = *partial.Routing
@@ -132,6 +138,20 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			document.Review = *partial.Review
+			if partial.Setups == nil {
+				document.Setups = nil
+				document.DefaultSetup = ""
+			}
+		}
+		if partial.Setups != nil {
+			if len(*partial.Setups) == 0 {
+				writeValidationError(w, "setups", errors.New("setups must contain at least one setup"))
+				return
+			}
+			document.Setups = *partial.Setups
+		}
+		if partial.DefaultSetup != nil {
+			document.DefaultSetup = *partial.DefaultSetup
 		}
 		if partial.Execution != nil {
 			document.Execution = *partial.Execution

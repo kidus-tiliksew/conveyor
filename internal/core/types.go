@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
 // Stage is a pipeline stage (spec §4). Phase 1 exercises only Implement;
@@ -108,28 +110,30 @@ const (
 
 // Task is a unit of intended change (spec §2). One task spans many jobs.
 type Task struct {
-	ID            string           `json:"id"`
-	Workspace     string           `json:"workspace"`
-	Source        string           `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
-	IntakeKey     string           `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
-	Title         string           `json:"title"`
-	Body          string           `json:"body"`  // free-form description; becomes part of the prompt
-	Class         string           `json:"class"` // bug | feature | chore
-	Level         EscalationLevel  `json:"level"`
-	Mode          TaskMode         `json:"mode"`
-	SpecApproval  bool             `json:"spec_approval"`
-	MergeApproval bool             `json:"merge_approval"`
-	PolicyVersion int              `json:"policy_version"`
-	Repo          string           `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
-	BaseBranch    string           `json:"base_branch"`
-	Branch        string           `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
-	State         TaskState        `json:"state"`
-	NextStage     Stage            `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
-	RecoveryStage Stage            `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID  string           `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
-	FeatureID     string           `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
-	GitHub        *GitHubLifecycle `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
-	CreatedAt     time.Time        `json:"created_at"`
+	ID            string                `json:"id"`
+	Workspace     string                `json:"workspace"`
+	Source        string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
+	IntakeKey     string                `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
+	Title         string                `json:"title"`
+	Body          string                `json:"body"`  // free-form description; becomes part of the prompt
+	Class         string                `json:"class"` // bug | feature | chore
+	Level         EscalationLevel       `json:"level"`
+	Mode          TaskMode              `json:"mode"`
+	SpecApproval  bool                  `json:"spec_approval"`
+	MergeApproval bool                  `json:"merge_approval"`
+	PolicyVersion int                   `json:"policy_version"`
+	SetupName     string                `json:"setup"`
+	SetupContract config.ExecutionSetup `json:"setup_contract"`
+	Repo          string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch    string                `json:"base_branch"`
+	Branch        string                `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
+	State         TaskState             `json:"state"`
+	NextStage     Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID  string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	FeatureID     string                `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
+	GitHub        *GitHubLifecycle      `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
+	CreatedAt     time.Time             `json:"created_at"`
 }
 
 type GitHubPublicationState string

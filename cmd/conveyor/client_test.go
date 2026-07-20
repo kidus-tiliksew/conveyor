@@ -28,6 +28,9 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 		if input["body"] != "fix it" {
 			t.Fatalf("body = %#v", input)
 		}
+		if input["setup"] != "backend" {
+			t.Fatalf("setup = %#v", input)
+		}
 		if _, supplied := input["title"]; supplied {
 			t.Fatalf("CLI still sends title: %#v", input)
 		}
@@ -36,7 +39,7 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	defer srv.Close()
 
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
-	if _, err := c.createTask("fix it", "api", "main"); err != nil {
+	if _, err := c.createTaskWithSetup("fix it", "api", "main", "", nil, nil, "backend"); err != nil {
 		t.Fatal(err)
 	}
 }

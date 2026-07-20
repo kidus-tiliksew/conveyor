@@ -61,6 +61,8 @@ export interface Task {
   spec_approval: boolean
   merge_approval: boolean
   policy_version: number
+  setup: string
+  setup_contract: ExecutionSetup
   repo: string
   base_branch: string
   branch: string
@@ -217,6 +219,8 @@ export interface WorkspaceInfo {
   database: string
   repos: WorkspaceRepo[] | null
   routing: WorkspaceRoute[] | null
+  setups: ExecutionSetup[] | null
+  default_setup: string
 }
 
 export interface WorkspaceRecord {
@@ -268,11 +272,7 @@ export interface ExecutionPolicy {
   review_concurrency: number
 }
 
-export interface WorkspaceConfigDocument {
-  workspace: string
-  max_bounces: number
-  work_order_queue_timeout: string
-  execution_settings: {
+export interface WorkspaceExecutionSettings {
     control_plane: {
       triage: { model: string; timeout: string }
       spec: { model: string; timeout: string }
@@ -290,19 +290,34 @@ export interface WorkspaceConfigDocument {
       fallback_model?: string
       fallback_harness?: string
     }
-  }
+}
+
+export interface ExecutionSetup {
+  name: string
+  execution_settings: WorkspaceExecutionSettings
+  review: { seats: WorkspaceReviewSeat[] }
+}
+
+export interface WorkspaceConfigDocument {
+  workspace: string
+  max_bounces: number
+  work_order_queue_timeout: string
+  execution_settings: WorkspaceExecutionSettings
   routing: {
     stages: Record<string, WorkspaceConfigRoute>
   }
   harnesses: WorkspaceHarness[]
   review: { seats: WorkspaceReviewSeat[] }
+  setups: ExecutionSetup[]
+  default_setup: string
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
 }
 
 export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
 export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
-export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string }
+export interface SetupServiceability { auto_available: boolean; auto_unavailable_reason?: string }
+export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string; setup_serviceability?: Record<string, SetupServiceability> }
 export interface TaskWorkerStatus { available: boolean; required_harnesses: string[]; reason: string; last_heartbeat_at?: string; last_heartbeat_age?: string; queue_context: 'never_started' | 'interrupted' }
 
 export interface VersionedWorkspaceConfig {
