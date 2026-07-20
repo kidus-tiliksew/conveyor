@@ -41,6 +41,9 @@ type Store interface {
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
 	UpdateTaskState(ctx context.Context, id string, s core.TaskState) error
+	// SetTaskHold toggles the §21.31 per-task reservation with an audit
+	// event; setting the current value is an idempotent no-op.
+	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
 	EnsureTaskEnqueued(ctx context.Context, id string) error
@@ -1697,12 +1700,6 @@ func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
-	if !t.Mode.Valid() {
-		t.Mode, t.SpecApproval, t.MergeApproval = core.LegacyPolicy(t.Level)
-	}
-	if t.Level == "" {
-		t.Level = core.LegacyLevel(t.Mode, t.SpecApproval, t.MergeApproval)
-	}
 	if t.NextStage == "" && (t.State == core.TaskQueued || t.State == core.TaskClaiming) {
 		t.NextStage = core.InitialStage(t.Level)
 	}
@@ -1772,6 +1769,26 @@ func (m *memory) UpdateTaskState(ctx context.Context, id string, s core.TaskStat
 	m.tasks[id] = t
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": s})})
 	return nil
+}
+
+func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Hold == hold {
+		return t, nil
+	}
+	t.Hold = hold
+	m.tasks[id] = t
+	kind := "task.hold.set"
+	if !hold {
+		kind = "task.hold.cleared"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
+	return t, nil
 }
 
 func (m *memory) SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error {

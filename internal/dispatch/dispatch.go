@@ -396,7 +396,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nExecution mode: %s · Spec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.Mode, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
 	events, _ := d.Store.ListEvents(ctx, task.ID)
 	invalidKind := string(stage) + ".output_invalid"
 	for i := len(events) - 1; i >= 0; i-- {

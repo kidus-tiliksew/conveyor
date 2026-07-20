@@ -36,6 +36,7 @@ type Querier interface {
 	ListTasks(ctx context.Context, workspaceID string) ([]Task, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)
 	UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error)
+	UpdateTaskHold(ctx context.Context, arg UpdateTaskHoldParams) (Task, error)
 	UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error)
 	UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error)
 	UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspaceConfigParams) (Workspace, error)

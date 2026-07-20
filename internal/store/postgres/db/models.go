@@ -183,6 +183,7 @@ type Task struct {
 	PolicyVersion   int32              `json:"policy_version"`
 	SetupName       string             `json:"setup_name"`
 	SetupContract   []byte             `json:"setup_contract"`
+	Hold            bool               `json:"hold"`
 }
 
 type TaskSpec struct {

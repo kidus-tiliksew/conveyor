@@ -51,4 +51,22 @@ test('new task removes title input and submits description for AI title generati
   await expect.poll(submitted).toContain('Generate this title from context')
   await expect.poll(submitted).toContain('frontend')
   expect(submitted()).not.toContain('"title"')
+  // §21.31: no execution-mode selector; hold defaults off and is omitted.
+  expect(submitted()).not.toContain('"mode"')
+  expect(submitted()).not.toContain('"hold"')
+})
+
+test('intake offers a hold toggle and advisory worker warning instead of modes', async ({ page }) => {
+  const submitted = await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+
+  await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
+  // backend (the default setup) is unserviceable in the mock: advisory only.
+  await expect(page.getByText(/No worker can run backend right now/)).toBeVisible()
+  await page.locator('textarea').fill('Hold this one for me')
+  await page.getByRole('switch', { name: 'Hold for hands-on work' }).click()
+  await expect(page.getByText(/No worker can run backend/)).toHaveCount(0)
+  await page.getByRole('button', { name: 'Create task' }).click()
+
+  await expect.poll(submitted).toContain('"hold":true')
 })

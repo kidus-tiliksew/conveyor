@@ -916,10 +916,10 @@ func implementationModelDocument(policy, model string, sentinels []string) confi
 	}
 }
 
-func TestResolvedSpecGateIsIndependentFromManualMode(t *testing.T) {
+func TestResolvedSpecGateIsIndependentFromHold(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, Level: core.L3, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Hold: true, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1344,7 +1344,7 @@ func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := store.WithWorkspace(t.Context(), "test")
 			st := store.NewMemory()
-			task := core.Task{ID: "policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/policy", Mode: core.TaskModeAuto, PolicyVersion: 1, SpecApproval: false, MergeApproval: test.mergeApproval, Level: core.LegacyLevel(core.TaskModeAuto, false, test.mergeApproval), State: core.TaskRunning, CreatedAt: time.Now()}
+			task := core.Task{ID: "policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/policy", PolicyVersion: 1, SpecApproval: false, MergeApproval: test.mergeApproval, State: core.TaskRunning, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
 				t.Fatal(err)
 			}

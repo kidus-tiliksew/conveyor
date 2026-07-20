@@ -98,7 +98,9 @@ type ReviewPanel struct {
 }
 
 type ExecutionPolicy struct {
-	DefaultMode          string `yaml:"default_mode" json:"default_mode"`
+	// DefaultMode is deprecated (spec §21.31): parsed from legacy documents
+	// and seeds for compatibility, never read for behavior, dropped on save.
+	DefaultMode          string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
@@ -550,14 +552,18 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if c.Database.Backend == "postgres" && c.Database.URL == "" {
 		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for postgres backend")
 	}
-	if c.Execution.DefaultMode == "" {
-		c.Execution.DefaultMode = "auto"
+	// An absent execution block means the shipped default: both gates on
+	// (§21.12 change 2; the mode axis itself is removed by §21.31).
+	if c.Execution == (ExecutionPolicy{}) {
 		c.Execution.SpecApproval = true
 		c.Execution.MergeApproval = true
 	}
-	if c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return nil, fmt.Errorf("execution.default_mode must be auto or manual")
+	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
+		return nil, fmt.Errorf("execution.default_mode is deprecated (spec §21.31) and must be auto or manual when present")
 	}
+	// Legacy documents keep their stored value readable, but it is never
+	// re-emitted or consulted; normalization drops it.
+	c.Execution.DefaultMode = ""
 	if c.Execution.ImplementConcurrency == 0 {
 		c.Execution.ImplementConcurrency = 1
 	}

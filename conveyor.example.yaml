@@ -54,7 +54,6 @@ routing:
       execution: mcp
 
 execution:
-  default_mode: auto
   spec_approval: true
   merge_approval: true
   implement_concurrency: 1

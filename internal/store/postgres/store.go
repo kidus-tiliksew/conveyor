@@ -346,12 +346,6 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
 	}
-	if !task.Mode.Valid() {
-		task.Mode, task.SpecApproval, task.MergeApproval = core.LegacyPolicy(task.Level)
-	}
-	if task.Level == "" {
-		task.Level = core.LegacyLevel(task.Mode, task.SpecApproval, task.MergeApproval)
-	}
 	if task.NextStage == "" && (task.State == core.TaskQueued || task.State == core.TaskClaiming) {
 		task.NextStage = core.InitialStage(task.Level)
 	}
@@ -426,6 +420,31 @@ func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) err
 		task.GitHub = &lifecycle
 	}
 	return nil
+}
+
+func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
+	var result core.Task
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if before.Hold == hold {
+			result = taskFromDB(before)
+			return nil
+		}
+		updated, err := q.UpdateTaskHold(ctx, db.UpdateTaskHoldParams{ID: id, WorkspaceID: workspace(ctx), Hold: hold})
+		if err != nil {
+			return err
+		}
+		result = taskFromDB(updated)
+		kind := "task.hold.set"
+		if !hold {
+			kind = "task.hold.cleared"
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
+	})
+	return result, err
 }
 
 func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskState) error {
@@ -2506,7 +2525,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		ID: task.ID, WorkspaceID: task.Workspace, Source: task.Source,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
-		Mode: string(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		Mode: string(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int32(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setupContractJSON(task.SetupContract),
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
@@ -2521,7 +2540,7 @@ func taskFromDB(task db.Task) core.Task {
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
-		Mode: core.TaskMode(task.Mode), SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		Mode: core.TaskMode(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setup,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,

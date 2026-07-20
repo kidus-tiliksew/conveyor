@@ -1,6 +1,7 @@
 // Package worker implements the enrolled Phase 5.1 dispatch supervisor
-// control surface. It selects only Auto-mode orders and reuses the existing
-// MCP work-order lifecycle rather than creating a parallel task protocol.
+// control surface. It selects orders the worker can serve — skipping held
+// tasks (spec §21.31) — and reuses the existing MCP work-order lifecycle
+// rather than creating a parallel task protocol.
 package worker
 
 import (
@@ -444,7 +445,10 @@ func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
 	return result, nil
 }
 
-func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
+// ListClaimable returns the queued orders this worker may claim (§21.31):
+// every order whose task is not held and whose frozen setup the worker's
+// healthy harnesses can serve.
+func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return nil, err
@@ -459,7 +463,7 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 			continue
 		}
 		task, getErr := s.Store.GetTask(ctx, order.TaskID)
-		if getErr != nil || task.Mode != core.TaskModeAuto {
+		if getErr != nil || task.Hold {
 			continue
 		}
 		orderCfg := cfg
@@ -492,7 +496,10 @@ func (s *Service) ListAuto(ctx context.Context, worker core.Worker) ([]DispatchO
 	return result, nil
 }
 
-func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+// ClaimForWorker is the server-side worker claim: held tasks are rejected at
+// claim time — the same enforcement layer as the self-review guard — and the
+// claiming worker must probe healthy for every harness the order requires.
+func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -505,14 +512,14 @@ func (s *Service) ClaimAuto(ctx context.Context, worker core.Worker, id string, 
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if task.Mode != core.TaskModeAuto {
-		return core.WorkOrder{}, fmt.Errorf("worker may claim Auto tasks only")
+	if task.Hold {
+		return core.WorkOrder{}, fmt.Errorf("task is held for operator claiming")
 	}
 	if task.SetupContract.Name != "" {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
 	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
-		return core.WorkOrder{}, fmt.Errorf("auto unavailable: %s", reason)
+		return core.WorkOrder{}, fmt.Errorf("worker cannot serve this order: %s", reason)
 	}
 	harness, ok := harnessForOrder(cfg, order)
 	if !ok {
