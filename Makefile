@@ -24,7 +24,7 @@ test:
 
 test-integration: test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./internal/store/postgres -count=1
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 test-db-up:
 	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test up -d --wait postgres-test
