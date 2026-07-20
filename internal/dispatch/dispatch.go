@@ -329,6 +329,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		})})
 		return err
 	}
+	input.Effort = route.Effort
 	if err := d.Store.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
 		return err
 	}

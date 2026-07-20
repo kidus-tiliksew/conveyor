@@ -65,6 +65,7 @@ type Attachment struct {
 
 type Input struct {
 	Prompt      string
+	Effort      string
 	Attachments []Attachment
 }
 
@@ -144,7 +145,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	}
 	requestInput := []map[string]any{{"role": "user", "content": content}}
 	auditInput := []map[string]any{{"role": "user", "content": auditContent}}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": requestInput, "store": false})
+	requestValue := responsesRequestEnvelope(model, requestInput, input.Effort)
+	auditRequestValue := responsesRequestEnvelope(model, auditInput, input.Effort)
+	body, _ := json.Marshal(requestValue)
 	httpClient := client.Client
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 2 * time.Hour}
@@ -209,8 +212,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if err != nil {
 		diagnostic.Phase = "retry_exhausted"
 		diagnostic.Retryable = true
-		requestValue := map[string]any{"model": model, "input": auditInput, "store": false}
-		transcript, stats, redactErr := client.auditEnvelope(requestValue, map[string]any{"diagnostic": diagnostic, "transport_error": err.Error()})
+		transcript, stats, redactErr := client.auditEnvelope(auditRequestValue, map[string]any{"diagnostic": diagnostic, "transport_error": err.Error()})
 		if redactErr != nil {
 			return Result{Diagnostic: &diagnostic}, redactErr
 		}
@@ -220,7 +222,6 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if json.Unmarshal(raw, &responseValue) != nil {
 		responseValue = string(raw)
 	}
-	requestValue := map[string]any{"model": model, "input": auditInput, "store": false}
 	if statusCode < 200 || statusCode >= 300 {
 		diagnostic.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= 500
 		if diagnostic.Retryable && attempts >= responsesMaxAttempts {
@@ -229,7 +230,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			diagnostic.Phase = "provider_response"
 		}
 	}
-	transcript, stats, redactErr := client.auditEnvelope(requestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
+	transcript, stats, redactErr := client.auditEnvelope(auditRequestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
 	if redactErr != nil {
 		return Result{Diagnostic: &diagnostic}, redactErr
 	}
@@ -282,6 +283,14 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	}
 	diagnostic.Phase = "completed"
 	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
+}
+
+func responsesRequestEnvelope(model string, input any, effort string) map[string]any {
+	request := map[string]any{"model": model, "input": input, "store": false}
+	if effort != "" {
+		request["reasoning"] = map[string]any{"effort": effort}
+	}
+	return request
 }
 
 func requestDiagnostic(model, endpoint string, attachments []Attachment) Diagnostic {

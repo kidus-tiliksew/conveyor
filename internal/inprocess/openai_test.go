@@ -86,6 +86,45 @@ func TestOpenAIRunDefaultEndpointIsNamedWithoutRequest(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunConditionallySendsReasoningEffort(t *testing.T) {
+	for _, test := range []struct {
+		name, effort  string
+		wantReasoning bool
+	}{
+		{name: "configured", effort: "low", wantReasoning: true},
+		{name: "provider default", effort: "", wantReasoning: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var request map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				_, _ = io.WriteString(w, `{"model":"gpt-test","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			defer server.Close()
+
+			result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-test", Input{Prompt: "work", Effort: test.effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reasoning, present := request["reasoning"]
+			if present != test.wantReasoning {
+				t.Fatalf("reasoning present=%t request=%+v", present, request)
+			}
+			if test.wantReasoning {
+				value, ok := reasoning.(map[string]any)
+				if !ok || value["effort"] != test.effort || !strings.Contains(string(result.Transcript), `"reasoning":{"effort":"low"}`) {
+					t.Fatalf("reasoning=%+v transcript=%s", reasoning, result.Transcript)
+				}
+			} else if strings.Contains(string(result.Transcript), `"reasoning"`) {
+				t.Fatalf("unset effort emitted reasoning: %s", result.Transcript)
+			}
+		})
+	}
+}
+
 func TestResponseEndpointHostExcludesURLMetadata(t *testing.T) {
 	t.Parallel()
 	const endpoint = "https://user:password@openrouter.ai:8443/api/v1?trace=yes#fragment"

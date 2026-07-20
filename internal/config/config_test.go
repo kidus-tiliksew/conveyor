@@ -446,6 +446,48 @@ func TestImplementationEffortValidatesSelectedHarnessAndPreservesUnset(t *testin
 	}
 }
 
+func TestControlPlaneEffortRoundTripsIntoStageRoutes(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.ExecutionSettings.ControlPlane.Triage.Effort = "minimal"
+	document.ExecutionSettings.ControlPlane.Spec.Effort = "high"
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, base, "control-plane effort test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ExecutionSettings.ControlPlane.Triage.Effort != "minimal" || parsed.Routing.Stages["triage"].Effort != "minimal" {
+		t.Fatalf("triage effort did not reach route: settings=%+v route=%+v", parsed.ExecutionSettings.ControlPlane.Triage, parsed.Routing.Stages["triage"])
+	}
+	if parsed.ExecutionSettings.ControlPlane.Spec.Effort != "high" || parsed.Routing.Stages["spec"].Effort != "high" {
+		t.Fatalf("spec effort did not reach route: settings=%+v route=%+v", parsed.ExecutionSettings.ControlPlane.Spec, parsed.Routing.Stages["spec"])
+	}
+	encoded, err := json.Marshal(parsed.WorkspaceDocument().ExecutionSettings.ControlPlane)
+	if err != nil || !strings.Contains(string(encoded), `"effort":"minimal"`) || !strings.Contains(string(encoded), `"effort":"high"`) {
+		t.Fatalf("control-plane efforts did not round trip: %s err=%v", encoded, err)
+	}
+
+	document.ExecutionSettings.ControlPlane.Triage.Effort = "maximum"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "control-plane effort test"); err == nil || !strings.Contains(err.Error(), `execution_settings.control_plane.triage.effort "maximum" must be minimal, low, medium, or high`) {
+		t.Fatalf("invalid triage effort error=%v", err)
+	}
+
+	document = base.WorkspaceDocument()
+	raw, _ = yaml.Marshal(document)
+	parsed, err = ParseWorkspaceDocument(raw, base, "control-plane effort unset test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(parsed.WorkspaceDocument().ExecutionSettings.ControlPlane)
+	if strings.Contains(string(encoded), "effort") {
+		t.Fatalf("unset control-plane effort changed legacy serialization: %s", encoded)
+	}
+}
+
 func TestLoadRejectsExplicitlyEmptyReviewPanel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	data := `workspace: demo
