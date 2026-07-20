@@ -193,6 +193,7 @@ type PullRequest struct {
 	State     string
 	Mergeable string
 	Merged    bool
+	HeadSHA   string
 }
 
 // PullRequestForBranch resolves the pull request attached to one assigned
@@ -203,7 +204,7 @@ func PullRequestForBranch(ctx context.Context, repo, branch string) (PullRequest
 }
 
 func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner) (PullRequest, error) {
-	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable")
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid")
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
 			return PullRequest{}, fmt.Errorf("%w for branch %s", ErrPullRequestNotFound, branch)
@@ -216,13 +217,14 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 		State     string     `json:"state"`
 		MergedAt  *time.Time `json:"mergedAt"`
 		Mergeable string     `json:"mergeable"`
+		HeadSHA   string     `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 {
 		return PullRequest{}, fmt.Errorf("parse pull request for branch %s", branch)
 	}
 	return PullRequest{
 		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
-		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil,
+		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil, HeadSHA: strings.TrimSpace(view.HeadSHA),
 	}, nil
 }
 
@@ -670,6 +672,17 @@ func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string
 
 func DiffForBranch(ctx context.Context, repo, branch string) (string, error) {
 	out, err := gh(ctx, "pr", "diff", branch, "--repo", repo)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// DiffBetween returns only the commits introduced after an approved review
+// baseline. GitHub's compare endpoint is the authoritative delta source for
+// refresh reviews (spec §21.30 change 4).
+func DiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
+	out, err := gh(ctx, "api", "repos/"+repo+"/compare/"+baseline+"..."+head, "-H", "Accept: application/vnd.github.v3.diff")
 	if err != nil {
 		return "", err
 	}

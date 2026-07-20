@@ -447,6 +447,46 @@ func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Tas
 	return result, err
 }
 
+func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error {
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		return fmt.Errorf("approved head SHA is required")
+	}
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		task, err := q.BindTaskApproval(ctx, db.BindTaskApprovalParams{ID: id, WorkspaceID: workspace(ctx), HeadSha: headSHA})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "approved_head": headSHA})})
+	})
+}
+
+func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error {
+	if approvedHeadSHA == "" || newHeadSHA == "" || approvedHeadSHA == newHeadSHA {
+		return fmt.Errorf("distinct approved and new head SHAs are required")
+	}
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		task, err := q.MarkTaskApprovalStale(ctx, db.MarkTaskApprovalStaleParams{ID: id, WorkspaceID: workspace(ctx), ApprovedHeadSha: approvedHeadSHA, NewHeadSha: newHeadSHA, RefreshReviewScope: scope})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
+	})
+}
+
+func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if _, err = q.SkipTaskRefresh(ctx, db.SkipTaskRefreshParams{ID: id, WorkspaceID: workspace(ctx), HeadSha: newHeadSHA}); err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "review.refresh_skipped", Payload: core.JSONPayload(map[string]any{"workspace": before.WorkspaceID, "task_id": id, "reason_code": reason, "approved_head": before.ApprovedHeadSha, "new_head": newHeadSHA})})
+	})
+}
+
 func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskState) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
@@ -1022,6 +1062,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed,
@@ -1058,16 +1099,18 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$38)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$43)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ModelEnforcement,
+			order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
 			order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt),
@@ -1134,15 +1177,17 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 				queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 				last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 				automatic_retry_count, next_retry_at, retry_suppressed,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 				self_reported, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$15,$15)`,
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$20,$20)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, core.WorkOrderQueued,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
+				order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
 				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
 			if err != nil {
 				return err
@@ -1247,15 +1292,17 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 			review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+			reason_code, review_kind, review_scope, baseline_sha, head_sha,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$15,$15)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$20,$20)`,
 			order.ID, workspaceID, request.TaskID, job.ID, core.StageReview, core.WorkOrderQueued,
 			order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
+			order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
 			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
 		if err != nil {
 			return store.ReviewRoundRetryResult{}, err
@@ -2025,8 +2072,17 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			} else if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})}); err != nil {
 				return err
 			}
-		} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
+		} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 			state, recovery = core.TaskApproved, ""
+		}
+		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
+			if state == core.TaskApproved {
+				if _, err = tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1,approved_head_sha=$1,approval_stale=false,refresh_baseline_sha='',refresh_head_sha='',refresh_review_scope='',updated_at=now() WHERE workspace_id=$2 AND id=$3`, aggregate.ApprovedHeadSHA, workspace(ctx), decision.TaskID); err != nil {
+					return err
+				}
+			} else if _, err = tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1,updated_at=now() WHERE workspace_id=$2 AND id=$3`, aggregate.ApprovedHeadSHA, workspace(ctx), decision.TaskID); err != nil {
+				return err
+			}
 		}
 
 		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
@@ -2066,15 +2122,17 @@ type completedReviewRecord struct {
 	RequiredHarness   string `json:"required_harness"`
 	RequiredEffort    string `json:"required_effort"`
 	ModelEnforcement  string `json:"model_enforcement"`
+	ReviewedCommitSHA string `json:"reviewed_commit_sha"`
 }
 
 type reviewRoundResultRecord struct {
-	ReviewRound int                     `json:"review_round"`
-	Verdict     string                  `json:"verdict"`
-	ReasonCode  string                  `json:"reason_code"`
-	Summary     string                  `json:"summary"`
-	Feedback    string                  `json:"feedback,omitempty"`
-	Reviews     []completedReviewRecord `json:"reviews"`
+	ReviewRound     int                     `json:"review_round"`
+	Verdict         string                  `json:"verdict"`
+	ReasonCode      string                  `json:"reason_code"`
+	Summary         string                  `json:"summary"`
+	Feedback        string                  `json:"feedback,omitempty"`
+	Reviews         []completedReviewRecord `json:"reviews"`
+	ApprovedHeadSHA string                  `json:"approved_head_sha,omitempty"`
 }
 
 func completedReviewRoundTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string, round int, workOrderID string) ([]completedReviewRecord, int, error) {
@@ -2115,7 +2173,11 @@ func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) revi
 	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ReviewSeat < reviews[j].ReviewSeat })
 	if round == 0 && len(reviews) == 1 {
 		review := reviews[0]
-		return reviewRoundResultRecord{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+		result := reviewRoundResultRecord{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+		if review.Verdict == "approve" {
+			result.ApprovedHeadSHA = review.ReviewedCommitSHA
+		}
+		return result
 	}
 	result := reviewRoundResultRecord{ReviewRound: round, Verdict: "approve", ReasonCode: "approved", Summary: "All review panel seats approved.", Reviews: reviews}
 	var feedback []string
@@ -2125,6 +2187,15 @@ func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) revi
 		}
 		if strings.TrimSpace(review.Feedback) != "" {
 			feedback = append(feedback, fmt.Sprintf("Seat %d (%s, %s): %s", review.ReviewSeat, review.RequiredModel, review.ModelEnforcement, strings.TrimSpace(review.Feedback)))
+		}
+	}
+	if result.Verdict == "approve" && len(reviews) > 0 {
+		result.ApprovedHeadSHA = reviews[0].ReviewedCommitSHA
+		for _, review := range reviews[1:] {
+			if review.ReviewedCommitSHA != result.ApprovedHeadSHA {
+				result.Verdict, result.ReasonCode, result.Summary, result.ApprovedHeadSHA = "changes_requested", "review_head_mismatch", "Review seats evaluated different pull-request heads.", ""
+				break
+			}
 		}
 	}
 	result.Feedback = strings.Join(feedback, "\n")
@@ -2215,6 +2286,8 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
+		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
+		"baseline_sha": decision.BaselineSHA, "head_sha": decision.HeadSHA,
 		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
 		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
@@ -2258,6 +2331,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
+		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed,
@@ -2528,6 +2602,8 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		Mode: string(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int32(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setupContractJSON(task.SetupContract),
+		ReviewedHeadSha: task.ReviewedHeadSHA, ApprovedHeadSha: task.ApprovedHeadSHA, ApprovalStale: task.ApprovalStale,
+		RefreshBaselineSha: task.RefreshBaselineSHA, RefreshHeadSha: task.RefreshHeadSHA, RefreshReviewScope: task.RefreshReviewScope,
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
 	}
@@ -2543,6 +2619,8 @@ func taskFromDB(task db.Task) core.Task {
 		Mode: core.TaskMode(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setup,
+		ReviewedHeadSHA: task.ReviewedHeadSha, ApprovedHeadSHA: task.ApprovedHeadSha, ApprovalStale: task.ApprovalStale,
+		RefreshBaselineSHA: task.RefreshBaselineSha, RefreshHeadSHA: task.RefreshHeadSha, RefreshReviewScope: task.RefreshReviewScope,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
 		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: task.FeatureID.String,
 		CreatedAt: task.CreatedAt.Time,

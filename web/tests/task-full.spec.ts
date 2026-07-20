@@ -146,7 +146,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-      state: taskId === 'gate' ? 'awaiting_human' : 'running',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' || taskId === 'merge-missing' ? 'approved' : 'running',
       next_stage: 'implement',
       created_at: createdAt,
     },
@@ -195,6 +195,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			reason: 'no healthy worker can serve the task\'s required harnesses',
 			queue_context: 'never_started',
 		} : undefined,
+		merge_readiness: taskId === 'merge-unknown' ? { state: 'UNKNOWN', head_sha: 'head-1' }
+			: taskId === 'merge-conflict' ? { state: 'CONFLICTING', head_sha: 'head-1', number: 12 }
+			: undefined,
   }
 }
 
@@ -528,6 +531,37 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 	await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 	await expect(gate).toBeInViewport()
 	await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('merge gate renders pending readiness without offering merge', async ({ page }) => {
+	await page.goto('/tasks/merge-unknown/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
+	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+})
+
+test('merge gate fails closed when readiness is absent', async ({ page }) => {
+	await page.goto('/tasks/merge-missing/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
+	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+})
+
+test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let dispatches = 0
+	await page.route('**/v1/tasks/merge-conflict/merge-conflict-fix*', async (route) => {
+		dispatches++
+		await route.fulfill({ json: { id: 'merge-conflict-implement-2', reason_code: 'merge-conflict' } })
+	})
+	await page.goto('/tasks/merge-conflict/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate.getByText('Merge blocked by conflicts')).toBeVisible()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+	await gate.getByRole('button', { name: 'Fix merge conflict' }).click()
+	await expect.poll(() => dispatches).toBe(1)
 })
 
 test('new task events scroll only the timeline container to the newest event', async ({ page }) => {
