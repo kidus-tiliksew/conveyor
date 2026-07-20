@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -237,6 +238,53 @@ func TestRemoveWorktreeSerializesCopyBackWithMirrorFetches(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RemoveWorktree did not continue after mirror lock release")
+	}
+}
+
+func TestBranchDiffReadsPushedBranchFromBareCache(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+
+	origin := filepath.Join(tmp, "origin")
+	mustRun(t, "", "git", "init", "-b", "main", origin)
+	mustRun(t, origin, "git", "config", "user.email", "test@example.com")
+	mustRun(t, origin, "git", "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(origin, "app.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "init")
+
+	m := NewManager(filepath.Join(tmp, "cache"), filepath.Join(tmp, "jobs"))
+	repoURL := "file://" + origin
+	branch := BranchName("42")
+
+	// A branch origin has never seen must error, not read as an empty change.
+	if _, err := m.BranchDiff(ctx, repoURL, branch, "main"); err == nil {
+		t.Fatal("BranchDiff succeeded for a branch that was never pushed")
+	}
+
+	// Simulate the implementing agent's push (spec §21.8): commit task work on
+	// the branch in origin, as `git push` from a task worktree would produce.
+	mustRun(t, origin, "git", "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(origin, "app.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "task work")
+	mustRun(t, origin, "git", "checkout", "main")
+
+	diff, err := m.BranchDiff(ctx, repoURL, branch, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"diff --git a/app.txt b/app.txt", "-v1", "+v2"} {
+		if !strings.Contains(diff, expected) {
+			t.Fatalf("branch diff missing %q:\n%s", expected, diff)
+		}
 	}
 }
 

@@ -179,7 +179,10 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	// retries a bounded number of times before the job fails. The schedule is
 	// exponential with jitter (base 2s: ~2s, 4s, 8s, 16s, 32s) so the window
 	// spans over a minute and rides out upstream 500 bursts; stage routes
-	// carry far longer timeouts and bound total time through ctx.
+	// carry far longer timeouts and bound total time through ctx. Providers
+	// also deliver failures inside HTTP 200 envelopes (body status "failed"
+	// with an error object), so retry classification must read the body, not
+	// just the status code.
 	var raw []byte
 	var statusCode int
 	var status string
@@ -190,6 +193,11 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		attempts = try
 		raw, statusCode, status, requestID, err = attempt()
 		transient := err != nil || statusCode == http.StatusTooManyRequests || statusCode >= 500
+		if !transient && statusCode >= 200 && statusCode < 300 {
+			if failure, failed := embeddedResponseFailure(raw); failed && failure.retryable() {
+				transient = true
+			}
+		}
 		if !transient || try >= responsesMaxAttempts {
 			break
 		}
@@ -222,8 +230,17 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if json.Unmarshal(raw, &responseValue) != nil {
 		responseValue = string(raw)
 	}
+	var embedded *responseFailure
 	if statusCode < 200 || statusCode >= 300 {
 		diagnostic.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= 500
+		if diagnostic.Retryable && attempts >= responsesMaxAttempts {
+			diagnostic.Phase = "retry_exhausted"
+		} else {
+			diagnostic.Phase = "provider_response"
+		}
+	} else if failure, failed := embeddedResponseFailure(raw); failed {
+		embedded = &failure
+		diagnostic.Retryable = failure.retryable()
 		if diagnostic.Retryable && attempts >= responsesMaxAttempts {
 			diagnostic.Phase = "retry_exhausted"
 		} else {
@@ -243,6 +260,13 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			details += " provider_code=" + diagnostic.ProviderCode
 		}
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, status, details)
+	}
+	if embedded != nil {
+		details := ""
+		if diagnostic.UpstreamRequest != "" {
+			details += " request_id=" + diagnostic.UpstreamRequest
+		}
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, embedded.describe(), details)
 	}
 	var decoded struct {
 		Model  string `json:"model"`
@@ -365,6 +389,81 @@ func validateImageContent(contentType string, content []byte) error {
 		return fmt.Errorf("content does not match its declared image media type")
 	}
 	return nil
+}
+
+// responseFailure is a failure the provider delivered inside a 2xx transport
+// envelope: the Responses API (and OpenRouter passing through upstream faults)
+// returns HTTP 200 with body status "failed" plus an error object, or status
+// "incomplete" when generation stopped early. Without body inspection these
+// surface as misleading "no output_text" extraction errors and are never
+// retried.
+type responseFailure struct {
+	status  string
+	code    string
+	message string
+	reason  string
+}
+
+// retryable reports whether the same request may succeed on resubmission.
+// Incomplete responses are deterministic (the same request hits the same
+// output cap); a failed status without a contradicting code is treated as a
+// server-side fault, matching the provider's own "you can retry" guidance.
+func (f responseFailure) retryable() bool {
+	if f.status == "incomplete" {
+		return false
+	}
+	if f.code == "" {
+		return true
+	}
+	return strings.Contains(f.code, "server_error") || strings.Contains(f.code, "rate_limit")
+}
+
+func (f responseFailure) describe() string {
+	switch {
+	case f.status == "incomplete" && f.reason != "":
+		return fmt.Sprintf("response incomplete (%s)", f.reason)
+	case f.status == "incomplete":
+		return "response incomplete"
+	}
+	description := "response status \"failed\""
+	if f.code != "" {
+		description += " provider_code=" + f.code
+	}
+	if f.message != "" {
+		description += ": " + f.message
+	}
+	return description
+}
+
+func embeddedResponseFailure(raw []byte) (responseFailure, bool) {
+	var envelope struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Code    any    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return responseFailure{}, false
+	}
+	failed := envelope.Error != nil || envelope.Status == "failed" || envelope.Status == "incomplete"
+	if !failed {
+		return responseFailure{}, false
+	}
+	failure := responseFailure{status: envelope.Status}
+	if envelope.Error != nil {
+		if envelope.Error.Code != nil {
+			failure.code = fmt.Sprint(envelope.Error.Code)
+		}
+		failure.message = envelope.Error.Message
+	}
+	if envelope.IncompleteDetails != nil {
+		failure.reason = envelope.IncompleteDetails.Reason
+	}
+	return failure, true
 }
 
 func providerErrorCode(raw []byte) string {

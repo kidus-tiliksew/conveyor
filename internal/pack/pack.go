@@ -56,10 +56,18 @@ func (l Loader) Role(stage core.Stage) (string, error) {
 	return string(data), nil
 }
 
-// InProcessReviewRole adds the structured output contract consumed by
-// pipeline.ParseReview. The in-process Responses API has no Conveyor MCP tools.
+// InProcessReviewRole adds the execution environment and the structured
+// output contract consumed by pipeline.ParseReview. The in-process Responses
+// API call has no Conveyor MCP tools, no checkout, and no filesystem.
 func InProcessReviewRole(role string) string {
 	return strings.TrimSpace(role) + `
+
+This review is a single in-process model call: you have no tools, no
+repository checkout, and no way to open files — the branch diff under
+review and its context are supplied in this prompt. Do not announce plans
+to inspect code or ask for more material; judge from what is provided and
+record anything you could not verify in the summary. Your one and only
+response must contain the verdict.
 
 End your answer with exactly one machine-owned block and nothing after it:
 
@@ -71,6 +79,10 @@ End your answer with exactly one machine-owned block and nothing after it:
 // Codex and Claude reviewers. Their prose or JSON output is never a verdict.
 func MCPReviewRole(role string) string {
 	return strings.TrimSpace(role) + `
+
+You are running in a read-only checkout on the task branch. Review the
+branch diff against its base; you may read any file for context, but judge
+only what the diff changes.
 
 Before ending, call Conveyor's ` + "`submit_review_verdict`" + ` MCP tool with
 your verdict, reason code, summary, and feedback, then wait for and observe a

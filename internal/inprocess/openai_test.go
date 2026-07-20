@@ -310,6 +310,87 @@ func TestOpenAIRunRetriesRateLimits(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunRetriesFailuresEmbeddedIn200Envelopes(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			// OpenRouter delivers upstream faults as HTTP 200 with a failed
+			// body: reasoning-only output, no message, embedded error object.
+			_, _ = io.WriteString(w, `{"status":"failed","error":{"code":"server_error","message":"An error occurred while processing your request."},"output":[{"type":"reasoning"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"model":"x-ai/grok-4.5","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2}}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "x-ai/grok-4.5", Input{Prompt: "work"})
+	if err != nil || attempts != 3 || result.Output != "done" {
+		t.Fatalf("attempts=%d result=%+v err=%v", attempts, result, err)
+	}
+}
+
+func TestOpenAIRunSurfacesNonRetryableEmbeddedFailureWithoutRetry(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = io.WriteString(w, `{"status":"failed","error":{"code":"invalid_prompt","message":"prompt rejected"},"output":[]}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err == nil || attempts != 1 {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+	if !strings.Contains(err.Error(), "provider_code=invalid_prompt") || !strings.Contains(err.Error(), "prompt rejected") || strings.Contains(err.Error(), "no output_text") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "provider_response" || result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
+func TestOpenAIRunReportsIncompleteResponsesWithReason(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = io.WriteString(w, `{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning"}]}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err == nil || attempts != 1 || !strings.Contains(err.Error(), "response incomplete (max_output_tokens)") {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
+func TestOpenAIRunExhaustsRetriesOnPersistentEmbeddedFailures(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = io.WriteString(w, `{"status":"failed","error":{"code":"server_error","message":"still broken"},"output":[]}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+	if err == nil || attempts != responsesMaxAttempts {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+	if !strings.Contains(err.Error(), "retry_exhausted") || !strings.Contains(err.Error(), "provider_code=server_error") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || !result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }

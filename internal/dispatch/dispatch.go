@@ -36,8 +36,12 @@ type Dispatcher struct {
 	PublishIssue    func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
 	ViewPullRequest func(context.Context, string, string) (github.PullRequest, error)
 	RequestMerge    func(context.Context, string, int) error
-	queue           chan queuedTask
-	durableQueue    bool
+	// ReviewDiff resolves the pushed task branch's diff against its base for
+	// the in-process review fallback, which has no checkout of its own
+	// (spec §21.4). Injectable for tests.
+	ReviewDiff   func(context.Context, *config.Config, core.Task) (string, error)
+	queue        chan queuedTask
+	durableQueue bool
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
@@ -46,7 +50,19 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		PublishIssue:    github.PublishIssue,
 		ViewPullRequest: github.PullRequestForBranch,
 		RequestMerge:    github.MergePullRequest,
+		ReviewDiff:      reviewBranchDiff,
 	}
+}
+
+// reviewBranchDiff reads the branch diff from the shared bare cache; the
+// implementing agent has already pushed the task branch to origin by the time
+// review dispatches (spec §21.8).
+func reviewBranchDiff(ctx context.Context, cfg *config.Config, task core.Task) (string, error) {
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok {
+		return "", fmt.Errorf("repository %q is not configured", task.Repo)
+	}
+	return gitx.NewManager(cfg.CacheDir, "").BranchDiff(ctx, repo.URL, task.Branch, task.BaseBranch)
 }
 
 type queuedTask struct{ Workspace, TaskID string }
@@ -55,6 +71,10 @@ const (
 	maxModelAttachmentBytes = 25 << 20
 	maxModelImageBytes      = 20 << 20
 	maxModelFileBytes       = 50 << 20
+	// maxModelDiffBytes caps the branch diff embedded inline in the
+	// in-process review prompt at the same per-input ceiling as a single
+	// model attachment (spec §21.4).
+	maxModelDiffBytes = maxModelAttachmentBytes
 )
 
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
@@ -320,7 +340,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	}
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
-	input, err := d.buildStageInput(ctx, task.NextStage, task)
+	input, err := d.buildStageInput(ctx, cfg, task.NextStage, task)
 	if err != nil {
 		attachmentCount, attachmentTypes := d.modelInputArtifactSummary(ctx, task)
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "artifact.context_failed", Payload: core.JSONPayload(map[string]any{
@@ -386,7 +406,7 @@ func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, task core.Ta
 	return len(types), types
 }
 
-func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task core.Task) (inprocess.Input, error) {
+func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, stage core.Stage, task core.Task) (inprocess.Input, error) {
 	role, err := d.Pack.Role(stage)
 	if err != nil {
 		return inprocess.Input{}, err
@@ -418,6 +438,29 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, stage core.Stage, task
 		}
 		if exists && spec.Approved {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
+		}
+	}
+	if stage == core.StageReview {
+		// The in-process reviewer has no checkout, so the change under review
+		// must travel in the prompt itself; a missing or oversized diff fails
+		// before model execution instead of degrading to a diff-less review
+		// (spec §21.4).
+		if d.ReviewDiff == nil {
+			return inprocess.Input{}, fmt.Errorf("in-process review for task %s requires a branch diff resolver", task.ID)
+		}
+		diff, diffErr := d.ReviewDiff(ctx, cfg, task)
+		if diffErr != nil {
+			return inprocess.Input{}, fmt.Errorf("resolve branch diff for task %s: %w", task.ID, diffErr)
+		}
+		if len(diff) > maxModelDiffBytes {
+			return inprocess.Input{}, fmt.Errorf("branch diff for task %s (%d bytes) exceeds the %d-byte model input limit", task.ID, len(diff), maxModelDiffBytes)
+		}
+		if strings.TrimSpace(diff) == "" {
+			fmt.Fprintf(&prompt, "\n# Branch diff\n\nBranch %s contains no changes against base %s.\n", task.Branch, task.BaseBranch)
+		} else {
+			// Four-backtick fence so diff hunks that themselves contain
+			// three-backtick lines cannot terminate the block early.
+			fmt.Fprintf(&prompt, "\n# Branch diff (%s vs %s)\n\nThe change under review:\n\n````diff\n%s\n````\n", task.Branch, task.BaseBranch, strings.TrimRight(diff, "\n"))
 		}
 	}
 	if stage == core.StageSpec {

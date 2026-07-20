@@ -429,6 +429,9 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	agent := &staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"}
 	dispatcher := dispatch.New(st, cfg, agent)
 	dispatcher.Pack = bundle
+	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) {
+		return "diff --git a/app.txt b/app.txt\n-v1\n+v2\n", nil
+	}
 	service := &Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 
 	if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000, 20_000); err != nil {
@@ -443,6 +446,9 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 	if !strings.Contains(agent.input.Prompt, "```conveyor:review") || strings.Contains(agent.input.Prompt, "submit_review_verdict") {
 		t.Fatalf("in-process review prompt has the wrong terminal contract: %s", agent.input.Prompt)
+	}
+	if !strings.Contains(agent.input.Prompt, "diff --git a/app.txt b/app.txt") {
+		t.Fatalf("in-process review prompt is missing the branch diff: %s", agent.input.Prompt)
 	}
 	updated, err := st.GetTask(ctx, task.ID)
 	if err != nil || updated.State != core.TaskApproved {

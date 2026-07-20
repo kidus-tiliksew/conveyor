@@ -223,6 +223,28 @@ func CommitsAhead(ctx context.Context, worktreeDir, base string) ([]string, erro
 	return commits, nil
 }
 
+// BranchDiff returns the unified diff of the pushed task branch against its
+// base, computed inside the shared bare cache — the change-under-review input
+// for the in-process review fallback, which has no checkout of its own
+// (spec §21.4). Both refs resolve from the refs/remotes/origin/* namespace
+// EnsureMirror maintains, falling back to local ref names for fully local
+// repositories.
+func (m *Manager) BranchDiff(ctx context.Context, repoURL, branch, base string) (string, error) {
+	mirror, err := m.EnsureMirror(ctx, repoURL)
+	if err != nil {
+		return "", err
+	}
+	baseRef := "refs/remotes/origin/" + base
+	if !refExists(ctx, mirror, baseRef) {
+		baseRef = base
+	}
+	branchRef := "refs/remotes/origin/" + branch
+	if !refExists(ctx, mirror, branchRef) {
+		branchRef = branch
+	}
+	return commandOutput(ctx, mirror, "git", "diff", "--no-ext-diff", baseRef+"..."+branchRef)
+}
+
 // DiffAgainstBase returns the review input for the independent review stage.
 func DiffAgainstBase(ctx context.Context, worktreeDir, base string) (string, error) {
 	ref := "refs/remotes/origin/" + base

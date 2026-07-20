@@ -202,6 +202,101 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	}
 }
 
+func TestInProcessReviewEmbedsBranchDiff(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "review-diff", Workspace: "demo", Repo: "api", Title: "Review the change", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-diff", BaseBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	dispatcher.ReviewDiff = func(_ context.Context, _ *config.Config, got core.Task) (string, error) {
+		if got.ID != task.ID {
+			t.Fatalf("ReviewDiff received task %q, want %q", got.ID, task.ID)
+		}
+		return "diff --git a/app.txt b/app.txt\n-v1\n+v2\n", nil
+	}
+	_ = dispatcher.DispatchNow(ctx, task.ID)
+	if agent.calls != 1 {
+		t.Fatalf("calls = %d, want 1", agent.calls)
+	}
+	for _, expected := range []string{"# Branch diff (conveyor/task-review-diff vs main)", "````diff", "diff --git a/app.txt b/app.txt", "+v2"} {
+		if !strings.Contains(agent.input.Prompt, expected) {
+			t.Fatalf("review prompt missing %q:\n%s", expected, agent.input.Prompt)
+		}
+	}
+}
+
+func TestInProcessReviewStatesWhenBranchHasNoChanges(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "review-empty", Workspace: "demo", Repo: "api", Title: "Review nothing", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-empty", BaseBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "\n", nil }
+	_ = dispatcher.DispatchNow(ctx, task.ID)
+	if agent.calls != 1 {
+		t.Fatalf("calls = %d, want 1", agent.calls)
+	}
+	if !strings.Contains(agent.input.Prompt, "Branch conveyor/task-review-empty contains no changes against base main.") {
+		t.Fatalf("review prompt missing empty-diff statement:\n%s", agent.input.Prompt)
+	}
+}
+
+func TestInProcessReviewDiffFailuresStopBeforeModelExecution(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "review-diff-fail", Workspace: "demo", Repo: "api", Title: "Review the change", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-diff-fail", BaseBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) {
+		return "", errors.New("origin unreachable")
+	}
+	if err = dispatcher.DispatchNow(ctx, task.ID); err == nil || !strings.Contains(err.Error(), "origin unreachable") {
+		t.Fatalf("DispatchNow error = %v, want branch diff failure", err)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("model executed despite diff failure: calls = %d", agent.calls)
+	}
+
+	oversized := strings.Repeat("a", maxModelDiffBytes+1)
+	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return oversized, nil }
+	if err = dispatcher.DispatchNow(ctx, task.ID); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("DispatchNow error = %v, want oversized diff failure", err)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("model executed despite oversized diff: calls = %d", agent.calls)
+	}
+}
+
 func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
