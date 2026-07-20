@@ -255,6 +255,15 @@ test('task detail headers show the task name while routes and API lookup keep us
 	expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
 })
 
+test('task sheet adds bottom clearance without changing full-page task spacing', async ({ page }) => {
+	await page.goto('/tasks/sheet-padding')
+	const sheetContent = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
+	await expect(sheetContent).toHaveCSS('padding-bottom', '32px')
+
+	await page.goto('/tasks/full-padding/full')
+	await expect(page.getByRole('region', { name: 'Task content' })).toHaveCSS('padding-bottom', '0px')
+})
+
 test('new task detail tolerates a null work-order list from the API', async ({ page }) => {
 	await page.goto('/tasks/no-orders/full')
 	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
