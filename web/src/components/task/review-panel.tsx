@@ -145,11 +145,19 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
 		if (input.kind === 'fix') { await fixMergeConflict(item.task.id, token); return }
       await reviewTask(item.task.id, token, { action: input.action, comment: input.comment, reasonCode: defaultReasonCode[input.action] })
     },
-    onSuccess: () => {
+    // Keep the mutation pending until the refetched task/activity data lands.
+    // Returning a promise from onSuccess holds mutation.isPending true across
+    // the invalidation (TanStack Query v5); otherwise isPending flips false the
+    // instant onSuccess returns, and gateFor re-renders the idle label from the
+    // still-stale task.state for a frame before the control settles — the
+    // reported merge/approve flash (spec AC-1/AC-2).
+    onSuccess: async () => {
       setExpanded(null)
       setComment('')
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
-      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['task', item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: ['activity'] }),
+      ])
     },
   })
 
