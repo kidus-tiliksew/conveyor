@@ -365,7 +365,9 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'spec.version_created':
       return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} drafted` }
     case 'spec.version_approved':
-      return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} approved` }
+      // The approval intervention renders the richer human "Approved" card.
+      // Retain the audit event in the API without repeating it in the timeline.
+      return undefined
     case 'github_issue.publication_queued':
       return { title: 'GitHub issue publication queued' }
     case 'github_issue.publication_retry':
