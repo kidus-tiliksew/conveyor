@@ -311,6 +311,9 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if order.Stage == core.StageReview {
 		role = pack.MCPReviewRole(role)
 	}
+	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
+		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
+	}
 	result := Context{Order: order, Task: task, RolePrompt: role}
 	if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
 		return Context{}, getErr
@@ -342,7 +345,11 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if order.Stage == core.StageReview {
 		cfg, _ := s.config(ctx)
 		if repo, ok := cfg.Repo(task.Repo); ok && repo.GitHub != "" {
-			result.Diff, _ = github.DiffForBranch(ctx, repo.GitHub, task.Branch)
+			if order.ReviewKind == "refresh" && order.ReviewScope == config.RefreshReviewDelta && order.BaselineSHA != "" && order.HeadSHA != "" {
+				result.Diff, _ = github.DiffBetween(ctx, repo.GitHub, order.BaselineSHA, order.HeadSHA)
+			} else {
+				result.Diff, _ = github.DiffForBranch(ctx, repo.GitHub, task.Branch)
+			}
 		}
 	}
 	return result, nil
@@ -459,6 +466,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		return nil, fmt.Errorf("repo %s not found", task.Repo)
 	}
 	prURL := ""
+	reviewedHead := ""
 	if repo.GitHub != "" {
 		if spec, exists, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID); specErr != nil {
 			return nil, specErr
@@ -492,6 +500,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"url": prURL, "number": target.Number, "head_sha": target.HeadSHA})}); err != nil {
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
 		}
+		reviewedHead = target.HeadSHA
 	}
 	order.State = core.WorkOrderSubmitted
 	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
@@ -502,6 +511,19 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		job.State = core.JobDone
 		job.EndedAt = time.Now().UTC()
 		_ = s.Store.UpdateJob(ctx, job)
+	}
+	if order.ReasonCode == "merge-conflict" {
+		baseline := order.BaselineSHA
+		if baseline == "" {
+			baseline = task.ApprovedHeadSHA
+		}
+		scope := task.SetupContract.RefreshReview
+		if scope == "" || scope == config.RefreshReviewNone {
+			scope = config.RefreshReviewDelta
+		}
+		if err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
+			return nil, err
+		}
 	}
 	if err = s.Store.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
 		return nil, err

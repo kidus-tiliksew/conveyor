@@ -72,7 +72,8 @@ export function fetchWorkspaceConfig(token: string) {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
     const result = await response.json() as VersionedWorkspaceConfig
     const review = result.document.review ?? { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] }
-    const setups = result.document.setups?.length ? result.document.setups : [{ name: 'default', execution_settings: result.document.execution_settings, review }]
+		const setups = (result.document.setups?.length ? result.document.setups : [{ name: 'default', execution_settings: result.document.execution_settings, review, refresh_review: 'delta' as const }])
+			.map((setup) => ({ ...setup, refresh_review: setup.refresh_review || 'delta' as const }))
     return {
       ...result,
       document: {
@@ -228,4 +229,12 @@ export async function mergeTask(taskId: string, token: string) {
 	})
 	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
 	return response.json() as Promise<Task>
+}
+
+export async function fixMergeConflict(taskId: string, token: string) {
+	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge-conflict-fix`), {
+		method: 'POST', headers: mutationHeaders(token),
+	})
+	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+	return response.json() as Promise<import('./types').WorkOrder>
 }

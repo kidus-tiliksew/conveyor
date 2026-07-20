@@ -64,6 +64,12 @@ export interface Task {
   policy_version: number
   setup: string
   setup_contract: ExecutionSetup
+  reviewed_head_sha?: string
+  approved_head_sha?: string
+  approval_stale?: boolean
+  refresh_baseline_sha?: string
+  refresh_head_sha?: string
+  refresh_review_scope?: 'delta' | 'full' | 'none'
   repo: string
   base_branch: string
   branch: string
@@ -296,6 +302,7 @@ export interface ExecutionSetup {
   name: string
   execution_settings: WorkspaceExecutionSettings
   review: { seats: WorkspaceReviewSeat[] }
+  refresh_review: 'delta' | 'full' | 'none'
 }
 
 export interface WorkspaceConfigDocument {
@@ -346,6 +353,7 @@ export interface ActivityItem {
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
   worker_status?: TaskWorkerStatus
+  merge_readiness?: { state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'; head_sha?: string; url?: string; number?: number }
 }
 
 export interface WorkOrder {
@@ -362,6 +370,11 @@ export interface WorkOrder {
   worker_id?: string
   review_round?: number
   review_seat?: number
+  reason_code?: string
+  review_kind?: 'refresh'
+  review_scope?: 'delta' | 'full'
+  baseline_sha?: string
+  head_sha?: string
   required_model?: string
   required_harness?: string
   required_effort?: 'low' | 'medium' | 'high'

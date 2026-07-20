@@ -395,6 +395,16 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       return { title: 'Already-merged pull request reconciled', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.failed':
       return { title: 'Merge needs operator action', detail: typeof payload.error === 'string' ? payload.error : undefined, alarm: true }
+	case 'merge.blocked':
+		return { title: 'Merge blocked — conflict fix required', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined, alarm: true }
+	case 'merge.conflict_fix_dispatched':
+		return { title: 'Conflict fix dispatched to implementation', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined }
+	case 'approval.stale':
+		return { title: 'Approval became stale after the PR head changed', detail: typeof payload.review_scope === 'string' ? `Refresh scope: ${payload.review_scope}` : undefined, alarm: true }
+	case 'review.refresh_round_created':
+		return { title: `Refresh review round ${String(payload.review_round ?? '')} started`, detail: typeof payload.review_scope === 'string' ? `Scope: ${payload.review_scope}` : undefined }
+	case 'review.refresh_skipped':
+		return { title: 'Clean head update re-armed without refresh review', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined }
     case 'dispatch.failed':
       return {
         title: 'Dispatch failed',

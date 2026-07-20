@@ -44,6 +44,9 @@ type Store interface {
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
+	BindTaskApproval(ctx context.Context, id, headSHA string) error
+	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
+	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
 	SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
 	EnsureTaskEnqueued(ctx context.Context, id string) error
@@ -794,8 +797,15 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		} else {
 			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})})
 		}
-	} else if (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
+	} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 		state, recovery = core.TaskApproved, ""
+	}
+	if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
+		task.ReviewedHeadSHA = aggregate.ApprovedHeadSHA
+		if state == core.TaskApproved {
+			task.ApprovedHeadSHA, task.ApprovalStale = aggregate.ApprovedHeadSHA, false
+			task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
+		}
 	}
 	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
@@ -818,15 +828,17 @@ type completedReview struct {
 	RequiredHarness   string `json:"required_harness"`
 	RequiredEffort    string `json:"required_effort"`
 	ModelEnforcement  string `json:"model_enforcement"`
+	ReviewedCommitSHA string `json:"reviewed_commit_sha"`
 }
 
 type reviewRoundResult struct {
-	ReviewRound int               `json:"review_round"`
-	Verdict     string            `json:"verdict"`
-	ReasonCode  string            `json:"reason_code"`
-	Summary     string            `json:"summary"`
-	Feedback    string            `json:"feedback,omitempty"`
-	Reviews     []completedReview `json:"reviews"`
+	ReviewRound     int               `json:"review_round"`
+	Verdict         string            `json:"verdict"`
+	ReasonCode      string            `json:"reason_code"`
+	Summary         string            `json:"summary"`
+	Feedback        string            `json:"feedback,omitempty"`
+	Reviews         []completedReview `json:"reviews"`
+	ApprovedHeadSHA string            `json:"approved_head_sha,omitempty"`
 }
 
 func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderID string) ([]completedReview, int) {
@@ -856,7 +868,11 @@ func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderI
 func aggregateReviewRound(round int, reviews []completedReview) reviewRoundResult {
 	if round == 0 && len(reviews) == 1 {
 		review := reviews[0]
-		return reviewRoundResult{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+		result := reviewRoundResult{ReviewRound: round, Verdict: review.Verdict, ReasonCode: review.ReasonCode, Summary: review.Summary, Feedback: review.Feedback, Reviews: reviews}
+		if review.Verdict == "approve" {
+			result.ApprovedHeadSHA = review.ReviewedCommitSHA
+		}
+		return result
 	}
 	result := reviewRoundResult{ReviewRound: round, Verdict: "approve", ReasonCode: "approved", Summary: "All review panel seats approved.", Reviews: reviews}
 	var feedback []string
@@ -866,6 +882,15 @@ func aggregateReviewRound(round int, reviews []completedReview) reviewRoundResul
 		}
 		if strings.TrimSpace(review.Feedback) != "" {
 			feedback = append(feedback, fmt.Sprintf("Seat %d (%s, %s): %s", review.ReviewSeat, review.RequiredModel, review.ModelEnforcement, strings.TrimSpace(review.Feedback)))
+		}
+	}
+	if result.Verdict == "approve" && len(reviews) > 0 {
+		result.ApprovedHeadSHA = reviews[0].ReviewedCommitSHA
+		for _, review := range reviews[1:] {
+			if review.ReviewedCommitSHA != result.ApprovedHeadSHA {
+				result.Verdict, result.ReasonCode, result.Summary, result.ApprovedHeadSHA = "changes_requested", "review_head_mismatch", "Review seats evaluated different pull-request heads.", ""
+				break
+			}
 		}
 	}
 	result.Feedback = strings.Join(feedback, "\n")
@@ -880,6 +905,8 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
+		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
+		"baseline_sha": decision.BaselineSHA, "head_sha": decision.HeadSHA,
 		"required_model": decision.RequiredModel, "required_harness": decision.RequiredHarness,
 		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
@@ -1789,6 +1816,56 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
 	return t, nil
+}
+
+func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		return fmt.Errorf("approved head SHA is required")
+	}
+	task.ReviewedHeadSHA, task.ApprovedHeadSHA, task.ApprovalStale = headSHA, headSHA, false
+	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
+	m.tasks[id] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "approved_head": headSHA})})
+	return nil
+}
+
+func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	if approvedHeadSHA == "" || newHeadSHA == "" || approvedHeadSHA == newHeadSHA {
+		return fmt.Errorf("distinct approved and new head SHAs are required")
+	}
+	task.ApprovedHeadSHA, task.ApprovalStale = approvedHeadSHA, true
+	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = approvedHeadSHA, newHeadSHA, scope
+	m.tasks[id] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
+	return nil
+}
+
+func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	baseline := task.ApprovedHeadSHA
+	task.ReviewedHeadSHA, task.ApprovedHeadSHA, task.ApprovalStale = newHeadSHA, newHeadSHA, false
+	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
+	m.tasks[id] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "review.refresh_skipped", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": baseline, "new_head": newHeadSHA})})
+	return nil
 }
 
 func (m *memory) SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error {

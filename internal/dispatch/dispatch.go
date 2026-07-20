@@ -51,6 +51,13 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 
 type queuedTask struct{ Workspace, TaskID string }
 
+type MergeReadiness struct {
+	State   string `json:"state"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Number  int    `json:"number,omitempty"`
+}
+
 const (
 	maxModelAttachmentBytes = 25 << 20
 	maxModelImageBytes      = 20 << 20
@@ -122,7 +129,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
 	if task.NextStage == core.StageImplement {
-		return d.createWorkOrder(ctx, cfg, task, route)
+		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
 	return d.runInProcess(ctx, cfg, task, route)
 }
@@ -153,6 +160,11 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	}
 	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		return err
+	}
+	if task.ApprovalStale {
+		if err = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.refresh_round_created", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": "approval-stale", "review_round": round, "review_scope": task.RefreshReviewScope, "approved_head": task.RefreshBaselineSHA, "new_head": task.RefreshHeadSHA})}); err != nil {
+			return err
+		}
 	}
 	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
 }
@@ -202,6 +214,13 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
 			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
+			ReviewKind: func() string {
+				if task.ApprovalStale {
+					return "refresh"
+				}
+				return ""
+			}(),
+			ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, HeadSHA: task.RefreshHeadSHA,
 			RequiredHarness: harness, RequiredEffort: seat.Effort, RequiredHarnessConfig: harnessConfig,
 			ExecutionTimeoutText: route.TimeoutText,
 			QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
@@ -241,7 +260,7 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 	return result
 }
 
-func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute, reasonCode string) error {
 	prior, err := d.Store.ListJobs(ctx, task.ID)
 	if err != nil {
 		return err
@@ -283,6 +302,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
 		RequiredModel: effectiveModel, RequiredHarness: route.Harness,
 		RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig,
+		ReasonCode: reasonCode, BaselineSHA: task.ApprovedHeadSHA,
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 	}
@@ -292,6 +312,9 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	payload := map[string]any{
 		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
 		"harness": route.Harness, "model": effectiveModel, "model_policy": route.ModelPolicy,
+	}
+	if reasonCode != "" {
+		payload["reason_code"] = reasonCode
 	}
 	if route.Effort != "" {
 		payload["required_effort"] = route.Effort
@@ -628,12 +651,15 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	publicationEligible = publicationEligible && repo.GitHub != ""
 	round, seat := 0, 0
 	requiredModel, requiredHarness, requiredEffort, enforcement := model, "", "", "self-reported"
+	decisionReviewKind, decisionReviewScope, decisionBaseline, decisionHead := "", "", "", ""
 	if order, orderErr := d.Store.GetWorkOrder(ctx, reviewWorkOrderID); orderErr == nil {
 		round, seat = order.ReviewRound, order.ReviewSeat
 		requiredModel, requiredHarness, requiredEffort = order.RequiredModel, order.RequiredHarness, order.RequiredEffort
 		if order.ModelEnforcement != "" {
 			enforcement = order.ModelEnforcement
 		}
+		decisionReviewKind, decisionReviewScope = order.ReviewKind, order.ReviewScope
+		decisionBaseline, decisionHead = order.BaselineSHA, order.HeadSHA
 	}
 	if err := d.Store.AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
@@ -641,6 +667,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
+		ReviewKind: decisionReviewKind, ReviewScope: decisionReviewScope, BaselineSHA: decisionBaseline, HeadSHA: decisionHead,
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
@@ -719,6 +746,13 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			}
 			return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
 		}
+		head := task.ReviewedHeadSHA
+		if head == "" {
+			head = d.reviewedHeadFromEvents(ctx, task.ID)
+		}
+		if err := d.Store.BindTaskApproval(ctx, task.ID, head); err != nil {
+			return err
+		}
 		return d.transition(ctx, task.ID, core.TaskApproved, "", "")
 	case core.InterventionRedirect:
 		target := task.RecoveryStage
@@ -738,6 +772,207 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return nil
 	}
 	return nil
+}
+
+func (d *Dispatcher) reviewedHeadFromEvents(ctx context.Context, taskID string) string {
+	events, _ := d.Store.ListEvents(ctx, taskID)
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.round_completed" && events[i].Kind != "review.completed" {
+			continue
+		}
+		var payload struct {
+			ApprovedHeadSHA   string `json:"approved_head_sha"`
+			ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &payload) == nil {
+			if payload.ApprovedHeadSHA != "" {
+				return payload.ApprovedHeadSHA
+			}
+			if payload.ReviewedCommitSHA != "" {
+				return payload.ReviewedCommitSHA
+			}
+		}
+	}
+	return ""
+}
+
+func (d *Dispatcher) refreshScope(task core.Task, conflict bool) string {
+	scope := task.SetupContract.RefreshReview
+	if scope == "" {
+		scope = config.RefreshReviewDelta
+	}
+	if conflict && scope == config.RefreshReviewNone {
+		scope = config.RefreshReviewDelta
+	}
+	return scope
+}
+
+func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, newHead, reason string, conflict bool) error {
+	baseline := task.ApprovedHeadSHA
+	if baseline == "" {
+		baseline = task.ReviewedHeadSHA
+	}
+	if baseline == "" || newHead == "" || baseline == newHead {
+		return fmt.Errorf("task %s requires distinct approved and current heads for refresh", task.ID)
+	}
+	scope := d.refreshScope(task, conflict)
+	if err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason); err != nil {
+		return err
+	}
+	if scope == config.RefreshReviewNone && !conflict {
+		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")
+	}
+	if err := d.Store.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
+		return err
+	}
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if current.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(current.SetupContract)
+	}
+	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
+}
+
+// ReadMergeReadiness resolves the gate-facing PR state with bounded backoff.
+// UNKNOWN is an ordinary pending result and never creates merge.failed noise.
+func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (MergeReadiness, error) {
+	var result MergeReadiness
+	err := d.Store.WithTaskLock(ctx, task.ID, func() error {
+		current, err := d.Store.GetTask(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		cfg, err := d.currentConfig(ctx)
+		if err != nil {
+			return err
+		}
+		repo, ok := cfg.Repo(current.Repo)
+		if !ok || repo.GitHub == "" {
+			return fmt.Errorf("repository %q does not configure GitHub", current.Repo)
+		}
+		var pr github.PullRequest
+		for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
+			pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+			if err != nil {
+				return err
+			}
+			if pr.Mergeable != "UNKNOWN" {
+				break
+			}
+			if attempt < 2 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(delay):
+				}
+			}
+		}
+		result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
+		approved := current.ApprovedHeadSHA
+		if approved == "" {
+			approved = current.ReviewedHeadSHA
+		}
+		if approved != "" && pr.HeadSHA != "" && approved != pr.HeadSHA {
+			if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
+				return err
+			}
+			result.State = "STALE"
+		}
+		if result.State == "CONFLICTING" {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": approved, "new_head": pr.HeadSHA})})
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (core.WorkOrder, error) {
+	var result core.WorkOrder
+	err := d.Store.WithTaskLock(ctx, task.ID, func() error {
+		current, err := d.Store.GetTask(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		cfg, err := d.currentConfig(ctx)
+		if err != nil {
+			return err
+		}
+		repo, ok := cfg.Repo(current.Repo)
+		if !ok || repo.GitHub == "" {
+			return fmt.Errorf("repository %q does not configure GitHub", current.Repo)
+		}
+		pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+		if err != nil {
+			return err
+		}
+		result, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
+		return err
+	})
+	return result, err
+}
+
+func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
+	orders, err := d.Store.ListTaskWorkOrders(ctx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	for _, order := range orders {
+		if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) {
+			return order, nil
+		}
+	}
+	if pr.Mergeable != "CONFLICTING" {
+		return core.WorkOrder{}, fmt.Errorf("pull request is not conflicting (%s)", pr.Mergeable)
+	}
+	if current.ApprovedHeadSHA == "" {
+		head := current.ReviewedHeadSHA
+		if head == "" {
+			head = pr.HeadSHA
+		}
+		if err = d.Store.BindTaskApproval(ctx, current.ID, head); err != nil {
+			return core.WorkOrder{}, err
+		}
+		current.ApprovedHeadSHA = head
+	}
+	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
+	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
+	if err = d.Store.CreateIntervention(systemCtx, intervention); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = d.Store.SetTaskTransition(systemCtx, current.ID, core.TaskQueued, core.StageImplement, ""); err != nil {
+		return core.WorkOrder{}, err
+	}
+	current, err = d.Store.GetTask(systemCtx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if current.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(current.SetupContract)
+	}
+	if err = d.createWorkOrder(systemCtx, cfg, current, cfg.Routing.Stages[string(core.StageImplement)], "merge-conflict"); err != nil {
+		return core.WorkOrder{}, err
+	}
+	orders, err = d.Store.ListTaskWorkOrders(systemCtx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	var result core.WorkOrder
+	for i := len(orders) - 1; i >= 0; i-- {
+		if orders[i].ReasonCode == "merge-conflict" {
+			result = orders[i]
+			break
+		}
+	}
+	if err = d.Store.AppendEvent(systemCtx, core.Event{TaskID: current.ID, JobID: result.JobID, Kind: "merge.conflict_fix_dispatched", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": current.ApprovedHeadSHA, "new_head": pr.HeadSHA, "work_order_id": result.ID})}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return result, nil
 }
 
 // MergeApprovedTask performs the final human-gate transition. A durable-store
@@ -785,6 +1020,36 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	if pr.State != "open" {
 		return d.recordMergeFailure(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State))
+	}
+	approvedHead := current.ApprovedHeadSHA
+	if approvedHead == "" {
+		approvedHead = current.ReviewedHeadSHA
+	}
+	if approvedHead == "" && pr.HeadSHA != "" {
+		// One-time compatibility binding for tasks approved before §21.30.
+		approvedHead = pr.HeadSHA
+		if err = d.Store.BindTaskApproval(ctx, current.ID, approvedHead); err != nil {
+			return err
+		}
+	}
+	if approvedHead != "" && pr.HeadSHA != "" && approvedHead != pr.HeadSHA {
+		if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
+			return err
+		}
+		return fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA)
+	}
+	if pr.Mergeable == "UNKNOWN" {
+		return fmt.Errorf("pull request %s#%d merge readiness is still pending", repo.GitHub, pr.Number)
+	}
+	if pr.Mergeable == "CONFLICTING" {
+		if err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": approvedHead, "new_head": pr.HeadSHA})}); err != nil {
+			return err
+		}
+		if !current.MergeApproval {
+			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
+			return err
+		}
+		return fmt.Errorf("pull request %s#%d has merge conflicts; dispatch the conflict fix", repo.GitHub, pr.Number)
 	}
 	if pr.Mergeable != "MERGEABLE" {
 		return d.recordMergeFailure(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable))

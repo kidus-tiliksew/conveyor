@@ -91,6 +91,7 @@ review:
 default_setup: default
 setups:
   - name: default
+    refresh_review: delta # delta | full | none; frozen on each task
     execution_settings:
       control_plane:
         triage: {model: gpt-5.6-luna, timeout: 20m}

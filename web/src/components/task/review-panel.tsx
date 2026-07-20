@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
-import { mergeTask, reviewTask } from '../../lib/api'
+import { fixMergeConflict, mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -27,10 +27,10 @@ export function isReviewable(task: Task): boolean {
 }
 
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
-export function gateTone(task: Task, events: TaskEvent[]): GateTone {
-  return gateFor(task, events).tone
+export function gateTone(task: Task, events: TaskEvent[], readiness?: ActivityItem['merge_readiness']): GateTone {
+	return gateFor(task, events, readiness).tone
 }
-type GatePrimary = 'merge' | 'approve' | 'redirect'
+type GatePrimary = 'merge' | 'approve' | 'redirect' | 'fix' | 'pending'
 
 interface Gate {
   tone: GateTone
@@ -41,8 +41,18 @@ interface Gate {
   primaryAction: GatePrimary
 }
 
-function gateFor(task: Task, events: TaskEvent[]): Gate {
-  if (task.state === 'approved') {
+function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merge_readiness']): Gate {
+	if (task.state === 'approved') {
+		if (readiness?.state === 'UNKNOWN' || readiness?.state === 'STALE') return {
+			tone: 'neutral', icon: GitMerge, headline: readiness.state === 'STALE' ? 'Approval changed — refreshing review' : 'Checking merge readiness',
+			detail: readiness.state === 'STALE' ? 'The pull-request head changed after approval. Conveyor has started the configured refresh flow.' : 'GitHub is still calculating mergeability. Conveyor will re-read it with bounded backoff.',
+			primaryLabel: 'Readiness pending', primaryAction: 'pending',
+		}
+		if (readiness?.state === 'CONFLICTING') return {
+			tone: 'alarm', icon: TriangleAlert, headline: 'Merge blocked by conflicts',
+			detail: 'Conveyor will dispatch an implementation order to merge the base branch, resolve conflicts, validate, and refresh review.',
+			primaryLabel: 'Fix merge conflict', primaryAction: 'fix',
+		}
     return {
       tone: 'positive',
       icon: GitMerge,
@@ -113,6 +123,7 @@ const secondaryActionsFor = (primary: GatePrimary) =>
 
 type GateMutation =
   | { kind: 'merge' }
+	| { kind: 'fix' }
   | { kind: 'review'; action: InterventionAction; comment: string }
 
 export function ReviewPanel({ item }: { item: ActivityItem }) {
@@ -121,16 +132,17 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
   const [expanded, setExpanded] = useState<InterventionAction | null>(null)
   const [comment, setComment] = useState('')
 
-  const gate = gateFor(item.task, item.events)
+	const gate = gateFor(item.task, item.events, item.merge_readiness)
   const style = toneStyles[gate.tone]
   const Icon = gate.icon
 
   const mutation = useMutation({
     mutationFn: async (input: GateMutation) => {
-      if (input.kind === 'merge') {
+		if (input.kind === 'merge') {
         await mergeTask(item.task.id, token)
         return
-      }
+		}
+		if (input.kind === 'fix') { await fixMergeConflict(item.task.id, token); return }
       await reviewTask(item.task.id, token, { action: input.action, comment: input.comment, reasonCode: defaultReasonCode[input.action] })
     },
     onSuccess: () => {
@@ -159,14 +171,16 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
           <p className="mt-0.5 text-xs leading-5 text-muted">{gate.detail}</p>
         </div>
         <Button
-          disabled={!token || mutation.isPending}
+			disabled={!token || mutation.isPending || gate.primaryAction === 'pending'}
           onClick={() => {
-            if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
+				if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
+				if (gate.primaryAction === 'fix') return mutation.mutate({ kind: 'fix' })
+				if (gate.primaryAction === 'pending') return
             if (gate.primaryAction === 'redirect') return toggle('redirect')
             mutation.mutate({ kind: 'review', action: 'approve', comment: '' })
           }}
         >
-          {gate.primaryAction === 'merge' ? <GitMerge /> : gate.primaryAction === 'redirect' ? <Undo2 /> : <ThumbsUp />}
+			{gate.primaryAction === 'merge' ? <GitMerge /> : gate.primaryAction === 'fix' ? <TriangleAlert /> : gate.primaryAction === 'redirect' ? <Undo2 /> : <ThumbsUp />}
           {mutation.isPending && !expanded ? (gate.primaryAction === 'merge' ? 'Merging…' : 'Recording…') : gate.primaryLabel}
         </Button>
       </div>

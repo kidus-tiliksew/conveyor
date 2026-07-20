@@ -6,7 +6,9 @@ its harness-template expansion and transport rules are clarified by §21.14
 and §21.20; worker-attempt recovery is fixed by §21.21, portable review
 publication by §21.22, terminal review-round recovery by §21.23,
 reconnect-safe worker plus interrupted-seat recovery by §21.26, and
-execution setups by §21.27. These are
+execution setups by §21.27. Merge readiness, conflict-fix dispatch, and
+refresh review are fixed by §21.30; execution modes are superseded by the
+per-task hold contract in §21.31. These are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
@@ -159,7 +161,8 @@ config, intake, and UI work with one dispatch-logic change.*
 Suggested order:
 
 1. **Setup schema + normalization** (data-only, unblocks the rest):
-   workspace config gains `setups: [{name, execution_settings, review}]`
+   workspace config gains `setups: [{name, execution_settings, review,
+   refresh_review}]`
    plus `default_setup`, under the standard §21.3 mechanics (validated
    writes, `config.updated`, hot reload). Normalization folds a v1.27
    document's top-level `execution_settings`/`review` into a single setup
@@ -203,6 +206,42 @@ for the in-flight task; breaking one setup's harness disables Auto only
 for tasks selecting that setup, with the other setup's Auto unaffected; a
 v1.27 single-config workspace upgrades with byte-for-byte identical
 behavior as setup `default`.
+
+## Phase 5.2.2 — Merge readiness and refresh review
+
+*Proves: the merge gate never offers an unverified merge and changed pull-request
+heads cannot bypass independent review (spec §21.30). Depends on 5.2 review
+rounds and 5.2.1 frozen setups.*
+
+Working breakdown:
+
+1. **Gate-facing readiness:** resolve PR head and mergeability before rendering
+   the primary merge action. `UNKNOWN` receives a bounded re-read and remains a
+   neutral pending state; `CONFLICTING` is blocked with **Fix merge conflict**
+   as its primary action. The operation-time readiness read stays authoritative.
+2. **Head-bound approval:** persist the unanimously reviewed head and bind a
+   human or automatic approval to it. Memory and PostgreSQL compare the current
+   PR head at the merge boundary, fail closed on drift, and record the stale
+   baseline/new-head transition.
+3. **Conflict-fix order:** idempotently record a system `merge-conflict`
+   redirect and one implementation order. The order inherits the frozen setup
+   and hold, and directs the worker to use the dedicated worktree, merge base
+   into task branch, resolve, validate, push without rebase/force-push, and
+   submit for review. A gate-off conflict dispatches this order automatically.
+4. **Frozen refresh scope:** setup `refresh_review` defaults to `delta` and
+   accepts `delta`, `full`, or `none`. Refresh seats carry the approved baseline
+   and new head; delta reads the compare diff, full reads the PR diff, and none
+   skips only clean updates. Conflict resolution always forces at least delta.
+5. **Round and audit continuity:** refresh uses the next monotonic round and the
+   frozen panel, aggregates only that round, then re-arms the gate through a
+   fresh readiness read or the gate-off merge path. Timeline and audit events
+   expose blocked, fix, stale, skipped, and refresh transitions with reason
+   codes and head provenance.
+
+**Exit criterion:** readiness states are rendered before merge; direct stale
+merge attempts cannot proceed; repeated conflict-fix requests reuse one active
+order; delta/full/none behavior is frozen and covered in Memory/PostgreSQL; and
+an approved refresh visibly returns to merge readiness.
 
 ## Phase 5.3 — GitHub coordination
 
