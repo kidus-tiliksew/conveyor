@@ -1,6 +1,6 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.31, accepted).
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.32, accepted).
 When code and spec disagree, the spec wins; spec changes go by amendment
 with a version bump (§21), never silent edits.
 
@@ -57,8 +57,10 @@ reconciliation (§21.10); omission is compatible only for a singleton workspace.
 
 Beta was achieved July 15, 2026 (§19 exit criterion met). Post-Beta scope is
 accepted by spec §21.12–§21.21 and now active (working breakdown in
-[docs/phase5-plan.md](docs/phase5-plan.md)): Phase 5.1 worker (`conveyor worker run`) + Auto/Manual
-execution modes replacing L0–L3 + harness registry; Phase 5.2 adversarial
+[docs/phase5-plan.md](docs/phase5-plan.md)): Phase 5.1 worker (`conveyor worker run`) + independent
+spec/merge gate toggles replacing L0–L3 + harness registry (execution modes
+were subsequently removed by §21.31 — one queue, workers claim what they can
+serve, with a per-task hold as the reservation primitive); Phase 5.2 adversarial
 review panel; Phase 5.3 factory-coordinated GitHub (issue on spec approval,
 verdict mirroring; PR stays at submit, §21.15); Phase 5.4 evidence-gated
 `submit_for_review`; Phase 5.5 worker service packaging (`conveyor worker
