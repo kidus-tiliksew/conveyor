@@ -49,10 +49,10 @@ func (c *client) createTaskWithLevel(body, repo, base string, level core.Escalat
 }
 
 func (c *client) createTaskWithMode(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
-	return c.createTaskWithSetup(body, repo, base, mode, specApproval, mergeApproval, "")
+	return c.createTaskWithSetup(body, repo, base, false, mode, specApproval, mergeApproval, "")
 }
 
-func (c *client) createTaskWithSetup(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
+func (c *client) createTaskWithSetup(body, repo, base string, hold bool, mode core.TaskMode, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
@@ -60,7 +60,12 @@ func (c *client) createTaskWithSetup(body, repo, base string, mode core.TaskMode
 	if setup != "" {
 		payload["setup"] = setup
 	}
+	if hold {
+		payload["hold"] = true
+	}
 	if mode != "" {
+		// Deprecated passthrough (§21.31 change 6): the server maps manual to
+		// hold and records the deprecated usage.
 		payload["mode"] = mode
 	}
 	if specApproval != nil {

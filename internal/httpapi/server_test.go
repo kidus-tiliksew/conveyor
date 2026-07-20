@@ -291,7 +291,55 @@ func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing
 	}
 }
 
-func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
+func TestSetTaskHoldTogglesReservationWithAudit(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	if err := st.CreateTask(ctx, core.Task{ID: "hold-task", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	request := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/v1/tasks/hold-task/hold", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, req)
+		return response
+	}
+	if response := request(`{}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing hold status=%d", response.Code)
+	}
+	response := request(`{"hold":true}`)
+	var task core.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); response.Code != http.StatusOK || err != nil || !task.Hold {
+		t.Fatalf("set status=%d task=%+v err=%v", response.Code, task, err)
+	}
+	// Setting the current value is idempotent: no duplicate audit event.
+	if response = request(`{"hold":true}`); response.Code != http.StatusOK {
+		t.Fatalf("idempotent set status=%d", response.Code)
+	}
+	if response = request(`{"hold":false}`); response.Code != http.StatusOK {
+		t.Fatalf("clear status=%d", response.Code)
+	}
+	events, err := st.ListEvents(ctx, "hold-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets, clears := 0, 0
+	for _, event := range events {
+		if event.Kind == "task.hold.set" {
+			sets++
+		}
+		if event.Kind == "task.hold.cleared" {
+			clears++
+		}
+	}
+	if sets != 1 || clears != 1 {
+		t.Fatalf("sets=%d clears=%d events=%+v", sets, clears, events)
+	}
+}
+
+func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
@@ -308,41 +356,55 @@ func TestTaskIntakeHealthGatesAutoAndPersistsResolvedPolicy(t *testing.T) {
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	if response := request(`{"body":"explicit","repo":"api","mode":"auto"}`); response.Code != http.StatusConflict {
-		t.Fatalf("explicit Auto status=%d body=%s", response.Code, response.Body.String())
-	}
-	response := request(`{"body":"default","repo":"api"}`)
+	// §21.31: no worker is enrolled, yet nothing is rejected or resolved to
+	// another mode at intake — serviceability is advisory, orders queue openly.
+	response := request(`{"body":"deprecated auto","repo":"api","mode":"auto"}`)
 	if response.Code != http.StatusCreated {
-		t.Fatalf("default status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("deprecated auto status=%d body=%s", response.Code, response.Body.String())
 	}
-	var fallback core.Task
-	if err := json.Unmarshal(response.Body.Bytes(), &fallback); err != nil {
+	var task core.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
-	if fallback.Mode != core.TaskModeManual || fallback.PolicyVersion != 1 || !fallback.SpecApproval || !fallback.MergeApproval {
-		t.Fatalf("fallback=%+v", fallback)
+	if task.Hold || task.Mode != "" || task.PolicyVersion != 1 || !task.SpecApproval || !task.MergeApproval {
+		t.Fatalf("deprecated auto task=%+v", task)
 	}
-	events, _ := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), fallback.ID)
-	found := false
-	for _, event := range events {
-		found = found || event.Kind == "task.auto_fallback"
+	deprecatedEvents := func(id string) int {
+		events, _ := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), id)
+		count := 0
+		for _, event := range events {
+			if event.Kind == "task.mode.deprecated" {
+				count++
+			}
+		}
+		return count
 	}
-	if !found {
-		t.Fatalf("events=%+v", events)
+	if deprecatedEvents(task.ID) != 1 {
+		t.Fatalf("expected deprecated-mode event for %s", task.ID)
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	worker := core.Worker{ID: "worker", Workspace: "demo", Name: "worker", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, CreatedAt: now}
-	if err := st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	response = request(`{"body":"healthy","repo":"api","mode":"auto","spec_approval":false,"merge_approval":false}`)
+
+	response = request(`{"body":"deprecated manual","repo":"api","mode":"manual"}`)
 	if response.Code != http.StatusCreated {
-		t.Fatalf("healthy status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("deprecated manual status=%d body=%s", response.Code, response.Body.String())
 	}
-	var auto core.Task
-	_ = json.Unmarshal(response.Body.Bytes(), &auto)
-	if auto.Mode != core.TaskModeAuto || auto.SpecApproval || auto.MergeApproval || auto.Level != core.L0 {
-		t.Fatalf("auto=%+v", auto)
+	var held core.Task
+	_ = json.Unmarshal(response.Body.Bytes(), &held)
+	if !held.Hold || held.Mode != "" || deprecatedEvents(held.ID) != 1 {
+		t.Fatalf("deprecated manual task=%+v", held)
+	}
+
+	response = request(`{"body":"held with gates off","repo":"api","hold":true,"spec_approval":false,"merge_approval":false}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("hold status=%d body=%s", response.Code, response.Body.String())
+	}
+	var explicit core.Task
+	_ = json.Unmarshal(response.Body.Bytes(), &explicit)
+	if !explicit.Hold || explicit.SpecApproval || explicit.MergeApproval || deprecatedEvents(explicit.ID) != 0 {
+		t.Fatalf("hold task=%+v", explicit)
+	}
+
+	if response := request(`{"body":"bad","repo":"api","mode":"turbo"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid mode status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -462,7 +524,7 @@ func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *
 		}
 		return "Generated task title", nil
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Describe the requested change","repo":"api","source":"dashboard","mode":"manual","spec_approval":false,"merge_approval":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Describe the requested change","repo":"api","source":"dashboard","hold":true,"spec_approval":false,"merge_approval":true}`))
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)
@@ -473,7 +535,7 @@ func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *
 	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
-	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != core.TaskModeManual || task.SpecApproval || !task.MergeApproval {
+	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != "" || !task.Hold || task.SpecApproval || !task.MergeApproval {
 		t.Fatalf("generated=%d task=%+v", generated, task)
 	}
 	persisted, err := st.GetTask(store.WithWorkspace(t.Context(), "demo"), task.ID)

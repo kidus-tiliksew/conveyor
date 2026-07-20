@@ -13,8 +13,8 @@ function repoColor(seed: string) {
   return repoHues[Math.abs(hash) % repoHues.length]
 }
 
-// One board card (spec §13.3): ID, title, execution-mode badge, provenance
-// chip, recency — "Needs attention" is the only alarm on the page.
+// One board card (spec §13.3, amended by §21.31): ID, title, hold chip,
+// provenance chip, recency — "Needs attention" is the only alarm on the page.
 export function TaskCard({ item, selected }: { item: ActivitySummary; selected: boolean }) {
   const provenance = parseProvenance(item.task.source)
   const lastAt = item.last_event_at || item.task.created_at
@@ -37,7 +37,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
         {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
-        <Badge variant="mono" className="capitalize">{item.task.mode || 'manual'}</Badge>
+        {item.task.hold && <Badge variant="mono">Held</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent" className="max-w-36 truncate">{provenance.label}</Badge>
       </div>

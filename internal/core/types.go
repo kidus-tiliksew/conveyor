@@ -36,8 +36,9 @@ func InitialStage(level EscalationLevel) Stage {
 	return StageTriage
 }
 
-// TaskMode controls whether an enrolled Conveyor worker may claim a task's
-// work orders. Human-attached MCP agents may claim either mode (spec §21.13).
+// TaskMode is the retired auto/manual execution mode (spec §21.31). It
+// survives only to parse deprecated intake input and render historical
+// records; behavior is governed by Task.Hold.
 type TaskMode string
 
 const (
@@ -47,32 +48,19 @@ const (
 
 func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
 
-// LegacyPolicy preserves the accepted L0-L3 meaning for historical callers
-// while new intake persists the three independent Phase 5.1 decisions.
-func LegacyPolicy(level EscalationLevel) (TaskMode, bool, bool) {
+// LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
+// hold (the §21.31 successor of Manual), spec approval, merge approval.
+func LegacyPolicy(level EscalationLevel) (bool, bool, bool) {
 	switch level {
 	case L0:
-		return TaskModeAuto, false, false
+		return false, false, false
 	case L1:
-		return TaskModeAuto, false, true
+		return false, false, true
 	case L2:
-		return TaskModeAuto, true, true
+		return false, true, true
 	default:
-		return TaskModeManual, true, true
+		return true, true, true
 	}
-}
-
-func LegacyLevel(mode TaskMode, specApproval, mergeApproval bool) EscalationLevel {
-	if mode == TaskModeManual {
-		return L3
-	}
-	if specApproval {
-		return L2
-	}
-	if mergeApproval {
-		return L1
-	}
-	return L0
 }
 
 // EscalationLevel is the degree of human involvement (spec §13.1).
@@ -118,7 +106,8 @@ type Task struct {
 	Body          string                `json:"body"`  // free-form description; becomes part of the prompt
 	Class         string                `json:"class"` // bug | feature | chore
 	Level         EscalationLevel       `json:"level"`
-	Mode          TaskMode              `json:"mode"`
+	Mode          TaskMode              `json:"mode,omitempty"` // legacy historical record (spec §21.31); never read for behavior
+	Hold          bool                  `json:"hold,omitempty"` // reservation from the worker daemon (spec §21.31)
 	SpecApproval  bool                  `json:"spec_approval"`
 	MergeApproval bool                  `json:"merge_approval"`
 	PolicyVersion int                   `json:"policy_version"`

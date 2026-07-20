@@ -111,7 +111,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			BaseBranch:    stringArg("base_branch"),
 			Source:        stringArg("source"),
 			Level:         core.EscalationLevel(stringArg("level")),
-			Mode:          core.TaskMode(stringArg("mode")),
+			Mode:          core.TaskMode(stringArg("mode")), // deprecated §21.31: manual→hold, auto→no-op
+			Hold:          boolArg(args, "hold") != nil && *boolArg(args, "hold"),
 			SpecApproval:  boolArg(args, "spec_approval"),
 			MergeApproval: boolArg(args, "merge_approval"),
 			Setup:         stringArg("setup"),
@@ -127,7 +128,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	switch name {
 	case "list_work_orders":
 		if workerAuth {
-			items, listErr := s.Workers.ListAuto(ctx, worker)
+			items, listErr := s.Workers.ListClaimable(ctx, worker)
 			if listErr != nil {
 				return nil, listErr
 			}
@@ -145,7 +146,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		claim := core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), ClaimantID: stringArg("claimant_id"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: lease}
 		if workerAuth {
-			return s.Workers.ClaimAuto(ctx, worker, stringArg("work_order_id"), claim)
+			return s.Workers.ClaimForWorker(ctx, worker, stringArg("work_order_id"), claim)
 		}
 		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), claim)
 	case "redispatch_work_order":
@@ -297,7 +298,7 @@ func mcpTools() []map[string]any {
 	num := map[string]string{"type": "number"}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": str, "repo": str, "base_branch": str, "source": str, "setup": str, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": str, "repo": str, "base_branch": str, "source": str, "setup": str, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; an operator-attached agent claims it explicitly (spec §21.31)."}, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}, "description": "Deprecated (spec §21.31): manual maps to hold=true, auto is a no-op."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out implement and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},

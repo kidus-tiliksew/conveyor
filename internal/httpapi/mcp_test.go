@@ -184,7 +184,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 
 	call := func(taskBody string) (core.Task, bool, bool) {
 		t.Helper()
-		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "create_task", "arguments": map[string]any{"body": taskBody, "repo": "api", "source": "mcp:test-issue", "mode": "manual", "spec_approval": true, "merge_approval": true, "idempotency_key": "issue-42"}}})
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "create_task", "arguments": map[string]any{"body": taskBody, "repo": "api", "source": "mcp:test-issue", "hold": true, "spec_approval": true, "merge_approval": true, "idempotency_key": "issue-42"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +257,7 @@ func TestMCPCreateTaskSelectsSetupAndRejectsUnknownName(t *testing.T) {
 	}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "MCP setup", nil }
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	result, err := server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "mode": "manual", "setup": "backend", "idempotency_key": "setup-ok"})
+	result, err := server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "setup": "backend", "idempotency_key": "setup-ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestMCPCreateTaskSelectsSetupAndRejectsUnknownName(t *testing.T) {
 	if created.SetupName != "backend" || created.SetupContract.ExecutionSettings.Implementation.Harness != "codex" {
 		t.Fatalf("created=%+v", created)
 	}
-	if _, err = server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "mode": "manual", "setup": "missing", "idempotency_key": "setup-missing"}); err == nil || !strings.Contains(err.Error(), "unknown setup") {
+	if _, err = server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "setup": "missing", "idempotency_key": "setup-missing"}); err == nil || !strings.Contains(err.Error(), "unknown setup") {
 		t.Fatalf("unknown setup error=%v", err)
 	}
 }
@@ -293,13 +293,13 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	server.Workspace, server.ConfigProvider, server.Workers = "demo", provider, workers
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Stable retry", nil }
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	arguments := map[string]any{"workspace_id": "demo", "body": "Keep retry policy stable", "repo": "api", "mode": "auto", "idempotency_key": "stable-policy"}
+	arguments := map[string]any{"workspace_id": "demo", "body": "Keep retry policy stable", "repo": "api", "idempotency_key": "stable-policy"}
 	firstResult, err := server.callMCPTool(request, "create_task", arguments)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := firstResult.(map[string]any)["task"].(core.Task)
-	if first.Mode != core.TaskModeAuto || !first.SpecApproval || !first.MergeApproval {
+	if first.Mode != "" || first.Hold || !first.SpecApproval || !first.MergeApproval {
 		t.Fatalf("first=%+v", first)
 	}
 

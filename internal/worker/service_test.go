@@ -50,8 +50,8 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 		t.Fatalf("auto unavailable: %s", reason)
 	}
 
-	createOrder := func(taskID string, mode core.TaskMode) {
-		task := core.Task{ID: taskID, Workspace: "demo", Mode: mode, SpecApproval: true, MergeApproval: true, PolicyVersion: 1, Level: core.LegacyLevel(mode, true, true), State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	createOrder := func(taskID string, hold bool) {
+		task := core.Task{ID: taskID, Workspace: "demo", Hold: hold, SpecApproval: true, MergeApproval: true, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 		if err := st.CreateTask(workerCtx, task); err != nil {
 			t.Fatal(err)
 		}
@@ -63,13 +63,27 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	createOrder("auto-task", core.TaskModeAuto)
-	createOrder("manual-task", core.TaskModeManual)
-	listed, err := service.ListAuto(workerCtx, worker)
+	createOrder("auto-task", false)
+	createOrder("manual-task", true)
+	listed, err := service.ListClaimable(workerCtx, worker)
 	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "enforced" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
-	claimed, err := service.ClaimAuto(workerCtx, worker, listed[0].Order.ID, core.WorkOrderClaim{SessionID: "session-a", ClientToken: "child-token"})
+	// Held tasks are rejected at claim time (spec §21.31 change 2), and a
+	// cleared hold releases the order back to worker claimability.
+	if _, claimErr := service.ClaimForWorker(workerCtx, worker, "manual-task-implement-1", core.WorkOrderClaim{SessionID: "session-held", ClientToken: "held-token"}); claimErr == nil || !strings.Contains(claimErr.Error(), "held") {
+		t.Fatalf("held claim err=%v", claimErr)
+	}
+	if _, holdErr := st.SetTaskHold(workerCtx, "manual-task", false); holdErr != nil {
+		t.Fatal(holdErr)
+	}
+	if relisted, relistErr := service.ListClaimable(workerCtx, worker); relistErr != nil || len(relisted) != 2 {
+		t.Fatalf("relisted=%+v err=%v", relisted, relistErr)
+	}
+	if _, holdErr := st.SetTaskHold(workerCtx, "manual-task", true); holdErr != nil {
+		t.Fatal(holdErr)
+	}
+	claimed, err := service.ClaimForWorker(workerCtx, worker, listed[0].Order.ID, core.WorkOrderClaim{SessionID: "session-a", ClientToken: "child-token"})
 	if err != nil || claimed.WorkerID != worker.ID {
 		t.Fatalf("claimed=%+v err=%v", claimed, err)
 	}
@@ -84,8 +98,8 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
 
-	createOrder("submitted-task", core.TaskModeAuto)
-	submittedClaim, err := service.ClaimAuto(workerCtx, worker, "submitted-task-implement-1", core.WorkOrderClaim{SessionID: "session-b", ClientToken: "submitted-token"})
+	createOrder("submitted-task", false)
+	submittedClaim, err := service.ClaimForWorker(workerCtx, worker, "submitted-task-implement-1", core.WorkOrderClaim{SessionID: "session-b", ClientToken: "submitted-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +125,7 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	}
 	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "claude"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "claude", Execution: config.ExecutionMCP}, "review": {Harness: "claude", Execution: config.ExecutionMCP}}}}
 	service := &Service{Store: st, Now: func() time.Time { return now }}
-	task := core.Task{ID: "worker-status-task", Workspace: "demo", Mode: core.TaskModeAuto, NextStage: core.StageReview}
+	task := core.Task{ID: "worker-status-task", Workspace: "demo", NextStage: core.StageReview}
 	orders := []core.WorkOrder{{ID: "seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderQueued, RequiredHarness: "claude", RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired}}
 	status := service.TaskAvailability(ctx, cfg, task, orders)
 	if status.Available || status.QueueContext != "interrupted" || status.LastHeartbeatAge != "0s" || len(status.RequiredHarnesses) != 1 || status.RequiredHarnesses[0] != "claude" {
@@ -129,7 +143,7 @@ func TestTaskAvailabilityReturnsEmptyRequiredHarnessesAsArray(t *testing.T) {
 	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
 		store.WithWorkspace(t.Context(), "demo"),
 		&config.Config{Workspace: "demo"},
-		core.Task{ID: "unrouted-task", Workspace: "demo", Mode: core.TaskModeAuto},
+		core.Task{ID: "unrouted-task", Workspace: "demo"},
 		nil,
 	)
 	if status.RequiredHarnesses == nil || len(status.RequiredHarnesses) != 0 {
@@ -202,7 +216,7 @@ func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testin
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	task := core.Task{ID: "route-health", Workspace: "demo", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: "route-health", Workspace: "demo", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -213,10 +227,10 @@ func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testin
 	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := service.ListAuto(ctx, worker); err != nil || len(listed) != 0 {
+	if listed, err := service.ListClaimable(ctx, worker); err != nil || len(listed) != 0 {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
-	if _, err := service.ClaimAuto(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token"}); err == nil || !strings.Contains(err.Error(), "reviewer") {
+	if _, err := service.ClaimForWorker(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token"}); err == nil || !strings.Contains(err.Error(), "reviewer") {
 		t.Fatalf("claim error=%v", err)
 	}
 }
@@ -265,7 +279,7 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
 	orders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: orders, ConfigProvider: orders.ConfigProvider, Now: func() time.Time { return now }}
-	task := core.Task{ID: "implementation-effort", Workspace: "demo", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: "implementation-effort", Workspace: "demo", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +298,7 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 	}
 	snapshotHarness := harnessFromSnapshot(snapshot)
 	worker := core.Worker{ID: "implementation-worker", Workspace: "demo", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Fingerprint: HarnessFingerprint(snapshotHarness), Healthy: true}}, CreatedAt: now}
-	listed, err := service.ListAuto(ctx, worker)
+	listed, err := service.ListClaimable(ctx, worker)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
@@ -303,7 +317,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
 	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Effort: "high"}, {Model: "claude-review", Harness: "claude", Effort: "high"}}}
 	cfg.Repos = []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main"}}
-	task := core.Task{ID: "panel-task", Workspace: "demo", Repo: "app", Mode: core.TaskModeAuto, PolicyVersion: 1, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
+	task := core.Task{ID: "panel-task", Workspace: "demo", Repo: "app", PolicyVersion: 1, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -334,10 +348,10 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	}
 	unhealthy := worker
 	unhealthy.Probes = []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: false}}
-	if blocked, listErr := service.ListAuto(ctx, unhealthy); listErr != nil || len(blocked) != 0 {
+	if blocked, listErr := service.ListClaimable(ctx, unhealthy); listErr != nil || len(blocked) != 0 {
 		t.Fatalf("unhealthy panel harness was dispatchable: %+v err=%v", blocked, listErr)
 	}
-	listed, err := service.ListAuto(ctx, worker)
+	listed, err := service.ListClaimable(ctx, worker)
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
@@ -361,7 +375,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	if err != nil {
 		t.Fatalf("snapshotted harness probe after hot reload: %v", err)
 	}
-	listed, err = restarted.ListAuto(ctx, worker)
+	listed, err = restarted.ListClaimable(ctx, worker)
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("restarted dispatch after hot reload=%+v err=%v", listed, err)
 	}
@@ -372,14 +386,14 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 	if bySeat[1].Model != "gpt-review" || bySeat[1].Effort != "high" || bySeat[1].Harness.Name != "codex" || bySeat[1].Harness.Command[0] != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Effort != "high" || bySeat[2].Harness.Name != "claude" || bySeat[2].Harness.Command[0] != "claude" {
 		t.Fatalf("seat dispatch=%+v", bySeat)
 	}
-	first, err := restarted.ClaimAuto(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})
+	first, err := restarted.ClaimForWorker(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})
 	if err != nil || first.ModelEnforcement != "worker-pinned" || first.Model != "gpt-review" {
 		t.Fatalf("first claim=%+v err=%v", first, err)
 	}
-	if _, err = restarted.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-2"}); err == nil || !strings.Contains(err.Error(), "session independence") {
+	if _, err = restarted.ClaimForWorker(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-2"}); err == nil || !strings.Contains(err.Error(), "session independence") {
 		t.Fatalf("same-session claim error=%v", err)
 	}
-	second, err := restarted.ClaimAuto(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-2", ClientToken: "review-token-2"})
+	second, err := restarted.ClaimForWorker(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-2", ClientToken: "review-token-2"})
 	if err != nil || second.ModelEnforcement != "worker-pinned" || second.Model != "claude-review" {
 		t.Fatalf("second claim=%+v err=%v", second, err)
 	}

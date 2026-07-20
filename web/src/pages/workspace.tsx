@@ -6,7 +6,7 @@ import { useOperatorToken, useWorkspace, useWorkspaceSelection } from '../compon
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Input, Select } from '../components/ui/input'
+import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Field } from '../components/workspace/field'
 import { HarnessCard, latestProbe } from '../components/workspace/harness-card'
@@ -143,9 +143,9 @@ function ExecutionTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfi
   // Collapsed by default; expansion is keyed by index so renames keep it open.
   const [expanded, setExpanded] = useState<Record<number, boolean>>({})
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
-  // Auto is gated per setup (spec §21.27 change 6); the policy default follows the default setup.
-  const autoForSetup = (name: string) => workerHealth?.setup_serviceability?.[name]?.auto_available ?? workerHealth?.auto_available === true
-  const autoDefault = autoForSetup(draft.default_setup)
+  // Per-setup serviceability is advisory (spec §21.31): it explains whether
+  // the worker can serve a setup, and never gates anything.
+  const workerReadyFor = (name: string) => workerHealth?.setup_serviceability?.[name]?.auto_available ?? workerHealth?.auto_available === true
   const uniqueName = (base: string) => { let name = base; let suffix = 2; while (draft.setups.some((setup) => setup.name === name)) name = `${base}-${suffix++}`; return name }
   const addSetup = () => {
     const base = draft.setups.find((setup) => setup.name === draft.default_setup) ?? draft.setups[0]
@@ -169,13 +169,7 @@ function ExecutionTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfi
   return <div className="space-y-4">
     <Card>
       <CardHeader><CardTitle>Policy</CardTitle><span className="text-xs text-faint">Dispatch worker · confinement none · authentication BYOA.</span></CardHeader>
-      <CardContent className="grid gap-x-6 gap-y-4 md:grid-cols-3">
-        <Field label="Default mode" hint="Auto dispatches to your worker automatically. Manual waits for you to claim each work order.">
-          <Select aria-label="Default mode" value={draft.execution.default_mode} onChange={(event) => update({ execution: { ...draft.execution, default_mode: event.target.value as 'auto' | 'manual' } })}>
-            <option value="auto" disabled={!autoDefault}>Auto — dispatch to worker{autoDefault ? '' : ' (worker unavailable)'}</option>
-            <option value="manual">Manual — claim by hand</option>
-          </Select>
-        </Field>
+      <CardContent className="grid gap-x-6 gap-y-4 md:grid-cols-2">
         <div className="space-y-3">
           <div className="flex items-center gap-3"><Switch aria-label="Spec approval" checked={draft.execution.spec_approval} onChange={(checked) => update({ execution: { ...draft.execution, spec_approval: checked } })} /><div><p className="text-sm font-medium">Pause for spec approval</p><p className="text-xs text-faint">You approve the spec before implementation starts</p></div></div>
           <div className="flex items-center gap-3"><Switch aria-label="Merge approval" checked={draft.execution.merge_approval} onChange={(checked) => update({ execution: { ...draft.execution, merge_approval: checked } })} /><div><p className="text-sm font-medium">Pause before merge</p><p className="text-xs text-faint">You approve the final PR before it merges</p></div></div>
@@ -195,7 +189,7 @@ function ExecutionTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfi
       <div className="space-y-3">
         {draft.setups.map((setup, index) => <SetupCard key={index} document={draft} setup={setup} index={index}
           expanded={Boolean(expanded[index])} onToggle={() => setExpanded({ ...expanded, [index]: !expanded[index] })}
-          autoAvailable={autoForSetup(setup.name)} autoReason={workerHealth?.setup_serviceability?.[setup.name]?.auto_unavailable_reason ?? workerHealth?.auto_unavailable_reason}
+          workerReady={workerReadyFor(setup.name)} workerReason={workerHealth?.setup_serviceability?.[setup.name]?.auto_unavailable_reason ?? workerHealth?.auto_unavailable_reason}
           setDraft={setDraft} onDuplicate={() => duplicateSetup(index)} onDelete={() => deleteSetup(index)} />)}
       </div>
     </div>
