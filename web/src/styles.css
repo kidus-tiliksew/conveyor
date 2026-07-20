@@ -31,6 +31,12 @@
 
   --color-rail: #f7f8fa;
   --color-rail-raised: #e9ebf0;
+  --color-workspace-tile: #e2e5ea;
+  --color-workspace-tile-hover: #d6dae1;
+  --color-workspace-tile-foreground: #4d535d;
+  --color-workspace-active: #ffffff;
+  --color-workspace-active-foreground: #16181d;
+  --color-workspace-active-ring: #aeb4bd;
 
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -89,6 +95,12 @@
 
   --color-rail: #12151a;
   --color-rail-raised: #252b34;
+  --color-workspace-tile: #343a43;
+  --color-workspace-tile-hover: #444b56;
+  --color-workspace-tile-foreground: #d7dbe2;
+  --color-workspace-active: #f2f4f7;
+  --color-workspace-active-foreground: #16181d;
+  --color-workspace-active-ring: #bbc0c7;
 }
 
 body {
