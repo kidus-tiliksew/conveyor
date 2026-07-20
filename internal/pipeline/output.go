@@ -5,6 +5,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -29,7 +30,7 @@ type AcceptanceCriterion struct {
 	ID        string `yaml:"id" json:"id"`
 	Criterion string `yaml:"criterion" json:"criterion"`
 	Verify    string `yaml:"verify" json:"verify"`
-	Ref       string `yaml:"ref" json:"ref,omitempty"`
+	Ref       string `yaml:"ref,omitempty" json:"ref,omitempty"`
 }
 
 type DecompositionItem struct {
@@ -43,6 +44,14 @@ type Spec struct {
 	Markdown      string
 	Acceptance    []AcceptanceCriterion
 	Decomposition []DecompositionItem
+}
+
+// StructuredSpec is the model-owned semantic spec result. Conveyor validates
+// this value and owns the canonical machine-block serialization (spec §4.1).
+type StructuredSpec struct {
+	Markdown      string                `json:"markdown"`
+	Acceptance    []AcceptanceCriterion `json:"acceptance"`
+	Decomposition []DecompositionItem   `json:"decomposition"`
 }
 
 var (
@@ -94,53 +103,215 @@ func ParseSpec(output string) (Spec, error) {
 	if !strings.Contains(markdown, "## Intent") || !strings.Contains(markdown, "## Non-goals") {
 		return Spec{}, fmt.Errorf("spec requires Intent and Non-goals sections")
 	}
-	acceptanceRaw, ok := fence(markdown, "acceptance")
-	if !ok {
-		return Spec{}, fmt.Errorf("spec requires one conveyor:acceptance block")
+	acceptanceBlocks := fences(markdown, "acceptance")
+	if len(acceptanceBlocks) == 0 {
+		return Spec{}, missingSpecFenceError(markdown, "acceptance")
+	}
+	if len(acceptanceBlocks) != 1 {
+		return Spec{}, fmt.Errorf("spec requires exactly one conveyor:acceptance block; found %d", len(acceptanceBlocks))
 	}
 	var acceptance []AcceptanceCriterion
-	if err := yaml.Unmarshal([]byte(acceptanceRaw), &acceptance); err != nil {
+	if err := decodeYAMLList(acceptanceBlocks[0], &acceptance); err != nil {
 		return Spec{}, fmt.Errorf("acceptance block: %w", err)
 	}
+	if err := validateAcceptance(acceptance); err != nil {
+		return Spec{}, err
+	}
+	decomposition := []DecompositionItem{}
+	decompositionBlocks := fences(markdown, "decomposition")
+	if len(decompositionBlocks) > 1 {
+		return Spec{}, fmt.Errorf("spec permits at most one conveyor:decomposition block; found %d", len(decompositionBlocks))
+	}
+	if len(decompositionBlocks) == 1 {
+		if err := decodeYAMLList(decompositionBlocks[0], &decomposition); err != nil {
+			return Spec{}, fmt.Errorf("decomposition block: %w", err)
+		}
+		if err := validateDecomposition(decomposition); err != nil {
+			return Spec{}, err
+		}
+	}
+	return Spec{Markdown: markdown, Acceptance: acceptance, Decomposition: decomposition}, nil
+}
+
+// StructuredSpecSchema is the strict Responses-compatible contract used only
+// for in-process specification generation. Optional decomposition is encoded
+// as an empty list; an optional acceptance ref is encoded as string or null.
+func StructuredSpecSchema() map[string]any {
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"markdown": map[string]any{"type": "string", "minLength": 1},
+			"acceptance": map[string]any{
+				"type": "array", "minItems": 1,
+				"items": map[string]any{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]any{
+						"id":        map[string]any{"type": "string", "pattern": `^AC-[1-9][0-9]*$`},
+						"criterion": map[string]any{"type": "string", "minLength": 1},
+						"verify":    map[string]any{"type": "string", "enum": []string{"test", "playwright", "computer-use", "human"}},
+						"ref":       map[string]any{"type": []string{"string", "null"}},
+					},
+					"required": []string{"id", "criterion", "verify", "ref"},
+				},
+			},
+			"decomposition": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]any{
+						"id":         map[string]any{"type": "string", "pattern": `^SUB-[1-9][0-9]*$`},
+						"repo":       map[string]any{"type": "string", "minLength": 1},
+						"summary":    map[string]any{"type": "string", "minLength": 1},
+						"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "string", "pattern": `^SUB-[1-9][0-9]*$`}},
+					},
+					"required": []string{"id", "repo", "summary", "depends_on"},
+				},
+			},
+		},
+		"required": []string{"markdown", "acceptance", "decomposition"},
+	}
+}
+
+// RenderStructuredSpec validates typed model output, renders exact fenced YAML
+// blocks, and then re-parses the document through ParseSpec as the final
+// invariant. Model-authored machine fences are rejected rather than repaired.
+func RenderStructuredSpec(output string) (Spec, error) {
+	var value StructuredSpec
+	decoder := json.NewDecoder(strings.NewReader(output))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return Spec{}, fmt.Errorf("structured spec output must match the required object shape: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Spec{}, fmt.Errorf("structured spec output contains more than one JSON value")
+		}
+		return Spec{}, fmt.Errorf("structured spec output has trailing data: %w", err)
+	}
+	markdown := strings.TrimSpace(value.Markdown)
+	if !strings.Contains(markdown, "## Intent") || !strings.Contains(markdown, "## Non-goals") {
+		return Spec{}, fmt.Errorf("structured spec markdown requires Intent and Non-goals sections")
+	}
+	if machineFenceNearMiss(markdown, "acceptance") != "" || machineFenceNearMiss(markdown, "decomposition") != "" {
+		return Spec{}, fmt.Errorf("structured spec markdown must not contain model-authored conveyor machine fences; Conveyor serializes them")
+	}
+	if err := validateAcceptance(value.Acceptance); err != nil {
+		return Spec{}, err
+	}
+	if err := validateDecomposition(value.Decomposition); err != nil {
+		return Spec{}, err
+	}
+	acceptanceYAML, err := yaml.Marshal(value.Acceptance)
+	if err != nil {
+		return Spec{}, fmt.Errorf("render acceptance block: %w", err)
+	}
+	var rendered strings.Builder
+	rendered.WriteString(markdown)
+	rendered.WriteString("\n\n```conveyor:acceptance\n")
+	rendered.Write(acceptanceYAML)
+	rendered.WriteString("```")
+	if len(value.Decomposition) != 0 {
+		decompositionYAML, marshalErr := yaml.Marshal(value.Decomposition)
+		if marshalErr != nil {
+			return Spec{}, fmt.Errorf("render decomposition block: %w", marshalErr)
+		}
+		rendered.WriteString("\n\n```conveyor:decomposition\n")
+		rendered.Write(decompositionYAML)
+		rendered.WriteString("```")
+	}
+	parsed, err := ParseSpec(rendered.String())
+	if err != nil {
+		return Spec{}, fmt.Errorf("Conveyor-rendered spec failed canonical ParseSpec validation: %w", err)
+	}
+	return parsed, nil
+}
+
+func validateAcceptance(acceptance []AcceptanceCriterion) error {
 	if len(acceptance) == 0 {
-		return Spec{}, fmt.Errorf("acceptance block must not be empty")
+		return fmt.Errorf("acceptance must be a non-empty list")
 	}
 	seen := map[string]bool{}
-	for _, criterion := range acceptance {
-		if !acceptanceIDPattern.MatchString(criterion.ID) || seen[criterion.ID] {
-			return Spec{}, fmt.Errorf("acceptance IDs must be unique AC-n values")
+	for index, criterion := range acceptance {
+		if !acceptanceIDPattern.MatchString(criterion.ID) {
+			return fmt.Errorf("acceptance item %d has invalid id %q; want AC-n", index+1, criterion.ID)
+		}
+		if seen[criterion.ID] {
+			return fmt.Errorf("acceptance contains duplicate id %q", criterion.ID)
 		}
 		seen[criterion.ID] = true
 		if strings.TrimSpace(criterion.Criterion) == "" {
-			return Spec{}, fmt.Errorf("acceptance criterion %s is empty", criterion.ID)
+			return fmt.Errorf("acceptance criterion %s has an empty criterion", criterion.ID)
 		}
 		switch criterion.Verify {
 		case "test", "playwright", "computer-use", "human":
 		default:
-			return Spec{}, fmt.Errorf("acceptance criterion %s has invalid verify method", criterion.ID)
+			return fmt.Errorf("acceptance criterion %s has invalid verify value %q; want test, playwright, computer-use, or human", criterion.ID, criterion.Verify)
 		}
 	}
-	decomposition := []DecompositionItem{}
-	if raw, exists := fence(markdown, "decomposition"); exists {
-		if err := yaml.Unmarshal([]byte(raw), &decomposition); err != nil {
-			return Spec{}, fmt.Errorf("decomposition block: %w", err)
+	return nil
+}
+
+func validateDecomposition(decomposition []DecompositionItem) error {
+	ids := map[string]bool{}
+	for index, item := range decomposition {
+		if !decompositionIDPattern.MatchString(item.ID) {
+			return fmt.Errorf("decomposition item %d has invalid id %q; want SUB-n", index+1, item.ID)
 		}
-		ids := map[string]bool{}
-		for _, item := range decomposition {
-			if !decompositionIDPattern.MatchString(item.ID) || ids[item.ID] || item.Repo == "" || item.Summary == "" {
-				return Spec{}, fmt.Errorf("decomposition items require unique SUB-n IDs, repo, and summary")
-			}
-			ids[item.ID] = true
+		if ids[item.ID] {
+			return fmt.Errorf("decomposition contains duplicate id %q", item.ID)
 		}
-		for _, item := range decomposition {
-			for _, dependency := range item.DependsOn {
-				if !ids[dependency] {
-					return Spec{}, fmt.Errorf("decomposition %s depends on unknown %s", item.ID, dependency)
-				}
+		if strings.TrimSpace(item.Repo) == "" {
+			return fmt.Errorf("decomposition %s has an empty repo", item.ID)
+		}
+		if strings.TrimSpace(item.Summary) == "" {
+			return fmt.Errorf("decomposition %s has an empty summary", item.ID)
+		}
+		ids[item.ID] = true
+	}
+	for _, item := range decomposition {
+		for _, dependency := range item.DependsOn {
+			if !ids[dependency] {
+				return fmt.Errorf("decomposition %s depends on unknown %s", item.ID, dependency)
 			}
 		}
 	}
-	return Spec{Markdown: markdown, Acceptance: acceptance, Decomposition: decomposition}, nil
+	return nil
+}
+
+func decodeYAMLList(raw string, destination any) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
+		return err
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.SequenceNode {
+		if len(document.Content) != 0 && document.Content[0].Kind == yaml.MappingNode && len(document.Content[0].Content) != 0 {
+			return fmt.Errorf("must be a top-level YAML list; wrapper key %q is not allowed", document.Content[0].Content[0].Value)
+		}
+		return fmt.Errorf("must be a top-level YAML list")
+	}
+	if err := document.Content[0].Decode(destination); err != nil {
+		return err
+	}
+	return nil
+}
+
+func missingSpecFenceError(markdown, kind string) error {
+	if opening := machineFenceNearMiss(markdown, kind); opening != "" {
+		return fmt.Errorf("spec requires exact ```conveyor:%s fence; rejected near-miss opening %q", kind, opening)
+	}
+	return fmt.Errorf("spec requires one conveyor:%s block", kind)
+}
+
+func machineFenceNearMiss(output, kind string) string {
+	needle := "conveyor:" + kind
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") && strings.Contains(trimmed, needle) {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func parseJSONFence(output, kind string, destination any) error {
@@ -173,4 +344,23 @@ func fence(output, kind string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(output[start : start+end]), true
+}
+
+func fences(output, kind string) []string {
+	marker := "```conveyor:" + kind
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	blocks := []string{}
+	for index := 0; index < len(lines); index++ {
+		if lines[index] != marker {
+			continue
+		}
+		start := index + 1
+		for index = start; index < len(lines); index++ {
+			if lines[index] == "```" {
+				blocks = append(blocks, strings.TrimSpace(strings.Join(lines[start:index], "\n")))
+				break
+			}
+		}
+	}
+	return blocks
 }
