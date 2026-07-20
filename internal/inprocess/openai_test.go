@@ -21,6 +21,7 @@ import (
 func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 	t.Parallel()
 	const key = "sk-test"
+	const model = "provider-routed-model"
 	var responseRequest map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -42,7 +43,7 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&responseRequest); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.WriteString(w, `{"model":"gpt-5.6-terra","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
+			_, _ = io.WriteString(w, `{"model":"provider-routed-model","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`)
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -53,7 +54,7 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf", Kind: AttachmentDocument, Content: []byte("pdf-bytes")},
 		{ID: "audio-id", Name: "clip.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio-bytes")},
 	}}
-	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", input)
+	result, err := (&OpenAI{APIKey: key, BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), model, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 		}
 	}
 	serverURL, _ := url.Parse(server.URL)
-	if result.Diagnostic == nil || result.Diagnostic.Model != "gpt-5.6-terra" || result.Diagnostic.AttachmentCount != 3 || result.Diagnostic.Endpoint != serverURL.Hostname() {
+	if result.Diagnostic == nil || result.Diagnostic.Model != model || result.Diagnostic.AttachmentCount != 3 || result.Diagnostic.Endpoint != serverURL.Hostname() {
 		t.Fatalf("diagnostic = %+v", result.Diagnostic)
 	}
 }
@@ -133,7 +134,7 @@ func TestResponseEndpointHostExcludesURLMetadata(t *testing.T) {
 	}
 }
 
-func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t *testing.T) {
+func TestOpenAIRunRejectsMalformedImagesBeforeProviderSubmission(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, model string
@@ -141,7 +142,6 @@ func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t 
 		want        string
 		phase       string
 	}{
-		{name: "unsupported model", model: "text-only-test", content: append([]byte("\x89PNG\r\n\x1a\n"), 'x'), want: "capability validation", phase: "capability_validation"},
 		{name: "malformed image", model: "gpt-5.6-terra", content: []byte("not-png"), want: "does not match", phase: "attachment_validation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

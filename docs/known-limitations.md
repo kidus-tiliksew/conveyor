@@ -60,16 +60,14 @@ historical attachments as task context.
 
 OpenAI Responses requests send supported PNG, JPEG, non-animated GIF, and WEBP
 artifacts as Base64 data URLs in `input_image.image_url`; images are never sent
-as generic `input_file` parts. Conveyor validates the declared image format and
-the configured model family before provider submission. The configured GPT-5.6
-family, including `gpt-5.6-luna` and `gpt-5.6-terra`, is explicitly
-image-capable. Other documented vision families are recognized in the
-in-process capability table; an unknown or unsupported model fails locally
-with an actionable diagnostic. Conveyor does not silently switch models.
+as generic `input_file` parts. Conveyor validates the declared image format
+before provider submission, while the provider determines whether the
+configured model supports image input. Conveyor does not silently switch
+models.
 
 Durable failure evidence identifies the phase (`attachment_preparation`,
-`attachment_validation`, `client_validation`, `capability_validation`,
-`provider_response`, `retry_exhausted`, or `response_validation`) and records
+`attachment_validation`, `client_validation`, `provider_response`,
+`retry_exhausted`, or `response_validation`) and records
 safe provider/model, attachment type/count, attempt count, HTTP status,
 provider code, and upstream request ID fields when available. Credentials,
 authorization headers, and binary attachment bytes are omitted and the

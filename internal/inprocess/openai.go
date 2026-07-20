@@ -335,30 +335,15 @@ func responseEndpointHost(endpoint string) string {
 }
 
 func validateImageInputs(model, endpoint string, attachments []Attachment) (string, error) {
-	hasImage := false
 	for _, attachment := range attachments {
 		if attachment.Kind != AttachmentImage {
 			continue
 		}
-		hasImage = true
 		if err := validateImageContent(attachment.ContentType, attachment.Content); err != nil {
 			return "attachment_validation", fmt.Errorf("Responses API (%s) image preparation failed for model %q: artifact %s (%s): %w", endpoint, model, attachment.ID, attachment.ContentType, err)
 		}
 	}
-	if hasImage && !supportsImageInput(model) {
-		return "capability_validation", fmt.Errorf("Responses API (%s) image capability validation failed: configured model %q is not in Conveyor's image-capable model families; choose an explicitly image-capable configured model or remove the image attachment", endpoint, model)
-	}
 	return "", nil
-}
-
-func supportsImageInput(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	for _, prefix := range []string{"gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5.1", "gpt-5-", "gpt-4.1", "gpt-4o", "o1", "o3", "o4", "computer-use-preview"} {
-		if strings.HasPrefix(model, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func validateImageContent(contentType string, content []byte) error {
