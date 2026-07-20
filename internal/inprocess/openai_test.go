@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -68,8 +69,28 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 			t.Fatalf("binary request/transcript contract failed for %q: request=%s transcript=%s", encodedBytes, requestText, result.Transcript)
 		}
 	}
-	if result.Diagnostic == nil || result.Diagnostic.Model != "gpt-5.6-terra" || result.Diagnostic.AttachmentCount != 3 {
+	serverURL, _ := url.Parse(server.URL)
+	if result.Diagnostic == nil || result.Diagnostic.Model != "gpt-5.6-terra" || result.Diagnostic.AttachmentCount != 3 || result.Diagnostic.Endpoint != serverURL.Hostname() {
 		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
+func TestOpenAIRunDefaultEndpointIsNamedWithoutRequest(t *testing.T) {
+	t.Parallel()
+	result, err := (&OpenAI{}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
+	if err == nil || !strings.Contains(err.Error(), "Responses API (api.openai.com) client validation failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Endpoint != "api.openai.com" || result.Diagnostic.Provider != "openai_responses" {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+}
+
+func TestResponseEndpointHostExcludesURLMetadata(t *testing.T) {
+	t.Parallel()
+	const endpoint = "https://user:password@openrouter.ai:8443/api/v1?trace=yes#fragment"
+	if got := responseEndpointHost(endpoint); got != "openrouter.ai" {
+		t.Fatalf("responseEndpointHost(%q) = %q", endpoint, got)
 	}
 }
 
@@ -89,14 +110,19 @@ func TestOpenAIRunRejectsUnsupportedOrMalformedImagesBeforeProviderSubmission(t 
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 			defer server.Close()
+			serverURL, _ := url.Parse(server.URL)
+			hostname := serverURL.Hostname()
 			result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), test.model, Input{
 				Prompt: "analyze", Attachments: []Attachment{{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: test.content}},
 			})
-			if err == nil || !strings.Contains(err.Error(), test.want) || calls != 0 {
+			if err == nil || !strings.Contains(err.Error(), "Responses API ("+hostname+")") || !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), server.URL) || calls != 0 {
 				t.Fatalf("error=%v calls=%d", err, calls)
 			}
-			if result.Diagnostic == nil || result.Diagnostic.Phase != test.phase || result.Diagnostic.Provider != "openai_responses" || len(result.Transcript) == 0 {
+			if result.Diagnostic == nil || result.Diagnostic.Phase != test.phase || result.Diagnostic.Provider != "openai_responses" || result.Diagnostic.Endpoint != hostname || len(result.Transcript) == 0 {
 				t.Fatalf("result = %+v", result)
+			}
+			if strings.Contains(string(result.Transcript), server.URL) {
+				t.Fatalf("transcript contains full endpoint URL: %s", result.Transcript)
 			}
 			if strings.Contains(string(result.Transcript), string(test.content)) {
 				t.Fatalf("transcript contains binary input: %s", result.Transcript)
@@ -210,10 +236,10 @@ func TestOpenAIRunBoundsTransportRetriesAndPersistsDiagnostic(t *testing.T) {
 		return nil, fmt.Errorf("connection reset")
 	})}
 	result, err := (&OpenAI{APIKey: "sk-test", Client: httpClient, RetryDelay: time.Millisecond}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
-	if err == nil || attempts != responsesMaxAttempts || result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != responsesMaxAttempts || !result.Diagnostic.Retryable {
+	if err == nil || attempts != responsesMaxAttempts || result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.Endpoint != "api.openai.com" || !result.Diagnostic.Retryable {
 		t.Fatalf("attempts=%d result=%+v err=%v", attempts, result, err)
 	}
-	if !strings.Contains(string(result.Transcript), "connection reset") || strings.Contains(string(result.Transcript), "sk-test") {
+	if !strings.Contains(err.Error(), "Responses API (api.openai.com)") || !strings.Contains(string(result.Transcript), "connection reset") || !strings.Contains(string(result.Transcript), `"endpoint":"api.openai.com"`) || strings.Contains(string(result.Transcript), "sk-test") {
 		t.Fatalf("unsafe or incomplete transcript: %s", result.Transcript)
 	}
 }
@@ -229,22 +255,50 @@ func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"code":"server_error","message":"temporary"}}`)
 	}))
 	defer server.Close()
+	serverURL, _ := url.Parse(server.URL)
+	hostname := serverURL.Hostname()
 	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
 	result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
-	if err == nil || !strings.Contains(err.Error(), "500") {
+	if err == nil || !strings.Contains(err.Error(), "Responses API ("+hostname+") retry_exhausted") || !strings.Contains(err.Error(), "500") || strings.Contains(err.Error(), server.URL) {
 		t.Fatalf("err = %v", err)
 	}
 	if attempts != responsesMaxAttempts {
 		t.Fatalf("attempts = %d, want %d", attempts, responsesMaxAttempts)
 	}
 	wantRequestID := fmt.Sprintf("req-safe-%d", responsesMaxAttempts)
-	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.UpstreamRequest != wantRequestID || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Endpoint != hostname || result.Diagnostic.Provider != "openai_responses" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.UpstreamRequest != wantRequestID || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
 		t.Fatalf("diagnostic = %+v", result.Diagnostic)
 	}
-	for _, expected := range []string{wantRequestID, "server_error", "retry_exhausted"} {
+	for _, expected := range []string{wantRequestID, "server_error", "retry_exhausted", `"endpoint":"` + hostname + `"`} {
 		if !strings.Contains(string(result.Transcript), expected) {
 			t.Fatalf("transcript missing %q: %s", expected, result.Transcript)
 		}
+	}
+	if strings.Contains(string(result.Transcript), server.URL) {
+		t.Fatalf("transcript contains full endpoint URL: %s", result.Transcript)
+	}
+}
+
+func TestOpenAIRunTranscriptionFailureNamesEndpointHost(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/transcriptions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	serverURL, _ := url.Parse(server.URL)
+	hostname := serverURL.Hostname()
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-5.6-terra", Input{
+		Prompt:      "work",
+		Attachments: []Attachment{{ID: "audio-id", Name: "clip.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio")}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Transcription API ("+hostname+") returned 401 Unauthorized") || strings.Contains(err.Error(), server.URL) {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Endpoint != hostname || result.Diagnostic.Provider != "openai_responses" {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
 	}
 }
 

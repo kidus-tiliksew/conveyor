@@ -38,6 +38,55 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'output-invalid' ? {
+		jobs: [
+			...Array.from({ length: 5 }, (_, index) => ({
+				id: `output-invalid-spec-${index + 1}`,
+				task_id: taskId,
+				stage: 'spec',
+				harness: 'codex',
+				model_tier: 'gpt-spec',
+				auth_mode: 'subscription',
+				runner: 'in-process',
+				confinement: 'none',
+				cost_usd: 0,
+				tokens_in: 0,
+				tokens_out: 0,
+				state: 'done',
+				started_at: `2026-07-15T12:0${index}:00Z`,
+				ended_at: `2026-07-15T12:0${index}:30Z`,
+			})),
+			{ id: 'output-invalid-preferred-job', task_id: taskId, stage: 'triage', harness: 'codex', model_tier: 'gpt-triage', runner: 'in-process', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:05:00Z', ended_at: '2026-07-15T12:05:30Z' },
+			{ id: 'output-invalid-preferred-triage', task_id: taskId, stage: 'triage', harness: 'codex', model_tier: 'gpt-triage', runner: 'in-process', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:06:00Z', ended_at: '2026-07-15T12:06:30Z' },
+			{ id: 'output-invalid-preferred-review', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', runner: 'in-process', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: '2026-07-15T12:07:00Z', ended_at: '2026-07-15T12:07:30Z' },
+		],
+		events: [
+			...Array.from({ length: 4 }, (_, index) => ({
+				id: index + 1,
+				task_id: taskId,
+				job_id: `output-invalid-spec-${index + 1}`,
+				kind: 'spec.output_invalid',
+				actor_id: 'pipeline',
+				actor_role: 'system' as const,
+				payload: {
+					error: index === 0 ? 'spec requires one conveyor:acceptance block' : `spec validation error ${index + 1}`,
+					output: index === 0 ? 'PRIVATE REJECTED OUTPUT' : undefined,
+				},
+				at: `2026-07-15T12:0${index}:31Z`,
+			})),
+			{ id: 5, task_id: taskId, job_id: 'output-invalid-spec-5', kind: 'spec.version_created', actor_id: 'pipeline', actor_role: 'system', payload: { version: 1 }, at: '2026-07-15T12:04:31Z' },
+			// A same-stage rejection for another job must not mark the accepted
+			// spec attempt as rejected.
+			{ id: 6, task_id: taskId, job_id: 'output-invalid-unrelated', kind: 'spec.output_invalid', actor_id: 'pipeline', actor_role: 'system', payload: { error: 'unrelated validation error' }, at: '2026-07-15T12:04:32Z' },
+			{ id: 7, task_id: taskId, job_id: 'output-invalid-preferred-job', kind: 'triage.output_invalid', actor_id: 'pipeline', actor_role: 'system', payload: { error: 'superseded job error' }, at: '2026-07-15T12:05:31Z' },
+			{ id: 8, task_id: taskId, job_id: 'output-invalid-preferred-job', kind: 'job.summary', actor_id: 'runner', actor_role: 'runner', payload: { summary: 'Harness narration wins.' }, at: '2026-07-15T12:05:32Z' },
+			{ id: 9, task_id: taskId, job_id: 'output-invalid-preferred-triage', kind: 'triage.output_invalid', actor_id: 'pipeline', actor_role: 'system', payload: { error: 'superseded triage error' }, at: '2026-07-15T12:06:31Z' },
+			{ id: 10, task_id: taskId, job_id: 'output-invalid-preferred-triage', kind: 'triage.completed', actor_id: 'runner', actor_role: 'runner', payload: { summary: 'Accepted triage summary wins.' }, at: '2026-07-15T12:06:32Z' },
+			{ id: 11, task_id: taskId, job_id: 'output-invalid-preferred-review', kind: 'review.output_invalid', actor_id: 'pipeline', actor_role: 'system', payload: { error: 'superseded review error' }, at: '2026-07-15T12:07:31Z' },
+			{ id: 12, task_id: taskId, job_id: 'output-invalid-preferred-review', kind: 'review.completed', actor_id: 'runner', actor_role: 'runner', payload: { summary: 'Accepted review summary wins.', feedback: 'Accepted review feedback wins too.' }, at: '2026-07-15T12:07:32Z' },
+			{ id: 13, task_id: taskId, job_id: 'output-invalid-spec-4', kind: 'pipeline.bounce_limit', actor_id: 'pipeline', actor_role: 'system', payload: { source: 'spec.output_invalid', max_bounces: 4 }, at: '2026-07-15T12:08:00Z' },
+		],
+		work_orders: [],
 	} : taskId === 'diagnostics' ? {
 		jobs: [
 			{ id: 'diagnostics-review-1-seat-1', task_id: taskId, stage: 'review', harness: 'codex', model_tier: 'gpt-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'running', started_at: '2026-07-15T12:00:00Z' },
@@ -393,6 +442,37 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
 	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
 	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
+})
+
+test('output-validation rejections show job-specific errors with warning tone and preserve accepted narration', async ({ page }) => {
+	await page.goto('/tasks/output-invalid/full')
+
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	const rejected = timeline.locator('article').filter({ hasText: 'Output rejected by the pipeline' })
+	await expect(rejected).toHaveCount(4)
+	await expect(rejected.nth(0)).toContainText('spec requires one conveyor:acceptance block')
+	await expect(rejected.nth(1)).toContainText('spec validation error 2')
+	await expect(rejected.nth(2)).toContainText('spec validation error 3')
+	await expect(rejected.nth(3)).toContainText('spec validation error 4')
+	for (const card of await rejected.all()) {
+		await expect(card).toHaveClass(/border-attention\/40/)
+		await expect(card).toHaveClass(/bg-attention-soft/)
+		await expect(card.locator('xpath=..').locator('.bg-attention-dot')).toHaveCount(1)
+	}
+
+	const acceptedSpec = timeline.locator('article').filter({ hasText: 'Completed.' }).filter({ has: page.getByText('Spec', { exact: true }) })
+	await expect(acceptedSpec).toHaveCount(1)
+	await expect(acceptedSpec).toHaveClass(/bg-card/)
+	await expect(acceptedSpec).not.toHaveClass(/bg-attention-soft/)
+	await expect(page.getByText('PRIVATE REJECTED OUTPUT')).toHaveCount(0)
+
+	await expect(timeline.getByText('Harness narration wins.', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Accepted triage summary wins.', { exact: true })).toBeVisible()
+	await expect(timeline.getByText(/Accepted review summary wins\.[\s\S]*Accepted review feedback wins too\./)).toBeVisible()
+	await expect(timeline.getByText(/superseded (job|triage|review) error/)).toHaveCount(0)
+
+	await expect(timeline.getByText('Review check-in — paused after the configured rounds', { exact: true })).toHaveCount(1)
+	await expect(timeline.getByText('Source: spec output validation · maximum 4 bounces', { exact: true })).toBeVisible()
 })
 
 test('active review claim diagnostics stay in the review panel instead of standalone history rows', async ({ page }) => {
