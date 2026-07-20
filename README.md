@@ -74,11 +74,11 @@ database so test workspaces never enter the development database:
 make test-integration
 ```
 
-That target starts `postgres-test` on `127.0.0.1:5433`, runs the Postgres
-package against the `conveyor_test` database, and removes the test container
-afterward. Its data directory is a tmpfs. Regular `make test` explicitly clears
-`CONVEYOR_TEST_DATABASE_URL`; integration tests also refuse database names that
-do not end in `_test`.
+That target starts `postgres-test` on `127.0.0.1:5433`, runs the Postgres store
+and dispatch integration suites against the `conveyor_test` database, and
+removes the test container afterward. Its data directory is a tmpfs. Regular
+`make test` explicitly clears `CONVEYOR_TEST_DATABASE_URL`; integration tests
+also refuse database names that do not end in `_test`.
 
 To run an already-built daemon without rebuilding or changing the database:
 
