@@ -17,15 +17,21 @@ not have, state the assumption explicitly in prose so the human approver
 can correct it at the gate; a spec that quietly invents details either
 bounces at review or — worse — gets faithfully implemented.
 
-Format (conveyor-spec.md §4.1): rich Markdown prose for intent, context,
-approach, and rationale — written for the human approver and the
-implementing agent, who both work better from reasoning than from skeletal
-bullet points — plus machine-owned fenced blocks:
+Your response is governed by Conveyor's strict structured-output schema. Fill
+its semantic fields; do not hand-author any `conveyor:acceptance` or
+`conveyor:decomposition` fence. Conveyor validates your values and
+deterministically appends those machine blocks to the stored document, then
+runs the final document through the strict conveyor-spec.md §4.1 parser.
+
+The `markdown` field contains the rich human-readable spec prose for intent,
+context, approach, and rationale. It must not contain machine fences. The
+`acceptance` field contains the criteria, and `decomposition` is an empty list
+unless decomposition is genuinely necessary:
 
 - `## Intent` and `## Non-goals` sections are required. Non-goals are
   enforced verbatim by code review: anything you exclude here will be
   flagged as scope creep if implemented, so exclude deliberately.
-- Exactly one `conveyor:acceptance` YAML block. Each criterion needs a
+- Each acceptance criterion needs a
   unique `AC-n` `id`, a concretely testable `criterion`, a `verify` value
   from `test | playwright | computer-use | human`, and optionally a `ref`
   (test file or path that anchors verification — include one when
@@ -33,8 +39,8 @@ bullet points — plus machine-owned fenced blocks:
   one). Keep the list minimal: every criterion is checked at every
   downstream stage forever, so prefer a few verifiable criteria over many
   vague ones.
-- A `conveyor:decomposition` block is optional and rarely appropriate in
-  this single-repository workspace — omit it unless the change genuinely
+- Decomposition is optional and rarely appropriate in this single-repository
+  workspace — return an empty `decomposition` list unless the change genuinely
   requires ordered, independently mergeable sub-units. If present, every
   item must contain exactly these keys: `id` (a unique SUB-n), `repo` (the
   configured repository name from the task header), `summary`, and
@@ -45,4 +51,5 @@ prose and write acceptance criteria only for what is unambiguous — the
 human resolves the rest at the approval gate; do not invent requirements to
 fill space.
 
-Your entire final answer is the proposed spec document, nothing else.
+Return only the schema-conforming structured result. Conveyor produces the
+final proposed spec document.

@@ -128,6 +128,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'review-retry-review-1-seat-1', task_id: taskId, job_id: 'review-retry-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 			{ id: 'review-retry-review-1-seat-2', task_id: taskId, job_id: 'review-retry-review-1-seat-2', stage: 'review', state: 'timed_out', review_round: 1, review_seat: 2, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', execution_deadline: '2026-07-15T13:00:00Z', last_failure_message: 'review harness exhausted retries', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
+	} : taskId === 'spec-approval' ? {
+		jobs: [],
+		events: [
+			{ id: 1, task_id: taskId, kind: 'spec.version_created', actor_id: 'pipeline', actor_role: 'system' as const, payload: { version: 2 }, at: '2026-07-15T11:58:00Z' },
+			{ id: 2, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human' as const, payload: { version: 2 }, at: '2026-07-15T11:59:00Z' },
+		],
+		work_orders: [],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -152,7 +159,16 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
     },
 		jobs: reviewActivity.jobs,
 		events: reviewActivity.events,
-    interventions: [],
+    interventions: taskId === 'spec-approval' ? [{
+		id: 1,
+		task_id: taskId,
+		actor_id: 'operator',
+		actor_role: 'human' as const,
+		action: 'approve' as const,
+		reason_code: 'approved',
+		comment: '',
+		at: '2026-07-15T11:59:00Z',
+	}] : [],
     checkout_available: false,
     checkout_guidance: 'Use the assigned worktree.',
     needs_attention: false,
@@ -450,10 +466,20 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(page.getByText('Bounced back to implement (bounce 1)', { exact: true })).toHaveCount(0)
 
 	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-	await expect(timelineRows).toHaveCount(3)
-	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
-	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
-	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
+	await expect(timelineRows).toHaveCount(2)
+	await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
+	await expect(timelineRows.nth(1)).toContainText('Pull request opened')
+})
+
+test('spec approval keeps the human marker without a duplicate versioned event', async ({ page }) => {
+	await page.goto('/tasks/spec-approval/full')
+
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	const timelineRows = timeline.locator('ol > li')
+	await expect(timelineRows).toHaveCount(2)
+	await expect(timelineRows.nth(0)).toContainText('Spec v2 drafted')
+	await expect(timelineRows.nth(1)).toContainText('Approved')
+	await expect(timeline.getByText(/Spec v\d+ approved/)).toHaveCount(0)
 })
 
 test('output-validation rejections show job-specific errors with warning tone and preserve accepted narration', async ({ page }) => {
@@ -499,11 +525,10 @@ test('active review claim diagnostics stay in the review panel instead of standa
 	await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
 	const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-	await expect(timelineRows).toHaveCount(4)
-	await expect(timelineRows.nth(0)).toContainText('Spec v1 approved')
-	await expect(timelineRows.nth(1)).toContainText('Panel of 2 · unanimous to pass')
-	await expect(timelineRows.nth(2)).toContainText('Review claim expired without verdict submission')
-	await expect(timelineRows.nth(3)).toContainText('Pull request opened')
+	await expect(timelineRows).toHaveCount(3)
+	await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
+	await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
+	await expect(timelineRows.nth(2)).toContainText('Pull request opened')
 
 	// The task sheet uses the same historical rendering boundary.
 	await page.goto('/tasks/diagnostics')
