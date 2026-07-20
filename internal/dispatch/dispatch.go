@@ -478,6 +478,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	if stage == core.StageReview {
 		role = pack.InProcessReviewRole(role)
 	}
+	input := inprocess.Input{}
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
@@ -528,6 +529,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 	}
 	if stage == core.StageSpec {
+		input.OutputSchema = &inprocess.OutputSchema{Name: "conveyor_spec", Schema: pipeline.StructuredSpecSchema()}
 		// A spec-gate redirect reopens this stage, so the regeneration must see
 		// the declined revision and the reviewer's comments — the same feedback
 		// the MCP work-order context already threads to implementing agents.
@@ -558,7 +560,6 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	if err != nil {
 		return inprocess.Input{}, fmt.Errorf("list context artifacts for task %s: %w", task.ID, err)
 	}
-	input := inprocess.Input{}
 	seen := map[string]bool{}
 	totalBytes := 0
 	for _, artifact := range artifacts {
@@ -661,7 +662,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		}
 		return d.transition(ctx, task.ID, core.TaskQueued, next, "")
 	case core.StageSpec:
-		result, err := pipeline.ParseSpec(output)
+		result, err := pipeline.RenderStructuredSpec(output)
 		if err != nil {
 			return invalid(err)
 		}

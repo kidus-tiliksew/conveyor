@@ -195,6 +195,9 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
+	if agent.input.OutputSchema == nil || agent.input.OutputSchema.Name != "conveyor_spec" || agent.input.OutputSchema.Schema == nil {
+		t.Fatalf("spec output schema = %+v", agent.input.OutputSchema)
+	}
 	for _, expected := range []string{"# Prior specification revision v1", "Old intent.", "# Human gate feedback", "Target v1.28, not v1.27."} {
 		if !strings.Contains(agent.input.Prompt, expected) {
 			t.Fatalf("spec prompt missing %q:\n%s", expected, agent.input.Prompt)
@@ -969,13 +972,58 @@ func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, 
 
 type sequenceAgent struct {
 	outputs []string
+	inputs  []inprocess.Input
 	next    int
 }
 
-func (agent *sequenceAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
+func (agent *sequenceAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
+	agent.inputs = append(agent.inputs, input)
 	output := agent.outputs[agent.next]
 	agent.next++
 	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10}, nil
+}
+
+func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "structured-spec-retry", Workspace: "demo", Repo: "api", Title: "Retry semantics", PolicyVersion: 1, SpecApproval: true, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := structuredSpecOutput("# Retry\n\n## Intent\nShip it.\n\n## Non-goals\nNone.", "Ship it", "")
+	invalid = strings.Replace(invalid, `"verify":"test"`, `"verify":"tests"`, 1)
+	agent := &sequenceAgent{outputs: []string{invalid, structuredSpecOutput("# Retry\n\n## Intent\nShip it.\n\n## Non-goals\nNone.", "Ship it", "")}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 3, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageSpec {
+		t.Fatalf("after invalid output task=%+v err=%v", current, err)
+	}
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "# Previous output rejected") || !strings.Contains(agent.inputs[1].Prompt, `invalid verify value "tests"`) {
+		t.Fatalf("retry prompt did not preserve precise validation error:\n%s", agent.inputs[1].Prompt)
+	}
+}
+
+func structuredSpecOutput(markdown, criterion, ref string) string {
+	value := map[string]any{
+		"markdown":      markdown,
+		"acceptance":    []map[string]any{{"id": "AC-1", "criterion": criterion, "verify": "test", "ref": ref}},
+		"decomposition": []any{},
+	}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
@@ -1023,7 +1071,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	}
 	agent := &sequenceAgent{outputs: []string{
 		"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.9,\"route\":\"spec\",\"summary\":\"Needs an accepted contract.\"}\n```",
-		"# Audit export\n\n## Intent\nAdd the export.\n\n## Non-goals\nNo unrelated formats.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Export tests pass\n  verify: test\n  ref: ./...\n```",
+		structuredSpecOutput("# Audit export\n\n## Intent\nAdd the export.\n\n## Non-goals\nNo unrelated formats.", "Export tests pass", "./..."),
 	}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, Timeout: time.Minute},
@@ -1202,7 +1250,7 @@ func TestResolvedSpecGateIsIndependentFromHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.2,\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", "# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Works\n  verify: test\n  ref: ./...\n```"}}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.2,\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", structuredSpecOutput("# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.", "Works", "./...")}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	d := New(st, cfg, agent)
 	d.Pack = bundle
@@ -1245,7 +1293,7 @@ func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"# Revised spec\n\n## Intent\nCorrect the workflow.\n\n## Non-goals\nNone.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Requested changes require another approval.\n  verify: test\n  ref: internal/dispatch/dispatch_test.go\n```"}}
+	agent := &sequenceAgent{outputs: []string{structuredSpecOutput("# Revised spec\n\n## Intent\nCorrect the workflow.\n\n## Non-goals\nNone.", "Requested changes require another approval.", "internal/dispatch/dispatch_test.go")}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"spec":      {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute},
 		"implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour},

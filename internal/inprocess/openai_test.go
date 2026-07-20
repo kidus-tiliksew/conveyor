@@ -126,6 +126,56 @@ func TestOpenAIRunConditionallySendsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunRequestsStrictStructuredOutput(t *testing.T) {
+	t.Parallel()
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"model":"gpt-test","output":[{"type":"message","content":[{"type":"output_text","text":"{\"answer\":\"ok\"}"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+
+	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []string{"answer"}}
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-test", Input{
+		Prompt: "work", OutputSchema: &OutputSchema{Name: "result", Schema: schema},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, ok := request["text"].(map[string]any)
+	format, formatOK := text["format"].(map[string]any)
+	if !ok || !formatOK || format["type"] != "json_schema" || format["name"] != "result" || format["strict"] != true || result.Output != `{"answer":"ok"}` {
+		t.Fatalf("request=%+v result=%+v", request, result)
+	}
+	if _, ok := format["schema"].(map[string]any); !ok || !strings.Contains(string(result.Transcript), `"type":"json_schema"`) {
+		t.Fatalf("format=%+v transcript=%s", format, result.Transcript)
+	}
+}
+
+func TestOpenAIRunFailsClosedWhenProviderRejectsStructuredOutput(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"unsupported_parameter","message":"text.format is not supported"}}`)
+	}))
+	defer server.Close()
+
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "provider-model", Input{
+		Prompt: "work", OutputSchema: &OutputSchema{Name: "result", Schema: map[string]any{"type": "object"}},
+	})
+	if err == nil || calls != 1 || !strings.Contains(err.Error(), "provider rejected the required structured output schema") || !strings.Contains(err.Error(), "provider_code=unsupported_parameter") {
+		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "structured_output_unsupported" || result.Diagnostic.ProviderCode != "unsupported_parameter" || result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic=%+v", result.Diagnostic)
+	}
+}
+
 func TestResponseEndpointHostExcludesURLMetadata(t *testing.T) {
 	t.Parallel()
 	const endpoint = "https://user:password@openrouter.ai:8443/api/v1?trace=yes#fragment"

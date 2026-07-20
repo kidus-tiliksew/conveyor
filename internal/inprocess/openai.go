@@ -64,9 +64,17 @@ type Attachment struct {
 }
 
 type Input struct {
-	Prompt      string
-	Effort      string
-	Attachments []Attachment
+	Prompt       string
+	Effort       string
+	Attachments  []Attachment
+	OutputSchema *OutputSchema
+}
+
+// OutputSchema requests a strict Responses-compatible JSON-schema result.
+// Role-specific packages own the schema and interpretation of output_text.
+type OutputSchema struct {
+	Name   string
+	Schema map[string]any
 }
 
 type Agent interface {
@@ -97,6 +105,10 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if strings.TrimSpace(client.APIKey) == "" {
 		diagnostic.Phase = "client_validation"
 		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: CONVEYOR_API_KEY is required for in-process stages", endpointHost, model)
+	}
+	if input.OutputSchema != nil && (strings.TrimSpace(input.OutputSchema.Name) == "" || input.OutputSchema.Schema == nil) {
+		diagnostic.Phase = "client_validation"
+		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: structured output requires a schema name and JSON schema", endpointHost, model)
 	}
 	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
@@ -145,8 +157,8 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	}
 	requestInput := []map[string]any{{"role": "user", "content": content}}
 	auditInput := []map[string]any{{"role": "user", "content": auditContent}}
-	requestValue := responsesRequestEnvelope(model, requestInput, input.Effort)
-	auditRequestValue := responsesRequestEnvelope(model, auditInput, input.Effort)
+	requestValue := responsesRequestEnvelope(model, requestInput, input.Effort, input.OutputSchema)
+	auditRequestValue := responsesRequestEnvelope(model, auditInput, input.Effort, input.OutputSchema)
 	body, _ := json.Marshal(requestValue)
 	httpClient := client.Client
 	if httpClient == nil {
@@ -233,7 +245,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	var embedded *responseFailure
 	if statusCode < 200 || statusCode >= 300 {
 		diagnostic.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= 500
-		if diagnostic.Retryable && attempts >= responsesMaxAttempts {
+		if input.OutputSchema != nil && structuredOutputRejected(raw) {
+			diagnostic.Phase = "structured_output_unsupported"
+		} else if diagnostic.Retryable && attempts >= responsesMaxAttempts {
 			diagnostic.Phase = "retry_exhausted"
 		} else {
 			diagnostic.Phase = "provider_response"
@@ -241,7 +255,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	} else if failure, failed := embeddedResponseFailure(raw); failed {
 		embedded = &failure
 		diagnostic.Retryable = failure.retryable()
-		if diagnostic.Retryable && attempts >= responsesMaxAttempts {
+		if input.OutputSchema != nil && !diagnostic.Retryable && structuredOutputRejected(raw) {
+			diagnostic.Phase = "structured_output_unsupported"
+		} else if diagnostic.Retryable && attempts >= responsesMaxAttempts {
 			diagnostic.Phase = "retry_exhausted"
 		} else {
 			diagnostic.Phase = "provider_response"
@@ -259,12 +275,18 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		if diagnostic.ProviderCode != "" {
 			details += " provider_code=" + diagnostic.ProviderCode
 		}
+		if diagnostic.Phase == "structured_output_unsupported" {
+			return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) provider rejected the required structured output schema for model %q: %s%s", endpointHost, model, status, details)
+		}
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, status, details)
 	}
 	if embedded != nil {
 		details := ""
 		if diagnostic.UpstreamRequest != "" {
 			details += " request_id=" + diagnostic.UpstreamRequest
+		}
+		if diagnostic.Phase == "structured_output_unsupported" {
+			return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) provider could not honor the required structured output schema for model %q: %s%s", endpointHost, model, embedded.describe(), details)
 		}
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, embedded.describe(), details)
 	}
@@ -309,12 +331,27 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
 }
 
-func responsesRequestEnvelope(model string, input any, effort string) map[string]any {
+func responsesRequestEnvelope(model string, input any, effort string, outputSchema *OutputSchema) map[string]any {
 	request := map[string]any{"model": model, "input": input, "store": false}
 	if effort != "" {
 		request["reasoning"] = map[string]any{"effort": effort}
 	}
+	if outputSchema != nil {
+		request["text"] = map[string]any{"format": map[string]any{
+			"type": "json_schema", "name": outputSchema.Name, "strict": true, "schema": outputSchema.Schema,
+		}}
+	}
 	return request
+}
+
+func structuredOutputRejected(raw []byte) bool {
+	detail := strings.ToLower(string(raw))
+	for _, marker := range []string{"structured output", "json_schema", "json schema", "response_format", "text.format", "unsupported_parameter", "schema is not supported"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestDiagnostic(model, endpoint string, attachments []Attachment) Diagnostic {
