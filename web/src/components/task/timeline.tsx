@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
-import { AlertTriangle, Check, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
@@ -279,7 +279,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
             {notes.map((seat) => (
               <div key={seat.seat} className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0">
                 <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">Seat {seat.seat}</span>
-                <p className="whitespace-pre-line leading-6 text-foreground/85">{seat.review!.feedback.trim()}</p>
+                <SeatNote seat={seat} />
               </div>
             ))}
           </div>
@@ -337,6 +337,58 @@ function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
       </span>
       {seat.status === 'deliberating' && seat.order.progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{seat.order.progress}</p>
+      )}
+    </div>
+  )
+}
+
+// A seat's review feedback rendered as a clipped document block — the same
+// family as the spec card's overflow treatment (see SpecCard): a fixed
+// collapsed height with overflow hidden and the shared bottom fade, plus a
+// small per-seat toggle shown only when the text actually overflows. State is
+// session-local and independent per seat (spec task 260720-29ffcc; AC-1..AC-3).
+function SeatNote({ seat }: { seat: PanelSeat }) {
+  const [expanded, setExpanded] = useState(false)
+  const [hasOverflow, setHasOverflow] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const viewportID = useId()
+
+  useLayoutEffect(() => {
+    // Only measure while collapsed; expanding keeps the last overflow reading so
+    // the collapse control stays visible (mirrors SpecCard's contentExpanded).
+    const viewport = viewportRef.current
+    if (!viewport || expanded) return
+    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(viewport)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    return () => observer.disconnect()
+  }, [expanded, seat.review])
+
+  return (
+    <div>
+      <div className="relative">
+        <div id={viewportID} ref={viewportRef} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
+          <p className="whitespace-pre-line leading-6 text-foreground/85">{seat.review!.feedback.trim()}</p>
+        </div>
+        {hasOverflow && !expanded && (
+          <div aria-hidden="true" className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-12" />
+        )}
+      </div>
+      {hasOverflow && (
+        <button
+          type="button"
+          aria-controls={viewportID}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} seat ${seat.seat} notes`}
+          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <ChevronUp aria-hidden="true" className="size-3" /> : <ChevronDown aria-hidden="true" className="size-3" />}
+          {expanded ? 'Less' : 'More'}
+        </button>
       )}
     </div>
   )
