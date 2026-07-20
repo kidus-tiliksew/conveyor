@@ -127,11 +127,30 @@ func (d *Dispatcher) currentConfig(ctx context.Context) (*config.Config, error) 
 }
 
 func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
-	cfg, err := d.currentConfig(ctx)
+	task, err := d.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	task, err := d.Store.GetTask(ctx, taskID)
+	if task.NextStage != core.StageImplement {
+		return d.runTaskForSnapshot(ctx, task)
+	}
+	// Dispatch and conflict-fix creation share one workspace-scoped gate. The
+	// callback re-reads durable state after acquiring it so a River delivery
+	// that overlapped §21.30 conflict handling observes the surviving order.
+	return d.Store.WithTaskLock(ctx, taskID, func() error {
+		current, currentErr := d.Store.GetTask(ctx, taskID)
+		if currentErr != nil {
+			return currentErr
+		}
+		if current.NextStage != core.StageImplement {
+			return nil
+		}
+		return d.runTaskForSnapshot(ctx, current)
+	})
+}
+
+func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
+	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -149,9 +168,31 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
 	if task.NextStage == core.StageImplement {
+		if _, active, activeErr := d.activeImplementationWorkOrder(ctx, task.ID, ""); activeErr != nil {
+			return activeErr
+		} else if active {
+			return nil
+		}
 		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
 	return d.runInProcess(ctx, cfg, task, route)
+}
+
+func (d *Dispatcher) activeImplementationWorkOrder(ctx context.Context, taskID, reasonCode string) (core.WorkOrder, bool, error) {
+	orders, err := d.Store.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		return core.WorkOrder{}, false, err
+	}
+	for i := len(orders) - 1; i >= 0; i-- {
+		order := orders[i]
+		if order.Stage != core.StageImplement || (reasonCode != "" && order.ReasonCode != reasonCode) {
+			continue
+		}
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed {
+			return order, true, nil
+		}
+	}
+	return core.WorkOrder{}, false, nil
 }
 
 func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
@@ -970,14 +1011,12 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 }
 
 func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
-	orders, err := d.Store.ListTaskWorkOrders(ctx, current.ID)
+	active, ok, err := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict")
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	for _, order := range orders {
-		if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) {
-			return order, nil
-		}
+	if ok {
+		return active, nil
 	}
 	if pr.Mergeable != "CONFLICTING" {
 		return core.WorkOrder{}, fmt.Errorf("pull request is not conflicting (%s)", pr.Mergeable)
@@ -1010,7 +1049,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if err = d.createWorkOrder(systemCtx, cfg, current, cfg.Routing.Stages[string(core.StageImplement)], "merge-conflict"); err != nil {
 		return core.WorkOrder{}, err
 	}
-	orders, err = d.Store.ListTaskWorkOrders(systemCtx, current.ID)
+	orders, err := d.Store.ListTaskWorkOrders(systemCtx, current.ID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}

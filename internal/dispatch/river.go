@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -321,6 +322,17 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 }
 
 func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs], err error) error {
+	// A duplicate jobs key can be a lost acknowledgement from a dispatch that
+	// already materialized the §21.30 conflict-fix order. Treat that durable
+	// active order as success before emitting failure or requeue activity.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if _, active, lookupErr := w.dispatcher.activeImplementationWorkOrder(ctx, job.Args.TaskID, "merge-conflict"); lookupErr != nil {
+			return fmt.Errorf("dispatch duplicate recovery: %w", lookupErr)
+		} else if active {
+			return nil
+		}
+	}
 	payload := core.JSONPayload(map[string]any{
 		"attempt":      job.Attempt,
 		"max_attempts": job.MaxAttempts,
