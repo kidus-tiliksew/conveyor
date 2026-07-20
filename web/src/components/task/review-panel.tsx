@@ -43,15 +43,15 @@ interface Gate {
 
 function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merge_readiness']): Gate {
 	if (task.state === 'approved') {
-		if (readiness?.state === 'UNKNOWN' || readiness?.state === 'STALE') return {
-			tone: 'neutral', icon: GitMerge, headline: readiness.state === 'STALE' ? 'Approval changed — refreshing review' : 'Checking merge readiness',
-			detail: readiness.state === 'STALE' ? 'The pull-request head changed after approval. Conveyor has started the configured refresh flow.' : 'GitHub is still calculating mergeability. Conveyor will re-read it with bounded backoff.',
-			primaryLabel: 'Readiness pending', primaryAction: 'pending',
-		}
 		if (readiness?.state === 'CONFLICTING') return {
 			tone: 'alarm', icon: TriangleAlert, headline: 'Merge blocked by conflicts',
 			detail: 'Conveyor will dispatch an implementation order to merge the base branch, resolve conflicts, validate, and refresh review.',
 			primaryLabel: 'Fix merge conflict', primaryAction: 'fix',
+		}
+		if (readiness?.state !== 'MERGEABLE') return {
+			tone: 'neutral', icon: GitMerge, headline: readiness?.state === 'STALE' ? 'Approval changed — refreshing review' : 'Checking merge readiness',
+			detail: readiness?.state === 'STALE' ? 'The pull-request head changed after approval. Conveyor has started the configured refresh flow.' : 'Merge readiness is not available yet. Conveyor will re-read GitHub with bounded backoff.',
+			primaryLabel: 'Readiness pending', primaryAction: 'pending',
 		}
     return {
       tone: 'positive',

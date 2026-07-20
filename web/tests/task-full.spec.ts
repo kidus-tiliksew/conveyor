@@ -146,7 +146,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' ? 'approved' : 'running',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' || taskId === 'merge-missing' ? 'approved' : 'running',
       next_stage: 'implement',
       created_at: createdAt,
     },
@@ -526,6 +526,14 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 
 test('merge gate renders pending readiness without offering merge', async ({ page }) => {
 	await page.goto('/tasks/merge-unknown/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
+	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+})
+
+test('merge gate fails closed when readiness is absent', async ({ page }) => {
+	await page.goto('/tasks/merge-missing/full')
 	const gate = page.getByRole('region', { name: 'Human gate' })
 	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
 	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()

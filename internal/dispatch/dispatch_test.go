@@ -278,10 +278,14 @@ func approvedMergeFixture(t *testing.T, githubRepo string) (context.Context, sto
 }
 
 func approvedMergeFixtureWithScope(t *testing.T, githubRepo, scope string) (context.Context, store.Store, core.Task, *Dispatcher) {
+	return approvedMergeFixtureWithScopeAndGate(t, githubRepo, scope, false)
+}
+
+func approvedMergeFixtureWithScopeAndGate(t *testing.T, githubRepo, scope string, mergeApproval bool) (context.Context, store.Store, core.Task, *Dispatcher) {
 	t.Helper()
 	ctx := store.WithWorkspace(context.Background(), "test")
 	st := store.NewMemory()
-	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, SetupContract: config.ExecutionSetup{RefreshReview: scope}, CreatedAt: time.Now()}
+	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, MergeApproval: mergeApproval, SetupContract: config.ExecutionSetup{RefreshReview: scope}, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +540,6 @@ func TestConflictResolutionForcesDeltaWhenFrozenPolicyIsNone(t *testing.T) {
 
 func TestGateOffConflictingMergeAutomaticallyDispatchesFix(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
-	task.MergeApproval = false
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
@@ -549,6 +552,62 @@ func TestGateOffConflictingMergeAutomaticallyDispatchesFix(t *testing.T) {
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
 	if len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
 		t.Fatalf("orders=%+v", orders)
+	}
+}
+
+func TestChangedHeadConflictingReadinessKeepsGateBlockedWithoutRefresh(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	readiness, err := d.ReadMergeReadiness(ctx, task)
+	if err != nil || readiness.State != "CONFLICTING" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if current.ApprovalStale || current.State != core.TaskApproved || len(orders) != 0 {
+		t.Fatalf("task=%+v orders=%+v", current, orders)
+	}
+}
+
+func TestChangedHeadConflictingAutoMergeDispatchesFixBeforeRefresh(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if current.ApprovalStale || current.State != core.TaskRunning || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
+		t.Fatalf("task=%+v orders=%+v", current, orders)
+	}
+}
+
+func TestChangedHeadConflictingReadinessAutoDispatchesFixBeforeRefresh(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	readiness, err := d.ReadMergeReadiness(ctx, task)
+	if err != nil || readiness.State != "CONFLICTING" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if current.ApprovalStale || current.State != core.TaskRunning || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
+		t.Fatalf("task=%+v orders=%+v", current, orders)
 	}
 }
 

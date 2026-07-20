@@ -707,11 +707,15 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	var mergeReadiness *dispatch.MergeReadiness
 	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
 		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
-		if readinessErr == nil {
-			mergeReadiness = &readiness
-			if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
-				task = refreshed
-			}
+		if readinessErr != nil {
+			// The merge action must never render without a successful gate-facing
+			// readiness read (spec §21.30 change 1).
+			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
+			return
+		}
+		mergeReadiness = &readiness
+		if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
+			task = refreshed
 		}
 	}
 	// Worker status is advisory serviceability (§21.31); held tasks are the

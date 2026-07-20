@@ -878,14 +878,23 @@ func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (Me
 		if approved == "" {
 			approved = current.ReviewedHeadSHA
 		}
+		if result.State == "UNKNOWN" {
+			return nil
+		}
+		if result.State == "CONFLICTING" {
+			if err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": approved, "new_head": pr.HeadSHA})}); err != nil {
+				return err
+			}
+			if !current.MergeApproval {
+				_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
+			}
+			return err
+		}
 		if approved != "" && pr.HeadSHA != "" && approved != pr.HeadSHA {
 			if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
 				return err
 			}
 			result.State = "STALE"
-		}
-		if result.State == "CONFLICTING" {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": approved, "new_head": pr.HeadSHA})})
 		}
 		return nil
 	})
@@ -1032,12 +1041,6 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 			return err
 		}
 	}
-	if approvedHead != "" && pr.HeadSHA != "" && approvedHead != pr.HeadSHA {
-		if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
-			return err
-		}
-		return fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA)
-	}
 	if pr.Mergeable == "UNKNOWN" {
 		return fmt.Errorf("pull request %s#%d merge readiness is still pending", repo.GitHub, pr.Number)
 	}
@@ -1050,6 +1053,12 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 			return err
 		}
 		return fmt.Errorf("pull request %s#%d has merge conflicts; dispatch the conflict fix", repo.GitHub, pr.Number)
+	}
+	if approvedHead != "" && pr.HeadSHA != "" && approvedHead != pr.HeadSHA {
+		if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
+			return err
+		}
+		return fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA)
 	}
 	if pr.Mergeable != "MERGEABLE" {
 		return d.recordMergeFailure(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable))
