@@ -450,6 +450,42 @@ func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 	}
 }
 
+func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
+	settings := func(harness, model string) config.ContextualExecutionSettings {
+		return config.ContextualExecutionSettings{
+			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
+			Implementation: config.ImplementationSettings{Harness: harness, Model: model, ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "45m"},
+		}
+	}
+	harness := func(name string) config.Harness {
+		return config.Harness{Name: name, Command: []string{name, "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s"}
+	}
+	backend := config.ExecutionSetup{Name: "backend", ExecutionSettings: settings("codex", "gpt-backend"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
+	frontend := config.ExecutionSetup{Name: "frontend", ExecutionSettings: settings("claude", "claude-ui"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "claude-review", Harness: "claude", Effort: "high"}}}}
+	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{backend, frontend}, DefaultSetup: "backend"}).WithSetup(backend)
+	cfg.Setups, cfg.DefaultSetup = []config.ExecutionSetup{backend, frontend}, "backend"
+
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "frozen-frontend", Workspace: "demo", Title: "Frontend", SetupName: frontend.Name, SetupContract: frontend, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, cfg, nil)
+	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].RequiredHarness != "claude" || orders[0].RequiredModel != "claude-ui" || orders[0].RequiredEffort != "high" || orders[0].ExecutionTimeoutText != "2h" {
+		t.Fatalf("implementation orders=%+v err=%v", orders, err)
+	}
+	jobs, reviewOrders, err := BuildReviewRound(cfg, task, cfg.Routing.Stages["review"], 1)
+	if err != nil || len(jobs) != 1 || len(reviewOrders) != 1 || reviewOrders[0].RequiredHarness != "claude" || reviewOrders[0].RequiredModel != "claude-review" || reviewOrders[0].ExecutionTimeoutText != "45m" {
+		t.Fatalf("review jobs=%+v orders=%+v err=%v", jobs, reviewOrders, err)
+	}
+}
+
 func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
 	body := PRBody(core.Task{ID: "task-1", Source: "cli", GitHub: &core.GitHubLifecycle{IssueNumber: 42}})
 	if !strings.Contains(body, "Closes #42") {

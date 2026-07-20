@@ -150,3 +150,23 @@ test('fully explicit review seats remove fallback requirements', async ({ page }
   await expect(page.getByText(/Every seat is explicitly routed/)).toBeVisible()
   await expect(page.getByLabel('Review fallback harness')).toHaveCount(0)
 })
+
+test('workspace manages named execution setups without losing their contracts', async ({ page }) => {
+  await mockWorkspaceAPIs(page)
+  await page.goto('/workspace')
+
+  await expect(page.getByText('Execution setups')).toBeVisible()
+  await page.getByRole('button', { name: 'Create' }).click()
+  await page.getByLabel('Name').first().fill('frontend')
+  await page.getByRole('button', { name: 'Duplicate' }).click()
+  await expect(page.getByLabel('Selected setup')).toHaveValue('frontend-copy')
+  await page.getByRole('button', { name: 'Set default' }).click()
+  await page.getByLabel('Selected setup').selectOption('default')
+  await page.getByRole('button', { name: 'Delete' }).last().click()
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.reload()
+
+  await expect(page.getByLabel('Selected setup')).toHaveValue('frontend-copy')
+  await expect(page.getByLabel('Selected setup').locator('option')).toHaveCount(2)
+  await expect(page.getByLabel('Implementation harness')).toHaveValue('codex')
+})

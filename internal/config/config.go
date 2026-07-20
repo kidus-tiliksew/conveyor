@@ -154,6 +154,15 @@ type ContextualExecutionSettings struct {
 	Review         ReviewExecutionSettings `yaml:"review" json:"review"`
 }
 
+// ExecutionSetup is one named execution contract. Harness definitions remain
+// workspace-scoped; the settings and review panel are frozen onto a task at
+// intake (spec §21.27 changes 1 and 4).
+type ExecutionSetup struct {
+	Name              string                      `yaml:"name" json:"name"`
+	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
+	Review            ReviewPanel                 `yaml:"review" json:"review"`
+}
+
 type WorkspaceDocument struct {
 	Workspace                 string                       `yaml:"workspace" json:"workspace"`
 	MaxBounces                int                          `yaml:"max_bounces" json:"max_bounces"`
@@ -162,6 +171,8 @@ type WorkspaceDocument struct {
 	Routing                   Routing                      `yaml:"routing" json:"routing"`
 	Harnesses                 []Harness                    `yaml:"harnesses,omitempty" json:"harnesses"`
 	Review                    ReviewPanel                  `yaml:"review" json:"review"`
+	Setups                    []ExecutionSetup             `yaml:"setups,omitempty" json:"setups"`
+	DefaultSetup              string                       `yaml:"default_setup,omitempty" json:"default_setup"`
 	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 
@@ -197,6 +208,8 @@ type Config struct {
 	Routing                   Routing                      `yaml:"routing"`
 	Harnesses                 []Harness                    `yaml:"harnesses,omitempty"`
 	Review                    ReviewPanel                  `yaml:"review"`
+	Setups                    []ExecutionSetup             `yaml:"setups,omitempty"`
+	DefaultSetup              string                       `yaml:"default_setup,omitempty"`
 	Execution                 ExecutionPolicy              `yaml:"execution"`
 	Repos                     []Repo                       `yaml:"repos"`
 }
@@ -232,6 +245,8 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Routing = document.Routing
 	next.Harnesses = document.Harnesses
 	next.Review = document.Review
+	next.Setups = document.Setups
+	next.DefaultSetup = document.DefaultSetup
 	next.Execution = document.Execution
 	next.Repos = document.Repos
 	return normalize(&next, source)
@@ -248,7 +263,7 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil || document.ExecutionSettings == nil
+	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil || document.ExecutionSettings == nil || document.Setups == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -419,6 +434,71 @@ func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error
 }
 
 func normalize(c *Config, path string) (*Config, error) {
+	setups := append([]ExecutionSetup(nil), c.Setups...)
+	defaultSetup := strings.TrimSpace(c.DefaultSetup)
+	if c.Setups == nil {
+		legacy := *c
+		legacy.Setups = nil
+		legacy.DefaultSetup = ""
+		normalized, err := normalizeLegacy(&legacy, path)
+		if err != nil {
+			return nil, err
+		}
+		setups = []ExecutionSetup{{Name: "default", ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review}}
+		defaultSetup = "default"
+	} else if len(setups) == 0 {
+		return nil, fmt.Errorf("setups must contain at least one setup")
+	}
+	if defaultSetup == "" {
+		return nil, fmt.Errorf("default_setup is required")
+	}
+
+	names := make(map[string]struct{}, len(setups))
+	var defaultConfig *Config
+	normalizedSetups := make([]ExecutionSetup, 0, len(setups))
+	for i, setup := range setups {
+		setup.Name = strings.TrimSpace(setup.Name)
+		if setup.Name == "" || !safePathSegment(setup.Name) {
+			return nil, fmt.Errorf("setups[%d].name must be one path-safe segment", i)
+		}
+		if _, duplicate := names[setup.Name]; duplicate {
+			return nil, fmt.Errorf("duplicate setup name %q", setup.Name)
+		}
+		names[setup.Name] = struct{}{}
+		candidate := *c
+		candidate.Setups = nil
+		candidate.DefaultSetup = ""
+		candidate.ExecutionSettings = &setup.ExecutionSettings
+		candidate.Review = setup.Review
+		candidate.Routing = Routing{Stages: map[string]StageRoute{}}
+		normalized, err := normalizeLegacy(&candidate, path)
+		if err != nil {
+			return nil, fmt.Errorf("setup %q: %w", setup.Name, err)
+		}
+		normalizedSetup := ExecutionSetup{Name: setup.Name, ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review}
+		normalizedSetups = append(normalizedSetups, normalizedSetup)
+		if setup.Name == defaultSetup {
+			defaultConfig = normalized
+		}
+	}
+	if defaultConfig == nil {
+		return nil, fmt.Errorf("default_setup %q does not name a configured setup", defaultSetup)
+	}
+	result := *defaultConfig
+	result.Setups = normalizedSetups
+	result.DefaultSetup = defaultSetup
+	// The legacy singleton is a read-only projection of the default setup.
+	for i := range normalizedSetups {
+		if normalizedSetups[i].Name == defaultSetup {
+			result.ExecutionSettings = &normalizedSetups[i].ExecutionSettings
+			result.Review = normalizedSetups[i].Review
+			break
+		}
+	}
+	return &result, nil
+}
+
+func normalizeLegacy(c *Config, path string) (*Config, error) {
 	applyContextualExecutionSettings(c)
 	if c.PackDir == "" {
 		c.PackDir = "pack"
@@ -710,6 +790,8 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
 		Review:                    ReviewPanel{Seats: reviewSeats},
+		Setups:                    append([]ExecutionSetup(nil), c.Setups...),
+		DefaultSetup:              c.DefaultSetup,
 		Execution:                 c.Execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 	}
@@ -721,6 +803,54 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		document.Routing.Stages[stage] = route
 	}
 	return document
+}
+
+// Setup resolves a configured setup by name, defaulting an empty selector to
+// the workspace default. Unknown explicit names never fall back (spec §21.27).
+func (c *Config) Setup(name string) (ExecutionSetup, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = c.DefaultSetup
+		if name == "" && len(c.Setups) == 0 {
+			name = "default"
+		}
+	}
+	for _, setup := range c.Setups {
+		if setup.Name == name {
+			return setup, true
+		}
+	}
+	if len(c.Setups) == 0 && name == "default" {
+		settings := c.ExecutionSettings
+		if settings == nil && len(c.Routing.Stages) != 0 {
+			settings = contextualExecutionSettings(c.Routing)
+		}
+		if settings != nil {
+			return ExecutionSetup{Name: "default", ExecutionSettings: *settings, Review: c.Review}, true
+		}
+	}
+	return ExecutionSetup{}, false
+}
+
+// WithSetup returns the existing normalized config projected through one
+// already-normalized setup. It is used for task-frozen dispatch and health
+// calculations without consulting the mutable setup name again.
+func (c *Config) WithSetup(setup ExecutionSetup) *Config {
+	next := *c
+	next.Setups = []ExecutionSetup{setup}
+	next.DefaultSetup = setup.Name
+	next.ExecutionSettings = &next.Setups[0].ExecutionSettings
+	next.Review = setup.Review
+	next.Routing = Routing{Stages: make(map[string]StageRoute, 4)}
+	applyContextualExecutionSettings(&next)
+	for stage, route := range next.Routing.Stages {
+		route.Timeout, _ = time.ParseDuration(route.TimeoutText)
+		if stage == "implement" {
+			route.EffectiveModel, _ = normalizeHarnessModel(route, next.Harnesses)
+		}
+		next.Routing.Stages[stage] = route
+	}
+	return &next
 }
 
 func (c *Config) EffectiveModel(stage string) string {

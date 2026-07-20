@@ -13,11 +13,14 @@ async function mockTaskCreateAPIs(page: Page) {
       return
     }
     if (url.pathname === '/v1/workspace') {
-      await route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 2, repos: [{ name: 'conveyor', base: 'main' }], routing: [] } })
+      await route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 2, repos: [{ name: 'conveyor', base: 'main' }], routing: [], default_setup: 'backend', setups: [
+        { name: 'backend', execution_settings: { implementation: { harness: 'codex', model: 'gpt' }, review: { fallback_harness: 'codex' } }, review: { seats: [{ model: 'gpt-review' }] } },
+        { name: 'frontend', execution_settings: { implementation: { harness: 'claude', model: 'claude-ui' }, review: { fallback_harness: 'claude' } }, review: { seats: [{ model: 'claude-review' }] } },
+      ] } })
       return
     }
     if (url.pathname === '/v1/workers') {
-      await route.fulfill({ json: { workers: [], auto_available: false, auto_unavailable_reason: 'manual test' } })
+      await route.fulfill({ json: { workers: [], auto_available: false, auto_unavailable_reason: 'manual test', setup_serviceability: { backend: { auto_available: false }, frontend: { auto_available: true } } } })
       return
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
@@ -39,9 +42,13 @@ test('new task removes title input and submits description for AI title generati
   const create = page.getByRole('button', { name: 'Create task' })
   await expect(create).toBeDisabled()
   await page.locator('textarea').fill('Generate this title from context')
+  await page.getByLabel('Execution setup').selectOption('frontend')
+  await page.getByText('Composition').click()
+  await expect(page.getByText(/Implement: claude/)).toBeVisible()
   await expect(create).toBeEnabled()
   await create.click()
 
   await expect.poll(submitted).toContain('Generate this title from context')
+  await expect.poll(submitted).toContain('frontend')
   expect(submitted()).not.toContain('"title"')
 })

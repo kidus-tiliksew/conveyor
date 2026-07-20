@@ -265,10 +265,11 @@ func TestOpenAIRunStopsAfterBoundedRetries(t *testing.T) {
 	if attempts != responsesMaxAttempts {
 		t.Fatalf("attempts = %d, want %d", attempts, responsesMaxAttempts)
 	}
-	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Endpoint != hostname || result.Diagnostic.Provider != "openai_responses" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.UpstreamRequest != fmt.Sprintf("req-safe-%d", responsesMaxAttempts) || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
+	wantRequestID := fmt.Sprintf("req-safe-%d", responsesMaxAttempts)
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || result.Diagnostic.Endpoint != hostname || result.Diagnostic.Provider != "openai_responses" || result.Diagnostic.Attempts != responsesMaxAttempts || result.Diagnostic.UpstreamRequest != wantRequestID || result.Diagnostic.ProviderCode != "server_error" || !result.Diagnostic.Retryable {
 		t.Fatalf("diagnostic = %+v", result.Diagnostic)
 	}
-	for _, expected := range []string{fmt.Sprintf("req-safe-%d", responsesMaxAttempts), "server_error", "retry_exhausted", `"endpoint":"` + hostname + `"`} {
+	for _, expected := range []string{wantRequestID, "server_error", "retry_exhausted", `"endpoint":"` + hostname + `"`} {
 		if !strings.Contains(string(result.Transcript), expected) {
 			t.Fatalf("transcript missing %q: %s", expected, result.Transcript)
 		}

@@ -194,7 +194,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -228,12 +228,14 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }
 
 const getTaskByIntakeKey = `-- name: GetTaskByIntakeKey :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version FROM tasks WHERE workspace_id = $1 AND intake_key = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract FROM tasks WHERE workspace_id = $1 AND intake_key = $2
 `
 
 type GetTaskByIntakeKeyParams struct {
@@ -267,6 +269,8 @@ func (q *Queries) GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKey
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }
@@ -527,12 +531,12 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 const insertTask = `-- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level, mode, spec_approval, merge_approval, policy_version,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
+    setup_name, setup_contract, repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-    $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+    $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract
 `
 
 type InsertTaskParams struct {
@@ -547,6 +551,8 @@ type InsertTaskParams struct {
 	SpecApproval    bool               `json:"spec_approval"`
 	MergeApproval   bool               `json:"merge_approval"`
 	PolicyVersion   int32              `json:"policy_version"`
+	SetupName       string             `json:"setup_name"`
+	SetupContract   []byte             `json:"setup_contract"`
 	RepoName        string             `json:"repo_name"`
 	BaseBranch      string             `json:"base_branch"`
 	Branch          string             `json:"branch"`
@@ -572,6 +578,8 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.SpecApproval,
 		arg.MergeApproval,
 		arg.PolicyVersion,
+		arg.SetupName,
+		arg.SetupContract,
 		arg.RepoName,
 		arg.BaseBranch,
 		arg.Branch,
@@ -607,6 +615,8 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }
@@ -900,7 +910,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, error) {
@@ -935,6 +945,8 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, er
 			&i.SpecApproval,
 			&i.MergeApproval,
 			&i.PolicyVersion,
+			&i.SetupName,
+			&i.SetupContract,
 		); err != nil {
 			return nil, err
 		}
@@ -1033,7 +1045,7 @@ UPDATE tasks
 SET class = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract
 `
 
 type UpdateTaskClassificationParams struct {
@@ -1068,6 +1080,8 @@ func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskCl
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }
@@ -1077,7 +1091,7 @@ UPDATE tasks
 SET state = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract
 `
 
 type UpdateTaskStateParams struct {
@@ -1112,6 +1126,8 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }
@@ -1124,7 +1140,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $4
   AND workspace_id = $5
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract
 `
 
 type UpdateTaskTransitionParams struct {
@@ -1167,6 +1183,8 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		&i.SpecApproval,
 		&i.MergeApproval,
 		&i.PolicyVersion,
+		&i.SetupName,
+		&i.SetupContract,
 	)
 	return i, err
 }

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,15 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", Mode: core.TaskModeAuto, PolicyVersion: 1, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
+	frozenSetup := config.ExecutionSetup{
+		Name: "review-heavy",
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Implementation: config.ImplementationSettings{Harness: "claude", Model: "claude-implement", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "gpt-review", FallbackHarness: "codex"},
+		},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}, {Model: "claude-review", Harness: "claude", Effort: "high"}}},
+	}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", Mode: core.TaskModeAuto, PolicyVersion: 1, SetupName: frozenSetup.Name, SetupContract: frozenSetup, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -57,6 +66,9 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	defer restarted.Close()
 	if persisted, getErr := restarted.GetWorkOrder(ctx, orders[1].ID); getErr != nil || persisted.RequiredHarnessConfig == nil || persisted.RequiredHarnessConfig.Command[0] != "claude" || persisted.RequiredEffort != "high" || persisted.RequiredHarnessConfig.EffortArgs["high"][1] != "high" {
 		t.Fatalf("restarted harness snapshot=%+v err=%v", persisted, getErr)
+	}
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || persisted.SetupName != frozenSetup.Name || !reflect.DeepEqual(persisted.SetupContract, frozenSetup) {
+		t.Fatalf("restarted setup contract=%+v err=%v", persisted.SetupContract, getErr)
 	}
 	st = restarted
 	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "phase52", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: now.Add(time.Minute), CreatedAt: now}
