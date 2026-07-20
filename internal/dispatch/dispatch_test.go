@@ -96,13 +96,13 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &capturingInputAgent{}
-	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute}}}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Effort: "low", Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 1 || len(agent.input.Attachments) != 4 {
+	if agent.calls != 1 || agent.input.Effort != "low" || len(agent.input.Attachments) != 4 {
 		t.Fatalf("calls=%d attachments=%+v", agent.calls, agent.input.Attachments)
 	}
 	kinds := map[inprocess.AttachmentKind]int{}

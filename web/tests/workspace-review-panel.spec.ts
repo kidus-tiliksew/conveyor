@@ -6,7 +6,7 @@ const baseDocument = {
   work_order_queue_timeout: '24h',
   execution_settings: {
     control_plane: {
-      triage: { model: 'gpt', timeout: '20m' },
+      triage: { model: 'gpt', effort: 'low', timeout: '20m' },
       spec: { model: 'gpt', timeout: '30m' },
     },
     implementation: { model: 'gpt-implement', model_policy: 'explicit', harness: 'codex', timeout: '4h' },
@@ -122,6 +122,21 @@ test('workspace renders contextual execution settings without generic routing co
 
   await expandDefaultSetup(page)
   await expect(page.getByLabel('triage model')).toHaveValue('gpt')
+  await expect(page.getByLabel('triage reasoning effort')).toHaveValue('low')
+  await expect(page.getByLabel('spec reasoning effort')).toHaveValue('')
+  await expect(page.getByLabel('triage reasoning effort').locator('option')).toHaveText(['Provider default', 'minimal', 'low', 'medium', 'high'])
+  await page.getByLabel('spec reasoning effort').selectOption('high')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated/)).toBeVisible()
+  await page.reload()
+  await expandDefaultSetup(page)
+  await expect(page.getByLabel('spec reasoning effort')).toHaveValue('high')
+  await page.getByLabel('triage reasoning effort').selectOption('')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated/)).toBeVisible()
+  await page.reload()
+  await expandDefaultSetup(page)
+  await expect(page.getByLabel('triage reasoning effort')).toHaveValue('')
   await expect(page.getByLabel('Implementation harness')).toHaveValue('codex')
   await expect(page.getByLabel('Implementation model policy')).toHaveValue('explicit')
   await expect(page.getByLabel('Implementation reasoning effort')).toHaveValue('')

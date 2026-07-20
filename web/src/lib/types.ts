@@ -274,8 +274,8 @@ export interface ExecutionPolicy {
 
 export interface WorkspaceExecutionSettings {
     control_plane: {
-      triage: { model: string; timeout: string }
-      spec: { model: string; timeout: string }
+      triage: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
+      spec: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
     }
     implementation: {
       harness: string

@@ -124,6 +124,7 @@ const (
 
 type ModelTimeoutSettings struct {
 	Model       string `yaml:"model" json:"model"`
+	Effort      string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	TimeoutText string `yaml:"timeout" json:"timeout"`
 }
 
@@ -343,12 +344,14 @@ func applyContextualExecutionSettings(c *Config) {
 		c.Routing.Stages = map[string]StageRoute{}
 	}
 	c.Routing.Stages["triage"] = StageRoute{
-		Model: settings.ControlPlane.Triage.Model, TimeoutText: settings.ControlPlane.Triage.TimeoutText,
-		Execution: ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
+		Model: settings.ControlPlane.Triage.Model, Effort: settings.ControlPlane.Triage.Effort,
+		TimeoutText: settings.ControlPlane.Triage.TimeoutText,
+		Execution:   ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
 	}
 	c.Routing.Stages["spec"] = StageRoute{
-		Model: settings.ControlPlane.Spec.Model, TimeoutText: settings.ControlPlane.Spec.TimeoutText,
-		Execution: ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
+		Model: settings.ControlPlane.Spec.Model, Effort: settings.ControlPlane.Spec.Effort,
+		TimeoutText: settings.ControlPlane.Spec.TimeoutText,
+		Execution:   ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
 	}
 	c.Routing.Stages["implement"] = StageRoute{
 		Model: settings.Implementation.Model, ModelPolicy: settings.Implementation.ModelPolicy,
@@ -370,8 +373,8 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	review := routing.Stages["review"]
 	return &ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
-			Triage: ModelTimeoutSettings{Model: triage.Model, TimeoutText: triage.TimeoutText},
-			Spec:   ModelTimeoutSettings{Model: spec.Model, TimeoutText: spec.TimeoutText},
+			Triage: ModelTimeoutSettings{Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText},
+			Spec:   ModelTimeoutSettings{Model: spec.Model, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
 		},
 		Implementation: ImplementationSettings{
 			Harness: implement.Harness, Model: implement.Model,
@@ -594,8 +597,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		harness.ProbeTimeout = parsed
 	}
 	for stage, route := range c.Routing.Stages {
-		if stage != "implement" && strings.TrimSpace(route.Effort) != "" {
-			return nil, fmt.Errorf("routing stage %s: effort is valid only for implementation", stage)
+		route.Effort = strings.TrimSpace(route.Effort)
+		if stage != "triage" && stage != "spec" && stage != "implement" && route.Effort != "" {
+			return nil, fmt.Errorf("routing stage %s: effort is not supported", stage)
 		}
 		if route.Model == "" {
 			route.Model = route.LegacyModelTier
@@ -641,6 +645,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("routing stage implement: execution is fixed to mcp")
 		}
 		if stage == "triage" || stage == "spec" {
+			if route.Effort != "" && !validResponsesEffort(route.Effort) {
+				return nil, fmt.Errorf("execution_settings.control_plane.%s.effort %q must be minimal, low, medium, or high", stage, route.Effort)
+			}
 			// Harness fields on pre-v1.18 control-plane routes are compatibility
 			// noise and never become worker requirements (spec §21.18 change 2).
 			route.Harness = ""
@@ -650,7 +657,6 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
 			}
 		} else if stage == "implement" {
-			route.Effort = strings.TrimSpace(route.Effort)
 			if route.Harness == "" && len(c.Harnesses) == 1 {
 				route.Harness = c.Harnesses[0].Name
 			}
@@ -989,6 +995,10 @@ func environmentHarnessContainsRuntimeValue(h Harness) bool {
 
 func validEffort(effort string) bool {
 	return effort == "low" || effort == "medium" || effort == "high"
+}
+
+func validResponsesEffort(effort string) bool {
+	return effort == "minimal" || validEffort(effort)
 }
 
 func MarshalWorkspaceDocument(c *Config) ([]byte, error) {

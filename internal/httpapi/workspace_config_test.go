@@ -146,3 +146,56 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 		t.Fatalf("stale status=%d body=%s", staleResult.Code, staleResult.Body)
 	}
 }
+
+func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
+	for _, stage := range []string{"triage", "spec"} {
+		for _, effort := range []string{"", "minimal", "low", "medium", "high"} {
+			t.Run(stage+"/accept/"+effort, func(t *testing.T) {
+				document := contextualWorkspaceDocument()
+				if stage == "triage" {
+					document.ExecutionSettings.ControlPlane.Triage.Effort = effort
+				} else {
+					document.ExecutionSettings.ControlPlane.Spec.Effort = effort
+				}
+				backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
+				s := NewServer(store.NewMemory())
+				s.BearerToken = "token"
+				s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+				s.ConfigStore = backend
+				body, _ := json.Marshal(map[string]any{"document": document})
+				request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+				request.Header.Set("Authorization", "Bearer token")
+				request.Header.Set("If-Match", "1")
+				result := httptest.NewRecorder()
+				s.Handler().ServeHTTP(result, request)
+				if result.Code != http.StatusOK || backend.updates != 1 {
+					t.Fatalf("status=%d updates=%d body=%s", result.Code, backend.updates, result.Body)
+				}
+			})
+		}
+
+		t.Run(stage+"/reject", func(t *testing.T) {
+			document := contextualWorkspaceDocument()
+			if stage == "triage" {
+				document.ExecutionSettings.ControlPlane.Triage.Effort = "maximum"
+			} else {
+				document.ExecutionSettings.ControlPlane.Spec.Effort = "maximum"
+			}
+			backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
+			s := NewServer(store.NewMemory())
+			s.BearerToken = "token"
+			s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+			s.ConfigStore = backend
+			body, _ := json.Marshal(map[string]any{"document": document})
+			request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+			request.Header.Set("Authorization", "Bearer token")
+			request.Header.Set("If-Match", "1")
+			result := httptest.NewRecorder()
+			s.Handler().ServeHTTP(result, request)
+			wantField := `"field":"execution_settings.control_plane.` + stage + `.effort"`
+			if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(result.Body.String(), wantField) || !strings.Contains(result.Body.String(), "maximum") {
+				t.Fatalf("status=%d updates=%d body=%s", result.Code, backend.updates, result.Body)
+			}
+		})
+	}
+}

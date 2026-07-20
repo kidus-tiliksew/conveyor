@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { ChevronRight, Copy, Plus, Trash2 } from 'lucide-react'
 import type { ExecutionSetup, WorkspaceConfigDocument, WorkspaceReviewSeat } from '../../lib/types'
 import { Badge } from '../ui/badge'
@@ -37,7 +38,7 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
       ...(isDefault ? { execution_settings: updated.execution_settings, review: updated.review } : {}),
     })
   }
-  const updateControlPlane = (stage: 'triage' | 'spec', change: Partial<{ model: string; timeout: string }>) =>
+  const updateControlPlane = (stage: 'triage' | 'spec', change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['triage']>) =>
     updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, [stage]: { ...settings.control_plane[stage], ...change } } } })
   const updateImplementation = (change: Partial<typeof settings.implementation>) =>
     updateSetup({ execution_settings: { ...settings, implementation: { ...settings.implementation, ...change } } })
@@ -76,8 +77,8 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
       </button>
 
       <div className="flex items-stretch gap-4 overflow-x-auto px-4 pb-3">
-        <Stage name="Triage" model={settings.control_plane.triage.model} meta={`${settings.control_plane.triage.timeout} limit`} />
-        <Stage name="Spec" model={settings.control_plane.spec.model} meta={`${settings.control_plane.spec.timeout} limit`} connected />
+        <Stage name="Triage" model={settings.control_plane.triage.model} meta={`${settings.control_plane.triage.timeout} limit${settings.control_plane.triage.effort ? ` · ${settings.control_plane.triage.effort} effort` : ''}`} />
+        <Stage name="Spec" model={settings.control_plane.spec.model} meta={`${settings.control_plane.spec.timeout} limit${settings.control_plane.spec.effort ? ` · ${settings.control_plane.spec.effort} effort` : ''}`} connected />
         <Stage name="Implement" model={implementSummary} meta={`${settings.implementation.timeout} limit`} connected />
         <Stage name="Review" model={`${seats.length} ${seats.length === 1 ? 'seat' : 'seats'}`} meta={`all must approve · ${settings.review.timeout}`} connected />
       </div>
@@ -86,11 +87,22 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
         <div className="border-t border-border">
           <div className="border-b border-border px-4 py-4">
             <GroupTitle title="Triage & spec" note="run inside Conveyor, no harness needed" />
-            <div className="grid gap-3 md:grid-cols-4">
-              <Field label="Triage model"><Input aria-label="triage model" className="font-mono" value={settings.control_plane.triage.model} onChange={(event) => updateControlPlane('triage', { model: event.target.value })} /></Field>
-              <Field label="Time limit"><Input aria-label="triage timeout" value={settings.control_plane.triage.timeout} onChange={(event) => updateControlPlane('triage', { timeout: event.target.value })} /></Field>
-              <Field label="Spec model"><Input aria-label="spec model" className="font-mono" value={settings.control_plane.spec.model} onChange={(event) => updateControlPlane('spec', { model: event.target.value })} /></Field>
-              <Field label="Time limit"><Input aria-label="spec timeout" value={settings.control_plane.spec.timeout} onChange={(event) => updateControlPlane('spec', { timeout: event.target.value })} /></Field>
+            <div className="grid gap-3 md:grid-cols-3">
+              {(['triage', 'spec'] as const).map((stage) => (
+                <Fragment key={stage}>
+                  <Field label={`${stage === 'triage' ? 'Triage' : 'Spec'} model`}><Input aria-label={`${stage} model`} className="font-mono" value={settings.control_plane[stage].model} onChange={(event) => updateControlPlane(stage, { model: event.target.value })} /></Field>
+                  <Field label="Reasoning effort" hint="Passed to the provider's Responses API; leave unset for the provider default.">
+                    <Select aria-label={`${stage} reasoning effort`} value={settings.control_plane[stage].effort ?? ''} onChange={(event) => updateControlPlane(stage, { effort: (event.target.value || undefined) as typeof settings.control_plane.triage.effort })}>
+                      <option value="">Provider default</option>
+                      <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </Select>
+                  </Field>
+                  <Field label="Time limit"><Input aria-label={`${stage} timeout`} value={settings.control_plane[stage].timeout} onChange={(event) => updateControlPlane(stage, { timeout: event.target.value })} /></Field>
+                </Fragment>
+              ))}
             </div>
           </div>
 
