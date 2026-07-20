@@ -531,9 +531,29 @@ func TestExecutionSetupsNormalizeLegacyAndProjectDefault(t *testing.T) {
 	if parsed.DefaultSetup != "default" || len(parsed.Setups) != 1 || parsed.Setups[0].Name != "default" {
 		t.Fatalf("legacy setup normalization = %+v default=%q", parsed.Setups, parsed.DefaultSetup)
 	}
+	if parsed.Setups[0].RefreshReview != RefreshReviewDelta {
+		t.Fatalf("legacy refresh_review = %q", parsed.Setups[0].RefreshReview)
+	}
 	projected := parsed.WorkspaceDocument()
 	if projected.ExecutionSettings == nil || *projected.ExecutionSettings != parsed.Setups[0].ExecutionSettings || !reflect.DeepEqual(projected.Review, parsed.Setups[0].Review) {
 		t.Fatalf("legacy projection diverged: document=%+v setup=%+v", projected, parsed.Setups[0])
+	}
+}
+
+func TestExecutionSetupRefreshReviewValidation(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Setups = []ExecutionSetup{{Name: "default", ExecutionSettings: *document.ExecutionSettings, Review: document.Review, RefreshReview: RefreshReviewFull}}
+	document.DefaultSetup = "default"
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, base, "refresh-review")
+	if err != nil || parsed.Setups[0].RefreshReview != RefreshReviewFull {
+		t.Fatalf("parsed=%+v err=%v", parsed, err)
+	}
+	document.Setups[0].RefreshReview = "sometimes"
+	raw, _ = yaml.Marshal(document)
+	if _, err = ParseWorkspaceDocument(raw, base, "refresh-review"); err == nil || !strings.Contains(err.Error(), "refresh_review") {
+		t.Fatalf("invalid refresh_review error=%v", err)
 	}
 }
 

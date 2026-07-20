@@ -146,6 +146,13 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
           <div className="border-b border-border px-4 py-4">
             <GroupTitle title="Review panel" note="every seat must approve" />
             <div className="grid gap-3 md:grid-cols-3">
+              <Field label="Refresh review" hint="Scope used when the approved pull-request head changes.">
+                <Select aria-label="Refresh review" value={setup.refresh_review} onChange={(event) => updateSetup({ refresh_review: event.target.value as ExecutionSetup['refresh_review'] })}>
+                  <option value="delta">Delta since approval</option>
+                  <option value="full">Full branch diff</option>
+                  <option value="none">Skip clean refresh</option>
+                </Select>
+              </Field>
               <Field label="Execution">
                 <Select aria-label="Review execution" value={settings.review.execution} onChange={(event) => updateReviewExecution({ execution: event.target.value as 'mcp' | 'in_process', ...(event.target.value === 'in_process' ? { fallback_harness: undefined } : {}) })}>
                   <option value="mcp">On your worker (MCP)</option>

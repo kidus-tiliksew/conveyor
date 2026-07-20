@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
+	BindTaskApproval(ctx context.Context, arg BindTaskApprovalParams) (Task, error)
 	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
 	// The §21.17 check-in window: events of a kind recorded after the latest
 	// human intervention on the task (all of them when no human has intervened).
@@ -34,6 +35,8 @@ type Querier interface {
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
 	ListTasks(ctx context.Context, workspaceID string) ([]Task, error)
+	MarkTaskApprovalStale(ctx context.Context, arg MarkTaskApprovalStaleParams) (Task, error)
+	SkipTaskRefresh(ctx context.Context, arg SkipTaskRefreshParams) (Task, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)
 	UpdateTaskClassification(ctx context.Context, arg UpdateTaskClassificationParams) (Task, error)
 	UpdateTaskHold(ctx context.Context, arg UpdateTaskHoldParams) (Task, error)

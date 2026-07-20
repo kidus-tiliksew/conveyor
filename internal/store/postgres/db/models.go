@@ -159,31 +159,37 @@ type ReviewRoundRetry struct {
 }
 
 type Task struct {
-	ID              string             `json:"id"`
-	WorkspaceID     string             `json:"workspace_id"`
-	Source          string             `json:"source"`
-	Title           string             `json:"title"`
-	Body            string             `json:"body"`
-	Class           string             `json:"class"`
-	EscalationLevel string             `json:"escalation_level"`
-	RepoName        string             `json:"repo_name"`
-	BaseBranch      string             `json:"base_branch"`
-	Branch          string             `json:"branch"`
-	State           string             `json:"state"`
-	ParentTaskID    string             `json:"parent_task_id"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	NextStage       string             `json:"next_stage"`
-	RecoveryStage   string             `json:"recovery_stage"`
-	FeatureID       pgtype.Text        `json:"feature_id"`
-	IntakeKey       pgtype.Text        `json:"intake_key"`
-	Mode            string             `json:"mode"`
-	SpecApproval    bool               `json:"spec_approval"`
-	MergeApproval   bool               `json:"merge_approval"`
-	PolicyVersion   int32              `json:"policy_version"`
-	SetupName       string             `json:"setup_name"`
-	SetupContract   []byte             `json:"setup_contract"`
-	Hold            bool               `json:"hold"`
+	ID                 string             `json:"id"`
+	WorkspaceID        string             `json:"workspace_id"`
+	Source             string             `json:"source"`
+	Title              string             `json:"title"`
+	Body               string             `json:"body"`
+	Class              string             `json:"class"`
+	EscalationLevel    string             `json:"escalation_level"`
+	RepoName           string             `json:"repo_name"`
+	BaseBranch         string             `json:"base_branch"`
+	Branch             string             `json:"branch"`
+	State              string             `json:"state"`
+	ParentTaskID       string             `json:"parent_task_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	NextStage          string             `json:"next_stage"`
+	RecoveryStage      string             `json:"recovery_stage"`
+	FeatureID          pgtype.Text        `json:"feature_id"`
+	IntakeKey          pgtype.Text        `json:"intake_key"`
+	Mode               string             `json:"mode"`
+	SpecApproval       bool               `json:"spec_approval"`
+	MergeApproval      bool               `json:"merge_approval"`
+	PolicyVersion      int32              `json:"policy_version"`
+	SetupName          string             `json:"setup_name"`
+	SetupContract      []byte             `json:"setup_contract"`
+	Hold               bool               `json:"hold"`
+	ReviewedHeadSha    string             `json:"reviewed_head_sha"`
+	ApprovedHeadSha    string             `json:"approved_head_sha"`
+	ApprovalStale      bool               `json:"approval_stale"`
+	RefreshBaselineSha string             `json:"refresh_baseline_sha"`
+	RefreshHeadSha     string             `json:"refresh_head_sha"`
+	RefreshReviewScope string             `json:"refresh_review_scope"`
 }
 
 type TaskSpec struct {
@@ -252,6 +258,11 @@ type WorkOrder struct {
 	AutomaticRetryCount   int32              `json:"automatic_retry_count"`
 	NextRetryAt           pgtype.Timestamptz `json:"next_retry_at"`
 	RetrySuppressed       bool               `json:"retry_suppressed"`
+	ReasonCode            string             `json:"reason_code"`
+	ReviewKind            string             `json:"review_kind"`
+	ReviewScope           string             `json:"review_scope"`
+	BaselineSha           string             `json:"baseline_sha"`
+	HeadSha               string             `json:"head_sha"`
 }
 
 type WorkOrderRecovery struct {

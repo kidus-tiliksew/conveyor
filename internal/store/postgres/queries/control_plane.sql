@@ -27,10 +27,13 @@ SET url = EXCLUDED.url,
 -- name: InsertTask :one
 INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level, mode, hold, spec_approval, merge_approval, policy_version,
-    setup_name, setup_contract, repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
+    setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
+    refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+    $13, $14, $15, $16, $17, $18, $19, $20,
+    $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
 )
 RETURNING *;
 
@@ -55,6 +58,33 @@ UPDATE tasks
 SET hold = sqlc.arg(hold), updated_at = now()
 WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
+-- name: BindTaskApproval :one
+UPDATE tasks
+SET reviewed_head_sha = sqlc.arg(head_sha),
+    approved_head_sha = sqlc.arg(head_sha),
+    approval_stale = false,
+    refresh_baseline_sha = '', refresh_head_sha = '', refresh_review_scope = '',
+    updated_at = now()
+WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
+-- name: MarkTaskApprovalStale :one
+UPDATE tasks
+SET approved_head_sha = sqlc.arg(approved_head_sha), approval_stale = true,
+    refresh_baseline_sha = sqlc.arg(approved_head_sha),
+    refresh_head_sha = sqlc.arg(new_head_sha),
+    refresh_review_scope = sqlc.arg(refresh_review_scope), updated_at = now()
+WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
+-- name: SkipTaskRefresh :one
+UPDATE tasks
+SET reviewed_head_sha = sqlc.arg(head_sha), approved_head_sha = sqlc.arg(head_sha),
+    approval_stale = false, refresh_baseline_sha = '', refresh_head_sha = '',
+    refresh_review_scope = '', updated_at = now()
+WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
 
 -- name: UpdateTaskTransition :one
