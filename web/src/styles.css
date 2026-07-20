@@ -106,7 +106,7 @@ button, input, textarea, select { font: inherit; }
 
 /* Rendered spec markdown (§4.1). The machine-owned fenced blocks are hidden
    here and rendered structurally by the acceptance checklist instead. */
-.markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); }
+.markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); overflow-wrap: break-word; }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   color: var(--color-foreground);
