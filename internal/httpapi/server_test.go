@@ -868,6 +868,64 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 	}
 }
 
+func TestTaskActivitySurfacesAttachmentsExcludingAuditTranscripts(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "attach-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	// Operator-supplied attachment (task_context role, defaulted from empty).
+	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: task.ID}, []byte("PNGDATA")); err != nil {
+		t.Fatal(err)
+	}
+	// Conveyor-generated audit transcript must never appear as an attachment.
+	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "triage-transcript.json", ContentType: "application/json", TaskID: task.ID, Role: core.ArtifactRoleGeneratedAudit}, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/attach-task/activity?workspace_id=demo", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, expected := range [][]byte{
+		[]byte(`"attachments":[`),
+		[]byte(`"name":"design.png"`),
+		[]byte(`"content_type":"image/png"`),
+		[]byte(`"download_url":"/v1/artifacts/`),
+	} {
+		if !bytes.Contains(response.Body.Bytes(), expected) {
+			t.Fatalf("activity body does not contain %s: %s", expected, response.Body.String())
+		}
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte("triage-transcript.json")) {
+		t.Fatalf("audit transcript leaked into attachments: %s", response.Body.String())
+	}
+}
+
+func TestTaskActivityOmitsAttachmentsWhenNone(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "bare-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/bare-task/activity?workspace_id=demo", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"attachments":[]`)) {
+		t.Fatalf("expected empty attachments array: %s", response.Body.String())
+	}
+}
+
 func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
 import { createTask, fetchWorkers } from '../../lib/api'
+import { formatBytes } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
@@ -154,7 +155,7 @@ export function TaskCreateSheet() {
                 <li key={`${file.name}:${file.size}`} className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs">
                   <Paperclip className="size-3 shrink-0 text-faint" />
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                  <span className="shrink-0 font-mono text-[11px] text-faint">{formatSize(file.size)}</span>
+                  <span className="shrink-0 font-mono text-[11px] text-faint">{formatBytes(file.size)}</span>
                   <button
                     type="button"
                     aria-label={`Remove ${file.name}`}
@@ -192,12 +193,6 @@ export function TaskCreateSheet() {
       </footer>
     </Sheet>
   )
-}
-
-function formatSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

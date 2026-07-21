@@ -1,0 +1,206 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Download, FileText, Image as ImageIcon, Paperclip, X } from 'lucide-react'
+import type { Artifact } from '../../lib/types'
+import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
+import { absoluteTime, cn, formatBytes } from '../../lib/utils'
+import { useOperatorToken } from '../app-shell'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Dialog } from '../ui/dialog'
+
+function isImage(contentType: string) {
+  return contentType.startsWith('image/')
+}
+
+// Fetch object URLs for the image attachments so they can preview inline. The
+// download route needs the operator token and forces attachment disposition,
+// so a plain <img src> cannot load it; the URLs are revoked on unmount.
+function useImagePreviews(attachments: Artifact[], token: string) {
+  const signature = attachments.map((attachment) => attachment.id).join(',')
+  const [urls, setUrls] = useState<Record<string, string>>({})
+  const [failed, setFailed] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    let active = true
+    const created: string[] = []
+    setUrls({})
+    setFailed({})
+    for (const attachment of attachments.filter((entry) => isImage(entry.content_type))) {
+      void fetchArtifactObjectURL(token, attachment)
+        .then((url) => {
+          if (!active) {
+            URL.revokeObjectURL(url)
+            return
+          }
+          created.push(url)
+          setUrls((prev) => ({ ...prev, [attachment.id]: url }))
+        })
+        .catch(() => {
+          if (active) setFailed((prev) => ({ ...prev, [attachment.id]: true }))
+        })
+    }
+    return () => {
+      active = false
+      for (const url of created) URL.revokeObjectURL(url)
+    }
+    // Re-run only when the set of attachments (or auth) changes, not on every
+    // render — the array identity is otherwise stable across query refetches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, token])
+
+  return { urls, failed }
+}
+
+// The attachments section (task feature): operator-supplied files previewed
+// as small tiles directly below the spec, each expandable in-place. Omitted
+// entirely when the task carries no attachments.
+export function AttachmentsCard({ attachments }: { attachments: Artifact[] }) {
+  const token = useOperatorToken()
+  const { urls, failed } = useImagePreviews(attachments, token)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const expanded = useMemo(
+    () => attachments.find((attachment) => attachment.id === expandedId) ?? null,
+    [attachments, expandedId],
+  )
+
+  if (attachments.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="items-center">
+        <div className="flex items-center gap-2">
+          <CardTitle>Attachments</CardTitle>
+          <Badge variant="mono">{attachments.length}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="py-4">
+        <ul className="flex flex-wrap gap-3">
+          {attachments.map((attachment) => (
+            <li key={attachment.id}>
+              <AttachmentTile
+                attachment={attachment}
+                previewURL={urls[attachment.id]}
+                previewFailed={failed[attachment.id]}
+                onExpand={() => setExpandedId(attachment.id)}
+              />
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+      {expanded && (
+        <AttachmentDialog
+          attachment={expanded}
+          previewURL={urls[expanded.id]}
+          previewFailed={failed[expanded.id]}
+          token={token}
+          onClose={() => setExpandedId(null)}
+        />
+      )}
+    </Card>
+  )
+}
+
+function AttachmentTile({
+  attachment,
+  previewURL,
+  previewFailed,
+  onExpand,
+}: {
+  attachment: Artifact
+  previewURL?: string
+  previewFailed?: boolean
+  onExpand: () => void
+}) {
+  const image = isImage(attachment.content_type)
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      title={attachment.name}
+      aria-label={`Expand ${attachment.name}`}
+      className="group flex w-28 flex-col overflow-hidden rounded-md border border-border bg-surface text-left transition-colors hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+    >
+      <div className="grid h-20 w-full place-items-center overflow-hidden border-b border-border bg-raised/40">
+        {image && previewURL ? (
+          <img src={previewURL} alt={attachment.name} className="h-full w-full object-cover" />
+        ) : (
+          <TileIcon image={image} loading={image && !previewFailed} />
+        )}
+      </div>
+      <div className="flex min-w-0 flex-col gap-0.5 px-2 py-1.5">
+        <span className="truncate text-xs text-foreground/90">{attachment.name}</span>
+        <span className="font-mono text-[10px] text-faint">{formatBytes(attachment.size_bytes)}</span>
+      </div>
+    </button>
+  )
+}
+
+function TileIcon({ image, loading }: { image: boolean; loading: boolean }) {
+  const Icon = image ? ImageIcon : FileText
+  return (
+    <Icon
+      className={cn('size-6 text-faint', loading && 'animate-pulse')}
+      aria-hidden="true"
+    />
+  )
+}
+
+function AttachmentDialog({
+  attachment,
+  previewURL,
+  previewFailed,
+  token,
+  onClose,
+}: {
+  attachment: Artifact
+  previewURL?: string
+  previewFailed?: boolean
+  token: string
+  onClose: () => void
+}) {
+  const image = isImage(attachment.content_type)
+  const showImage = image && !!previewURL
+  return (
+    <Dialog onClose={onClose} label={attachment.name} className={cn(showImage && 'max-w-3xl')}>
+      <header className="flex items-center gap-3 border-b border-border px-4 py-3">
+        <Paperclip className="size-4 shrink-0 text-faint" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">{attachment.name}</p>
+          <p className="font-mono text-[11px] text-faint">
+            {attachment.content_type || 'unknown'} · {formatBytes(attachment.size_bytes)} · {absoluteTime(attachment.created_at)}
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!token}
+          title={token ? undefined : 'Add the operator token in Settings to download'}
+          onClick={() => void downloadArtifact(token, attachment).catch(() => {})}
+        >
+          <Download />
+          Download
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="Close preview" onClick={onClose}>
+          <X />
+        </Button>
+      </header>
+      <div className="grid place-items-center p-4">
+        {showImage ? (
+          <img src={previewURL} alt={attachment.name} className="max-h-[70vh] w-auto rounded-md object-contain" />
+        ) : (
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <FileText className="size-10 text-faint" aria-hidden="true" />
+            <p className="max-w-sm text-sm text-muted">
+              {image && previewFailed
+                ? 'This image could not be loaded for preview.'
+                : token
+                  ? 'No inline preview for this file type.'
+                  : 'Add the operator token in Settings to preview and download attachments.'}
+            </p>
+          </div>
+        )}
+      </div>
+    </Dialog>
+  )
+}
