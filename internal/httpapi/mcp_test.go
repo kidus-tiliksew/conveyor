@@ -139,6 +139,14 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			if !bodyRequired {
 				t.Fatalf("create_task does not require body: %s", data)
 			}
+			body, ok := properties["body"].(map[string]any)
+			if !ok || body["type"] != "string" {
+				t.Fatalf("create_task body is not a string schema: %s", data)
+			}
+			description, _ := body["description"].(string)
+			if !strings.Contains(description, "GitHub-flavored Markdown") || !strings.Contains(description, "headings and lists") {
+				t.Fatalf("create_task body does not publish structured GFM guidance: %s", data)
+			}
 		}
 	}
 }

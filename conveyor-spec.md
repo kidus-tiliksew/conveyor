@@ -2759,4 +2759,13 @@ remain unchanged:
 
 ---
 
-*End of specification. v1.35 accepted July 21, 2026; all prior amendments remain in force, and §21.34 adds task cancellation, setup re-freeze on operator recovery, and the stalled-task tray. Subsequent changes proceed by amendment with version bumps.*
+### 21.35 v1.36 — GitHub-flavored task bodies (July 21, 2026)
+
+Task `body` is GitHub-flavored Markdown, stored as the original string and
+delivered unchanged to downstream consumers; existing plain-text bodies remain
+compatible, and MCP intake identifies the format and encourages headings and
+lists without adding rendered storage or enabling raw HTML.
+
+---
+
+*End of specification. v1.36 accepted July 21, 2026; all prior amendments remain in force, and §21.35 defines task bodies as GitHub-flavored Markdown. Subsequent changes proceed by amendment with version bumps.*
