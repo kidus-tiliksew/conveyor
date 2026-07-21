@@ -474,6 +474,34 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 	})
 }
 
+// AdvanceTaskRefreshHead moves a stale approval's refresh target to the head
+// most recently submitted for review, so the next refresh round contracts the
+// pushed fix rather than the head recorded when the approval went stale
+// (spec §21.30). Re-advancing to the current refresh head is an idempotent
+// no-op.
+func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
+	newHeadSHA = strings.TrimSpace(newHeadSHA)
+	if newHeadSHA == "" {
+		return fmt.Errorf("new head SHA is required")
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		task, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if !task.ApprovalStale {
+			return fmt.Errorf("task %s has no stale approval to refresh", id)
+		}
+		if task.RefreshHeadSha == newHeadSHA {
+			return nil
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "approved_head": task.RefreshBaselineSha, "prior_head": task.RefreshHeadSha, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
+	})
+}
+
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})

@@ -79,10 +79,22 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || !persisted.ApprovalStale || persisted.RefreshBaselineSHA != "approved-head" || persisted.RefreshHeadSHA != "new-head" || persisted.RefreshReviewScope != config.RefreshReviewDelta {
 		t.Fatalf("stale approval=%+v err=%v", persisted, getErr)
 	}
-	if err = restarted.SkipTaskRefresh(ctx, task.ID, "new-head", "clean-update"); err != nil {
+	if err = restarted.AdvanceTaskRefreshHead(ctx, task.ID, "fix-head"); err != nil {
 		t.Fatal(err)
 	}
-	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || persisted.ApprovalStale || persisted.ApprovedHeadSHA != "new-head" {
+	if err = restarted.AdvanceTaskRefreshHead(ctx, task.ID, "fix-head"); err != nil {
+		t.Fatalf("idempotent refresh-head advance: %v", err)
+	}
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || !persisted.ApprovalStale || persisted.RefreshBaselineSHA != "approved-head" || persisted.RefreshHeadSHA != "fix-head" || persisted.RefreshReviewScope != config.RefreshReviewDelta {
+		t.Fatalf("advanced refresh head=%+v err=%v", persisted, getErr)
+	}
+	if advanced, countErr := restarted.CountEvents(ctx, task.ID, "review.refresh_head_advanced"); countErr != nil || advanced != 1 {
+		t.Fatalf("advance events=%d err=%v", advanced, countErr)
+	}
+	if err = restarted.SkipTaskRefresh(ctx, task.ID, "fix-head", "clean-update"); err != nil {
+		t.Fatal(err)
+	}
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || persisted.ApprovalStale || persisted.ApprovedHeadSHA != "fix-head" {
 		t.Fatalf("skipped refresh=%+v err=%v", persisted, getErr)
 	}
 	st = restarted

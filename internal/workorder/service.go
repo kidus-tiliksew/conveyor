@@ -560,6 +560,15 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
 			return nil, err
 		}
+	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
+		// A fix submitted while the approval is stale must retarget the
+		// refresh review to the pushed head; each refresh seat order
+		// contracts the baseline and the new head (spec §21.30), so leaving
+		// the recorded head behind would review a snapshot that predates
+		// the fix on every subsequent round.
+		if err = s.Store.AdvanceTaskRefreshHead(ctx, task.ID, reviewedHead); err != nil {
+			return nil, err
+		}
 	}
 	if err = s.Store.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
 		return nil, err

@@ -46,6 +46,12 @@ type Store interface {
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
+	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
+	// head most recently submitted for review, so the next refresh round
+	// contracts the pushed fix rather than the head recorded when the
+	// approval went stale (spec §21.30). Re-advancing to the current refresh
+	// head is an idempotent no-op.
+	AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
 	SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
@@ -1933,6 +1939,30 @@ func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA,
 	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = approvedHeadSHA, newHeadSHA, scope
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
+	return nil
+}
+
+func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	newHeadSHA = strings.TrimSpace(newHeadSHA)
+	if newHeadSHA == "" {
+		return fmt.Errorf("new head SHA is required")
+	}
+	if !task.ApprovalStale {
+		return fmt.Errorf("task %s has no stale approval to refresh", id)
+	}
+	if task.RefreshHeadSHA == newHeadSHA {
+		return nil
+	}
+	prior := task.RefreshHeadSHA
+	task.RefreshHeadSHA = newHeadSHA
+	m.tasks[id] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "approved_head": task.RefreshBaselineSHA, "prior_head": prior, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
 	return nil
 }
 

@@ -672,6 +672,60 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	}
 }
 
+func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "stale-refresh", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-refresh", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "conflict-fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "stale-refresh-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.UseDurableQueue()
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
+			return "https://github.com/acme/app/pull/7", nil
+		},
+		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+			return githubtrigger.ReviewTarget{Number: 7, HeadSHA: "panel-fix-head"}, nil
+		}}
+	if _, err := service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetTask(ctx, task.ID)
+	if err != nil || !updated.ApprovalStale || updated.RefreshBaselineSHA != "approved-head" || updated.RefreshHeadSHA != "panel-fix-head" {
+		t.Fatalf("task = %+v err=%v", updated, err)
+	}
+	if n, countErr := st.CountEvents(ctx, task.ID, "review.refresh_head_advanced"); countErr != nil || n != 1 {
+		t.Fatalf("advance events=%d err=%v", n, countErr)
+	}
+	// The next refresh round must contract the newly pushed head, not the
+	// head recorded when the approval went stale (spec §21.30 change 4).
+	_, orders, err := dispatch.BuildReviewRound(cfg, updated, cfg.Routing.Stages["review"], 2)
+	if err != nil || len(orders) == 0 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	for _, order := range orders {
+		if order.ReviewKind != "refresh" || order.BaselineSHA != "approved-head" || order.HeadSHA != "panel-fix-head" {
+			t.Fatalf("refresh order contract = %+v", order)
+		}
+	}
+}
+
 func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
