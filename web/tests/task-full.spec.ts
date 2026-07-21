@@ -710,7 +710,9 @@ for (const decision of ['approve', 'redirect'] as const) {
 
 		const intervention = page
 			.getByRole('region', { name: 'Execution event timeline' })
-			.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+			.locator('ol > li')
+			.filter({ hasText: decision === 'approve' ? 'Approved' : 'Requested changes' })
+			.last()
 		await expect(intervention).toBeVisible()
 		await expect(intervention).toBeInViewport()
 		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
