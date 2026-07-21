@@ -5,7 +5,7 @@ import { fixMergeConflict, mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useOperatorToken } from '../app-shell'
+import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -126,8 +126,9 @@ type GateMutation =
 	| { kind: 'fix' }
   | { kind: 'review'; action: InterventionAction; comment: string }
 
-export function ReviewPanel({ item }: { item: ActivityItem }) {
+export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState<InterventionAction | null>(null)
   const [comment, setComment] = useState('')
@@ -151,13 +152,16 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
     // instant onSuccess returns, and gateFor re-renders the idle label from the
     // still-stale task.state for a frame before the control settles — the
     // reported merge/approve flash (spec AC-1/AC-2).
-    onSuccess: async () => {
+    onSuccess: async (_result, input) => {
       setExpanded(null)
       setComment('')
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }),
         queryClient.invalidateQueries({ queryKey: ['activity'] }),
       ])
+      if (input.kind === 'review' && (input.action === 'approve' || input.action === 'redirect')) {
+        onDecisionRecorded?.()
+      }
     },
   })
 
