@@ -19,6 +19,10 @@ type WorkspaceConfigStore interface {
 	UpdateWorkspaceConfig(context.Context, int64, *config.Config) (config.UpdateReceipt, error)
 }
 
+func (s *Server) getHarnessTemplates(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"templates": config.HarnessTemplates()})
+}
+
 func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 	if s.ConfigStore == nil {
 		http.Error(w, "workspace config unavailable", http.StatusNotFound)
