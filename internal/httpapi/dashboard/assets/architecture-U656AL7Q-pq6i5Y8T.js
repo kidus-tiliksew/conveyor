@@ -1,1 +1,0 @@
-import"./chunk-FPAJGGOC-uWAY-gTZ.js";import{h as e}from"./mermaid-parser.core-MOlmyOd4.js";export{e as createArchitectureServices};
