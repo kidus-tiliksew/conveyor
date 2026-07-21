@@ -10,7 +10,8 @@ const codexHarness = {
 const document = {
   workspace: 'demo', max_bounces: 2, work_order_queue_timeout: '24h',
   execution_settings: {
-    control_plane: { triage: { model: 'gpt', timeout: '20m' }, spec: { model: 'gpt', timeout: '30m' } },
+    control_plane: { triage: { model: 'gpt', timeout: '20m' } },
+    spec: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '30m' },
     implementation: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '2h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'gpt', fallback_harness: 'codex' },
   },
