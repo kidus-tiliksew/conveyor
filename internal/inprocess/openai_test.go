@@ -420,6 +420,55 @@ func TestOpenAIRunReportsIncompleteResponsesWithReason(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunRetriesReasoningOnlyCompletedResponses(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = io.WriteString(w, `{"status":"completed","error":null,"model":"x-ai/grok-4.5","output":[{"type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":"thinking only"}]}],"usage":{"input_tokens":10,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":5}}}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "x-ai/grok-4.5", Input{Prompt: "work"})
+	if err == nil || attempts != responsesMaxAttempts {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+	if !strings.Contains(err.Error(), "no output_text") || !strings.Contains(err.Error(), "reasoning-only") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "retry_exhausted" || !result.Diagnostic.Retryable || result.Diagnostic.Attempts != responsesMaxAttempts {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+	if !strings.Contains(string(result.Transcript), `"phase":"retry_exhausted"`) {
+		t.Fatalf("transcript records stale phase: %s", result.Transcript)
+	}
+}
+
+func TestOpenAIRunRecoversFromReasoningOnlyCompletedResponse(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			_, _ = io.WriteString(w, `{"status":"completed","model":"x-ai/grok-4.5","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking only"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"completed","model":"x-ai/grok-4.5","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":10,"output_tokens":7}}`)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "x-ai/grok-4.5", Input{Prompt: "work"})
+	if err != nil || attempts != 2 || result.Output != "done" {
+		t.Fatalf("attempts=%d output=%q err=%v", attempts, result.Output, err)
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Phase != "completed" || result.Diagnostic.Attempts != 2 || result.Diagnostic.Retryable {
+		t.Fatalf("diagnostic = %+v", result.Diagnostic)
+	}
+	if !strings.Contains(string(result.Transcript), `"phase":"completed"`) {
+		t.Fatalf("transcript records stale phase: %s", result.Transcript)
+	}
+}
+
 func TestOpenAIRunExhaustsRetriesOnPersistentEmbeddedFailures(t *testing.T) {
 	t.Parallel()
 	attempts := 0

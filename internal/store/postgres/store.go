@@ -1365,6 +1365,12 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 		if err = json.Unmarshal(priorJSON, &prior); err != nil {
 			return store.InterruptedReviewRecoveryResult{}, err
 		}
+		if prior.RecoveredOrders == nil {
+			prior.RecoveredOrders = []core.WorkOrder{}
+		}
+		if prior.RetainedOrders == nil {
+			prior.RetainedOrders = []core.WorkOrder{}
+		}
 		return prior, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -1403,7 +1409,13 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
 	}
 	now := time.Now().UTC()
-	result := store.InterruptedReviewRecoveryResult{RequestID: request.RequestID, TaskID: request.TaskID, ReviewRound: request.Round, RetainedOrders: append([]core.WorkOrder(nil), recovery.RetainedOrders...)}
+	result := store.InterruptedReviewRecoveryResult{
+		RequestID:       request.RequestID,
+		TaskID:          request.TaskID,
+		ReviewRound:     request.Round,
+		RecoveredOrders: make([]core.WorkOrder, 0, len(recovery.EligibleOrders)),
+		RetainedOrders:  append(make([]core.WorkOrder, 0, len(recovery.RetainedOrders)), recovery.RetainedOrders...),
+	}
 	actor := store.ActorFromContext(ctx)
 	q := s.queries.WithTx(tx)
 	for _, eligible := range recovery.EligibleOrders {
