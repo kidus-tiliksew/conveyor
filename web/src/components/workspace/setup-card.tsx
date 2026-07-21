@@ -1,4 +1,3 @@
-import { Fragment } from 'react'
 import { ChevronRight, Copy, Plus, Trash2 } from 'lucide-react'
 import type { ExecutionSetup, WorkspaceConfigDocument, WorkspaceReviewSeat } from '../../lib/types'
 import { Badge } from '../ui/badge'
@@ -38,8 +37,10 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
       ...(isDefault ? { execution_settings: updated.execution_settings, review: updated.review } : {}),
     })
   }
-  const updateControlPlane = (stage: 'triage' | 'spec', change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['triage']>) =>
-    updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, [stage]: { ...settings.control_plane[stage], ...change } } } })
+  const updateTriage = (change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['triage']>) =>
+    updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, triage: { ...settings.control_plane.triage, ...change } } } })
+  const updateSpec = (change: Partial<typeof settings.spec>) =>
+    updateSetup({ execution_settings: { ...settings, spec: { ...settings.spec, ...change } } })
   const updateImplementation = (change: Partial<typeof settings.implementation>) =>
     updateSetup({ execution_settings: { ...settings, implementation: { ...settings.implementation, ...change } } })
   const updateReviewExecution = (change: Partial<typeof settings.review>) =>
@@ -51,6 +52,7 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
   }
 
   const implementationHarness = document.harnesses.find((harness) => harness.name === settings.implementation.harness)
+	const specHarness = document.harnesses.find((harness) => harness.name === settings.spec.harness)
   const reviewNeedsFallback = seats.some((seat) => !seat.harness)
   const implementSummary = [
     settings.implementation.harness || 'no harness',
@@ -78,7 +80,7 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
 
       <div className="flex items-stretch gap-4 overflow-x-auto px-4 pb-3">
         <Stage name="Triage" model={settings.control_plane.triage.model} meta={`${settings.control_plane.triage.timeout} limit${settings.control_plane.triage.effort ? ` · ${settings.control_plane.triage.effort} effort` : ''}`} />
-        <Stage name="Spec" model={settings.control_plane.spec.model} meta={`${settings.control_plane.spec.timeout} limit${settings.control_plane.spec.effort ? ` · ${settings.control_plane.spec.effort} effort` : ''}`} connected />
+		<Stage name="Spec" model={`${settings.spec.harness || 'no harness'} · ${settings.spec.model_policy === 'explicit' ? settings.spec.model || 'no model' : 'harness default'}`} meta={`${settings.spec.timeout} limit`} connected />
         <Stage name="Implement" model={implementSummary} meta={`${settings.implementation.timeout} limit`} connected />
         <Stage name="Review" model={`${seats.length} ${seats.length === 1 ? 'seat' : 'seats'}`} meta={`all must approve · ${settings.review.timeout}`} connected />
       </div>
@@ -86,13 +88,11 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
       {expanded && (
         <div className="border-t border-border">
           <div className="border-b border-border px-4 py-4">
-            <GroupTitle title="Triage & spec" note="run inside Conveyor, no harness needed" />
+            <GroupTitle title="Triage" note="runs inside Conveyor" />
             <div className="grid gap-3 md:grid-cols-3">
-              {(['triage', 'spec'] as const).map((stage) => (
-                <Fragment key={stage}>
-                  <Field label={`${stage === 'triage' ? 'Triage' : 'Spec'} model`}><Input aria-label={`${stage} model`} className="font-mono" value={settings.control_plane[stage].model} onChange={(event) => updateControlPlane(stage, { model: event.target.value })} /></Field>
+                  <Field label="Triage model"><Input aria-label="triage model" className="font-mono" value={settings.control_plane.triage.model} onChange={(event) => updateTriage({ model: event.target.value })} /></Field>
                   <Field label="Reasoning effort" hint="Passed to the provider's Responses API; leave unset for the provider default.">
-                    <Select aria-label={`${stage} reasoning effort`} value={settings.control_plane[stage].effort ?? ''} onChange={(event) => updateControlPlane(stage, { effort: (event.target.value || undefined) as typeof settings.control_plane.triage.effort })}>
+                    <Select aria-label="triage reasoning effort" value={settings.control_plane.triage.effort ?? ''} onChange={(event) => updateTriage({ effort: (event.target.value || undefined) as typeof settings.control_plane.triage.effort })}>
                       <option value="">Provider default</option>
                       <option value="minimal">minimal</option>
                       <option value="low">low</option>
@@ -100,11 +100,19 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
                       <option value="high">high</option>
                     </Select>
                   </Field>
-                  <Field label="Time limit"><Input aria-label={`${stage} timeout`} value={settings.control_plane[stage].timeout} onChange={(event) => updateControlPlane(stage, { timeout: event.target.value })} /></Field>
-                </Fragment>
-              ))}
+                  <Field label="Time limit"><Input aria-label="triage timeout" value={settings.control_plane.triage.timeout} onChange={(event) => updateTriage({ timeout: event.target.value })} /></Field>
             </div>
           </div>
+
+		  <div className="border-b border-border px-4 py-4">
+			<GroupTitle title="Specification" note="runs on your worker over MCP without git changes" />
+			<div className="grid gap-3 md:grid-cols-4">
+			  <Field label="Harness"><Select aria-label="Spec harness" value={settings.spec.harness} onChange={(event) => updateSpec({ harness: event.target.value, model: '' })}><option value="">Select harness</option>{document.harnesses.map((harness) => <option key={harness.name} value={harness.name}>{harness.name}</option>)}</Select></Field>
+			  <Field label="Model policy"><Select aria-label="Spec model policy" value={settings.spec.model_policy} onChange={(event) => updateSpec({ model_policy: event.target.value as 'explicit' | 'harness_default', model: '' })}><option value="explicit">Explicit model</option><option value="harness_default">Harness default</option></Select></Field>
+			  {settings.spec.model_policy === 'explicit' ? <Field label="Model"><Input aria-label="Spec model" className="font-mono" value={settings.spec.model ?? ''} onChange={(event) => updateSpec({ model: event.target.value })} /></Field> : <Field label="Default sentinel"><Select aria-label="Spec default sentinel" value={settings.spec.model ?? ''} onChange={(event) => updateSpec({ model: event.target.value })}><option value="">Omit model arguments</option>{(specHarness?.default_model_sentinels ?? []).map((sentinel) => <option key={sentinel} value={sentinel}>{sentinel}</option>)}</Select></Field>}
+			  <Field label="Time limit"><Input aria-label="spec timeout" value={settings.spec.timeout} onChange={(event) => updateSpec({ timeout: event.target.value })} /></Field>
+			</div>
+		  </div>
 
           <div className="border-b border-border px-4 py-4">
             <GroupTitle title="Implementation" note="runs on your worker over MCP" />

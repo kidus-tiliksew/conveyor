@@ -33,11 +33,138 @@ type capturingInputAgent struct {
 func (agent *capturingInputAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
 	agent.calls++
 	agent.input = input
-	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.8,\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
+	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
 }
 
 type failingTranscriptAgent struct {
 	attachmentCounts []int
+}
+
+type concurrentSpecDispatchStore struct {
+	store.Store
+
+	mu             sync.Mutex
+	arrivals       int
+	firstTimedOut  bool
+	raceObserved   bool
+	arrivalsReady  chan struct{}
+	snapshots      int
+	snapshotsReady chan struct{}
+	createCalls    int
+}
+
+func newConcurrentSpecDispatchStore(st store.Store) *concurrentSpecDispatchStore {
+	return &concurrentSpecDispatchStore{
+		Store:          st,
+		arrivalsReady:  make(chan struct{}),
+		snapshotsReady: make(chan struct{}),
+	}
+}
+
+func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	st.mu.Lock()
+	st.arrivals++
+	arrival := st.arrivals
+	if arrival == 2 && !st.firstTimedOut {
+		st.raceObserved = true
+		close(st.arrivalsReady)
+	}
+	st.mu.Unlock()
+
+	if arrival == 1 {
+		select {
+		case <-st.arrivalsReady:
+		case <-time.After(50 * time.Millisecond):
+			st.mu.Lock()
+			st.firstTimedOut = true
+			st.mu.Unlock()
+		}
+	}
+
+	orders, err := st.Store.ListTaskWorkOrders(ctx, taskID)
+	st.mu.Lock()
+	concurrent := st.raceObserved
+	if concurrent {
+		st.snapshots++
+		if st.snapshots == 2 {
+			close(st.snapshotsReady)
+		}
+	}
+	st.mu.Unlock()
+	if concurrent {
+		<-st.snapshotsReady
+	}
+	return orders, err
+}
+
+func (st *concurrentSpecDispatchStore) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	st.mu.Lock()
+	st.createCalls++
+	st.mu.Unlock()
+	return st.Store.CreateWorkOrder(ctx, order)
+}
+
+func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-mcp-spec", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	// A stale pre-§21.33 route may still say in_process. New spec dispatch must
+	// ignore that execution marker and create an MCP work order; only an already
+	// in-flight legacy call may finish through the old completion path.
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionInProcess}}}}
+	d := New(st, cfg, agent)
+	if err := d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageSpec || orders[0].RequiredHarness != "codex" || orders[0].RequiredHarnessConfig == nil {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("in-process spec fallback ran %d time(s)", agent.calls)
+	}
+}
+
+func TestConcurrentSpecDispatchCreatesOneWorkOrder(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	memory := store.NewMemory()
+	task := core.Task{ID: "concurrent-mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := memory.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	st := newConcurrentSpecDispatchStore(memory)
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionMCP}}}}
+	d := New(st, cfg, &capturingInputAgent{})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			errs <- d.DispatchNow(ctx, task.ID)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	orders, err := memory.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	createCalls := st.createCalls
+	st.mu.Unlock()
+	if createCalls != 1 || len(orders) != 1 || orders[0].Stage != core.StageSpec {
+		t.Fatalf("create calls=%d orders=%+v, want one spec work order", createCalls, orders)
+	}
 }
 
 func (agent *failingTranscriptAgent) Run(_ context.Context, model string, input inprocess.Input) (inprocess.Result, error) {
@@ -191,7 +318,9 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
-	_ = dispatcher.DispatchNow(ctx, task.ID)
+	// Simulate completion of a spec call that was already in flight when
+	// §21.33 moved new spec dispatch to MCP work orders.
+	_ = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, task, cfg.Routing.Stages["spec"])
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
@@ -1001,14 +1130,14 @@ func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 3, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, task, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
 	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageSpec {
 		t.Fatalf("after invalid output task=%+v err=%v", current, err)
 	}
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, current, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "# Previous output rejected") || !strings.Contains(agent.inputs[1].Prompt, `invalid verify value "tests"`) {
@@ -1038,7 +1167,7 @@ func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"automatability\":1,\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage": {Model: "gpt-newly-configured", Execution: config.ExecutionInProcess, Timeout: time.Minute},
 	}}}
@@ -1070,7 +1199,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &sequenceAgent{outputs: []string{
-		"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.9,\"route\":\"spec\",\"summary\":\"Needs an accepted contract.\"}\n```",
+		"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"spec\",\"summary\":\"Needs an accepted contract.\"}\n```",
 		structuredSpecOutput("# Audit export\n\n## Intent\nAdd the export.\n\n## Non-goals\nNo unrelated formats.", "Export tests pass", "./..."),
 	}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -1085,7 +1214,11 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	inFlightSpec, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, inFlightSpec, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
@@ -1239,7 +1372,7 @@ func implementationModelDocument(policy, model string, sentinels []string) confi
 	}
 }
 
-func TestResolvedSpecGateIsIndependentFromHold(t *testing.T) {
+func TestHumanTriageRouteAlwaysAwaitsInput(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Hold: true, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
@@ -1250,7 +1383,7 @@ func TestResolvedSpecGateIsIndependentFromHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.2,\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", structuredSpecOutput("# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.", "Works", "./...")}}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", structuredSpecOutput("# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.", "Works", "./...")}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	d := New(st, cfg, agent)
 	d.Pack = bundle
@@ -1258,15 +1391,8 @@ func TestResolvedSpecGateIsIndependentFromHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
-	if current.NextStage != core.StageSpec || current.State != core.TaskQueued {
+	if current.State != core.TaskAwaiting || current.RecoveryStage != core.StageTriage {
 		t.Fatalf("after triage=%+v", current)
-	}
-	if err = d.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	current, _ = st.GetTask(ctx, task.ID)
-	if current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
-		t.Fatalf("after spec=%+v", current)
 	}
 }
 
@@ -1320,7 +1446,9 @@ func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testi
 		t.Fatalf("requested changes created implementation orders=%+v err=%v", orders, err)
 	}
 
-	if err = d.DispatchNow(ctx, task.ID); err != nil {
+	// Complete the legacy call that was already in flight before the redirect;
+	// any new delivery of this queued stage would create an MCP work order.
+	if err = d.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, current, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err = st.GetTask(ctx, task.ID)

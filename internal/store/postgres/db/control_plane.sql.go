@@ -20,7 +20,7 @@ WHERE s.task_id = t.id
   AND s.version = $2
   AND t.workspace_id = $3
   AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = $1)
-RETURNING s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at
+RETURNING s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model
 `
 
 type ApproveLatestSpecVersionParams struct {
@@ -42,6 +42,8 @@ func (q *Queries) ApproveLatestSpecVersion(ctx context.Context, arg ApproveLates
 		&i.Approved,
 		&i.CreatedAt,
 		&i.ApprovedAt,
+		&i.Agent,
+		&i.Model,
 	)
 	return i, err
 }
@@ -220,7 +222,7 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 }
 
 const getLatestSpecVersion = `-- name: GetLatestSpecVersion :one
-SELECT s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at FROM task_specs s
+SELECT s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND t.workspace_id = $2
 ORDER BY s.version DESC
@@ -245,6 +247,8 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 		&i.Approved,
 		&i.CreatedAt,
 		&i.ApprovedAt,
+		&i.Agent,
+		&i.Model,
 	)
 	return i, err
 }
@@ -548,7 +552,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 const insertSpecVersion = `-- name: InsertSpecVersion :one
 INSERT INTO task_specs (
     task_id, version, content, acceptance_count, acceptance, decomposition,
-    approved, approved_at, created_at
+    approved, approved_at, created_at, agent, model
 )
 SELECT
     $1,
@@ -559,10 +563,12 @@ SELECT
     $5,
     false,
     NULL,
-    $6
+    $6,
+    $7,
+    $8
 FROM task_specs
 WHERE task_id = $1
-RETURNING task_id, version, content, acceptance_count, acceptance, decomposition, approved, created_at, approved_at
+RETURNING task_id, version, content, acceptance_count, acceptance, decomposition, approved, created_at, approved_at, agent, model
 `
 
 type InsertSpecVersionParams struct {
@@ -572,6 +578,8 @@ type InsertSpecVersionParams struct {
 	Acceptance      []byte             `json:"acceptance"`
 	Decomposition   []byte             `json:"decomposition"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Agent           string             `json:"agent"`
+	Model           string             `json:"model"`
 }
 
 func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error) {
@@ -582,6 +590,8 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 		arg.Acceptance,
 		arg.Decomposition,
 		arg.CreatedAt,
+		arg.Agent,
+		arg.Model,
 	)
 	var i TaskSpec
 	err := row.Scan(
@@ -594,6 +604,8 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 		&i.Approved,
 		&i.CreatedAt,
 		&i.ApprovedAt,
+		&i.Agent,
+		&i.Model,
 	)
 	return i, err
 }

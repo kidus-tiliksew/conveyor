@@ -314,9 +314,10 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 	st := store.NewMemory()
 	cfg := workerTestConfig()
 	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
+	cfg.Repos = []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}
 	orders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: orders, ConfigProvider: orders.ConfigProvider, Now: func() time.Time { return now }}
-	task := core.Task{ID: "implementation-effort", Workspace: "demo", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: "implementation-effort", Workspace: "demo", Repo: "app", BaseBranch: "main", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
 	item := listed[0]
-	if item.Effort != "high" || !reflect.DeepEqual(item.EffortArgv, snapshot.EffortArgv) || !reflect.DeepEqual(item.Harness.EffortArgs["high"], snapshot.EffortArgv) {
+	if item.Effort != "high" || !reflect.DeepEqual(item.EffortArgv, snapshot.EffortArgv) || !reflect.DeepEqual(item.Harness.EffortArgs["high"], snapshot.EffortArgv) || !reflect.DeepEqual(item.Repository, cfg.Repos[0]) {
 		t.Fatalf("implementation dispatch recomputed hot-reloaded effort: %+v", item)
 	}
 }

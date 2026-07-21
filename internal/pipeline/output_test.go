@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseTriageAndReview(t *testing.T) {
-	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"automatability\":0.8,\"route\":\"spec\",\"summary\":\"Needs a contract.\"}\n```")
+	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"spec\",\"summary\":\"Needs a contract.\"}\n```")
 	if err != nil || triage.Route != "spec" {
 		t.Fatalf("triage=%+v err=%v", triage, err)
 	}
@@ -46,6 +46,13 @@ Nothing.
 ` + "```conveyor:decomposition\n- id: SUB-1\n  repo: api\n  summary: Add it\n  depends_on: [SUB-404]\n```"
 	if _, err := ParseSpec(invalid); err == nil {
 		t.Fatal("accepted an unknown decomposition dependency")
+	}
+}
+
+func TestParseSpecTreatsMermaidAndOtherFencesAsOrdinaryProse(t *testing.T) {
+	document := "## Intent\n\n```mermaid\nthis is deliberately malformed\n```\n\n```go\nfunc example() {}\n```\n\n## Non-goals\n\nNone.\n\n```conveyor:acceptance\n- id: AC-1\n  criterion: Works\n  verify: test\n```"
+	if _, err := ParseSpec(document); err != nil {
+		t.Fatalf("ordinary prose fence failed validation: %v", err)
 	}
 }
 

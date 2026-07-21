@@ -1,5 +1,5 @@
 # Conveyor deployment/bootstrap config (spec §21.4). CONVEYOR_API_KEY is the
-# deployment-owned key used only by in-process triage/spec. MCP clients use
+# deployment-owned key used only by in-process triage. MCP clients use
 # their own agent subscriptions or API credentials on their own machines.
 workspace: demo
 pack_dir: pack
@@ -18,7 +18,12 @@ database:
 execution_settings:
   control_plane:
     triage: {model: gpt-5.6-luna, timeout: 20m}
-    spec: {model: gpt-5.6-luna, timeout: 30m}
+  spec:
+    harness: local-agent
+    model: gpt-5.6-sol
+    model_policy: explicit
+    effort: high
+    timeout: 30m
   implementation:
     harness: local-agent
     model_policy: harness_default
@@ -38,9 +43,12 @@ routing:
       timeout: 20m
       execution: in_process
     spec:
-      model: gpt-5.6-luna
+      model: gpt-5.6-sol
+      model_policy: explicit
+      harness: local-agent
+      effort: high
       timeout: 30m
-      execution: in_process
+      execution: mcp
     implement:
       model: operator-owned
       harness: local-agent
@@ -95,7 +103,12 @@ setups:
     execution_settings:
       control_plane:
         triage: {model: gpt-5.6-luna, timeout: 20m}
-        spec: {model: gpt-5.6-luna, timeout: 30m}
+      spec:
+        harness: local-agent
+        model: gpt-5.6-sol
+        model_policy: explicit
+        effort: high
+        timeout: 30m
       implementation:
         harness: local-agent
         model_policy: harness_default

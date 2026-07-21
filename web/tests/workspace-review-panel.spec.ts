@@ -7,8 +7,8 @@ const baseDocument = {
   execution_settings: {
     control_plane: {
       triage: { model: 'gpt', effort: 'low', timeout: '20m' },
-      spec: { model: 'gpt', timeout: '30m' },
     },
+    spec: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '30m' },
     implementation: { model: 'gpt-implement', model_policy: 'explicit', harness: 'codex', timeout: '4h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'fallback', fallback_harness: 'codex' },
   },

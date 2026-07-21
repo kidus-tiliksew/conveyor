@@ -4,7 +4,11 @@ const createdAt = '2026-07-15T12:00:00Z'
 let emitLiveScrollEvent = () => {}
 
 function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
-	const specContent = taskId === 'long-spec'
+	const specContent = taskId === 'mermaid-valid'
+		? '## Specification\n\n```mermaid\ngraph TD\n  A --> B\n```'
+		: taskId === 'mermaid-invalid'
+			? '## Specification\n\n```mermaid\nthis is deliberately malformed\n```'
+		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
 	const reviewActivity = taskId === 'live-scroll' ? {
@@ -629,4 +633,13 @@ test('task sheet opens scrolled to the human gate for reviewable tasks', async (
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {
 	await page.goto('/')
 	await expect(page.getByText('Verdict claim expired')).toBeVisible()
+})
+
+test('spec diagrams render best-effort and malformed Mermaid falls back to source', async ({ page }) => {
+	await page.goto('/tasks/mermaid-valid/full')
+	await expect(page.locator('[data-mermaid] svg')).toBeVisible()
+
+	await page.goto('/tasks/mermaid-invalid/full')
+	await expect(page.locator('code.language-mermaid')).toContainText('this is deliberately malformed')
+	await expect(page.getByRole('heading', { name: 'Specification' }).first()).toBeVisible()
 })

@@ -942,6 +942,97 @@ func TestRunHarnessChildReviewCanRetryAfterExitRelease(t *testing.T) {
 	}
 }
 
+func TestRunHarnessChildMaterializesSpecRepositoryOutsideWorkerDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	wantHead := mustGitOutput(t, fixture.seed, "rev-parse", "HEAD")
+	workerDirectory := t.TempDir()
+	t.Chdir(workerDirectory)
+	reportPath := filepath.Join(t.TempDir(), "spec-repository.json")
+	t.Setenv("CONVEYOR_FAKE_HARNESS", "1")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_REPO_REPORT", reportPath)
+
+	var mu sync.Mutex
+	state := core.WorkOrderQueued
+	session := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/mcp" {
+			var request struct {
+				Params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"params"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request.Params.Arguments["session_id"] != session {
+				http.Error(w, "wrong session", http.StatusForbidden)
+				return
+			}
+			if request.Params.Name == "submit_spec" {
+				state = core.WorkOrderCompleted
+			} else if request.Params.Name != "get_work_order" {
+				http.Error(w, "unexpected tool", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			var claim struct {
+				SessionID string `json:"session_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&claim)
+			session, state = claim.SessionID, core.WorkOrderClaimed
+		case "reconcile":
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: state}, Authorized: state == core.WorkOrderClaimed})
+			return
+		case "release", "renew":
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: state, LeaseExpiresAt: time.Now().Add(time.Minute)})
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "fake-spec", Stage: core.StageSpec},
+		Task:       core.Task{ID: "task-spec", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-spec"},
+		Repository: config.Repo{Name: "app", URL: fixture.origin, Base: "main"},
+		Harness:    config.Harness{Name: "fake", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+		Model:      "fake-model",
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Directory string `json:"directory"`
+		Head      string `json:"head"`
+		Branch    string `json:"branch"`
+		Readme    string `json:"readme"`
+		PushURL   string `json:"push_url"`
+		Mode      uint32 `json:"mode"`
+	}
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Directory == workerDirectory || report.Head != wantHead || report.Branch != "" || report.Readme != "main\n" || report.PushURL != "disabled://conveyor-spec-read-only" || report.Mode&0o222 != 0 {
+		t.Fatalf("spec repository report=%+v worker_directory=%s want_head=%s", report, workerDirectory, wantHead)
+	}
+}
+
 func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
 		t.Helper()
@@ -1131,7 +1222,37 @@ func TestWorkerHarnessHelper(t *testing.T) {
 	}
 	identity := map[string]any{"workspace_id": os.Getenv("CONVEYOR_WORKSPACE"), "work_order_id": orderID, "session_id": session}
 	call("get_work_order", identity)
-	if strings.Contains(orderID, "implement") {
+	if reportPath := os.Getenv("CONVEYOR_FAKE_HARNESS_REPO_REPORT"); reportPath != "" {
+		directory, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		readme, err := os.ReadFile("README.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, _ := json.Marshal(map[string]any{
+			"directory": directory,
+			"head":      mustGitOutput(t, directory, "rev-parse", "HEAD"),
+			"branch":    mustGitOutput(t, directory, "branch", "--show-current"),
+			"readme":    string(readme),
+			"push_url":  mustGitOutput(t, directory, "remote", "get-url", "--push", "origin"),
+			"mode":      uint32(info.Mode().Perm()),
+		})
+		if err = os.WriteFile(reportPath, report, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(orderID, "spec") {
+		identity["markdown"] = "## Intent\nGrounded spec"
+		identity["acceptance"] = []any{}
+		identity["decomposition"] = []any{}
+		call("submit_spec", identity)
+	} else if strings.Contains(orderID, "implement") {
 		call("submit_for_review", identity)
 	} else {
 		mode := os.Getenv("CONVEYOR_FAKE_HARNESS_MODE")

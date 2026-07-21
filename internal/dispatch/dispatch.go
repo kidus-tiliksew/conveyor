@@ -131,18 +131,19 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	if task.NextStage != core.StageImplement {
+	if task.NextStage != core.StageImplement && task.NextStage != core.StageSpec {
 		return d.runTaskForSnapshot(ctx, task)
 	}
-	// Dispatch and conflict-fix creation share one workspace-scoped gate. The
-	// callback re-reads durable state after acquiring it so a River delivery
-	// that overlapped §21.30 conflict handling observes the surviving order.
+	// Implement/spec dispatch and conflict-fix creation share one
+	// workspace-scoped gate. The callback re-reads durable state after
+	// acquiring it so overlapping River deliveries observe the surviving
+	// order before checking and creating another one (spec §§21.30, 21.33).
 	return d.Store.WithTaskLock(ctx, taskID, func() error {
 		current, currentErr := d.Store.GetTask(ctx, taskID)
 		if currentErr != nil {
 			return currentErr
 		}
-		if current.NextStage != core.StageImplement {
+		if current.NextStage != core.StageImplement && current.NextStage != core.StageSpec {
 			return nil
 		}
 		return d.runTaskForSnapshot(ctx, current)
@@ -167,8 +168,12 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
-	if task.NextStage == core.StageImplement {
-		if _, active, activeErr := d.activeImplementationWorkOrder(ctx, task.ID, ""); activeErr != nil {
+	// Newly dispatched specs are always MCP work orders, even when a stale
+	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
+	// handling in runInProcess is only for completion of calls that were already
+	// in flight when the execution contract changed (spec §21.33).
+	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec {
+		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
 		} else if active {
 			return nil
@@ -179,13 +184,17 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 }
 
 func (d *Dispatcher) activeImplementationWorkOrder(ctx context.Context, taskID, reasonCode string) (core.WorkOrder, bool, error) {
+	return d.activeWorkOrder(ctx, taskID, core.StageImplement, reasonCode)
+}
+
+func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage core.Stage, reasonCode string) (core.WorkOrder, bool, error) {
 	orders, err := d.Store.ListTaskWorkOrders(ctx, taskID)
 	if err != nil {
 		return core.WorkOrder{}, false, err
 	}
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
-		if order.Stage != core.StageImplement || (reasonCode != "" && order.ReasonCode != reasonCode) {
+		if order.Stage != stage || (reasonCode != "" && order.ReasonCode != reasonCode) {
 			continue
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed {
@@ -351,7 +360,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		var found bool
 		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
 		if !found {
-			return fmt.Errorf("implementation route references unavailable harness %q", route.Harness)
+			return fmt.Errorf("%s route references unavailable harness %q", task.NextStage, route.Harness)
 		}
 		if route.Effort != "" {
 			harnessConfig.Effort = route.Effort
@@ -482,6 +491,13 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	if stage == core.StageTriage {
+		features, _ := d.Store.ListFeatures(ctx)
+		prompt.WriteString("\n# Requirements-tree features\n\nPropose only an ID from this list, or an empty feature_id:\n")
+		for _, feature := range features {
+			fmt.Fprintf(&prompt, "- %s: %s\n", feature.ID, feature.Name)
+		}
+	}
 	events, _ := d.Store.ListEvents(ctx, task.ID)
 	invalidKind := string(stage) + ".output_invalid"
 	for i := len(events) - 1; i >= 0; i-- {
@@ -649,8 +665,8 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 			return err
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
-		d.suggestFeature(ctx, task, result.Summary)
-		if task.PolicyVersion == 0 && (task.Level == core.L3 || result.Route == "human") {
+		d.recordFeatureSuggestion(ctx, task, result.FeatureID)
+		if task.Level == core.L3 || result.Route == "human" {
 			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageTriage)
 		}
 		if result.Route == "parked" {
@@ -666,20 +682,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
-		version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition)})
-		if err != nil {
-			return err
-		}
-		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
-			return d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
-		}
-		if err = d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
-			return err
-		}
-		if err = d.queueApprovedIssue(ctx, task, version); err != nil {
-			return err
-		}
-		return d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
+		return d.completeSpec(ctx, task, result, reviewer, job.ModelTier)
 	case core.StageReview:
 		result, err := pipeline.ParseReview(output)
 		if err != nil {
@@ -697,6 +700,42 @@ func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, jo
 		return err
 	}
 	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model)
+}
+
+// ApplyExternalSpec validates an MCP-authored structured specification and
+// enters the unchanged approval/auto-approval path (spec §21.33).
+func (d *Dispatcher) ApplyExternalSpec(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredSpec, agent, model string) (core.SpecVersion, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	result, err := pipeline.RenderStructuredSpec(string(raw))
+	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	return d.completeSpecVersion(ctx, task, result, agent, model)
+}
+
+func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) error {
+	_, err := d.completeSpecVersion(ctx, task, result, agent, model)
+	return err
+}
+
+func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (core.SpecVersion, error) {
+	version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model})
+	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
+		return version, d.transition(ctx, task.ID, core.TaskAwaiting, "", core.StageImplement)
+	}
+	if err = d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
+		return core.SpecVersion{}, err
+	}
+	if err = d.queueApprovedIssue(ctx, task, version); err != nil {
+		return core.SpecVersion{}, err
+	}
+	return version, d.transition(ctx, task.ID, core.TaskQueued, core.StageImplement, "")
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
@@ -789,11 +828,14 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 	return d.transition(ctx, taskID, core.TaskQueued, core.StageImplement, "")
 }
 
-func (d *Dispatcher) suggestFeature(ctx context.Context, task core.Task, summary string) {
+func (d *Dispatcher) recordFeatureSuggestion(ctx context.Context, task core.Task, featureID string) {
+	featureID = strings.TrimSpace(featureID)
+	if featureID == "" {
+		return
+	}
 	features, _ := d.Store.ListFeatures(ctx)
-	haystack := strings.ToLower(task.Title + " " + task.Body + " " + summary)
 	for _, feature := range features {
-		if strings.Contains(haystack, strings.ToLower(feature.Name)) {
+		if feature.ID == featureID {
 			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "triage.feature_suggested", Payload: core.JSONPayload(map[string]string{"feature_id": feature.ID, "feature_name": feature.Name})})
 			return
 		}

@@ -10,8 +10,8 @@ const baseDocument = {
   execution_settings: {
     control_plane: {
       triage: { model: 'openai/gpt-5.6-luna', timeout: '20m' },
-      spec: { model: 'openai/gpt-5.6-luna', timeout: '30m' },
     },
+    spec: { model: 'openai/gpt-5.6-luna', model_policy: 'explicit', harness: 'codex', timeout: '30m' },
     implementation: { model: 'gpt-5.6-sol', model_policy: 'explicit', harness: 'codex', effort: 'high', timeout: '2h' },
     review: { execution: 'mcp', timeout: '30m' },
   },

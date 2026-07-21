@@ -79,6 +79,51 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "submit-spec", Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "submit-spec-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "spec-session", ClientToken: "secret", Agent: "codex", Model: "gpt-spec", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	d := &dispatch.Dispatcher{Store: st}
+	service := &Service{Store: st, Dispatcher: d}
+	invalid := pipeline.StructuredSpec{Markdown: "# Missing required sections", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Works", Verify: "test"}}}
+	if _, err := service.SubmitSpec(ctx, job.ID, "spec-session", invalid); err == nil {
+		t.Fatal("invalid spec submission succeeded")
+	}
+	claimed, _ := st.GetWorkOrder(ctx, job.ID)
+	if claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("validation changed order state to %s", claimed.State)
+	}
+	if _, ok, _ := st.GetLatestSpecVersion(ctx, task.ID); ok {
+		t.Fatal("validation failure created a spec version")
+	}
+	valid := pipeline.StructuredSpec{Markdown: "## Intent\n\nShip it.\n\n## Non-goals\n\nNone.", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Works", Verify: "test"}}, Decomposition: []pipeline.DecompositionItem{}}
+	if _, err := service.SubmitSpec(ctx, job.ID, "spec-session", valid); err != nil {
+		t.Fatal(err)
+	}
+	version, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil || !ok || version.Agent != "codex" || version.Model != "gpt-spec" {
+		t.Fatalf("version=%+v ok=%t err=%v", version, ok, err)
+	}
+	completed, _ := st.GetWorkOrder(ctx, job.ID)
+	current, _ := st.GetTask(ctx, task.ID)
+	if completed.State != core.WorkOrderCompleted || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+		t.Fatalf("order=%+v task=%+v", completed, current)
+	}
+}
+
 func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()

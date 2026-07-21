@@ -686,7 +686,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 		}
 		row, err := q.InsertSpecVersion(ctx, db.InsertSpecVersionParams{
 			TaskID: spec.TaskID, Content: spec.Content, AcceptanceCount: int32(spec.AcceptanceCount),
-			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt),
+			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt), Agent: spec.Agent, Model: spec.Model,
 		})
 		if err != nil {
 			return err
@@ -2688,6 +2688,7 @@ func specFromDB(spec db.TaskSpec) core.SpecVersion {
 		TaskID: spec.TaskID, Version: int(spec.Version), Content: spec.Content,
 		AcceptanceCount: int(spec.AcceptanceCount), Acceptance: append([]byte(nil), spec.Acceptance...),
 		Decomposition: append([]byte(nil), spec.Decomposition...), Approved: spec.Approved,
+		Agent: spec.Agent, Model: spec.Model,
 		CreatedAt: spec.CreatedAt.Time, ApprovedAt: nullableTime(spec.ApprovedAt),
 	}
 }

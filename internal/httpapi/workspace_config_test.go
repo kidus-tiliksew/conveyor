@@ -52,8 +52,8 @@ func contextualWorkspaceDocument() config.WorkspaceDocument {
 		ExecutionSettings: &config.ContextualExecutionSettings{
 			ControlPlane: config.ControlPlaneSettings{
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
-				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
 			},
+			Spec:           config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "30m"},
 			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
 			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "fallback", FallbackHarness: "codex"},
 		},
@@ -181,13 +181,19 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 
 func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
 	for _, stage := range []string{"triage", "spec"} {
-		for _, effort := range []string{"", "minimal", "low", "medium", "high"} {
+		efforts := []string{"", "low", "medium", "high"}
+		if stage == "triage" {
+			efforts = append(efforts, "minimal")
+		} else {
+			efforts = []string{"", "high"}
+		}
+		for _, effort := range efforts {
 			t.Run(stage+"/accept/"+effort, func(t *testing.T) {
 				document := contextualWorkspaceDocument()
 				if stage == "triage" {
 					document.ExecutionSettings.ControlPlane.Triage.Effort = effort
 				} else {
-					document.ExecutionSettings.ControlPlane.Spec.Effort = effort
+					document.ExecutionSettings.Spec.Effort = effort
 				}
 				backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
 				s := NewServer(store.NewMemory())
@@ -211,7 +217,7 @@ func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
 			if stage == "triage" {
 				document.ExecutionSettings.ControlPlane.Triage.Effort = "maximum"
 			} else {
-				document.ExecutionSettings.ControlPlane.Spec.Effort = "maximum"
+				document.ExecutionSettings.Spec.Effort = "maximum"
 			}
 			backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
 			s := NewServer(store.NewMemory())
@@ -224,8 +230,11 @@ func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
 			request.Header.Set("If-Match", "1")
 			result := httptest.NewRecorder()
 			s.Handler().ServeHTTP(result, request)
-			wantField := `"field":"execution_settings.control_plane.` + stage + `.effort"`
-			if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(result.Body.String(), wantField) || !strings.Contains(result.Body.String(), "maximum") {
+			wantField := `"field":"execution_settings.` + stage + `.effort"`
+			if stage == "triage" {
+				wantField = `"field":"execution_settings.control_plane.triage.effort"`
+			}
+			if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(result.Body.String(), wantField) || !strings.Contains(result.Body.String(), "must be") {
 				t.Fatalf("status=%d updates=%d body=%s", result.Code, backend.updates, result.Body)
 			}
 		})

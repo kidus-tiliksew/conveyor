@@ -13,10 +13,18 @@ import (
 )
 
 type Triage struct {
-	Class          string  `json:"class"`
-	Automatability float64 `json:"automatability"`
-	Route          string  `json:"route"`
-	Summary        string  `json:"summary"`
+	Class     string      `json:"class"`
+	Route     string      `json:"route"`
+	Summary   string      `json:"summary"`
+	Brief     TriageBrief `json:"brief"`
+	FeatureID string      `json:"feature_id,omitempty"`
+}
+
+// TriageBrief frames downstream investigation without becoming normative.
+type TriageBrief struct {
+	Questions     []string `json:"questions"`
+	AffectedAreas []string `json:"affected_areas"`
+	Risks         []string `json:"risks"`
 }
 
 type Review struct {
@@ -67,9 +75,6 @@ func ParseTriage(output string) (Triage, error) {
 	if value.Class != "bug" && value.Class != "feature" && value.Class != "chore" {
 		return value, fmt.Errorf("triage class must be bug, feature, or chore")
 	}
-	if value.Automatability < 0 || value.Automatability > 1 {
-		return value, fmt.Errorf("triage automatability must be between 0 and 1")
-	}
 	switch value.Route {
 	case "implement", "spec", "human", "parked":
 	default:
@@ -77,6 +82,15 @@ func ParseTriage(output string) (Triage, error) {
 	}
 	if strings.TrimSpace(value.Summary) == "" {
 		return value, fmt.Errorf("triage summary is required")
+	}
+	if value.Brief.Questions == nil {
+		value.Brief.Questions = []string{}
+	}
+	if value.Brief.AffectedAreas == nil {
+		value.Brief.AffectedAreas = []string{}
+	}
+	if value.Brief.Risks == nil {
+		value.Brief.Risks = []string{}
 	}
 	return value, nil
 }

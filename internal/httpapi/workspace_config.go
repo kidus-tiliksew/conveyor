@@ -144,7 +144,7 @@ func writeValidationError(w http.ResponseWriter, field string, err error) {
 
 func validationField(err error) string {
 	message := err.Error()
-	for _, field := range []string{"execution_settings.control_plane.triage.effort", "execution_settings.control_plane.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
+	for _, field := range []string{"execution_settings.control_plane.triage.effort", "execution_settings.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
 		if strings.Contains(message, field) {
 			if field == "repo" {
 				return "repos"

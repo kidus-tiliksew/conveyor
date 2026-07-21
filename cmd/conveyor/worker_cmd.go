@@ -465,7 +465,10 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		_ = release(core.WorkOrderOutcomeReleased, "create worker temp directory failed", nil)
 		return err
 	}
-	defer os.RemoveAll(directory)
+	defer func() {
+		_ = makeCheckoutWritable(directory)
+		_ = os.RemoveAll(directory)
+	}()
 	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
 	if err != nil {
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
@@ -474,7 +477,7 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
 	var effortArgv []string
 	if item.Effort != "" {
-		if item.Order.Stage == core.StageImplement {
+		if item.Order.Stage == core.StageSpec || item.Order.Stage == core.StageImplement {
 			effortArgv = append([]string(nil), item.EffortArgv...)
 			if len(effortArgv) == 0 {
 				_ = release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
@@ -513,10 +516,19 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		"CONVEYOR_TASK_BASE_BRANCH": item.Task.BaseBranch,
 		"CONVEYOR_TASK_REPO":        item.Task.Repo,
 	})
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
-		return fmt.Errorf("resolve worker directory: %w", err)
+	workingDirectory := ""
+	if item.Order.Stage == core.StageSpec {
+		workingDirectory, err = materializeSpecCheckout(ctx, directory, item)
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "materialize spec repository failed", nil)
+			return err
+		}
+	} else {
+		workingDirectory, err = os.Getwd()
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
+			return fmt.Errorf("resolve worker directory: %w", err)
+		}
 	}
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateGrokEnvironmentAttachment(ctx, item.Harness, childEnv, workingDirectory); err != nil {
@@ -534,6 +546,7 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = redactedStdout, redactedStderr
 	command.Env = childEnv
+	command.Dir = workingDirectory
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -625,6 +638,72 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 			return ctx.Err()
 		}
 	}
+}
+
+// materializeSpecCheckout gives a spec agent repository-grounded, immutable
+// base-branch context without creating the task branch (spec §21.33).
+func materializeSpecCheckout(ctx context.Context, root string, item workerservice.DispatchOrder) (string, error) {
+	repository := item.Repository
+	if strings.TrimSpace(repository.Name) == "" || repository.Name != item.Task.Repo {
+		return "", fmt.Errorf("resolve spec repository %q from worker dispatch", item.Task.Repo)
+	}
+	if strings.TrimSpace(repository.URL) == "" {
+		return "", fmt.Errorf("spec repository %q has no clone URL", repository.Name)
+	}
+	base := strings.TrimSpace(item.Task.BaseBranch)
+	if base == "" {
+		base = strings.TrimSpace(repository.Base)
+	}
+	if base == "" {
+		return "", fmt.Errorf("spec repository %q has no base branch", repository.Name)
+	}
+
+	checkout := filepath.Join(root, "repository")
+	if _, err := gitOutput(ctx, root, "clone", "--depth=1", "--single-branch", "--branch", base, "--", repository.URL, checkout); err != nil {
+		return "", fmt.Errorf("materialize spec repository %q at %s: %w", repository.Name, base, err)
+	}
+	if _, err := gitOutput(ctx, checkout, "checkout", "--detach", "HEAD"); err != nil {
+		return "", fmt.Errorf("detach spec repository %q at %s: %w", repository.Name, base, err)
+	}
+	if _, err := gitOutput(ctx, checkout, "remote", "set-url", "--push", "origin", "disabled://conveyor-spec-read-only"); err != nil {
+		return "", fmt.Errorf("disable pushes from spec repository %q: %w", repository.Name, err)
+	}
+	if err := makeCheckoutReadOnly(checkout); err != nil {
+		return "", fmt.Errorf("make spec repository %q read-only: %w", repository.Name, err)
+	}
+	return checkout, nil
+}
+
+func makeCheckoutReadOnly(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()&^0o222)
+	})
+}
+
+func makeCheckoutWritable(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()|0o200)
+	})
 }
 
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
@@ -771,6 +850,9 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s using session_id %s.", order.ID, workspace, sessionID)
 	if order.Stage == core.StageReview {
 		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id for the approved contract. Complete the standard review lifecycle by calling submit_review_verdict, waiting for its response, and observing that the tool call succeeded before exiting. Printing, returning, or describing verdict JSON is not completion, and a missing or failed tool response is not terminal success."
+	}
+	if order.Stage == core.StageSpec {
+		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the repository and artifacts without making edits or git changes, then complete the spec lifecycle by calling submit_spec and observing that the tool call succeeded before exiting."
 	}
 	if order.Stage != core.StageImplement {
 		return fmt.Sprintf("%s Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", prompt, order.Stage)

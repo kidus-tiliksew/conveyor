@@ -248,7 +248,7 @@ WHERE tr.job_id = $1 AND t.workspace_id = $2;
 -- name: InsertSpecVersion :one
 INSERT INTO task_specs (
     task_id, version, content, acceptance_count, acceptance, decomposition,
-    approved, approved_at, created_at
+    approved, approved_at, created_at, agent, model
 )
 SELECT
     sqlc.arg(task_id),
@@ -259,7 +259,9 @@ SELECT
     sqlc.arg(decomposition),
     false,
     NULL,
-    sqlc.arg(created_at)
+    sqlc.arg(created_at),
+    sqlc.arg(agent),
+    sqlc.arg(model)
 FROM task_specs
 WHERE task_id = sqlc.arg(task_id)
 RETURNING *;

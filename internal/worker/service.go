@@ -66,6 +66,7 @@ type TaskWorkerStatus struct {
 type DispatchOrder struct {
 	Order            core.WorkOrder `json:"work_order"`
 	Task             core.Task      `json:"task"`
+	Repository       config.Repo    `json:"repository"`
 	Harness          config.Harness `json:"harness"`
 	Model            string         `json:"model"`
 	Effort           string         `json:"effort,omitempty"`
@@ -255,7 +256,7 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 	}
 	byFingerprint := map[string]HarnessProbeTarget{}
 	for _, order := range orders {
-		workerDispatched := order.Stage == core.StageImplement || order.Stage == core.StageReview
+		workerDispatched := order.Stage == core.StageSpec || order.Stage == core.StageImplement || order.Stage == core.StageReview
 		if !workerDispatched || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
 			continue
 		}
@@ -410,8 +411,11 @@ func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
 	for _, harness := range cfg.Harnesses {
 		byName[harness.Name] = harness
 	}
-	for _, stage := range []string{"implement"} {
-		route := cfg.Routing.Stages[stage]
+	for _, stage := range []string{"spec", "implement"} {
+		route, configured := cfg.Routing.Stages[stage]
+		if !configured || (stage == "spec" && route.Execution != config.ExecutionMCP) {
+			continue
+		}
 		if route.Harness == "" {
 			return nil, fmt.Errorf("%s route has no harness", stage)
 		}
@@ -485,7 +489,8 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if order.RequiredEffort != "" && order.RequiredHarnessConfig != nil {
 			effortArgv = append([]string(nil), order.RequiredHarnessConfig.EffortArgv...)
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		repository, _ := cfg.Repo(task.Repo)
+		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {
