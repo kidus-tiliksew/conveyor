@@ -33,14 +33,16 @@ type Service struct {
 }
 
 type Context struct {
-	Order         core.WorkOrder      `json:"work_order"`
-	Task          core.Task           `json:"task"`
-	ApprovedSpec  *core.SpecVersion   `json:"approved_spec,omitempty"`
-	RolePrompt    string              `json:"role_prompt"`
-	BounceHistory []json.RawMessage   `json:"bounce_history,omitempty"`
-	PriorFeedback []string            `json:"prior_feedback,omitempty"`
-	Artifacts     []ArtifactReference `json:"artifacts,omitempty"`
-	Diff          string              `json:"diff,omitempty"`
+	Order         core.WorkOrder        `json:"work_order"`
+	Task          core.Task             `json:"task"`
+	ApprovedSpec  *core.SpecVersion     `json:"approved_spec,omitempty"`
+	PriorSpec     *core.SpecVersion     `json:"prior_spec,omitempty"`
+	TriageBrief   *pipeline.TriageBrief `json:"triage_brief,omitempty"`
+	RolePrompt    string                `json:"role_prompt"`
+	BounceHistory []json.RawMessage     `json:"bounce_history,omitempty"`
+	PriorFeedback []string              `json:"prior_feedback,omitempty"`
+	Artifacts     []ArtifactReference   `json:"artifacts,omitempty"`
+	Diff          string                `json:"diff,omitempty"`
 }
 
 type ArtifactReference struct {
@@ -334,15 +336,30 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
 	result := Context{Order: order, Task: task, RolePrompt: role}
+	if order.Stage == core.StageSpec {
+		// Spec work has repository/base context but never receives a branch.
+		result.Task.Branch = ""
+	}
 	if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
 		return Context{}, getErr
-	} else if ok && spec.Approved {
-		result.ApprovedSpec = &spec
+	} else if ok {
+		if order.Stage == core.StageSpec {
+			result.PriorSpec = &spec
+		} else if spec.Approved {
+			result.ApprovedSpec = &spec
+		}
 	}
 	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
 			result.BounceHistory = append(result.BounceHistory, event.Payload)
+		}
+		if event.Kind == "triage.completed" {
+			var triage pipeline.Triage
+			if json.Unmarshal(event.Payload, &triage) == nil {
+				brief := triage.Brief
+				result.TriageBrief = &brief
+			}
 		}
 	}
 	interventions, _ := s.Store.ListInterventions(ctx, task.ID)
@@ -563,6 +580,61 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
 	return map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true}, nil
+}
+
+// SubmitSpec completes a claimed spec order. Validation errors are returned
+// directly and leave the order claimed for in-session correction (spec §21.33).
+func (s *Service) SubmitSpec(ctx context.Context, id, session string, value pipeline.StructuredSpec) (map[string]any, error) {
+	order, err := s.authorized(ctx, id, session)
+	if err != nil {
+		return nil, err
+	}
+	if order.Stage != core.StageSpec {
+		return nil, fmt.Errorf("work order %s is not spec", id)
+	}
+	if err = s.enforce(ctx, order); err != nil {
+		return nil, err
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := s.Store.ListJobs(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	var job core.Job
+	found := false
+	for _, candidate := range jobs {
+		if candidate.ID == order.JobID {
+			job, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("spec job unavailable")
+	}
+	version, err := s.Dispatcher.ApplyExternalSpec(ctx, task, job, value, order.Agent, order.Model)
+	if err != nil {
+		return nil, err
+	}
+	order.State = core.WorkOrderCompleted
+	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+		return nil, err
+	}
+	job.State = core.JobDone
+	job.EndedAt = time.Now().UTC()
+	job.CostUSD = &order.CostUSD
+	job.TokensIn = order.TokensIn
+	job.TokensOut = order.TokensOut
+	if err = s.Store.UpdateJob(ctx, job); err != nil {
+		return nil, err
+	}
+	current, err := s.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"task_id": task.ID, "version": version.Version, "approved": current.State != core.TaskAwaiting, "next_stage": current.NextStage}, nil
 }
 
 func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time.Duration) (map[string]any, error) {

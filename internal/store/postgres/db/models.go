@@ -202,6 +202,8 @@ type TaskSpec struct {
 	Approved        bool               `json:"approved"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
+	Agent           string             `json:"agent"`
+	Model           string             `json:"model"`
 }
 
 type Transcript struct {

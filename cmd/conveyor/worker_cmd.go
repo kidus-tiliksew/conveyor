@@ -474,7 +474,7 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
 	var effortArgv []string
 	if item.Effort != "" {
-		if item.Order.Stage == core.StageImplement {
+		if item.Order.Stage == core.StageSpec || item.Order.Stage == core.StageImplement {
 			effortArgv = append([]string(nil), item.EffortArgv...)
 			if len(effortArgv) == 0 {
 				_ = release(core.WorkOrderOutcomeReleased, "configured effort is unsupported by harness snapshot", nil)
@@ -758,6 +758,9 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 	prompt := fmt.Sprintf("Work on Conveyor work order %s in workspace %s using session_id %s.", order.ID, workspace, sessionID)
 	if order.Stage == core.StageReview {
 		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id for the approved contract. Complete the standard review lifecycle by calling submit_review_verdict, waiting for its response, and observing that the tool call succeeded before exiting. Printing, returning, or describing verdict JSON is not completion, and a missing or failed tool response is not terminal success."
+	}
+	if order.Stage == core.StageSpec {
+		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the repository and artifacts without making edits or git changes, then complete the spec lifecycle by calling submit_spec and observing that the tool call succeeded before exiting."
 	}
 	if order.Stage != core.StageImplement {
 		return fmt.Sprintf("%s Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", prompt, order.Stage)

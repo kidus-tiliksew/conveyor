@@ -465,11 +465,14 @@ func TestImplementationEffortValidatesSelectedHarnessAndPreservesUnset(t *testin
 	}
 }
 
-func TestControlPlaneEffortRoundTripsIntoStageRoutes(t *testing.T) {
+func TestContextualEffortRoundTripsIntoStageRoutes(t *testing.T) {
 	base := validConfig()
+	base.Harnesses = []Harness{{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}
+	base.Routing.Stages["spec"] = StageRoute{Model: "gpt", Harness: "codex", ModelPolicy: ModelPolicyExplicit, TimeoutText: "30m", Execution: ExecutionMCP}
+	base.Routing.Stages["implement"] = StageRoute{Model: "gpt-implement", Harness: "codex", ModelPolicy: ModelPolicyExplicit, TimeoutText: "4h", Execution: ExecutionMCP}
 	document := base.WorkspaceDocument()
 	document.ExecutionSettings.ControlPlane.Triage.Effort = "minimal"
-	document.ExecutionSettings.ControlPlane.Spec.Effort = "high"
+	document.ExecutionSettings.Spec.Effort = "high"
 	raw, err := yaml.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -481,12 +484,12 @@ func TestControlPlaneEffortRoundTripsIntoStageRoutes(t *testing.T) {
 	if parsed.ExecutionSettings.ControlPlane.Triage.Effort != "minimal" || parsed.Routing.Stages["triage"].Effort != "minimal" {
 		t.Fatalf("triage effort did not reach route: settings=%+v route=%+v", parsed.ExecutionSettings.ControlPlane.Triage, parsed.Routing.Stages["triage"])
 	}
-	if parsed.ExecutionSettings.ControlPlane.Spec.Effort != "high" || parsed.Routing.Stages["spec"].Effort != "high" {
-		t.Fatalf("spec effort did not reach route: settings=%+v route=%+v", parsed.ExecutionSettings.ControlPlane.Spec, parsed.Routing.Stages["spec"])
+	if parsed.ExecutionSettings.Spec.Effort != "high" || parsed.Routing.Stages["spec"].Effort != "high" {
+		t.Fatalf("spec effort did not reach route: settings=%+v route=%+v", parsed.ExecutionSettings.Spec, parsed.Routing.Stages["spec"])
 	}
-	encoded, err := json.Marshal(parsed.WorkspaceDocument().ExecutionSettings.ControlPlane)
+	encoded, err := json.Marshal(parsed.WorkspaceDocument().ExecutionSettings)
 	if err != nil || !strings.Contains(string(encoded), `"effort":"minimal"`) || !strings.Contains(string(encoded), `"effort":"high"`) {
-		t.Fatalf("control-plane efforts did not round trip: %s err=%v", encoded, err)
+		t.Fatalf("contextual efforts did not round trip: %s err=%v", encoded, err)
 	}
 
 	document.ExecutionSettings.ControlPlane.Triage.Effort = "maximum"

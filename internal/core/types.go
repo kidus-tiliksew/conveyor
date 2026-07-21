@@ -324,7 +324,7 @@ const (
 )
 
 // HarnessSnapshot is the immutable worker execution contract captured for a
-// implementation or review order when it is created. Workspace hot reloads
+// spec, implementation, or review order when it is created. Workspace hot reloads
 // must not alter an in-flight command, model arguments, effort arguments, or
 // health probe (spec §21.19); on queue re-entry the server re-resolves the
 // snapshot from the current registry (spec §21.32).
@@ -394,7 +394,7 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 }
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
-// operator-owned implementation or review agent (spec §21.4).
+// operator-owned spec, implementation, or review agent (spec §21.33).
 type WorkOrder struct {
 	ID                    string           `json:"id"`
 	TaskID                string           `json:"task_id"`
@@ -668,6 +668,8 @@ type SpecVersion struct {
 	AcceptanceCount int             `json:"acceptance_count"`
 	Acceptance      json.RawMessage `json:"acceptance"`
 	Decomposition   json.RawMessage `json:"decomposition"`
+	Agent           string          `json:"agent,omitempty"`
+	Model           string          `json:"model,omitempty"`
 	Approved        bool            `json:"approved"`
 	CreatedAt       time.Time       `json:"created_at"`
 	ApprovedAt      time.Time       `json:"approved_at,omitempty"`

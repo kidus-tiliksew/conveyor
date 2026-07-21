@@ -1,6 +1,7 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import mermaid from 'mermaid'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
@@ -16,6 +17,30 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
   playwright: Globe,
   'computer-use': MousePointerClick,
   human: Square,
+}
+
+mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
+
+function MermaidBlock({ source }: { source: string }) {
+  const id = `mermaid-${useId().replace(/:/g, '')}`
+  const [svg, setSvg] = useState<string>()
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    setSvg(undefined)
+    setFailed(false)
+    mermaid.render(id, source).then(({ svg: rendered }) => {
+      if (active) setSvg(rendered)
+    }).catch(() => {
+      if (active) setFailed(true)
+    })
+    return () => { active = false }
+  }, [id, source])
+
+  if (failed) return <pre><code className="language-mermaid">{source}</code></pre>
+  if (!svg) return <pre><code className="language-mermaid">{source}</code></pre>
+  return <div className="my-4 overflow-x-auto" data-mermaid dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
 // The spec review card (spec §13.3 element 3): rendered markdown plus the
@@ -106,7 +131,16 @@ export function SpecCard({
             >
               <div>
                 <div className="markdown">
-                  <Markdown remarkPlugins={[remarkGfm]}>{prose}</Markdown>
+                  <Markdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code({ className, children, ...props }) {
+                        const source = String(children).replace(/\n$/, '')
+                        if (className === 'language-mermaid') return <MermaidBlock source={source} />
+                        return <code className={className} {...props}>{children}</code>
+                      },
+                    }}
+                  >{prose}</Markdown>
                 </div>
                 {criteria.length > 0 && (
                   <div className="mt-5 border-t border-border pt-4">

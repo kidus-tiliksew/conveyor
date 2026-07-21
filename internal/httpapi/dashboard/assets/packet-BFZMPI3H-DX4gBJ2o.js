@@ -1,0 +1,1 @@
+import"./chunk-FPAJGGOC-uWAY-gTZ.js";import{l as e}from"./mermaid-parser.core-MOlmyOd4.js";export{e as createPacketServices};

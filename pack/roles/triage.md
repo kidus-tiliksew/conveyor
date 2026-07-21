@@ -30,15 +30,14 @@ The task header states its escalation level: L2 tasks pass through spec
 approval regardless of your route, and L3 tasks always stop for a human —
 route on the merits anyway; the pipeline applies the level.
 
-Calibrate `automatability` as the probability this task ships with zero
-human code turns: 0.9+ mechanical change with existing test coverage;
-around 0.7 clear scope with some judgment; around 0.4 unclear boundaries or
-weak tests; 0.2 or below needs human design. This number feeds routing
-statistics — estimate honestly, not optimistically.
+Frame the next agent's investigation with an advisory `brief`: list the
+questions a spec must answer, suspected affected areas, and risks or
+ambiguities. Propose `feature_id` only from the feature list supplied in the
+prompt; use an empty string when no listed feature is a sound placement.
 
 Keep any prose brief. End your answer with exactly one machine-owned block
 and nothing after it:
 
 ```conveyor:triage
-{"class":"bug|feature|chore","automatability":0.0,"route":"implement|spec|human|parked","summary":"concise rationale a human can act on"}
+{"class":"bug|feature|chore","route":"implement|spec|human|parked","summary":"concise rationale a human can act on","brief":{"questions":[],"affected_areas":[],"risks":[]},"feature_id":"listed feature id or empty"}
 ```

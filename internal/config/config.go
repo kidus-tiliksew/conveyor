@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -130,7 +131,17 @@ type ModelTimeoutSettings struct {
 
 type ControlPlaneSettings struct {
 	Triage ModelTimeoutSettings `yaml:"triage" json:"triage"`
-	Spec   ModelTimeoutSettings `yaml:"spec" json:"spec"`
+	// Spec accepts pre-v1.34 documents. Normalization moves it into the
+	// contextual spec execution settings and never emits it again (spec §21.33).
+	Spec ModelTimeoutSettings `yaml:"spec,omitempty" json:"spec,omitempty"`
+}
+
+// MarshalJSON keeps the canonical control-plane surface triage-only while the
+// field above remains readable for stored pre-v1.34 documents.
+func (c ControlPlaneSettings) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Triage ModelTimeoutSettings `json:"triage"`
+	}{Triage: c.Triage})
 }
 
 type ImplementationSettings struct {
@@ -153,6 +164,7 @@ type ReviewExecutionSettings struct {
 // object is present (spec §21.18 changes 1-2).
 type ContextualExecutionSettings struct {
 	ControlPlane   ControlPlaneSettings    `yaml:"control_plane" json:"control_plane"`
+	Spec           ImplementationSettings  `yaml:"spec" json:"spec"`
 	Implementation ImplementationSettings  `yaml:"implementation" json:"implementation"`
 	Review         ReviewExecutionSettings `yaml:"review" json:"review"`
 }
@@ -347,6 +359,19 @@ func applyContextualExecutionSettings(c *Config) {
 		return
 	}
 	settings := c.ExecutionSettings
+	if settings.Spec.TimeoutText == "" && settings.ControlPlane.Spec.TimeoutText != "" {
+		legacy := settings.ControlPlane.Spec
+		settings.Spec.Model = legacy.Model
+		settings.Spec.TimeoutText = legacy.TimeoutText
+		// The implementation harness is the unambiguous legacy worker context;
+		// otherwise a single registered harness is safe to adopt.
+		settings.Spec.Harness = settings.Implementation.Harness
+		if settings.Spec.Harness == "" && len(c.Harnesses) == 1 {
+			settings.Spec.Harness = c.Harnesses[0].Name
+		}
+		settings.Spec.ModelPolicy = ModelPolicyExplicit
+	}
+	settings.ControlPlane.Spec = ModelTimeoutSettings{}
 	if c.Routing.Stages == nil {
 		c.Routing.Stages = map[string]StageRoute{}
 	}
@@ -356,9 +381,9 @@ func applyContextualExecutionSettings(c *Config) {
 		Execution:   ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
 	}
 	c.Routing.Stages["spec"] = StageRoute{
-		Model: settings.ControlPlane.Spec.Model, Effort: settings.ControlPlane.Spec.Effort,
-		TimeoutText: settings.ControlPlane.Spec.TimeoutText,
-		Execution:   ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
+		Model: settings.Spec.Model, Harness: settings.Spec.Harness, Effort: settings.Spec.Effort,
+		TimeoutText: settings.Spec.TimeoutText,
+		Execution:   ExecutionMCP, ModelPolicy: settings.Spec.ModelPolicy,
 	}
 	c.Routing.Stages["implement"] = StageRoute{
 		Model: settings.Implementation.Model, ModelPolicy: settings.Implementation.ModelPolicy,
@@ -377,12 +402,29 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	triage := routing.Stages["triage"]
 	spec := routing.Stages["spec"]
 	implement := routing.Stages["implement"]
+	specHadModel := spec.Model != ""
+	if spec.Harness == "" {
+		spec.Harness = implement.Harness
+	}
+	if spec.Model == "" {
+		spec.Model = implement.Model
+	}
+	if spec.ModelPolicy == "" {
+		if specHadModel {
+			spec.ModelPolicy = ModelPolicyExplicit
+		} else {
+			spec.ModelPolicy = implement.ModelPolicy
+		}
+	}
+	if spec.TimeoutText == "" {
+		spec.TimeoutText = implement.TimeoutText
+	}
 	review := routing.Stages["review"]
 	return &ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
 			Triage: ModelTimeoutSettings{Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText},
-			Spec:   ModelTimeoutSettings{Model: spec.Model, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
 		},
+		Spec: ImplementationSettings{Harness: spec.Harness, Model: spec.Model, ModelPolicy: spec.ModelPolicy, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
 		Implementation: ImplementationSettings{
 			Harness: implement.Harness, Model: implement.Model,
 			ModelPolicy: implement.ModelPolicy, Effort: implement.Effort,
@@ -402,6 +444,13 @@ func symbolicModelPolicy(model string) bool {
 	default:
 		return false
 	}
+}
+
+func stageName(stage string) string {
+	if stage == "implement" {
+		return "implementation"
+	}
+	return stage
 }
 
 func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error) {
@@ -611,6 +660,17 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		harness.ProbeTimeout = parsed
 	}
 	for stage, route := range c.Routing.Stages {
+		if stage == "spec" {
+			// Pre-v1.34 stored routes were fixed in-process. Upgrade them to the
+			// worker context without allowing legacy values to override explicit
+			// contextual spec settings (spec §21.33).
+			if route.Execution == "" || route.Execution == ExecutionInProcess {
+				route.Execution = ExecutionMCP
+			}
+			if route.Harness == "" {
+				route.Harness = c.Routing.Stages["implement"].Harness
+			}
+		}
 		route.Effort = strings.TrimSpace(route.Effort)
 		if stage != "triage" && stage != "spec" && stage != "implement" && route.Effort != "" {
 			return nil, fmt.Errorf("routing stage %s: effort is not supported", stage)
@@ -643,7 +703,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		}
 		if route.Execution == "" {
 			switch stage {
-			case "triage", "spec":
+			case "triage":
 				route.Execution = ExecutionInProcess
 			default:
 				route.Execution = ExecutionMCP
@@ -652,13 +712,13 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		if route.Execution != ExecutionInProcess && route.Execution != ExecutionMCP {
 			return nil, fmt.Errorf("routing stage %s: execution must be in_process or mcp", stage)
 		}
-		if (stage == "triage" || stage == "spec") && route.Execution != ExecutionInProcess {
-			return nil, fmt.Errorf("routing stage %s: execution is fixed to in_process", stage)
+		if stage == "triage" && route.Execution != ExecutionInProcess {
+			return nil, fmt.Errorf("routing stage triage: execution is fixed to in_process")
 		}
-		if stage == "implement" && route.Execution != ExecutionMCP {
-			return nil, fmt.Errorf("routing stage implement: execution is fixed to mcp")
+		if (stage == "spec" || stage == "implement") && route.Execution != ExecutionMCP {
+			return nil, fmt.Errorf("routing stage %s: execution is fixed to mcp", stage)
 		}
-		if stage == "triage" || stage == "spec" {
+		if stage == "triage" {
 			if route.Effort != "" && !validResponsesEffort(route.Effort) {
 				return nil, fmt.Errorf("execution_settings.control_plane.%s.effort %q must be minimal, low, medium, or high", stage, route.Effort)
 			}
@@ -670,7 +730,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			if route.Harness != "" {
 				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
 			}
-		} else if stage == "implement" {
+		} else if stage == "spec" || stage == "implement" {
 			if route.Harness == "" && len(c.Harnesses) == 1 {
 				route.Harness = c.Harnesses[0].Name
 			}
@@ -686,15 +746,15 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			}
 			if route.Effort != "" {
 				if !validEffort(route.Effort) {
-					return nil, fmt.Errorf("execution_settings.implementation.effort must be low, medium, or high")
+					return nil, fmt.Errorf("execution_settings.%s.effort must be low, medium, or high", stageName(stage))
 				}
 				if len(implementationHarness.EffortArgs[route.Effort]) == 0 {
-					return nil, fmt.Errorf("execution_settings.implementation.effort %q is not supported by harness %q", route.Effort, route.Harness)
+					return nil, fmt.Errorf("execution_settings.%s.effort %q is not supported by harness %q", stageName(stage), route.Effort, route.Harness)
 				}
 			}
 			effective, modelErr := normalizeHarnessModel(route, c.Harnesses)
 			if modelErr != nil {
-				return nil, fmt.Errorf("routing stage implement: %w", modelErr)
+				return nil, fmt.Errorf("routing stage %s: %w", stage, modelErr)
 			}
 			route.EffectiveModel = effective
 		}

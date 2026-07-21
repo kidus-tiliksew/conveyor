@@ -255,7 +255,7 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 	}
 	byFingerprint := map[string]HarnessProbeTarget{}
 	for _, order := range orders {
-		workerDispatched := order.Stage == core.StageImplement || order.Stage == core.StageReview
+		workerDispatched := order.Stage == core.StageSpec || order.Stage == core.StageImplement || order.Stage == core.StageReview
 		if !workerDispatched || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
 			continue
 		}
@@ -410,8 +410,11 @@ func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
 	for _, harness := range cfg.Harnesses {
 		byName[harness.Name] = harness
 	}
-	for _, stage := range []string{"implement"} {
-		route := cfg.Routing.Stages[stage]
+	for _, stage := range []string{"spec", "implement"} {
+		route, configured := cfg.Routing.Stages[stage]
+		if !configured || (stage == "spec" && route.Execution != config.ExecutionMCP) {
+			continue
+		}
 		if route.Harness == "" {
 			return nil, fmt.Errorf("%s route has no harness", stage)
 		}
