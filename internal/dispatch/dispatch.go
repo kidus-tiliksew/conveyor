@@ -168,7 +168,11 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
-	if task.NextStage == core.StageImplement || (task.NextStage == core.StageSpec && route.Execution == config.ExecutionMCP) {
+	// Newly dispatched specs are always MCP work orders, even when a stale
+	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
+	// handling in runInProcess is only for completion of calls that were already
+	// in flight when the execution contract changed (spec §21.33).
+	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
 		} else if active {

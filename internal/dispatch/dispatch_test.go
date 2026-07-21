@@ -112,7 +112,10 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &capturingInputAgent{}
-	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionMCP}}}}
+	// A stale pre-§21.33 route may still say in_process. New spec dispatch must
+	// ignore that execution marker and create an MCP work order; only an already
+	// in-flight legacy call may finish through the old completion path.
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionInProcess}}}}
 	d := New(st, cfg, agent)
 	if err := d.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
@@ -315,7 +318,9 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
-	_ = dispatcher.DispatchNow(ctx, task.ID)
+	// Simulate completion of a spec call that was already in flight when
+	// §21.33 moved new spec dispatch to MCP work orders.
+	_ = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, task, cfg.Routing.Stages["spec"])
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
@@ -1125,14 +1130,14 @@ func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 3, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, task, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
 	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageSpec {
 		t.Fatalf("after invalid output task=%+v err=%v", current, err)
 	}
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, current, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "# Previous output rejected") || !strings.Contains(agent.inputs[1].Prompt, `invalid verify value "tests"`) {
@@ -1209,7 +1214,11 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	inFlightSpec, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, inFlightSpec, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
@@ -1437,7 +1446,9 @@ func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testi
 		t.Fatalf("requested changes created implementation orders=%+v err=%v", orders, err)
 	}
 
-	if err = d.DispatchNow(ctx, task.ID); err != nil {
+	// Complete the legacy call that was already in flight before the redirect;
+	// any new delivery of this queued stage would create an MCP work order.
+	if err = d.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, current, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
 	current, err = st.GetTask(ctx, task.ID)
