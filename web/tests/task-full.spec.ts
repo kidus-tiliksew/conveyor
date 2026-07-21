@@ -116,6 +116,10 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		jobs: [{ id: 'timeout-review', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'failed', started_at: '2026-07-15T12:00:00Z', ended_at: '2026-07-15T12:30:00Z' }],
 		events: [],
 		work_orders: [{ id: 'timeout-review', task_id: taskId, job_id: 'timeout-review', stage: 'review', state: 'timed_out', queue_entered_at: '2026-07-15T11:00:00Z', queue_deadline: '2026-07-16T11:00:00Z', execution_started_at: '2026-07-15T12:00:00Z', execution_deadline: '2026-07-15T12:30:00Z', updated_at: '2026-07-16T08:24:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'checkout-blocked-recovery' ? {
+		jobs: [{ id: 'checkout-blocked-implement-1', task_id: taskId, stage: 'implement', state: 'failed', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
+		events: [],
+		work_orders: [{ id: 'checkout-blocked-implement-1', task_id: taskId, job_id: 'checkout-blocked-implement-1', stage: 'implement', state: 'queued', claimable: false, last_attempt_outcome: 'released', last_failure_message: 'checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE.md and conveyor-spec.md; operator changes preserved', automatic_retry_count: 0, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'recovery' ? {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
@@ -325,8 +329,32 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	await page.goto('/tasks/recovery/full')
 	await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
 	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
+	await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.goto('/tasks/checkout-blocked-recovery/full')
+
+	const failure = page.getByText(/checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE\.md and conveyor-spec\.md/)
+	const resolveFirst = page.locator('p').filter({ hasText: 'Resolve the primary checkout changes first.' })
+	const recoveryEffect = page.locator('p').filter({ hasText: 'requeues the order for another attempt and preserves your checkout changes' })
+	const action = page.getByRole('button', { name: 'Recover work order' })
+
+	await expect(failure).toBeVisible()
+	await expect(resolveFirst).toBeVisible()
+	await expect(resolveFirst).toContainText('commit or stash them')
+	await expect(recoveryEffect).toBeVisible()
+	await expect(recoveryEffect).toContainText('does not clean, commit, stash, or discard them')
+	await expect(action).toBeVisible()
+	for (const guidance of [resolveFirst, recoveryEffect]) {
+		await expect.poll(() => guidance.evaluate((node) => {
+			const action = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Recover work order'))
+			return action != null && Boolean(node.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING)
+		})).toBe(true)
+	}
 })
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
