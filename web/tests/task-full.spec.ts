@@ -606,28 +606,83 @@ test('conflicting readiness makes the idempotent fix dispatch primary', async ({
 	await expect.poll(() => dispatches).toBe(1)
 })
 
-test('new task events scroll only the timeline container to the newest event', async ({ page }) => {
+test('new task events preserve the task sheet scroll position', async ({ page }) => {
 	await page.goto('/tasks/live-scroll')
 
 	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
 	const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
 	await expect(timeline.getByText('Spec v18 drafted')).toBeVisible()
 	await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
-	await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(0)
+	await container.evaluate((element) => { element.scrollTop = 120 })
+	const before = await container.evaluate((element) => element.scrollTop)
+	expect(before).toBeGreaterThan(0)
 
 	emitLiveScrollEvent()
 
 	const newest = timeline.getByText('Spec v19 drafted')
 	await expect(newest).toBeVisible()
-	await expect(newest).toBeInViewport()
-	await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
+	await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(before)
+	await expect(newest).not.toBeInViewport()
 	await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
 })
+
+for (const decision of ['approve', 'redirect'] as const) {
+	test(`successful ${decision} scrolls the task sheet to the refreshed timeline tail`, async ({ page }) => {
+		await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+		let recorded = false
+		await page.route('**/v1/tasks/gate/activity*', async (route) => {
+			const item = activity('gate', true)
+			if (recorded) {
+				item.task.state = 'running'
+				item.interventions = [{
+					id: 1,
+					task_id: 'gate',
+					actor_id: 'dashboard-operator',
+					actor_role: 'human',
+					action: decision,
+					reason_code: decision === 'approve' ? 'approved' : 'changes_requested',
+					comment: decision === 'redirect' ? 'Please revise the implementation.' : '',
+					at: '2026-07-15T12:10:00Z',
+				}]
+			}
+			await route.fulfill({ json: item })
+		})
+		await page.route('**/v1/tasks/gate/review*', async (route) => {
+			recorded = true
+			await route.fulfill({ json: { task: activity('gate', true).task, checkout_available: false, checkout_guidance: '' } })
+		})
+
+		await page.goto('/tasks/gate')
+		const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
+		await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+		await container.evaluate((element) => { element.scrollTop = 0 })
+
+		const gate = page.getByRole('region', { name: 'Human gate' })
+		const reviewRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/tasks/gate/review')
+		if (decision === 'approve') {
+			await gate.getByRole('button', { name: 'Approve' }).click()
+		} else {
+			await gate.getByRole('button', { name: 'Request changes' }).click()
+			await gate.getByLabel('Redirect feedback').fill('Please revise the implementation.')
+			const submit = gate.getByRole('button', { name: 'Send feedback' })
+			await expect(submit).toBeEnabled()
+			await submit.click()
+		}
+		await reviewRequest
+
+		const intervention = page.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+		await expect(intervention).toBeVisible()
+		await expect(intervention).toBeInViewport()
+		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
+		await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
+	})
+}
 
 test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
 	await page.goto('/tasks/gate')
 	const gate = page.getByRole('region', { name: 'Human gate' })
 	await expect(gate).toBeInViewport()
+	await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {
