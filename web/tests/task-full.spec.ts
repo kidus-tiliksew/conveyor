@@ -709,7 +709,7 @@ for (const decision of ['approve', 'redirect'] as const) {
 		await reviewRequest
 
 		const intervention = page
-			.getByLabel('Execution event timeline')
+			.getByRole('region', { name: 'Execution event timeline' })
 			.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
 		await expect(intervention).toBeVisible()
 		await expect(intervention).toBeInViewport()
