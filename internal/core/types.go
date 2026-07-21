@@ -396,51 +396,53 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent (spec §21.33).
 type WorkOrder struct {
-	ID                    string           `json:"id"`
-	TaskID                string           `json:"task_id"`
-	JobID                 string           `json:"job_id"`
-	Stage                 Stage            `json:"stage"`
-	State                 WorkOrderState   `json:"state"`
-	Claimable             bool             `json:"claimable"`
-	ClaimantID            string           `json:"claimed_by,omitempty"`
-	SessionID             string           `json:"session_id,omitempty"`
-	ClientTokenHash       string           `json:"-"`
-	Agent                 string           `json:"agent,omitempty"`
-	Model                 string           `json:"model,omitempty"`
-	WorkerID              string           `json:"worker_id,omitempty"`
-	ReviewRound           int              `json:"review_round,omitempty"`
-	ReviewSeat            int              `json:"review_seat,omitempty"`
-	ReasonCode            string           `json:"reason_code,omitempty"`
-	ReviewKind            string           `json:"review_kind,omitempty"`
-	ReviewScope           string           `json:"review_scope,omitempty"`
-	BaselineSHA           string           `json:"baseline_sha,omitempty"`
-	HeadSHA               string           `json:"head_sha,omitempty"`
-	RequiredModel         string           `json:"required_model,omitempty"`
-	RequiredHarness       string           `json:"required_harness,omitempty"`
-	RequiredEffort        string           `json:"required_effort,omitempty"`
-	RequiredHarnessConfig *HarnessSnapshot `json:"required_harness_config,omitempty"`
-	ExecutionTimeoutText  string           `json:"execution_timeout,omitempty"`
-	ModelEnforcement      string           `json:"model_enforcement,omitempty"`
-	LeaseExpiresAt        time.Time        `json:"lease_expires_at,omitempty"`
-	QueueEnteredAt        time.Time        `json:"queue_entered_at"`
-	QueueDeadline         time.Time        `json:"queue_deadline"`
-	ExecutionStartedAt    time.Time        `json:"execution_started_at,omitempty"`
-	ExecutionDeadline     time.Time        `json:"execution_deadline,omitempty"`
-	LastAttemptOutcome    string           `json:"last_attempt_outcome,omitempty"`
-	LastFailureMessage    string           `json:"last_failure_message,omitempty"`
-	LastFailureExitStatus *int             `json:"last_failure_exit_status,omitempty"`
-	LastFailureAt         time.Time        `json:"last_failure_at,omitempty"`
-	AutomaticRetryCount   int              `json:"automatic_retry_count"`
-	NextRetryAt           time.Time        `json:"next_retry_at,omitempty"`
-	RetrySuppressed       bool             `json:"retry_suppressed"`
-	RedispatchCount       int              `json:"redispatch_count"`
-	Progress              string           `json:"progress,omitempty"`
-	CostUSD               float64          `json:"cost_usd"`
-	TokensIn              int64            `json:"tokens_in"`
-	TokensOut             int64            `json:"tokens_out"`
-	SelfReported          bool             `json:"self_reported"`
-	CreatedAt             time.Time        `json:"created_at"`
-	UpdatedAt             time.Time        `json:"updated_at"`
+	ID                     string           `json:"id"`
+	TaskID                 string           `json:"task_id"`
+	JobID                  string           `json:"job_id"`
+	Stage                  Stage            `json:"stage"`
+	State                  WorkOrderState   `json:"state"`
+	Claimable              bool             `json:"claimable"`
+	ClaimantID             string           `json:"claimed_by,omitempty"`
+	SessionID              string           `json:"session_id,omitempty"`
+	ClientTokenHash        string           `json:"-"`
+	Agent                  string           `json:"agent,omitempty"`
+	Model                  string           `json:"model,omitempty"`
+	WorkerID               string           `json:"worker_id,omitempty"`
+	ReviewRound            int              `json:"review_round,omitempty"`
+	ReviewSeat             int              `json:"review_seat,omitempty"`
+	ReasonCode             string           `json:"reason_code,omitempty"`
+	ReviewKind             string           `json:"review_kind,omitempty"`
+	ReviewScope            string           `json:"review_scope,omitempty"`
+	BaselineSHA            string           `json:"baseline_sha,omitempty"`
+	HeadSHA                string           `json:"head_sha,omitempty"`
+	RequiredModel          string           `json:"required_model,omitempty"`
+	RequiredHarness        string           `json:"required_harness,omitempty"`
+	RequiredEffort         string           `json:"required_effort,omitempty"`
+	RequiredHarnessConfig  *HarnessSnapshot `json:"required_harness_config,omitempty"`
+	ExecutionTimeoutText   string           `json:"execution_timeout,omitempty"`
+	ModelEnforcement       string           `json:"model_enforcement,omitempty"`
+	LeaseExpiresAt         time.Time        `json:"lease_expires_at,omitempty"`
+	QueueEnteredAt         time.Time        `json:"queue_entered_at"`
+	QueueDeadline          time.Time        `json:"queue_deadline"`
+	ExecutionStartedAt     time.Time        `json:"execution_started_at,omitempty"`
+	ExecutionDeadline      time.Time        `json:"execution_deadline,omitempty"`
+	LastAttemptOutcome     string           `json:"last_attempt_outcome,omitempty"`
+	LastFailureMessage     string           `json:"last_failure_message,omitempty"`
+	LastFailureDetail      string           `json:"last_failure_detail,omitempty"`
+	LastFailureExitStatus  *int             `json:"last_failure_exit_status,omitempty"`
+	LastFailureAt          time.Time        `json:"last_failure_at,omitempty"`
+	AutomaticRetryCount    int              `json:"automatic_retry_count"`
+	NextRetryAt            time.Time        `json:"next_retry_at,omitempty"`
+	RetrySuppressed        bool             `json:"retry_suppressed"`
+	RetrySuppressionReason string           `json:"retry_suppression_reason,omitempty"`
+	RedispatchCount        int              `json:"redispatch_count"`
+	Progress               string           `json:"progress,omitempty"`
+	CostUSD                float64          `json:"cost_usd"`
+	TokensIn               int64            `json:"tokens_in"`
+	TokensOut              int64            `json:"tokens_out"`
+	SelfReported           bool             `json:"self_reported"`
+	CreatedAt              time.Time        `json:"created_at"`
+	UpdatedAt              time.Time        `json:"updated_at"`
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and
@@ -491,10 +493,11 @@ type WorkOrderClaim struct {
 }
 
 const (
-	WorkOrderOutcomeChildFailure = "child_failure"
-	WorkOrderOutcomeReleased     = "released"
-	WorkOrderOutcomeCancelled    = "cancelled"
-	WorkOrderOutcomeExpired      = "expired"
+	WorkOrderOutcomeChildFailure      = "child_failure"
+	WorkOrderOutcomeReleased          = "released"
+	WorkOrderOutcomeCancelled         = "cancelled"
+	WorkOrderOutcomeExpired           = "expired"
+	IdenticalFailureSuppressionReason = "identical failure output on consecutive attempts"
 )
 
 type WorkOrderRelease struct {
@@ -502,9 +505,21 @@ type WorkOrderRelease struct {
 	Reason              string
 	Outcome             string
 	ExitStatus          *int
+	FailureDetail       string
+	ModelRejection      bool
 	InitialRetryDelay   time.Duration
 	MaximumRetryDelay   time.Duration
 	AutomaticRetryLimit int
+}
+
+// HarnessModelFailure is retained evidence that one frozen harness/model pair
+// was rejected by its provider. It is advisory only and never changes routing.
+type HarnessModelFailure struct {
+	Harness     string    `json:"harness"`
+	Model       string    `json:"model"`
+	Detail      string    `json:"detail"`
+	WorkOrderID string    `json:"work_order_id"`
+	ObservedAt  time.Time `json:"observed_at"`
 }
 
 type HarnessProbe struct {

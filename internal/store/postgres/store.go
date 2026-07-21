@@ -1064,8 +1064,8 @@ session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
-last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
-automatic_retry_count, next_retry_at, retry_suppressed,
+last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
+automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
 
@@ -1422,12 +1422,13 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 		priorOutcome := eligible.LastAttemptOutcome
 		eligible.LastAttemptOutcome = ""
 		eligible.RetrySuppressed = false
+		eligible.RetrySuppressionReason = ""
 		eligible.AutomaticRetryCount = 0
 		eligible.NextRetryAt = time.Time{}
 		eligible.QueueEnteredAt, eligible.QueueDeadline = now, now.Add(queueTimeout)
 		eligible.RedispatchCount++
 		eligible.UpdatedAt, eligible.Claimable = now, true
-		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
 		if updateErr != nil {
 			return store.InterruptedReviewRecoveryResult{}, updateErr
 		}
@@ -1804,7 +1805,7 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	}
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND session_id='' AND worker_id='' AND lease_expires_at IS NULL AND (last_attempt_outcome<>'' OR retry_suppressed=true OR next_retry_at IS NOT NULL) RETURNING `+workOrderColumns, now, now.Add(queueTimeout), workspace(ctx), id))
+	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND session_id='' AND worker_id='' AND lease_expires_at IS NULL AND (last_attempt_outcome<>'' OR retry_suppressed=true OR next_retry_at IS NOT NULL) RETURNING `+workOrderColumns, now, now.Add(queueTimeout), workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1947,17 +1948,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
 			model_enforcement=$8, queue_entered_at=$9, queue_deadline=$10, execution_started_at=$11,
-			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14,
-			last_failure_exit_status=$15, last_failure_at=$16, automatic_retry_count=$17,
-			next_retry_at=$18, retry_suppressed=$19, redispatch_count=$20, progress=$21,
-			cost_usd=$22, tokens_in=$23, tokens_out=$24, self_reported=$25, updated_at=now()
-			WHERE workspace_id=$26 AND id=$27`, order.State, order.ClaimantID, order.SessionID,
+			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14, last_failure_detail=$15,
+			last_failure_exit_status=$16, last_failure_at=$17, automatic_retry_count=$18,
+			next_retry_at=$19, retry_suppressed=$20, retry_suppression_reason=$21, redispatch_count=$22, progress=$23,
+			cost_usd=$24, tokens_in=$25, tokens_out=$26, self_reported=$27, updated_at=now()
+			WHERE workspace_id=$28 AND id=$29`, order.State, order.ClaimantID, order.SessionID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
-			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage,
+			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureDetail,
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
-			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RedispatchCount, order.Progress,
+			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
 		if err != nil {
 			return err
@@ -2384,8 +2385,8 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
-		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureExitStatus, &lastFailureAt,
-		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed,
+		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
+		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)

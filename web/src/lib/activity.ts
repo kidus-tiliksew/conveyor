@@ -84,7 +84,7 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
 
 export type TimelineEntry =
   | { type: 'job'; at: string; job: Job; summary: string; model: string; tone: 'default' | 'warning'; order?: WorkOrder }
-  | { type: 'note'; at: string; key: string; title: string; detail?: string; href?: string; alarm?: boolean }
+  | { type: 'note'; at: string; key: string; title: string; detail?: string; failureDetail?: string; href?: string; alarm?: boolean }
   | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
   | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
@@ -323,7 +323,8 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'work_order.child_failed':
       return {
         title: payload.retry_suppressed === true ? 'Worker child failed — automatic retry suppressed' : 'Worker child failed — retry scheduled',
-        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+        detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
+        failureDetail: typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined,
         alarm: true,
       }
     case 'work_order.expired':
@@ -434,7 +435,7 @@ const genericSummaries = new Set([
 // states a job entry cannot carry — waiting for an agent, stale, timed out —
 // become entries of their own.
 function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
-  const stage = order.stage === 'implement' ? 'Implementation' : 'Review'
+  const stage = order.stage === 'spec' ? 'Spec' : order.stage === 'implement' ? 'Implementation' : 'Review'
   const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}` }
   switch (order.state) {
     case 'queued':

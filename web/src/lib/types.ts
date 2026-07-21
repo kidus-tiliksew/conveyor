@@ -336,7 +336,8 @@ export interface WorkspaceConfigDocument {
 
 export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
 export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
-export interface SetupServiceability { auto_available: boolean; auto_unavailable_reason?: string }
+export interface HarnessModelFailure { harness: string; model: string; detail: string; work_order_id: string; observed_at: string }
+export interface SetupServiceability { auto_available: boolean; auto_unavailable_reason?: string; model_failures?: HarnessModelFailure[] }
 export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string; setup_serviceability?: Record<string, SetupServiceability> }
 export interface TaskWorkerStatus { available: boolean; required_harnesses: string[]; reason: string; last_heartbeat_at?: string; last_heartbeat_age?: string; queue_context: 'never_started' | 'interrupted' }
 
@@ -373,7 +374,7 @@ export interface WorkOrder {
   id: string
   task_id: string
   job_id: string
-  stage: 'implement' | 'review'
+  stage: 'spec' | 'implement' | 'review'
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
   claimed_by?: string
@@ -401,11 +402,13 @@ export interface WorkOrder {
   execution_deadline?: string
   last_attempt_outcome?: 'child_failure' | 'released' | 'cancelled' | 'expired'
   last_failure_message?: string
+  last_failure_detail?: string
   last_failure_exit_status?: number
   last_failure_at?: string
   automatic_retry_count?: number
   next_retry_at?: string
   retry_suppressed?: boolean
+  retry_suppression_reason?: string
   redispatch_count: number
   progress?: string
   cost_usd: number

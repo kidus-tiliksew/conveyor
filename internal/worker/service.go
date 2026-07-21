@@ -295,7 +295,57 @@ func (s *Service) AutoAvailableForSetup(ctx context.Context, cfg *config.Config,
 			return false, "workspace has no valid default setup"
 		}
 	}
+	failures, err := s.ModelFailuresForSetup(ctx, setup)
+	if err != nil {
+		return false, err.Error()
+	}
+	if len(failures) > 0 {
+		failure := failures[0]
+		return false, fmt.Sprintf("known provider rejection for %s / %s (observed on work order %s)", failure.Harness, failure.Model, failure.WorkOrderID)
+	}
 	return s.autoAvailableForConfig(ctx, cfg.WithSetup(setup))
+}
+
+// ModelFailuresForSetup projects retained provider evidence onto one setup.
+// It is advisory health only; dispatch still evaluates the frozen order.
+func (s *Service) ModelFailuresForSetup(ctx context.Context, setup config.ExecutionSetup) ([]core.HarnessModelFailure, error) {
+	known, err := s.Store.ListHarnessModelFailures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pairs := setupHarnessModelPairs(setup)
+	result := make([]core.HarnessModelFailure, 0)
+	for _, failure := range known {
+		if pairs[failure.Harness+"\x00"+failure.Model] {
+			result = append(result, failure)
+		}
+	}
+	return result, nil
+}
+
+func setupHarnessModelPairs(setup config.ExecutionSetup) map[string]bool {
+	result := map[string]bool{}
+	add := func(harness, model string) {
+		harness, model = strings.TrimSpace(harness), strings.TrimSpace(model)
+		if harness != "" && model != "" {
+			result[harness+"\x00"+model] = true
+		}
+	}
+	add(setup.ExecutionSettings.Spec.Harness, setup.ExecutionSettings.Spec.Model)
+	add(setup.ExecutionSettings.Implementation.Harness, setup.ExecutionSettings.Implementation.Model)
+	if setup.ExecutionSettings.Review.Execution != config.ExecutionInProcess {
+		if len(setup.Review.Seats) == 0 {
+			add(setup.ExecutionSettings.Review.FallbackHarness, setup.ExecutionSettings.Review.FallbackModel)
+		}
+		for _, seat := range setup.Review.Seats {
+			harness := seat.Harness
+			if harness == "" {
+				harness = setup.ExecutionSettings.Review.FallbackHarness
+			}
+			add(harness, seat.Model)
+		}
+	}
+	return result
 }
 
 func (s *Service) autoAvailableForConfig(ctx context.Context, cfg *config.Config) (bool, string) {
@@ -729,6 +779,8 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}
 	release.Reason = strings.TrimSpace(release.Reason)
+	release.FailureDetail = boundedFailureDetail(release.FailureDetail)
+	release.ModelRejection = providerModelRejection(release.FailureDetail)
 	if release.Outcome == "" {
 		release.Outcome = core.WorkOrderOutcomeReleased
 	}
@@ -755,6 +807,39 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 		return core.WorkOrder{}, err
 	}
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
+}
+
+const FailureDetailLimit = 2 * 1024
+
+func boundedFailureDetail(detail string) string {
+	detail = strings.ToValidUTF8(detail, "�")
+	if len(detail) > FailureDetailLimit {
+		detail = detail[len(detail)-FailureDetailLimit:]
+		detail = strings.ToValidUTF8(detail, "�")
+	}
+	return strings.TrimSpace(detail)
+}
+
+// providerModelRejection deliberately recognizes only explicit model support
+// failures. A generic provider or harness exit must not poison pair health.
+func providerModelRejection(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if detail == "" || !strings.Contains(detail, "model") {
+		return false
+	}
+	for _, marker := range []string{
+		"model is not supported",
+		"unsupported model",
+		"model is unsupported",
+		"does not support the model",
+		"does not support model",
+		"model not supported",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshReleasedHarnessSnapshot re-resolves a released order's pinned harness

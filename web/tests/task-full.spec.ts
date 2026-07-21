@@ -11,7 +11,15 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
-	const reviewActivity = taskId === 'live-scroll' ? {
+	const reviewActivity = taskId === 'stage-aware' ? {
+		jobs: [],
+		events: [{ id: 1, task_id: taskId, job_id: 'stage-aware-spec', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { reason: 'harness exited: status 1', detail: 'provider rejected the configured model', retry_suppressed: true, suppression_reason: 'identical failure output on consecutive attempts' }, at: createdAt }],
+		work_orders: [
+			{ id: 'stage-aware-spec', task_id: taskId, job_id: 'stage-aware-spec', stage: 'spec', state: 'queued', claimable: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'stage-aware-implement', task_id: taskId, job_id: 'stage-aware-implement', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: '2026-07-15T12:01:00Z', queue_deadline: '2026-07-16T12:01:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'stage-aware-review', task_id: taskId, job_id: 'stage-aware-review', stage: 'review', state: 'timed_out', claimable: false, queue_entered_at: '2026-07-15T12:02:00Z', queue_deadline: '2026-07-16T12:02:00Z', execution_deadline: '2026-07-15T12:03:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
+	} : taskId === 'live-scroll' ? {
 		jobs: [],
 		events: Array.from({ length: liveEventCount }, (_, index) => ({
 			id: index + 1,
@@ -376,6 +384,20 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
 	const timeoutEntry = page.locator('li').filter({ hasText: 'Review — timed out' })
 	await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
 	await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
+})
+
+test('work-order cards use their actual stage and expose captured failure detail', async ({ page }) => {
+	await page.goto('/tasks/stage-aware/full')
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
+	await expect(timeline.getByText(/identical failure output on consecutive attempts/)).toBeVisible()
+	const captured = timeline.getByText('Captured child error')
+	await expect(captured).toBeVisible()
+	await captured.click()
+	await expect(timeline.getByText('provider rejected the configured model', { exact: true })).toBeVisible()
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {

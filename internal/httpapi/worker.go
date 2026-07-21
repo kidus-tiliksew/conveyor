@@ -107,7 +107,12 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 	serviceability := make(map[string]any, len(cfg.Setups))
 	for _, setup := range cfg.Setups {
 		setupAvailable, setupReason := s.Workers.AutoAvailableForSetup(r.Context(), cfg, setup)
-		serviceability[setup.Name] = map[string]any{"auto_available": setupAvailable, "auto_unavailable_reason": setupReason}
+		modelFailures, failureErr := s.Workers.ModelFailuresForSetup(r.Context(), setup)
+		if failureErr != nil {
+			http.Error(w, failureErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		serviceability[setup.Name] = map[string]any{"auto_available": setupAvailable, "auto_unavailable_reason": setupReason, "model_failures": modelFailures}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "auto_available": available, "auto_unavailable_reason": reason, "setup_serviceability": serviceability})
 }
@@ -230,13 +235,14 @@ func (s *Server) reconcileWorkerOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
 	var request struct {
-		SessionID  string `json:"session_id"`
-		Reason     string `json:"reason"`
-		Outcome    string `json:"outcome"`
-		ExitStatus *int   `json:"exit_status"`
+		SessionID     string `json:"session_id"`
+		Reason        string `json:"reason"`
+		Outcome       string `json:"outcome"`
+		ExitStatus    *int   `json:"exit_status"`
+		FailureDetail string `json:"failure_detail"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
-	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderRelease{SessionID: request.SessionID, Reason: request.Reason, Outcome: request.Outcome, ExitStatus: request.ExitStatus})
+	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderRelease{SessionID: request.SessionID, Reason: request.Reason, Outcome: request.Outcome, ExitStatus: request.ExitStatus, FailureDetail: request.FailureDetail})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

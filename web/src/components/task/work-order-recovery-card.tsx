@@ -43,9 +43,10 @@ function RecoveryState({ item, order }: { item: ActivityItem; order: WorkOrder }
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" />
         <p className="min-w-0 text-xs text-muted">
           Attempt {order.last_attempt_outcome ?? 'released'} · {order.automatic_retry_count ?? 0} automatic retries used. {retry}{failure}
-          {order.retry_suppressed && ' Automatic retry is suppressed until an operator recovers this order.'}
+          {order.retry_suppressed && ` Automatic retry is suppressed${order.retry_suppression_reason ? `: ${order.retry_suppression_reason}` : ''} until an operator recovers this order.`}
         </p>
       </div>
+      {order.last_failure_detail && <details className="text-xs text-muted"><summary className="cursor-pointer">Last captured child error</summary><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">{order.last_failure_detail}</pre></details>}
       {(order.retry_suppressed || order.next_retry_at) && (
         <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
           <RotateCcw />

@@ -123,7 +123,7 @@ func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinned := &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredModel: "provider/model", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	worker := core.Worker{ID: "worker-refresh", Workspace: "demo", Name: "refresh", CredentialHash: "hash", CreatedAt: now}
@@ -136,16 +136,52 @@ func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Harnesses: []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}}}, nil
 	}}
-	released, err := service.Release(ctx, worker, "refresh-task-implement-1", core.WorkOrderRelease{SessionID: "session-r", Reason: "harness exited", Outcome: core.WorkOrderOutcomeChildFailure})
+	released, err := service.Release(ctx, worker, "refresh-task-implement-1", core.WorkOrderRelease{SessionID: "session-r", Reason: "harness exited", Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: "The model is not supported by this provider"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if released.RequiredHarnessConfig == nil || !strings.Contains(strings.Join(released.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
 		t.Fatalf("released snapshot = %+v", released.RequiredHarnessConfig)
 	}
+	failures, err := st.ListHarnessModelFailures(ctx)
+	if err != nil || len(failures) != 1 || failures[0].Harness != "claude" || failures[0].Model != "provider/model" {
+		t.Fatalf("model failures=%+v err=%v", failures, err)
+	}
+	setup := config.ExecutionSetup{Name: "observed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "claude", Model: "provider/model", ModelPolicy: config.ModelPolicyExplicit}}}
+	available, reason := service.AutoAvailableForSetup(ctx, &config.Config{}, setup)
+	if available || !strings.Contains(reason, "claude / provider/model") {
+		t.Fatalf("serviceability available=%v reason=%q", available, reason)
+	}
+	unrelated := setup
+	unrelated.Name = "unrelated"
+	unrelated.ExecutionSettings.Implementation.Model = "provider/other"
+	if projected, projectionErr := service.ModelFailuresForSetup(ctx, unrelated); projectionErr != nil || len(projected) != 0 {
+		t.Fatalf("unrelated model failures=%+v err=%v", projected, projectionErr)
+	}
 	refreshEvents, err := st.CountEvents(ctx, "refresh-task", "work_order.harness_refreshed")
 	if err != nil || refreshEvents != 1 {
 		t.Fatalf("harness refresh events = %d err=%v", refreshEvents, err)
+	}
+}
+
+func TestFailureDetailBoundAndProviderModelRejectionMatcher(t *testing.T) {
+	detail := strings.Repeat("x", FailureDetailLimit+100) + " unsupported model "
+	bounded := boundedFailureDetail(detail)
+	if len(bounded) > FailureDetailLimit || !strings.HasSuffix(bounded, "unsupported model") {
+		t.Fatalf("bounded detail length=%d suffix=%q", len(bounded), bounded[len(bounded)-20:])
+	}
+	for _, fixture := range []struct {
+		detail string
+		want   bool
+	}{
+		{"The model is not supported when using this account", true},
+		{"unsupported model provider/foo", true},
+		{"provider returned status 400", false},
+		{"harness exited with status 1", false},
+	} {
+		if got := providerModelRejection(fixture.detail); got != fixture.want {
+			t.Fatalf("providerModelRejection(%q)=%v want %v", fixture.detail, got, fixture.want)
+		}
 	}
 }
 

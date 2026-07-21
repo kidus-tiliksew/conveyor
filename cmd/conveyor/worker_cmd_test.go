@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,10 +25,32 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
+	secret := "child-only-runtime-secret"
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	tail := &boundedTailWriter{limit: workerservice.FailureDetailLimit}
+	var console bytes.Buffer
+	redactor := redact.New([]string{secret})
+	stdout := &redact.Writer{Destination: io.MultiWriter(&console, tail), Redactor: redactor}
+	stderr := &redact.Writer{Destination: io.MultiWriter(&console, tail), Redactor: redactor}
+	_, _ = stdout.Write([]byte(strings.Repeat("prefix", 500) + "\n"))
+	_, _ = stderr.Write([]byte("raw=" + secret + " encoded=" + encoded + "\nfinal provider error\n"))
+	_ = stdout.Flush()
+	_ = stderr.Flush()
+	detail := tail.String()
+	if len(detail) > workerservice.FailureDetailLimit || strings.Contains(detail, secret) || strings.Contains(detail, encoded) {
+		t.Fatalf("unsafe bounded detail len=%d detail=%q", len(detail), detail)
+	}
+	if !strings.Contains(detail, "[REDACTED:exact]") || !strings.Contains(detail, "[REDACTED:encoded]") || !strings.HasSuffix(detail, "final provider error") {
+		t.Fatalf("captured detail=%q", detail)
+	}
+}
 
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
 	harness := config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
