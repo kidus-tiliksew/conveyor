@@ -155,7 +155,7 @@ export function ReviewPanel({ item }: { item: ActivityItem }) {
       setExpanded(null)
       setComment('')
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['task', item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] }),
         queryClient.invalidateQueries({ queryKey: ['activity'] }),
       ])
     },

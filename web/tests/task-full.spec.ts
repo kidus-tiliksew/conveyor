@@ -157,7 +157,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' || taskId === 'merge-missing' ? 'approved' : 'running',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
       created_at: createdAt,
     },
@@ -223,6 +223,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		} : undefined,
 		merge_readiness: taskId === 'merge-unknown' ? { state: 'UNKNOWN', head_sha: 'head-1' }
 			: taskId === 'merge-conflict' ? { state: 'CONFLICTING', head_sha: 'head-1', number: 12 }
+			: taskId === 'merge-delayed' || taskId === 'merge-failure' ? { state: 'MERGEABLE', head_sha: 'head-1', number: 12 }
 			: undefined,
   }
 }
@@ -589,6 +590,55 @@ test('merge gate fails closed when readiness is absent', async ({ page }) => {
 	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
 	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
 	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+})
+
+test('merge gate stays pending until the post-success task and activity refreshes settle', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let merged = false
+	let releaseRefresh = () => {}
+	const refreshReleased = new Promise<void>((resolve) => { releaseRefresh = resolve })
+	await page.route('**/v1/**', async (route) => {
+		const path = new URL(route.request().url()).pathname
+		if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+		if (path === '/v1/tasks/merge-delayed/merge') {
+			merged = true
+			return route.fulfill({ json: { id: 'merge-delayed', state: 'approved' } })
+		}
+		if (!merged || (path !== '/v1/tasks/merge-delayed/activity' && path !== '/v1/activity')) return route.fallback()
+		await refreshReleased
+		if (path === '/v1/activity') return route.fulfill({ json: [] })
+		const refreshed = activity('merge-delayed', false)
+		refreshed.task.state = 'done'
+		await route.fulfill({ json: refreshed })
+	})
+
+	await page.goto('/tasks/merge-delayed/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByRole('button', { name: 'Merging…' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+
+	releaseRefresh()
+	await expect(gate).toHaveCount(0)
+})
+
+test('failed merge restores the existing error and retry action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let attempts = 0
+	await page.route('**/v1/tasks/merge-failure/merge*', async (route) => {
+		attempts++
+		await route.fulfill({ status: 502, body: 'GitHub merge failed' })
+	})
+
+	await page.goto('/tasks/merge-failure/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
+	await expect(merge).toBeEnabled()
+	await merge.click()
+	await expect.poll(() => attempts).toBe(2)
 })
 
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
