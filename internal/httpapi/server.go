@@ -82,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
+		r.With(s.requireMutationAuth).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)

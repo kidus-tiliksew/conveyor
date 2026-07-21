@@ -12,6 +12,7 @@ import type {
   Artifact,
   WorkerList,
   WorkOrder,
+  HarnessTemplate,
 } from './types'
 
 function workspaceURL(path: string) {
@@ -91,6 +92,12 @@ export function fetchWorkspaceConfig(token: string) {
       },
     }
   })
+}
+
+export async function getHarnessTemplates(token: string) {
+  const response = await fetch('/v1/harness-templates', { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ templates: HarnessTemplate[] }>
 }
 
 export class ConfigValidationError extends Error {

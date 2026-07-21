@@ -265,6 +265,13 @@ export interface WorkspaceHarness {
   probe_timeout: string
 }
 
+export interface HarnessTemplate {
+  id: string
+  label: string
+  description: string
+  harness: WorkspaceHarness
+}
+
 export interface WorkspaceReviewSeat {
   model: string
   harness?: string

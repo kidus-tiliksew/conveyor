@@ -17,6 +17,35 @@ type fakeWorkspaceConfigStore struct {
 	updates int
 }
 
+func TestHarnessTemplatesAPIRequiresAuthAndReturnsCatalog(t *testing.T) {
+	s := NewServer(store.NewMemory())
+	s.BearerToken = "token"
+	h := s.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/harness-templates", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/harness-templates", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+	var body struct {
+		Templates []config.HarnessTemplate `json:"templates"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Templates) != 3 || body.Templates[0].ID != "codex" || body.Templates[0].Harness.Command[0] != "codex" {
+		t.Fatalf("unexpected templates response: %+v", body.Templates)
+	}
+}
+
 func contextualWorkspaceDocument() config.WorkspaceDocument {
 	return config.WorkspaceDocument{
 		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",
