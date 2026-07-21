@@ -1,10 +1,11 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { cn } from '../../lib/utils'
 
 // Centered modal dialog: same dependency-free behavior contract as Sheet
 // (portal, Escape/overlay close, body scroll lock, focus capture/restore).
-// Consumers own the header and content.
-export function Dialog({ onClose, label, children }: { onClose: () => void; label: string; children: ReactNode }) {
+// Consumers own the header and content; className widens the default panel.
+export function Dialog({ onClose, label, className, children }: { onClose: () => void; label: string; className?: string; children: ReactNode }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -34,7 +35,7 @@ export function Dialog({ onClose, label, children }: { onClose: () => void; labe
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
-        className="relative max-h-[85vh] w-full max-w-lg animate-dialog-in overflow-y-auto rounded-lg border border-border bg-background shadow-xl outline-none"
+        className={cn('relative max-h-[85vh] w-full max-w-lg animate-dialog-in overflow-y-auto rounded-lg border border-border bg-background shadow-xl outline-none', className)}
       >
         {children}
       </div>

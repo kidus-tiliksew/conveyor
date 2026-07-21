@@ -4,6 +4,7 @@ import type { ActivityItem } from '../../lib/types'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
+import { AttachmentsCard } from './attachments-card'
 import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
@@ -70,6 +71,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable />}
+      <AttachmentsCard attachments={item.attachments ?? []} />
       <Timeline item={item} />
     </div>
   )
