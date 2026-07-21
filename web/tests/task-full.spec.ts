@@ -708,7 +708,9 @@ for (const decision of ['approve', 'redirect'] as const) {
 		}
 		await reviewRequest
 
-		const intervention = page.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+		const intervention = page
+			.getByLabel('Execution event timeline')
+			.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
 		await expect(intervention).toBeVisible()
 		await expect(intervention).toBeInViewport()
 		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
