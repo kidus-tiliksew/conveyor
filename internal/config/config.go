@@ -359,17 +359,23 @@ func applyContextualExecutionSettings(c *Config) {
 		return
 	}
 	settings := c.ExecutionSettings
-	if settings.Spec.TimeoutText == "" && settings.ControlPlane.Spec.TimeoutText != "" {
-		legacy := settings.ControlPlane.Spec
+	legacy := settings.ControlPlane.Spec
+	if settings.Spec.Model == "" && legacy.Model != "" {
 		settings.Spec.Model = legacy.Model
-		settings.Spec.TimeoutText = legacy.TimeoutText
 		// The implementation harness is the unambiguous legacy worker context;
 		// otherwise a single registered harness is safe to adopt.
-		settings.Spec.Harness = settings.Implementation.Harness
+		if settings.Spec.Harness == "" {
+			settings.Spec.Harness = settings.Implementation.Harness
+		}
 		if settings.Spec.Harness == "" && len(c.Harnesses) == 1 {
 			settings.Spec.Harness = c.Harnesses[0].Name
 		}
-		settings.Spec.ModelPolicy = ModelPolicyExplicit
+		if settings.Spec.ModelPolicy == "" {
+			settings.Spec.ModelPolicy = ModelPolicyExplicit
+		}
+	}
+	if settings.Spec.TimeoutText == "" && legacy.TimeoutText != "" {
+		settings.Spec.TimeoutText = legacy.TimeoutText
 	}
 	settings.ControlPlane.Spec = ModelTimeoutSettings{}
 	if c.Routing.Stages == nil {

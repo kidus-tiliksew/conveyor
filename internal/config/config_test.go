@@ -338,6 +338,33 @@ func TestContextualSettingsOverrideLegacyRoutesAndAllowExplicitReviewSeats(t *te
 	}
 }
 
+func TestLegacyControlPlaneSpecDoesNotOverrideContextualModel(t *testing.T) {
+	config := validConfig()
+	config.Harnesses = []Harness{{Name: "codex"}}
+	config.ExecutionSettings = &ContextualExecutionSettings{
+		ControlPlane: ControlPlaneSettings{
+			Spec: ModelTimeoutSettings{Model: "legacy-spec", TimeoutText: "30m"},
+		},
+		Spec: ImplementationSettings{
+			Harness:     "codex",
+			Model:       "contextual-spec",
+			ModelPolicy: ModelPolicyExplicit,
+		},
+	}
+
+	applyContextualExecutionSettings(config)
+
+	if got := config.ExecutionSettings.Spec.Model; got != "contextual-spec" {
+		t.Fatalf("contextual spec model overwritten by legacy value: %q", got)
+	}
+	if got := config.ExecutionSettings.Spec.TimeoutText; got != "30m" {
+		t.Fatalf("legacy spec timeout was not normalized independently: %q", got)
+	}
+	if got := config.ExecutionSettings.Spec.ModelPolicy; got != ModelPolicyExplicit {
+		t.Fatalf("contextual spec model policy changed: %q", got)
+	}
+}
+
 func TestHarnessDefaultModelOnlyForwardsDeclaredSentinel(t *testing.T) {
 	base := validConfig()
 	base.Harnesses = []Harness{{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, DefaultModelSentinels: []string{"subscription"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}
