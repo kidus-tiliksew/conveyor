@@ -504,6 +504,14 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		"CONVEYOR_WORK_ORDER_ID": item.Order.ID,
 		"CONVEYOR_SESSION_ID":    sessionID,
 		"CONVEYOR_CLIENT_TOKEN":  clientToken,
+		// The branch assignment travels with the dispatch so `conveyor
+		// checkout` resolves it locally; worker credentials are valid on the
+		// worker and MCP planes only, never on workspace REST reads, so a
+		// child cannot look the task up itself (spec §21.8).
+		"CONVEYOR_TASK_ID":          item.Task.ID,
+		"CONVEYOR_TASK_BRANCH":      item.Task.Branch,
+		"CONVEYOR_TASK_BASE_BRANCH": item.Task.BaseBranch,
+		"CONVEYOR_TASK_REPO":        item.Task.Repo,
 	})
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -748,7 +756,12 @@ func isolatedChildEnvironment(base []string, values map[string]string) []string 
 		}
 		result = append(result, entry)
 	}
-	for _, name := range []string{"CONVEYOR_API_TOKEN", "CONVEYOR_ADDR", "CONVEYOR_WORKSPACE", "CONVEYOR_WORK_ORDER_ID", "CONVEYOR_SESSION_ID", "CONVEYOR_CLIENT_TOKEN"} {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		result = append(result, name+"="+values[name])
 	}
 	return result

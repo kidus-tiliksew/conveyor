@@ -81,13 +81,17 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 }
 
 func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
-	env := isolatedChildEnvironment([]string{"PATH=/bin", "CONVEYOR_API_TOKEN=stale", "CONVEYOR_SESSION_ID=stale"}, map[string]string{
+	env := isolatedChildEnvironment([]string{"PATH=/bin", "CONVEYOR_API_TOKEN=stale", "CONVEYOR_SESSION_ID=stale", "CONVEYOR_TASK_ID=stale-task"}, map[string]string{
 		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
 		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+		"CONVEYOR_TASK_ID": "task-1", "CONVEYOR_TASK_BRANCH": "conveyor/task-1",
+		"CONVEYOR_TASK_BASE_BRANCH": "main", "CONVEYOR_TASK_REPO": "conveyor",
 	})
 	for name, want := range map[string]string{
 		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
 		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+		"CONVEYOR_TASK_ID": "task-1", "CONVEYOR_TASK_BRANCH": "conveyor/task-1",
+		"CONVEYOR_TASK_BASE_BRANCH": "main", "CONVEYOR_TASK_REPO": "conveyor",
 	} {
 		if got := environmentValue(env, name); got != want {
 			t.Fatalf("%s=%q want=%q", name, got, want)
