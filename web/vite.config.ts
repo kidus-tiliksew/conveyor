@@ -8,8 +8,16 @@ export default defineConfig({
     tailwindcss(),
     {
       name: 'normalize-generated-whitespace',
+      enforce: 'post',
       renderChunk(code) {
         return code.replace(/[\t ]+$/gm, '')
+      },
+      generateBundle(_options, bundle) {
+        for (const output of Object.values(bundle)) {
+          if (output.type === 'chunk') {
+            output.code = output.code.replace(/[\t ]+$/gm, '')
+          }
+        }
       },
     },
   ],
