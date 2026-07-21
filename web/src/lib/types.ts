@@ -362,6 +362,7 @@ export interface ActivityItem {
   checkout_guidance: string
   needs_attention: boolean
   spec?: SpecVersion
+  attachments?: Artifact[]
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState

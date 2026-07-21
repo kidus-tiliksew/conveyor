@@ -165,7 +165,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' || taskId === 'merge-missing' ? 'approved' : 'running',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
       created_at: createdAt,
     },
@@ -231,6 +231,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		} : undefined,
 		merge_readiness: taskId === 'merge-unknown' ? { state: 'UNKNOWN', head_sha: 'head-1' }
 			: taskId === 'merge-conflict' ? { state: 'CONFLICTING', head_sha: 'head-1', number: 12 }
+			: taskId === 'merge-delayed' || taskId === 'merge-failure' ? { state: 'MERGEABLE', head_sha: 'head-1', number: 12 }
 			: undefined,
   }
 }
@@ -613,6 +614,55 @@ test('merge gate fails closed when readiness is absent', async ({ page }) => {
 	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
 })
 
+test('merge gate stays pending until the post-success task and activity refreshes settle', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let merged = false
+	let releaseRefresh = () => {}
+	const refreshReleased = new Promise<void>((resolve) => { releaseRefresh = resolve })
+	await page.route('**/v1/**', async (route) => {
+		const path = new URL(route.request().url()).pathname
+		if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+		if (path === '/v1/tasks/merge-delayed/merge') {
+			merged = true
+			return route.fulfill({ json: { id: 'merge-delayed', state: 'approved' } })
+		}
+		if (!merged || (path !== '/v1/tasks/merge-delayed/activity' && path !== '/v1/activity')) return route.fallback()
+		await refreshReleased
+		if (path === '/v1/activity') return route.fulfill({ json: [] })
+		const refreshed = activity('merge-delayed', false)
+		refreshed.task.state = 'done'
+		await route.fulfill({ json: refreshed })
+	})
+
+	await page.goto('/tasks/merge-delayed/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByRole('button', { name: 'Merging…' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+
+	releaseRefresh()
+	await expect(gate).toHaveCount(0)
+})
+
+test('failed merge restores the existing error and retry action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let attempts = 0
+	await page.route('**/v1/tasks/merge-failure/merge*', async (route) => {
+		attempts++
+		await route.fulfill({ status: 502, body: 'GitHub merge failed' })
+	})
+
+	await page.goto('/tasks/merge-failure/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
+	await expect(merge).toBeEnabled()
+	await merge.click()
+	await expect.poll(() => attempts).toBe(2)
+})
+
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	let dispatches = 0
@@ -628,28 +678,83 @@ test('conflicting readiness makes the idempotent fix dispatch primary', async ({
 	await expect.poll(() => dispatches).toBe(1)
 })
 
-test('new task events scroll only the timeline container to the newest event', async ({ page }) => {
+test('new task events preserve the task sheet scroll position', async ({ page }) => {
 	await page.goto('/tasks/live-scroll')
 
 	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
 	const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
 	await expect(timeline.getByText('Spec v18 drafted')).toBeVisible()
 	await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
-	await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(0)
+	await container.evaluate((element) => { element.scrollTop = 120 })
+	const before = await container.evaluate((element) => element.scrollTop)
+	expect(before).toBeGreaterThan(0)
 
 	emitLiveScrollEvent()
 
 	const newest = timeline.getByText('Spec v19 drafted')
 	await expect(newest).toBeVisible()
-	await expect(newest).toBeInViewport()
-	await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
+	await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(before)
+	await expect(newest).not.toBeInViewport()
 	await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
 })
+
+for (const decision of ['approve', 'redirect'] as const) {
+	test(`successful ${decision} scrolls the task sheet to the refreshed timeline tail`, async ({ page }) => {
+		await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+		let recorded = false
+		await page.route('**/v1/tasks/gate/activity*', async (route) => {
+			const item = activity('gate', true)
+			if (recorded) {
+				item.task.state = 'running'
+				item.interventions = [{
+					id: 1,
+					task_id: 'gate',
+					actor_id: 'dashboard-operator',
+					actor_role: 'human',
+					action: decision,
+					reason_code: decision === 'approve' ? 'approved' : 'changes_requested',
+					comment: decision === 'redirect' ? 'Please revise the implementation.' : '',
+					at: '2026-07-15T12:10:00Z',
+				}]
+			}
+			await route.fulfill({ json: item })
+		})
+		await page.route('**/v1/tasks/gate/review*', async (route) => {
+			recorded = true
+			await route.fulfill({ json: { task: activity('gate', true).task, checkout_available: false, checkout_guidance: '' } })
+		})
+
+		await page.goto('/tasks/gate')
+		const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
+		await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+		await container.evaluate((element) => { element.scrollTop = 0 })
+
+		const gate = page.getByRole('region', { name: 'Human gate' })
+		const reviewRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/tasks/gate/review')
+		if (decision === 'approve') {
+			await gate.getByRole('button', { name: 'Approve' }).click()
+		} else {
+			await gate.getByRole('button', { name: 'Request changes' }).click()
+			await gate.getByLabel('Redirect feedback').fill('Please revise the implementation.')
+			const submit = gate.getByRole('button', { name: 'Send feedback' })
+			await expect(submit).toBeEnabled()
+			await submit.click()
+		}
+		await reviewRequest
+
+		const intervention = page.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+		await expect(intervention).toBeVisible()
+		await expect(intervention).toBeInViewport()
+		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)
+		await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
+	})
+}
 
 test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
 	await page.goto('/tasks/gate')
 	const gate = page.getByRole('region', { name: 'Human gate' })
 	await expect(gate).toBeInViewport()
+	await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {

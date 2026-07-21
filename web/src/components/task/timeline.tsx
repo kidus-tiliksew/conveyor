@@ -36,20 +36,16 @@ export function Timeline({ item }: { item: ActivityItem }) {
   const showGate = isReviewable(item.task)
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
-  const renderedEventsRef = useRef({ taskId: item.task.id, count: item.events.length, lastId: item.events.at(-1)?.id })
+  const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
 
-  // A refetch replaces the activity item after the event nodes render. Keep
-  // the task detail's own scroll region pinned to the newest appended event,
-  // while leaving both initial-load and page-level scroll positions alone.
+  // A successful human decision explicitly requests one tail scroll after its
+  // refreshed activity has rendered. Live event refetches never enter this
+  // path, so they preserve the reader's position in the task detail.
   useLayoutEffect(() => {
-    const previous = renderedEventsRef.current
-    const current = { taskId: item.task.id, count: item.events.length, lastId: item.events.at(-1)?.id }
-    renderedEventsRef.current = current
-    if (previous.taskId !== current.taskId || current.count < previous.count || current.lastId === previous.lastId) return
-
+    if (decisionScrollRequest === 0) return
     const container = scrollableAncestor(timelineRef.current)
     if (container) container.scrollTop = container.scrollHeight
-  }, [item.task.id, item.events])
+  }, [decisionScrollRequest])
 
   // Reviewable tasks open scrolled to the gate — the decision point — not
   // the top of a story the reviewer has often already read.
@@ -87,7 +83,7 @@ export function Timeline({ item }: { item: ActivityItem }) {
         {showGate && (
           <li ref={gateRef} className="relative pl-7">
 			<TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])} />
-            <ReviewPanel item={item} />
+            <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
           </li>
         )}
       </ol>
