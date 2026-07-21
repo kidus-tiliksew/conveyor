@@ -66,6 +66,7 @@ type TaskWorkerStatus struct {
 type DispatchOrder struct {
 	Order            core.WorkOrder `json:"work_order"`
 	Task             core.Task      `json:"task"`
+	Repository       config.Repo    `json:"repository"`
 	Harness          config.Harness `json:"harness"`
 	Model            string         `json:"model"`
 	Effort           string         `json:"effort,omitempty"`
@@ -488,7 +489,8 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if order.RequiredEffort != "" && order.RequiredHarnessConfig != nil {
 			effortArgv = append([]string(nil), order.RequiredHarnessConfig.EffortArgv...)
 		}
-		result = append(result, DispatchOrder{Order: order, Task: task, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		repository, _ := cfg.Repo(task.Repo)
+		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Order.Stage != result[j].Order.Stage {

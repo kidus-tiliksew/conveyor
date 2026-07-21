@@ -465,7 +465,10 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		_ = release(core.WorkOrderOutcomeReleased, "create worker temp directory failed", nil)
 		return err
 	}
-	defer os.RemoveAll(directory)
+	defer func() {
+		_ = makeCheckoutWritable(directory)
+		_ = os.RemoveAll(directory)
+	}()
 	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
 	if err != nil {
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
@@ -505,10 +508,19 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		"CONVEYOR_SESSION_ID":    sessionID,
 		"CONVEYOR_CLIENT_TOKEN":  clientToken,
 	})
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
-		return fmt.Errorf("resolve worker directory: %w", err)
+	workingDirectory := ""
+	if item.Order.Stage == core.StageSpec {
+		workingDirectory, err = materializeSpecCheckout(ctx, directory, item)
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "materialize spec repository failed", nil)
+			return err
+		}
+	} else {
+		workingDirectory, err = os.Getwd()
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
+			return fmt.Errorf("resolve worker directory: %w", err)
+		}
 	}
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateGrokEnvironmentAttachment(ctx, item.Harness, childEnv, workingDirectory); err != nil {
@@ -526,6 +538,7 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = redactedStdout, redactedStderr
 	command.Env = childEnv
+	command.Dir = workingDirectory
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -617,6 +630,72 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 			return ctx.Err()
 		}
 	}
+}
+
+// materializeSpecCheckout gives a spec agent repository-grounded, immutable
+// base-branch context without creating the task branch (spec §21.33).
+func materializeSpecCheckout(ctx context.Context, root string, item workerservice.DispatchOrder) (string, error) {
+	repository := item.Repository
+	if strings.TrimSpace(repository.Name) == "" || repository.Name != item.Task.Repo {
+		return "", fmt.Errorf("resolve spec repository %q from worker dispatch", item.Task.Repo)
+	}
+	if strings.TrimSpace(repository.URL) == "" {
+		return "", fmt.Errorf("spec repository %q has no clone URL", repository.Name)
+	}
+	base := strings.TrimSpace(item.Task.BaseBranch)
+	if base == "" {
+		base = strings.TrimSpace(repository.Base)
+	}
+	if base == "" {
+		return "", fmt.Errorf("spec repository %q has no base branch", repository.Name)
+	}
+
+	checkout := filepath.Join(root, "repository")
+	if _, err := gitOutput(ctx, root, "clone", "--depth=1", "--single-branch", "--branch", base, "--", repository.URL, checkout); err != nil {
+		return "", fmt.Errorf("materialize spec repository %q at %s: %w", repository.Name, base, err)
+	}
+	if _, err := gitOutput(ctx, checkout, "checkout", "--detach", "HEAD"); err != nil {
+		return "", fmt.Errorf("detach spec repository %q at %s: %w", repository.Name, base, err)
+	}
+	if _, err := gitOutput(ctx, checkout, "remote", "set-url", "--push", "origin", "disabled://conveyor-spec-read-only"); err != nil {
+		return "", fmt.Errorf("disable pushes from spec repository %q: %w", repository.Name, err)
+	}
+	if err := makeCheckoutReadOnly(checkout); err != nil {
+		return "", fmt.Errorf("make spec repository %q read-only: %w", repository.Name, err)
+	}
+	return checkout, nil
+}
+
+func makeCheckoutReadOnly(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()&^0o222)
+	})
+}
+
+func makeCheckoutWritable(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()|0o200)
+	})
 }
 
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
