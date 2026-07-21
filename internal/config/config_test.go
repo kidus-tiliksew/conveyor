@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -87,12 +86,9 @@ func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing
 	if len(cfg.Review.Seats) != 2 || cfg.Routing.Stages["review"].Harness != "" {
 		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
 	}
-	example, err := os.ReadFile("../../conveyor.example.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(example, []byte(`--allowedTools, "mcp__conveyor__*"`)) {
-		t.Fatal("Claude worker example does not pre-authorize the scoped Conveyor MCP lifecycle")
+	templates := HarnessTemplates()
+	if len(templates) != 3 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*"}) {
+		t.Fatalf("Claude catalog template does not pre-authorize the scoped Conveyor MCP lifecycle: %+v", templates)
 	}
 }
 
@@ -291,6 +287,35 @@ func TestEnvironmentHarnessRequiresNonSecretAttachmentAndTransportAwarePlacehold
 		if err := ValidateHarness(legacy); err == nil || !strings.Contains(err.Error(), "exactly one {mcp_config}") {
 			t.Fatalf("%s missing placeholder error=%v", transport, err)
 		}
+	}
+}
+
+func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
+	templates := HarnessTemplates()
+	if len(templates) != 3 {
+		t.Fatalf("template count = %d, want 3", len(templates))
+	}
+	wantIDs := []string{"codex", "claude", "grok"}
+	for index, template := range templates {
+		if template.ID != wantIDs[index] {
+			t.Fatalf("template %d id = %q, want %q", index, template.ID, wantIDs[index])
+		}
+		if template.Label == "" || template.Description == "" {
+			t.Fatalf("template %q is missing picker copy", template.ID)
+		}
+		if template.Harness.Name != template.ID {
+			t.Fatalf("template %q harness name = %q", template.ID, template.Harness.Name)
+		}
+		if err := ValidateHarness(template.Harness); err != nil {
+			t.Fatalf("template %q failed validation: %v", template.ID, err)
+		}
+	}
+	if templates[0].Harness.MCPTransport != MCPTransportTOMLOverride || templates[1].Harness.MCPTransport != MCPTransportJSONFile {
+		t.Fatalf("codex/claude transports = %q/%q", templates[0].Harness.MCPTransport, templates[1].Harness.MCPTransport)
+	}
+	grok := templates[2].Harness
+	if grok.MCPTransport != MCPTransportEnvironment || grok.MCPAttachment != "conveyor" {
+		t.Fatalf("grok transport/attachment = %q/%q", grok.MCPTransport, grok.MCPAttachment)
 	}
 }
 

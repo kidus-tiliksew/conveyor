@@ -18,6 +18,25 @@ type gitFixture struct {
 	seed    string
 }
 
+func TestAssignedCheckoutFromEnvironmentHonorsOnlyItsOwnTask(t *testing.T) {
+	t.Setenv("CONVEYOR_TASK_ID", "task-1")
+	t.Setenv("CONVEYOR_TASK_BRANCH", "conveyor/task-1")
+	t.Setenv("CONVEYOR_TASK_BASE_BRANCH", "main")
+	t.Setenv("CONVEYOR_TASK_REPO", "conveyor")
+
+	branch, base, repo, ok := assignedCheckoutFromEnvironment("task-1")
+	if !ok || branch != "conveyor/task-1" || base != "main" || repo != "conveyor" {
+		t.Fatalf("assignment = %q %q %q ok=%v", branch, base, repo, ok)
+	}
+	if _, _, _, ok := assignedCheckoutFromEnvironment("task-2"); ok {
+		t.Fatal("assignment for a different task must fall back to the authenticated lookup")
+	}
+	t.Setenv("CONVEYOR_TASK_BRANCH", "")
+	if _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
+		t.Fatal("incomplete assignment must fall back to the authenticated lookup")
+	}
+}
+
 func TestCheckoutCreatesMissingBranchFromFreshBaseWithoutTouchingPrimary(t *testing.T) {
 	fixture := newGitFixture(t)
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")

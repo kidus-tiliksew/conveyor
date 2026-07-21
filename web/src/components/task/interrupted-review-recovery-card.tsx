@@ -23,6 +23,10 @@ export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) 
     },
   })
   if (!recovery?.needed) return null
+  const eligibleOrders = recovery.eligible_orders ?? []
+  const retainedOrders = recovery.retained_orders ?? []
+  const recoveredCount = mutation.data?.recovered_orders?.length ?? 0
+  const retainedCount = mutation.data?.retained_orders?.length ?? 0
   return (
     <section className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3" aria-label="Interrupted review round recovery">
       <div className="flex items-start gap-2">
@@ -30,12 +34,12 @@ export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) 
         <div className="min-w-0 text-xs leading-5 text-muted">
           <p className="font-medium text-attention">Review round {recovery.review_round} was interrupted</p>
           <p>{recovery.reason}. Only the interrupted seats below will be requeued; completed verdicts are retained.</p>
-          {recovery.eligible_orders.map((order) => (
+          {eligibleOrders.map((order) => (
             <p key={order.id} className="mt-1 font-mono text-[11px]">
               Seat {order.review_seat ?? '?'} · {order.id} · {order.last_attempt_outcome ?? 'retry suppressed'}
             </p>
           ))}
-          {recovery.retained_orders.map((order) => (
+          {retainedOrders.map((order) => (
             <p key={order.id} className="mt-1 font-mono text-[11px] text-positive">
               Seat {order.review_seat ?? '?'} · completed verdict retained
             </p>
@@ -46,7 +50,7 @@ export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) 
         <RotateCcw />
         {mutation.isPending ? 'Recovering…' : 'Recover interrupted review round'}
       </Button>
-      {mutation.data && <p className="text-xs text-positive">Recovered {mutation.data.recovered_orders.length} interrupted seat{mutation.data.recovered_orders.length === 1 ? '' : 's'}; {mutation.data.retained_orders.length} completed verdict{mutation.data.retained_orders.length === 1 ? '' : 's'} retained.</p>}
+      {mutation.data && <p className="text-xs text-positive">Recovered {recoveredCount} interrupted seat{recoveredCount === 1 ? '' : 's'}; {retainedCount} completed verdict{retainedCount === 1 ? '' : 's'} retained.</p>}
       {mutation.error != null && <p className="text-xs text-failure">Recovery failed without partial changes: {String(mutation.error)}</p>}
     </section>
   )

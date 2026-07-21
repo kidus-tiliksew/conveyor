@@ -2,13 +2,64 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+func TestInterruptedReviewRecoveryNeededEmitsEmptyCollectionsAsArrays(t *testing.T) {
+	orders := []core.WorkOrder{
+		{ID: "review-seat-1", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true},
+		{ID: "review-seat-2", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 2, RetrySuppressed: true},
+	}
+	recovery := InterruptedReviewRecoveryNeeded(orders)
+	if recovery == nil || recovery.EligibleOrders == nil || recovery.RetainedOrders == nil || len(recovery.EligibleOrders) != 2 || len(recovery.RetainedOrders) != 0 {
+		t.Fatalf("recovery=%+v", recovery)
+	}
+	data, err := json.Marshal(recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"eligible_orders":[`) || !strings.Contains(string(data), `"retained_orders":[]`) {
+		t.Fatalf("recovery JSON contains nullable collections: %s", data)
+	}
+}
+
+func TestMemoryInterruptedReviewRecoveryResultEmitsEmptyRetainedOrdersAsArray(t *testing.T) {
+	st := NewMemory()
+	ctx := WithActor(WithWorkspace(t.Context(), "demo"), Actor{ID: "operator", Role: core.ActorHuman})
+	now := time.Now().UTC()
+	task := core.Task{ID: "all-interrupted-review", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for seat := 1; seat <= 2; seat++ {
+		id := fmt.Sprintf("%s-review-1-seat-%d", task.ID, seat)
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: seat, RetrySuppressed: true, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := st.RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: task.ID, RequestID: "recover-empty-retained", Round: 1}, time.Hour)
+	if err != nil || result.RecoveredOrders == nil || result.RetainedOrders == nil || len(result.RecoveredOrders) != 2 || len(result.RetainedOrders) != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"recovered_orders":[`) || !strings.Contains(string(data), `"retained_orders":[]`) {
+		t.Fatalf("recovery result JSON contains nullable collections: %s", data)
+	}
+}
 
 func interruptedReviewFixture(t *testing.T, st Store) context.Context {
 	t.Helper()

@@ -122,47 +122,10 @@ setups:
         - {model: gpt-5.6, harness: local-agent}
         - {model: claude-opus-4.1, harness: local-agent}
 
-# Adapter-level review effort excerpt (spec §21.19). Implementation effort uses
-# the same harness mappings through execution_settings.implementation (spec
-# §21.19 v1.20 extension). Merge these fields into the
-# corresponding full harness entries after their authenticated wrapper defines
-# the {mcp_config} transport; these are adapter argv, not complete launch
-# commands:
-# harnesses:
-#   - name: codex
-#     mcp_transport: toml_override
-#     command: [codex, exec, "{prompt}", --config, "{mcp_config}"]
-#     model_args: [--model, "{model}"]
-#     probe_command: [codex, --version]
-#     probe_timeout: 10s
-#     effort_args:
-#       high: [--config, 'model_reasoning_effort="high"']
-#   - name: claude
-#     mcp_transport: json_file
-#     # Headless workers cannot answer an interactive MCP permission prompt.
-#     # Pre-authorize only the scoped Conveyor lifecycle server.
-#     command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --allowedTools, "mcp__conveyor__*"]
-#     model_args: [--model, "{model}"]
-#     probe_command: [claude, --version]
-#     probe_timeout: 10s
-#     effort_args:
-#       high: [--effort, high]
-#   - name: grok
-#     mcp_transport: environment
-#     mcp_attachment: conveyor
-#     command: [grok, --single, "{prompt}", --permission-mode, bypassPermissions, --no-plan]
-#     model_args: [--model, "{model}"]
-#     probe_command: [grok, --version]
-#     probe_timeout: 30s
-#     effort_args:
-#       low: [--reasoning-effort, low]
-#       medium: [--reasoning-effort, medium]
-#       high: [--reasoning-effort, high]
-# review:
-#   seats:
-#     - {model: gpt-5.6-sol, harness: codex, effort: high}
-#     - {model: claude-opus-4-8, harness: claude, effort: high}
-#     - {model: grok-build, harness: grok, effort: high}
+# Built-in Codex, Claude, and Grok harness starting points are maintained in
+# internal/config/harness_templates.go and are available from the Workspace UI.
+# Copy and customize a catalog entry here only when a deployment needs a
+# checked-in harness configuration; workspaces are not seeded automatically.
 
 repos:
   - name: api

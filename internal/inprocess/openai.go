@@ -193,8 +193,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	// spans over a minute and rides out upstream 500 bursts; stage routes
 	// carry far longer timeouts and bound total time through ctx. Providers
 	// also deliver failures inside HTTP 200 envelopes (body status "failed"
-	// with an error object), so retry classification must read the body, not
-	// just the status code.
+	// with an error object) or as "completed" responses that carry only
+	// reasoning items and no final message, so retry classification must read
+	// the body, not just the status code.
 	var raw []byte
 	var statusCode int
 	var status string
@@ -206,7 +207,11 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		raw, statusCode, status, requestID, err = attempt()
 		transient := err != nil || statusCode == http.StatusTooManyRequests || statusCode >= 500
 		if !transient && statusCode >= 200 && statusCode < 300 {
-			if failure, failed := embeddedResponseFailure(raw); failed && failure.retryable() {
+			if failure, failed := embeddedResponseFailure(raw); failed {
+				if failure.retryable() {
+					transient = true
+				}
+			} else if missingOutputText(raw) {
 				transient = true
 			}
 		}
@@ -243,6 +248,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		responseValue = string(raw)
 	}
 	var embedded *responseFailure
+	var decoded responsesBody
+	var decodeErr error
+	outputText := ""
 	if statusCode < 200 || statusCode >= 300 {
 		diagnostic.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= 500
 		if input.OutputSchema != nil && structuredOutputRejected(raw) {
@@ -262,6 +270,17 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		} else {
 			diagnostic.Phase = "provider_response"
 		}
+	} else if decodeErr = json.Unmarshal(raw, &decoded); decodeErr != nil {
+		diagnostic.Phase = "response_validation"
+	} else if outputText = decoded.outputText(); outputText == "" {
+		diagnostic.Retryable = true
+		if attempts >= responsesMaxAttempts {
+			diagnostic.Phase = "retry_exhausted"
+		} else {
+			diagnostic.Phase = "response_validation"
+		}
+	} else {
+		diagnostic.Phase = "completed"
 	}
 	transcript, stats, redactErr := client.auditEnvelope(auditRequestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
 	if redactErr != nil {
@@ -290,45 +309,59 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		}
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) %s for model %q after %d attempt(s): %s%s", endpointHost, diagnostic.Phase, model, attempts, embedded.describe(), details)
 	}
-	var decoded struct {
-		Model  string `json:"model"`
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-		Usage struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
-		} `json:"usage"`
+	if decodeErr != nil {
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("decode Responses API result for model %q: %w", model, decodeErr)
 	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		diagnostic.Phase = "response_validation"
-		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("decode Responses API result for model %q: %w", model, err)
+	if outputText == "" {
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) returned no output_text for model %q after %d attempt(s): provider completed with reasoning-only or empty output", endpointHost, model, attempts)
 	}
-	lastMessage := -1
-	for index := len(decoded.Output) - 1; index >= 0; index-- {
-		if decoded.Output[index].Type == "message" {
-			lastMessage = index
-			break
+	return Result{Output: outputText, Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
+}
+
+// responsesBody is the successful Responses API shape the pipeline consumes:
+// the concatenated output_text parts of the final message item.
+type responsesBody struct {
+	Model  string `json:"model"`
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+	Usage struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+func (body responsesBody) outputText() string {
+	for index := len(body.Output) - 1; index >= 0; index-- {
+		if body.Output[index].Type != "message" {
+			continue
 		}
-	}
-	var output strings.Builder
-	if lastMessage >= 0 {
-		for _, part := range decoded.Output[lastMessage].Content {
+		var output strings.Builder
+		for _, part := range body.Output[index].Content {
 			if part.Type == "output_text" {
 				output.WriteString(part.Text)
 			}
 		}
+		return output.String()
 	}
-	if output.Len() == 0 {
-		diagnostic.Phase = "response_validation"
-		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API returned no output_text for model %q", model)
+	return ""
+}
+
+// missingOutputText reports a well-formed 2xx body that self-reports success
+// yet carries no final message text — the provider spent the whole generation
+// on reasoning items and stopped. Observed intermittently from x-ai/grok
+// models via OpenRouter; resubmitting the identical request usually succeeds,
+// so the retry loop classifies it transient.
+func missingOutputText(raw []byte) bool {
+	var decoded responsesBody
+	if json.Unmarshal(raw, &decoded) != nil {
+		return false
 	}
-	diagnostic.Phase = "completed"
-	return Result{Output: output.String(), Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
+	return decoded.outputText() == ""
 }
 
 func responsesRequestEnvelope(model string, input any, effort string, outputSchema *OutputSchema) map[string]any {

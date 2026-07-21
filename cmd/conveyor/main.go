@@ -235,11 +235,15 @@ func checkoutCmd() *cobra.Command {
 		Short: "Create or reuse the task's dedicated local worktree (spec §21.8)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			task, err := newClient().getTask(args[0])
-			if err != nil {
-				return err
+			branch, base, repo, ok := assignedCheckoutFromEnvironment(args[0])
+			if !ok {
+				task, err := newClient().getTask(args[0])
+				if err != nil {
+					return err
+				}
+				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
 			}
-			path, err := checkoutTask(cmd.Context(), task.Branch, task.BaseBranch, task.Repo, task.ID, destination)
+			path, err := checkoutTask(cmd.Context(), branch, base, repo, args[0], destination)
 			if err != nil {
 				return err
 			}
@@ -249,6 +253,24 @@ func checkoutCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling <repo>-task-<id>)")
 	return cmd
+}
+
+// assignedCheckoutFromEnvironment resolves the branch assignment a worker
+// dispatch injects as CONVEYOR_TASK_* (spec §21.8). Worker credentials never
+// authorize workspace REST reads, so a worker-spawned agent cannot call
+// getTask; the assignment is only honored for the exact task it was issued
+// for, and every other invocation falls back to the authenticated lookup.
+func assignedCheckoutFromEnvironment(taskID string) (branch, base, repo string, ok bool) {
+	if strings.TrimSpace(os.Getenv("CONVEYOR_TASK_ID")) != taskID {
+		return "", "", "", false
+	}
+	branch = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_BRANCH"))
+	base = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_BASE_BRANCH"))
+	repo = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_REPO"))
+	if branch == "" || base == "" || repo == "" {
+		return "", "", "", false
+	}
+	return branch, base, repo, true
 }
 
 func doneCmd() *cobra.Command {

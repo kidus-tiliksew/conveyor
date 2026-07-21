@@ -7,13 +7,14 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import { DropdownMenu, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { Switch } from '../components/ui/switch'
 import { Field } from '../components/workspace/field'
 import { HarnessCard, latestProbe } from '../components/workspace/harness-card'
 import { SetupCard } from '../components/workspace/setup-card'
-import { ConfigValidationError, fetchWorkers, fetchWorkspaceConfig, issueWorkerPairing, revokeWorker, updateWorkspaceConfig } from '../lib/api'
+import { ConfigValidationError, fetchWorkers, fetchWorkspaceConfig, getHarnessTemplates, issueWorkerPairing, revokeWorker, updateWorkspaceConfig } from '../lib/api'
 import { cn } from '../lib/utils'
-import type { WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo, WorkspaceHarness } from '../lib/types'
+import type { HarnessTemplate, WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo, WorkspaceHarness } from '../lib/types'
 
 type TabId = 'general' | 'execution' | 'harnesses' | 'workers'
 
@@ -40,6 +41,7 @@ function tabForField(field: string): TabId {
 export function WorkspacePage() {
   const token = useOperatorToken(); const queryClient = useQueryClient(); const { workspace } = useWorkspaceSelection(); const { data: snapshot } = useWorkspace()
   const query = useQuery({ queryKey: ['workspace-config', token, workspace], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token && workspace) })
+  const templates = useQuery({ queryKey: ['harness-templates', token], queryFn: () => getHarnessTemplates(token), enabled: Boolean(token), retry: false })
   const workers = useQuery({ queryKey: ['workers', token, workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace), refetchInterval: 5000 })
   const [tab, setTab] = useState<TabId>('execution')
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
@@ -87,7 +89,7 @@ export function WorkspacePage() {
       <div className="pt-5">
         {tab === 'general' && <GeneralTab draft={draft} setDraft={setDraft} />}
         {tab === 'execution' && <ExecutionTab draft={draft} setDraft={setDraft} workerHealth={workers.data} />}
-        {tab === 'harnesses' && <HarnessesTab draft={draft} setDraft={setDraft} workerHealth={workers.data} />}
+        {tab === 'harnesses' && <HarnessesTab draft={draft} setDraft={setDraft} workerHealth={workers.data} templates={templates.data?.templates ?? []} />}
         {tab === 'workers' && <WorkersTab data={workers.data} pairing={pairing} onPair={() => pair.mutate()} onRevoke={(id) => revoke.mutate(id)} />}
       </div>
 
@@ -196,20 +198,32 @@ function ExecutionTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfi
   </div>
 }
 
-function HarnessesTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfigDocument; setDraft: (value: WorkspaceConfigDocument) => void; workerHealth?: WorkerList }) {
+function HarnessesTab({ draft, setDraft, workerHealth, templates }: { draft: WorkspaceConfigDocument; setDraft: (value: WorkspaceConfigDocument) => void; workerHealth?: WorkerList; templates: HarnessTemplate[] }) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({})
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
   const updateHarness = (index: number, change: Partial<WorkspaceHarness>) => { const harnesses = [...draft.harnesses]; harnesses[index] = { ...harnesses[index], ...change }; update({ harnesses }) }
   const updateEffortArgs = (index: number, effort: 'low' | 'medium' | 'high', value: string[]) => { const effortArgs = { ...draft.harnesses[index].effort_args }; if (value.length === 0) delete effortArgs[effort]; else effortArgs[effort] = value; updateHarness(index, { effort_args: Object.keys(effortArgs).length ? effortArgs : undefined }) }
-  const addHarness = () => {
-    // New harnesses seed the Codex template with toml_override (spec §21.20).
-    update({ harnesses: [...draft.harnesses, { name: '', mcp_transport: 'toml_override', command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'], model_args: ['--model', '{model}'], default_model_sentinels: [], probe_command: ['codex', '--version'], probe_timeout: '10s' }] })
+  const uniqueName = (base: string) => { let name = base; let suffix = 2; while (draft.harnesses.some((harness) => harness.name === name)) name = `${base}-${suffix++}`; return name }
+  const addHarness = (template?: HarnessTemplate) => {
+    const harness: WorkspaceHarness = template
+      ? { ...structuredClone(template.harness), name: uniqueName(template.id) }
+      : { name: '', mcp_transport: 'json_file', command: [], probe_command: [], probe_timeout: '10s' }
+    update({ harnesses: [...draft.harnesses, harness] })
     setExpanded({ ...expanded, [draft.harnesses.length]: true })
   }
   return <div>
     <div className="mb-3 flex items-center gap-3">
       <div><h3 className="text-sm font-semibold">Harnesses</h3><p className="text-xs text-faint">How the worker launches each coding agent</p></div>
-      <Button size="sm" className="ml-auto" onClick={addHarness}><Plus />Add harness</Button>
+      <DropdownMenu label="Add harness" className="ml-auto">
+        {templates.map((template) => <DropdownMenuItem key={template.id} onSelect={() => addHarness(template)}>
+          <span className="text-sm font-medium">{template.label}</span>
+          <span className="text-xs text-faint">{template.description}</span>
+        </DropdownMenuItem>)}
+        <DropdownMenuItem onSelect={() => addHarness()}>
+          <span className="text-sm font-medium">Custom</span>
+          <span className="text-xs text-faint">Start with a blank harness</span>
+        </DropdownMenuItem>
+      </DropdownMenu>
     </div>
     <div className="space-y-3">
       {draft.harnesses.map((harness, index) => <HarnessCard key={index} harness={harness} index={index}

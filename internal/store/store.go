@@ -269,7 +269,13 @@ func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReview
 	if latest == 0 {
 		return nil
 	}
-	state := &InterruptedReviewRecoveryState{Needed: true, ReviewRound: latest, Reason: "latest review round has interrupted seats whose claims are no longer authorized"}
+	state := &InterruptedReviewRecoveryState{
+		Needed:         true,
+		ReviewRound:    latest,
+		Reason:         "latest review round has interrupted seats whose claims are no longer authorized",
+		EligibleOrders: make([]core.WorkOrder, 0),
+		RetainedOrders: make([]core.WorkOrder, 0),
+	}
 	for _, order := range orders {
 		if order.Stage != core.StageReview || order.ReviewRound != latest {
 			continue
@@ -1166,7 +1172,13 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
 	}
-	result := InterruptedReviewRecoveryResult{RequestID: request.RequestID, TaskID: request.TaskID, ReviewRound: request.Round, RetainedOrders: append([]core.WorkOrder(nil), recovery.RetainedOrders...)}
+	result := InterruptedReviewRecoveryResult{
+		RequestID:       request.RequestID,
+		TaskID:          request.TaskID,
+		ReviewRound:     request.Round,
+		RecoveredOrders: make([]core.WorkOrder, 0, len(recovery.EligibleOrders)),
+		RetainedOrders:  append(make([]core.WorkOrder, 0, len(recovery.RetainedOrders)), recovery.RetainedOrders...),
+	}
 	actor := ActorFromContext(ctx)
 	for _, eligible := range recovery.EligibleOrders {
 		order := m.workOrders[eligible.ID]

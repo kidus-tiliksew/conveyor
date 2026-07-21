@@ -55,6 +55,12 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
       await route.fulfill({ headers: { ETag: `"${version}"` }, json: { document, version } })
       return
     }
+    if (url.pathname === '/v1/harness-templates') {
+      await route.fulfill({ json: { templates: [{ id: 'codex', label: 'Codex CLI', description: "OpenAI's coding agent", harness: {
+        name: 'codex', mcp_transport: 'toml_override', command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['codex', '--version'], probe_timeout: '10s',
+      } }] } })
+      return
+    }
     if (url.pathname === '/v1/workers') {
       await route.fulfill({ json: { workers: [], auto_available: false, auto_unavailable_reason: 'manual test' } })
       return
@@ -164,20 +170,21 @@ test('workspace renders contextual execution settings without generic routing co
   await page.getByRole('button', { name: 'Toggle claude' }).click()
 
   await page.getByRole('button', { name: 'Add harness' }).click()
+  await page.getByRole('menuitem', { name: /Codex CLI/ }).click()
   await expect(page.getByLabel('MCP transport')).toHaveValue('toml_override')
   await expect(page.getByRole('button', { name: 'Remove exec from Command argv', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Remove {mcp_config} from Command argv', exact: true })).toBeVisible()
   await page.getByLabel('MCP transport').selectOption('environment')
-  await expect(page.getByLabel('MCP attachment for harness 3')).toHaveValue('conveyor')
+  await expect(page.getByLabel('MCP attachment for codex-2')).toHaveValue('conveyor')
   await expect(page.getByText(/forbids \{mcp_config\}/)).toBeVisible()
-  await page.getByLabel('MCP attachment for harness 3').fill('conveyor-build')
+  await page.getByLabel('MCP attachment for codex-2').fill('conveyor-build')
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText(/Recorded config.updated/)).toBeVisible()
   await page.reload()
   await page.getByRole('tab', { name: 'Harnesses' }).click()
-  await page.getByRole('button', { name: 'Toggle harness 3' }).click()
+  await page.getByRole('button', { name: 'Toggle codex-2' }).click()
   await expect(page.getByLabel('MCP transport')).toHaveValue('environment')
-  await expect(page.getByLabel('MCP attachment for harness 3')).toHaveValue('conveyor-build')
+  await expect(page.getByLabel('MCP attachment for codex-2')).toHaveValue('conveyor-build')
   await expect(page.getByText('Stage routing')).toHaveCount(0)
   await expect(page.getByText('Inherit single harness')).toHaveCount(0)
 })

@@ -201,6 +201,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			reason: 'latest review round has interrupted seats whose claims are no longer authorized',
 			eligible_orders: reviewActivity.work_orders?.filter((order) => order.state === 'queued') ?? [],
 			retained_orders: reviewActivity.work_orders?.filter((order) => order.state === 'completed') ?? [],
+		} : taskId === 'interrupted-review-empty' ? {
+			needed: true,
+			review_round: 1,
+			reason: 'latest review round has interrupted seats whose claims are no longer authorized',
+			eligible_orders: [{ id: 'interrupted-review-empty-review-1-seat-1', review_seat: 1, last_attempt_outcome: 'expired' }],
+			retained_orders: null,
 		} : undefined,
 		worker_status: taskId === 'interrupted-review' ? {
 			available: false,
@@ -353,6 +359,13 @@ test('interrupted review round offers one same-round recovery and retains comple
 	await action.click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
 	await expect(page.getByText(/Recovered 1 interrupted seat; 1 completed verdict retained/)).toBeVisible()
+})
+
+test('interrupted review recovery tolerates legacy null empty collections', async ({ page }) => {
+	await page.goto('/tasks/interrupted-review-empty/full')
+	await expect(page.getByText(/interrupted-review-empty-review-1-seat-1/)).toBeVisible()
+	await expect(page.getByRole('button', { name: 'Recover interrupted review round' })).toHaveCount(1)
+	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
 test('timeout timeline and duration use the execution deadline', async ({ page }) => {
