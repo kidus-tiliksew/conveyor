@@ -131,18 +131,19 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	if task.NextStage != core.StageImplement {
+	if task.NextStage != core.StageImplement && task.NextStage != core.StageSpec {
 		return d.runTaskForSnapshot(ctx, task)
 	}
-	// Dispatch and conflict-fix creation share one workspace-scoped gate. The
-	// callback re-reads durable state after acquiring it so a River delivery
-	// that overlapped §21.30 conflict handling observes the surviving order.
+	// Implement/spec dispatch and conflict-fix creation share one
+	// workspace-scoped gate. The callback re-reads durable state after
+	// acquiring it so overlapping River deliveries observe the surviving
+	// order before checking and creating another one (spec §§21.30, 21.33).
 	return d.Store.WithTaskLock(ctx, taskID, func() error {
 		current, currentErr := d.Store.GetTask(ctx, taskID)
 		if currentErr != nil {
 			return currentErr
 		}
-		if current.NextStage != core.StageImplement {
+		if current.NextStage != core.StageImplement && current.NextStage != core.StageSpec {
 			return nil
 		}
 		return d.runTaskForSnapshot(ctx, current)

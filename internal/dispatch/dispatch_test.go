@@ -40,6 +40,70 @@ type failingTranscriptAgent struct {
 	attachmentCounts []int
 }
 
+type concurrentSpecDispatchStore struct {
+	store.Store
+
+	mu             sync.Mutex
+	arrivals       int
+	firstTimedOut  bool
+	raceObserved   bool
+	arrivalsReady  chan struct{}
+	snapshots      int
+	snapshotsReady chan struct{}
+	createCalls    int
+}
+
+func newConcurrentSpecDispatchStore(st store.Store) *concurrentSpecDispatchStore {
+	return &concurrentSpecDispatchStore{
+		Store:          st,
+		arrivalsReady:  make(chan struct{}),
+		snapshotsReady: make(chan struct{}),
+	}
+}
+
+func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	st.mu.Lock()
+	st.arrivals++
+	arrival := st.arrivals
+	if arrival == 2 && !st.firstTimedOut {
+		st.raceObserved = true
+		close(st.arrivalsReady)
+	}
+	st.mu.Unlock()
+
+	if arrival == 1 {
+		select {
+		case <-st.arrivalsReady:
+		case <-time.After(50 * time.Millisecond):
+			st.mu.Lock()
+			st.firstTimedOut = true
+			st.mu.Unlock()
+		}
+	}
+
+	orders, err := st.Store.ListTaskWorkOrders(ctx, taskID)
+	st.mu.Lock()
+	concurrent := st.raceObserved
+	if concurrent {
+		st.snapshots++
+		if st.snapshots == 2 {
+			close(st.snapshotsReady)
+		}
+	}
+	st.mu.Unlock()
+	if concurrent {
+		<-st.snapshotsReady
+	}
+	return orders, err
+}
+
+func (st *concurrentSpecDispatchStore) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+	st.mu.Lock()
+	st.createCalls++
+	st.mu.Unlock()
+	return st.Store.CreateWorkOrder(ctx, order)
+}
+
 func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -59,6 +123,44 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 	}
 	if agent.calls != 0 {
 		t.Fatalf("in-process spec fallback ran %d time(s)", agent.calls)
+	}
+}
+
+func TestConcurrentSpecDispatchCreatesOneWorkOrder(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	memory := store.NewMemory()
+	task := core.Task{ID: "concurrent-mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
+	if err := memory.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	st := newConcurrentSpecDispatchStore(memory)
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionMCP}}}}
+	d := New(st, cfg, &capturingInputAgent{})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			errs <- d.DispatchNow(ctx, task.ID)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	orders, err := memory.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	createCalls := st.createCalls
+	st.mu.Unlock()
+	if createCalls != 1 || len(orders) != 1 || orders[0].Stage != core.StageSpec {
+		t.Fatalf("create calls=%d orders=%+v, want one spec work order", createCalls, orders)
 	}
 }
 
