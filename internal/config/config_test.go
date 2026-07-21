@@ -338,18 +338,19 @@ func TestContextualSettingsOverrideLegacyRoutesAndAllowExplicitReviewSeats(t *te
 	}
 }
 
-func TestLegacyControlPlaneSpecDoesNotOverrideContextualModel(t *testing.T) {
+func TestLegacyControlPlaneSpecDoesNotOverrideContextualFields(t *testing.T) {
 	config := validConfig()
-	config.Harnesses = []Harness{{Name: "codex"}}
+	config.Harnesses = []Harness{{Name: "contextual"}, {Name: "legacy-worker"}}
 	config.ExecutionSettings = &ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
 			Spec: ModelTimeoutSettings{Model: "legacy-spec", TimeoutText: "30m"},
 		},
 		Spec: ImplementationSettings{
-			Harness:     "codex",
+			Harness:     "contextual",
 			Model:       "contextual-spec",
-			ModelPolicy: ModelPolicyExplicit,
+			ModelPolicy: ModelPolicyHarnessDefault,
 		},
+		Implementation: ImplementationSettings{Harness: "legacy-worker"},
 	}
 
 	applyContextualExecutionSettings(config)
@@ -360,7 +361,10 @@ func TestLegacyControlPlaneSpecDoesNotOverrideContextualModel(t *testing.T) {
 	if got := config.ExecutionSettings.Spec.TimeoutText; got != "30m" {
 		t.Fatalf("legacy spec timeout was not normalized independently: %q", got)
 	}
-	if got := config.ExecutionSettings.Spec.ModelPolicy; got != ModelPolicyExplicit {
+	if got := config.ExecutionSettings.Spec.Harness; got != "contextual" {
+		t.Fatalf("contextual spec harness overwritten by legacy worker context: %q", got)
+	}
+	if got := config.ExecutionSettings.Spec.ModelPolicy; got != ModelPolicyHarnessDefault {
 		t.Fatalf("contextual spec model policy changed: %q", got)
 	}
 }
