@@ -455,10 +455,25 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		return err
 	}
 	leaseExpiresAt := claimed.LeaseExpiresAt
+	var redactedStdout, redactedStderr *redact.Writer
+	var failureTail *boundedTailWriter
+	flushOutput := func() {
+		if redactedStdout != nil {
+			_ = redactedStdout.Flush()
+		}
+		if redactedStderr != nil {
+			_ = redactedStderr.Flush()
+		}
+	}
 	release := func(outcome, reason string, exitStatus *int) error {
+		flushOutput()
+		detail := ""
+		if failureTail != nil {
+			detail = failureTail.String()
+		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus})
+		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus, FailureDetail: detail})
 	}
 	directory, err := os.MkdirTemp("", "conveyor-worker-")
 	if err != nil {
@@ -537,12 +552,10 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		}
 	}
 	outputRedactor := redact.New([]string{credential, childAddress, sessionID, clientToken})
-	redactedStdout := &redact.Writer{Destination: stdout, Redactor: outputRedactor}
-	redactedStderr := &redact.Writer{Destination: stderr, Redactor: outputRedactor}
-	defer func() {
-		_ = redactedStdout.Flush()
-		_ = redactedStderr.Flush()
-	}()
+	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
+	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdout, failureTail), Redactor: outputRedactor}
+	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
+	defer flushOutput()
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = redactedStdout, redactedStderr
 	command.Env = childEnv
@@ -638,6 +651,28 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 			return ctx.Err()
 		}
 	}
+}
+
+type boundedTailWriter struct {
+	mu    sync.Mutex
+	limit int
+	data  []byte
+}
+
+func (w *boundedTailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data = append(w.data, p...)
+	if len(w.data) > w.limit {
+		w.data = append([]byte(nil), w.data[len(w.data)-w.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (w *boundedTailWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.TrimSpace(strings.ToValidUTF8(string(w.data), "�"))
 }
 
 // materializeSpecCheckout gives a spec agent repository-grounded, immutable

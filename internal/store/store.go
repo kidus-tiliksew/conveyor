@@ -103,6 +103,7 @@ type Store interface {
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
 	CreateWorker(ctx context.Context, worker core.Worker) error
 	ListWorkers(ctx context.Context) ([]core.Worker, error)
+	ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error)
 	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
 	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
 	RevokeWorker(ctx context.Context, id string) error
@@ -383,6 +384,7 @@ func NewMemory() Store {
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
 		pairings:                    map[string]core.WorkerPairing{},
 		workers:                     map[string]core.Worker{},
+		harnessModelFailures:        map[string]core.HarnessModelFailure{},
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
@@ -415,6 +417,7 @@ type memory struct {
 	artifacts                   map[memoryArtifactKey]memoryArtifact
 	pairings                    map[string]core.WorkerPairing
 	workers                     map[string]core.Worker
+	harnessModelFailures        map[string]core.HarnessModelFailure
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
@@ -520,6 +523,25 @@ func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires ti
 	return worker, nil
 }
 
+func (m *memory) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	result := make([]core.HarnessModelFailure, 0, len(m.harnessModelFailures))
+	for key, failure := range m.harnessModelFailures {
+		if strings.HasPrefix(key, workspace+"\x00") {
+			result = append(result, failure)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Harness != result[j].Harness {
+			return result[i].Harness < result[j].Harness
+		}
+		return result[i].Model < result[j].Model
+	})
+	return result, nil
+}
+
 func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -578,24 +600,41 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 	}
 	clearActiveAttempt(&order)
 	order.State = core.WorkOrderQueued
+	previousOutcome := order.LastAttemptOutcome
 	order.LastAttemptOutcome = release.Outcome
 	order.NextRetryAt = time.Time{}
+	order.RetrySuppressionReason = ""
 	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		previousDetail := order.LastFailureDetail
+		detail := strings.TrimSpace(release.FailureDetail)
 		order.LastFailureMessage = strings.TrimSpace(release.Reason)
+		order.LastFailureDetail = detail
 		order.LastFailureExitStatus = release.ExitStatus
 		order.LastFailureAt = now
 		limit := release.AutomaticRetryLimit
 		if limit <= 0 {
 			limit = 3
 		}
+		identical := detail != "" && previousOutcome == core.WorkOrderOutcomeChildFailure && detail == previousDetail
 		if order.AutomaticRetryCount < limit {
 			order.AutomaticRetryCount++
-			order.NextRetryAt = now.Add(workOrderRetryDelay(release, order.AutomaticRetryCount))
-			order.RetrySuppressed = false
+			if identical {
+				order.RetrySuppressed = true
+				order.RetrySuppressionReason = core.IdenticalFailureSuppressionReason
+			} else {
+				order.NextRetryAt = now.Add(workOrderRetryDelay(release, order.AutomaticRetryCount))
+				order.RetrySuppressed = false
+			}
 		} else {
 			order.RetrySuppressed = true
 		}
+		if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && detail != "" {
+			workspace, _ := WorkspaceFromContext(ctx)
+			key := workspace + "\x00" + order.RequiredHarness + "\x00" + order.RequiredModel
+			m.harnessModelFailures[key] = core.HarnessModelFailure{Harness: order.RequiredHarness, Model: order.RequiredModel, Detail: detail, WorkOrderID: order.ID, ObservedAt: now}
+		}
 	} else {
+		order.LastFailureDetail = ""
 		order.RetrySuppressed = true
 	}
 	order.UpdatedAt = now
@@ -615,7 +654,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 	if release.Outcome == core.WorkOrderOutcomeChildFailure {
 		kind = "work_order.child_failed"
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
 }
 
@@ -1185,6 +1224,7 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 		priorOutcome := order.LastAttemptOutcome
 		order.LastAttemptOutcome = ""
 		order.RetrySuppressed = false
+		order.RetrySuppressionReason = ""
 		order.AutomaticRetryCount = 0
 		order.NextRetryAt = time.Time{}
 		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
@@ -1430,6 +1470,7 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	prior := order.LastAttemptOutcome
 	order.LastAttemptOutcome = ""
 	order.RetrySuppressed = false
+	order.RetrySuppressionReason = ""
 	order.AutomaticRetryCount = 0
 	order.NextRetryAt = time.Time{}
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
