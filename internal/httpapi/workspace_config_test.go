@@ -96,6 +96,9 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if got.Document.ExecutionSettings == nil || got.Document.ExecutionSettings.Implementation.Harness != "codex" || got.Document.Review.Seats[1].Effort != "high" || got.Document.Routing.Stages["review"].Harness != "codex" {
 		t.Fatalf("GET lost contextual or compatibility config: %+v", got.Document)
 	}
+	if len(got.Document.Setups) != 1 || got.Document.Setups[0].Review.Seats == nil || len(got.Document.Setups[0].Review.Seats) != 2 {
+		t.Fatalf("GET returned nullable or incomplete setup review seats: %+v", got.Document.Setups)
+	}
 
 	invalidDocument := document
 	invalidDocument.MaxBounces = -1

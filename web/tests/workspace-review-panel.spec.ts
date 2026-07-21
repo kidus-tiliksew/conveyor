@@ -27,8 +27,8 @@ const baseDocument = {
   repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }],
 }
 
-async function mockWorkspaceAPIs(page: Page) {
-  let document = structuredClone(baseDocument)
+async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
+  let document = structuredClone(initialDocument)
   let version = 1
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
@@ -190,6 +190,25 @@ test('fully explicit review seats remove fallback requirements', async ({ page }
   await page.getByLabel('Seat 1 harness').selectOption('codex')
   await expect(page.getByText(/Every seat is explicitly routed/)).toBeVisible()
   await expect(page.getByLabel('Review fallback harness')).toHaveCount(0)
+})
+
+test('legacy null review seats are normalized before setup rendering', async ({ page }) => {
+  const legacyDocument = {
+    ...structuredClone(baseDocument),
+    review: { seats: null },
+    setups: [{
+      name: 'default',
+      execution_settings: structuredClone(baseDocument.execution_settings),
+      review: { seats: null },
+      refresh_review: 'delta',
+    }],
+    default_setup: 'default',
+  } as unknown as typeof baseDocument
+  await mockWorkspaceAPIs(page, legacyDocument)
+  await page.goto('/workspace')
+
+  await expect(page.getByText('1 seat')).toBeVisible()
+  await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
 test('workspace manages named execution setups without losing their contracts', async ({ page }) => {

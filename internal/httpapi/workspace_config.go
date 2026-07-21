@@ -29,6 +29,23 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if s.Deployment != nil {
+		data, marshalErr := yaml.Marshal(record.Document)
+		if marshalErr != nil {
+			http.Error(w, marshalErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		base := *s.Deployment
+		if workspace, ok := store.WorkspaceFromContext(r.Context()); ok {
+			base.Workspace = workspace
+		}
+		normalized, parseErr := config.ParseWorkspaceDocument(data, &base, "workspace config API")
+		if parseErr != nil {
+			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		record.Document = normalized.WorkspaceDocument()
+	}
 	if record.Document.Harnesses == nil {
 		record.Document.Harnesses = []config.Harness{}
 	}

@@ -29,6 +29,25 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDocumentEmitsSetupReviewSeatsAsArrays(t *testing.T) {
+	cfg := validConfig()
+	normalized, err := normalize(cfg, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := normalized.WorkspaceDocument()
+	if len(document.Setups) != 1 || document.Setups[0].Review.Seats == nil {
+		t.Fatalf("workspace document contains nullable setup review seats: %+v", document.Setups)
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"setups":[`) || strings.Contains(string(data), `"seats":null`) {
+		t.Fatalf("workspace document JSON contains nullable setup review seats: %s", data)
+	}
+}
+
 func TestLoadPhase47Config(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	data := `workspace: demo

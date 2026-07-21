@@ -71,9 +71,14 @@ export function fetchWorkspaceConfig(token: string) {
 	return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
     const result = await response.json() as VersionedWorkspaceConfig
-    const review = result.document.review ?? { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] }
+		const fallbackReview = { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] }
+		const review = { ...result.document.review, seats: result.document.review?.seats ?? fallbackReview.seats }
 		const setups = (result.document.setups?.length ? result.document.setups : [{ name: 'default', execution_settings: result.document.execution_settings, review, refresh_review: 'delta' as const }])
-			.map((setup) => ({ ...setup, refresh_review: setup.refresh_review || 'delta' as const }))
+			.map((setup) => ({
+				...setup,
+				review: { ...setup.review, seats: setup.review?.seats ?? review.seats },
+				refresh_review: setup.refresh_review || 'delta' as const,
+			}))
     return {
       ...result,
       document: {
