@@ -782,6 +782,31 @@ func TestGateOffConflictingMergeAutomaticallyDispatchesFix(t *testing.T) {
 	}
 }
 
+func TestConflictingMergeGateRetriesRecordOneBlockedEvent(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "CONFLICTING" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	for range 2 {
+		if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "merge conflicts") {
+			t.Fatalf("err=%v", err)
+		}
+	}
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 {
+		t.Fatalf("merge.blocked events=%d, want 1", blocked)
+	}
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 0 {
+		t.Fatalf("human-gated merge retries created orders=%+v", orders)
+	}
+}
+
 func TestChangedHeadConflictingReadinessKeepsGateBlockedWithoutRefresh(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
@@ -798,6 +823,16 @@ func TestChangedHeadConflictingReadinessKeepsGateBlockedWithoutRefresh(t *testin
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
 	if current.ApprovalStale || current.State != core.TaskApproved || len(orders) != 0 {
 		t.Fatalf("task=%+v orders=%+v", current, orders)
+	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 {
+		t.Fatalf("merge.blocked events=%d, want 1", blocked)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 0 {
+		t.Fatalf("repeated human-gated readiness created orders=%+v", orders)
 	}
 }
 
@@ -835,6 +870,44 @@ func TestChangedHeadConflictingReadinessAutoDispatchesFixBeforeRefresh(t *testin
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
 	if current.ApprovalStale || current.State != core.TaskRunning || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
 		t.Fatalf("task=%+v orders=%+v", current, orders)
+	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 || len(orders) != 1 {
+		t.Fatalf("merge.blocked events=%d orders=%+v", blocked, orders)
+	}
+	if dispatched, _ := st.CountEvents(ctx, task.ID, "merge.conflict_fix_dispatched"); dispatched != 1 {
+		t.Fatalf("merge.conflict_fix_dispatched events=%d, want 1", dispatched)
+	}
+}
+
+func TestResolvedReadinessAllowsNewConflictEpisode(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	mergeable := "CONFLICTING"
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: mergeable, HeadSHA: "approved-head"}, nil
+	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	mergeable = "MERGEABLE"
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "MERGEABLE" {
+		t.Fatalf("resolved readiness=%+v err=%v", readiness, err)
+	}
+	mergeable = "CONFLICTING"
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 2 {
+		t.Fatalf("merge.blocked events=%d, want 2", blocked)
+	}
+	if cleared, _ := st.CountEvents(ctx, task.ID, "merge.conflict_cleared"); cleared != 1 {
+		t.Fatalf("merge.conflict_cleared events=%d, want 1", cleared)
 	}
 }
 

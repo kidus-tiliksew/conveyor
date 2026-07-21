@@ -1,6 +1,7 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ActivityItem } from '../lib/types'
+import { AttachmentsCard } from '../components/task/attachments-card'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
@@ -69,12 +70,13 @@ function FullBody({ item }: { item: ActivityItem }) {
         <TaskHeader item={item} variant="full" />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
-        <section aria-label="Specification" className="border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
+        <section aria-label="Specification" className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
           {item.spec ? (
             <SpecCard spec={item.spec} collapsible={false} />
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">No spec yet — the spec stage has not produced a version.</p>
           )}
+          <AttachmentsCard attachments={item.attachments ?? []} />
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
           <Timeline item={item} />

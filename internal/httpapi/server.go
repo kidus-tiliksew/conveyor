@@ -612,6 +612,7 @@ type reviewItem struct {
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
 	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
+	Attachments               []core.Artifact                       `json:"attachments"`
 }
 
 type activityItem struct {
@@ -704,6 +705,15 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		workOrders = []core.WorkOrder{}
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
+	// Attachments are the operator-supplied task_context artifacts uploaded at
+	// intake (spec §21.5); the task detail view previews them below the spec.
+	// Conveyor-generated audit transcripts are deliberately excluded — they are
+	// evidence, not attachments.
+	attachments, err := s.taskAttachments(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
 	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
@@ -738,7 +748,27 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(workOrders),
 		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,
+		Attachments:               attachments,
 	})
+}
+
+// taskAttachments lists the operator-supplied attachments linked to a task,
+// each with a download URL the dashboard can preview. Only task_context
+// artifacts are surfaced; generated audit transcripts stay out of the view.
+func (s *Server) taskAttachments(ctx context.Context, taskID string) ([]core.Artifact, error) {
+	all, err := s.Store.ListArtifacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	attachments := make([]core.Artifact, 0)
+	for _, artifact := range all {
+		if artifact.TaskID != taskID || artifact.Role != core.ArtifactRoleTaskContext {
+			continue
+		}
+		artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
+		attachments = append(attachments, artifact)
+	}
+	return attachments, nil
 }
 
 func (s *Server) checkoutState(ctx context.Context, taskID string) (string, bool, string, error) {
