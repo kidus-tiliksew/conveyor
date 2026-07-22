@@ -455,6 +455,15 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		return err
 	}
 	leaseExpiresAt := claimed.LeaseExpiresAt
+	// Pre-start setup (temp directory, MCP config, spec checkout clone) can
+	// outlast the claim lease, so renewal must begin at claim time rather than
+	// child launch (spec §21.21: renewal keeps the claim alive but never
+	// extends the fixed execution window). Authority loss cancels setupCtx so
+	// long-running setup steps abort instead of continuing unclaimed.
+	setupCtx, cancelSetup := context.WithCancel(ctx)
+	defer cancelSetup()
+	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+	defer renewal.Stop()
 	var redactedStdout, redactedStderr *redact.Writer
 	var failureTail *boundedTailWriter
 	flushOutput := func() {
@@ -474,6 +483,9 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus, FailureDetail: detail})
+	}
+	if hook := workerPreStartTestHook; hook != nil {
+		hook(setupCtx)
 	}
 	directory, err := os.MkdirTemp("", "conveyor-worker-")
 	if err != nil {
@@ -533,8 +545,12 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	})
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
-		workingDirectory, err = materializeSpecCheckout(ctx, directory, item)
+		workingDirectory, err = materializeSpecCheckout(setupCtx, directory, item)
 		if err != nil {
+			if _, lost := renewal.Stop(); lost != nil {
+				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
+				return lost
+			}
 			_ = release(core.WorkOrderOutcomeReleased, "materialize spec repository failed", nil)
 			return err
 		}
@@ -546,7 +562,11 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 		}
 	}
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
-		if err = validateGrokEnvironmentAttachment(ctx, item.Harness, childEnv, workingDirectory); err != nil {
+		if err = validateGrokEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
+			if _, lost := renewal.Stop(); lost != nil {
+				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
+				return lost
+			}
 			_ = release(core.WorkOrderOutcomeReleased, "environment MCP readiness failed", nil)
 			return err
 		}
@@ -556,6 +576,18 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdout, failureTail), Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	defer flushOutput()
+	// Hand lease authority to the running-child loop: stop pre-start renewal
+	// before launch so exactly one renewer owns the claim at a time.
+	handoffLease, lost := renewal.Stop()
+	if lost != nil {
+		if ctx.Err() != nil {
+			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			return ctx.Err()
+		}
+		_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
+		return lost
+	}
+	leaseExpiresAt = handoffLease
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdout, command.Stderr = redactedStdout, redactedStderr
 	command.Env = childEnv
@@ -570,7 +602,7 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(workerClaimRenewInterval)
 	defer ticker.Stop()
 	claimFinalized := false
 	for {
@@ -673,6 +705,87 @@ func (w *boundedTailWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return strings.TrimSpace(strings.ToValidUTF8(string(w.data), "�"))
+}
+
+// workerClaimRenewInterval paces claim renewal for both pre-start setup and
+// the running-child loop; tests shorten it to exercise renewal quickly.
+var workerClaimRenewInterval = 10 * time.Second
+
+// workerPreStartTestHook, when set by tests, runs with the setup context
+// between a successful claim and child launch to simulate slow pre-start
+// setup.
+var workerPreStartTestHook func(context.Context)
+
+// preStartClaimRenewal keeps a claimed work order's lease renewed between a
+// successful claim and child launch, when pre-start setup can outlast the
+// lease window (spec §21.21: renewal keeps the claim alive but never extends
+// the fixed execution window). On authority loss it cancels the setup
+// context so long-running setup steps abort instead of continuing unclaimed.
+type preStartClaimRenewal struct {
+	stop   chan struct{}
+	done   chan struct{}
+	cancel context.CancelFunc
+	once   sync.Once
+
+	mu    sync.Mutex
+	lease time.Time
+	lost  error
+}
+
+func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential, orderID, sessionID string, lease time.Time) *preStartClaimRenewal {
+	renewal := &preStartClaimRenewal{stop: make(chan struct{}), done: make(chan struct{}), cancel: cancelSetup, lease: lease}
+	go func() {
+		defer close(renewal.done)
+		ticker := time.NewTicker(workerClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewal.stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewal.mu.Lock()
+				current := renewal.lease
+				renewal.mu.Unlock()
+				renewed, err := renewWorkerClaimUntil(ctx, c, credential, orderID, sessionID, current)
+				if err == nil && renewed.State != core.WorkOrderClaimed {
+					err = fmt.Errorf("server reports %s", renewed.State)
+				}
+				if err != nil {
+					// Shutdown or handoff cancellation is not authority loss.
+					if ctx.Err() != nil {
+						return
+					}
+					renewal.mu.Lock()
+					renewal.lost = err
+					renewal.mu.Unlock()
+					cancelSetup()
+					return
+				}
+				renewal.mu.Lock()
+				renewal.lease = renewed.LeaseExpiresAt
+				renewal.mu.Unlock()
+			}
+		}
+	}()
+	return renewal
+}
+
+// Stop ends pre-start renewal (idempotent), joins the renewal goroutine, and
+// reports the latest lease expiry plus any authority loss observed during
+// setup. It cancels the setup context first so an in-flight renewal attempt
+// unblocks promptly; by the time Stop is called, setup is either finished or
+// being abandoned.
+func (r *preStartClaimRenewal) Stop() (time.Time, error) {
+	r.once.Do(func() {
+		close(r.stop)
+		r.cancel()
+		<-r.done
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lease, r.lost
 }
 
 // materializeSpecCheckout gives a spec agent repository-grounded, immutable
