@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,24 @@ func TestMigrationVersion(t *testing.T) {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
 		}
+	}
+}
+
+func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/035_canonical_lifecycle_states.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := renderMigration(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "state IN ("+quotedTaskStates()+")") {
+		t.Fatalf("task constraint is not core-derived: %s", text)
+	}
+	if !strings.Contains(text, "state IN ("+quotedWorkOrderStates()+")") {
+		t.Fatalf("work-order constraint is not core-derived: %s", text)
 	}
 }
 

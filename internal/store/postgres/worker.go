@@ -173,8 +173,11 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		}
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
+	if _, transitionErr := core.TransitionWorkOrder(current.State, core.WorkOrderCmdRelease); transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
 	if !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
-		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
 			return core.WorkOrder{}, err
 		}
 		if err = tx.Commit(ctx); err != nil {

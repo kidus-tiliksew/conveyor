@@ -19,7 +19,7 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
+	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateIntervention(ctx, core.Intervention{

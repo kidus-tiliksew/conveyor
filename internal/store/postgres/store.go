@@ -516,11 +516,15 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason stri
 	})
 }
 
-func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskState) error {
+func (s *Store) TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		state, err := core.TransitionTask(core.TaskState(before.State), command)
+		if err != nil {
+			return err
 		}
 		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state)}); err != nil {
 			return err
@@ -528,7 +532,7 @@ func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskS
 		if err := insertEvent(ctx, q, core.Event{
 			TaskID:  id,
 			Kind:    "task.state_changed",
-			Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state}),
+			Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command}),
 		}); err != nil {
 			return err
 		}
@@ -540,18 +544,22 @@ func (s *Store) UpdateTaskState(ctx context.Context, id string, state core.TaskS
 	})
 }
 
-func (s *Store) SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
+func (s *Store) SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		state, err := core.TransitionTask(core.TaskState(before.State), command)
+		if err != nil {
+			return err
 		}
 		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 			ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(nextStage), RecoveryStage: string(recoveryStage),
 		}); err != nil {
 			return err
 		}
-		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state})}); err != nil {
+		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command})}); err != nil {
 			return err
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
@@ -1048,6 +1056,10 @@ func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) 
 	if core.TaskState(priorState) == core.TaskMerged || core.TaskState(priorState) == core.TaskClosed {
 		return core.Task{}, store.ErrTaskTerminal
 	}
+	taskState, transitionErr := core.TransitionTask(core.TaskState(priorState), core.TaskCancel)
+	if transitionErr != nil {
+		return core.Task{}, transitionErr
+	}
 	actor := store.ActorFromContext(ctx)
 	if intervention.ActorID == "" {
 		intervention.ActorID = actor.ID
@@ -1070,31 +1082,51 @@ func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) 
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 		return core.Task{}, err
 	}
-	rows, err := tx.Query(ctx, `UPDATE work_orders SET state='cancelled',last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,updated_at=$1 WHERE workspace_id=$2 AND task_id=$3 AND state NOT IN ('completed','cancelled') RETURNING id,job_id`, intervention.At, workspace(ctx), intervention.TaskID)
+	rows, err := tx.Query(ctx, `SELECT id,job_id,state FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled') FOR UPDATE`, workspace(ctx), intervention.TaskID)
 	if err != nil {
 		return core.Task{}, err
 	}
-	var cancelled []string
-	var jobIDs []string
+	type cancelledOrder struct {
+		id, jobID string
+		state     core.WorkOrderState
+	}
+	var orders []cancelledOrder
 	for rows.Next() {
-		var orderID, jobID string
-		if err = rows.Scan(&orderID, &jobID); err != nil {
+		var order cancelledOrder
+		if err = rows.Scan(&order.id, &order.jobID, &order.state); err != nil {
 			rows.Close()
 			return core.Task{}, err
 		}
-		cancelled, jobIDs = append(cancelled, orderID), append(jobIDs, jobID)
+		if _, transitionErr = core.TransitionWorkOrder(order.state, core.WorkOrderCmdCancel); transitionErr != nil {
+			rows.Close()
+			return core.Task{}, transitionErr
+		}
+		orders = append(orders, order)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
 		return core.Task{}, err
 	}
 	rows.Close()
+	var cancelled, jobIDs []string
+	for _, order := range orders {
+		if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, intervention.At, workspace(ctx), order.id, order.state); err != nil {
+			return core.Task{}, err
+		}
+		cancelled, jobIDs = append(cancelled, order.id), append(jobIDs, order.jobID)
+		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"id": order.id, "state": core.WorkOrderCancelled, "from": order.state, "command": core.WorkOrderCmdCancel}), At: intervention.At}); err != nil {
+			return core.Task{}, err
+		}
+	}
 	if len(jobIDs) != 0 {
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE task_id=$2 AND id=ANY($3) AND state<>'done'`, intervention.At, intervention.TaskID, jobIDs); err != nil {
 			return core.Task{}, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE tasks SET state='closed',next_stage='',recovery_stage='',updated_at=$1 WHERE workspace_id=$2 AND id=$3`, intervention.At, workspace(ctx), intervention.TaskID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,next_stage='',recovery_stage='',updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, taskState, intervention.At, workspace(ctx), intervention.TaskID, priorState); err != nil {
+		return core.Task{}, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": priorState, "to": taskState, "command": core.TaskCancel}), At: intervention.At}); err != nil {
 		return core.Task{}, err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": priorState, "cancelled_work_orders": cancelled}), At: intervention.At}); err != nil {
@@ -1186,7 +1218,13 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 	}
 	if order.State == "" {
-		order.State = core.WorkOrderQueued
+		var err error
+		order.State, err = core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if err != nil {
+			return err
+		}
+	} else if expected, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate); err != nil || order.State != expected {
+		return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: "", Command: string(core.WorkOrderCmdCreate), Allowed: []core.TransitionAlternative{{Command: string(core.WorkOrderCmdCreate), To: string(expected)}}}
 	}
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -1235,7 +1273,7 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 		return fmt.Errorf("review round requires one job per work order")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		before, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		_, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", taskID)
 		}
@@ -1253,12 +1291,6 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 			if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID || orders[i].ReviewRound != orders[0].ReviewRound {
 				return fmt.Errorf("invalid review round member %d", i)
 			}
-		}
-		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: taskID, WorkspaceID: workspace(ctx), State: string(core.TaskRunning)}); err != nil {
-			return err
-		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": core.TaskRunning})}); err != nil {
-			return err
 		}
 		now := time.Now().UTC()
 		for i, job := range jobs {
@@ -1278,7 +1310,11 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 			if order.QueueDeadline.IsZero() {
 				order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 			}
-			order.State, order.Claimable = core.WorkOrderQueued, true
+			state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+			if transitionErr != nil {
+				return transitionErr
+			}
+			order.State, order.Claimable = state, true
 			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -1290,7 +1326,7 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 				self_reported, created_at, updated_at
 			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$20,$20)`,
-				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, core.WorkOrderQueued,
+				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, order.State,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 				order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
@@ -1367,14 +1403,6 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 		}
 	}
 	now := time.Now().UTC()
-	if core.TaskState(before.State) != core.TaskRunning {
-		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: request.TaskID, WorkspaceID: workspaceID, State: string(core.TaskRunning)}); err != nil {
-			return store.ReviewRoundRetryResult{}, err
-		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": core.TaskRunning}), At: now}); err != nil {
-			return store.ReviewRoundRetryResult{}, err
-		}
-	}
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
 		if _, err = q.InsertJob(ctx, jobInsertParams(job)); err != nil {
@@ -1393,7 +1421,11 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if transitionErr != nil {
+			return store.ReviewRoundRetryResult{}, transitionErr
+		}
+		order.State, order.Claimable, order.UpdatedAt = state, true, now
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -1706,7 +1738,7 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	now := time.Now().UTC()
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
-		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now)
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}
@@ -1717,7 +1749,7 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now)
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}
@@ -1789,7 +1821,7 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 			if _, err = tx.Exec(ctx, `UPDATE work_orders SET execution_deadline=$1 WHERE workspace_id=$2 AND id=$3`, order.ExecutionDeadline, workspace(ctx), id); err != nil {
 				return core.WorkOrder{}, err
 			}
-			order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now)
+			order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now)
 			if err != nil {
 				return core.WorkOrder{}, err
 			}
@@ -1802,6 +1834,9 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	lease := claim.Lease
 	if lease <= 0 {
 		lease = 15 * time.Minute
+	}
+	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdClaim); transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
 	}
 	expires := now.Add(lease)
 	executionStarted, executionDeadline := order.ExecutionStartedAt, order.ExecutionDeadline
@@ -1822,6 +1857,22 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	if _, err := tx.Exec(ctx, `UPDATE jobs SET state='running', model_tier=$1,
 		started_at=COALESCE(started_at,$2), updated_at=$2 WHERE id=$3`, claim.Model, executionStarted, order.JobID); err != nil {
 		return core.WorkOrder{}, err
+	}
+	var taskState core.TaskState
+	if err = tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), order.TaskID).Scan(&taskState); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if taskState == core.TaskQueued {
+		nextTaskState, transitionErr := core.TransitionTask(taskState, core.TaskOrderClaim)
+		if transitionErr != nil {
+			return core.WorkOrder{}, transitionErr
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, nextTaskState, now, workspace(ctx), order.TaskID, taskState); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": taskState, "to": nextTaskState, "command": core.TaskOrderClaim}), At: now}); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)}); err != nil {
 		return core.WorkOrder{}, err
@@ -1851,13 +1902,16 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now)
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}
 	}
 	if order.State != core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+	}
+	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRecover); transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
 	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
 		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
@@ -1956,6 +2010,11 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
 	priorState := order.State
+	if priorState == core.WorkOrderStale || priorState == core.WorkOrderTimedOut {
+		if _, transitionErr := core.TransitionWorkOrder(priorState, core.WorkOrderCmdRecover); transitionErr != nil {
+			return core.WorkOrder{}, transitionErr
+		}
+	}
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		change := refreeze[0]
 		var priorJSON []byte
@@ -2023,7 +2082,7 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 		now := time.Now().UTC()
 		for _, order := range orders {
 			if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
-				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
 					return err
 				}
 				continue
@@ -2036,7 +2095,7 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 			}
 			if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 				!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderStale, "work_order.stale", now); err != nil {
+				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now); err != nil {
 					return err
 				}
 			}
@@ -2046,6 +2105,9 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 }
 
 func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, now time.Time) (core.WorkOrder, error) {
+	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdExpire); transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
 	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,next_retry_at=NULL,retry_suppressed=true,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state='claimed' RETURNING `+workOrderColumns, core.WorkOrderOutcomeExpired, now, workspace(ctx), order.ID))
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -2060,7 +2122,11 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 	return updated, nil
 }
 
-func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, state core.WorkOrderState, kind string, now time.Time) (core.WorkOrder, error) {
+func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, command core.WorkOrderCommand, kind string, now time.Time) (core.WorkOrder, error) {
+	state, transitionErr := core.TransitionWorkOrder(order.State, command)
+	if transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state=$1, lease_expires_at=NULL,
 		updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
 		state, now, workspace(ctx), order.ID)
@@ -2085,7 +2151,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 	return updated, nil
 }
 
-func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	var lifecycleErr error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		current, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), order.ID))
@@ -2095,7 +2161,7 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		now := time.Now().UTC()
 		if (current.State == core.WorkOrderQueued || current.State == core.WorkOrderClaimed) &&
 			!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
-			if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
+			if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
 				return err
 			}
 			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, order.ID)
@@ -2123,6 +2189,23 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		if updateRequiresClaim(order.State, current.State) &&
 			(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
 			return fmt.Errorf("work order %s is not claimed by this session", order.ID)
+		}
+		if current.State != order.State {
+			if len(commands) == 0 {
+				if inferred, ok := store.InferWorkOrderUpdateCommand(current, order); ok {
+					commands = []core.WorkOrderCommand{inferred}
+				}
+			}
+			if len(commands) != 1 {
+				return fmt.Errorf("work order %s state change requires exactly one lifecycle command", order.ID)
+			}
+			to, transitionErr := core.TransitionWorkOrder(current.State, commands[0])
+			if transitionErr != nil {
+				return transitionErr
+			}
+			if to != order.State {
+				return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: string(current.State), Command: string(commands[0]), Allowed: core.WorkOrderTransitionAlternatives(current.State)}
+			}
 		}
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
@@ -2271,7 +2354,8 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			return err
 		}
 
-		state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
+		command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
+		autoApprove := false
 		if aggregate.Verdict == "changes_requested" {
 			count, countErr := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
 			if countErr != nil {
@@ -2299,12 +2383,30 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 				return err
 			}
 			if int(window) < decision.MaxBounces {
-				state, next, recovery = core.TaskQueued, core.StageImplement, ""
+				command, next, recovery = core.TaskStageBounce, core.StageImplement, ""
 			} else if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})}); err != nil {
 				return err
+			} else {
+				command = core.TaskStageBounceLimit
 			}
 		} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-			state, recovery = core.TaskApproved, ""
+			autoApprove, recovery = true, ""
+		}
+		fromState := core.TaskState(before.State)
+		state, transitionErr := core.TransitionTask(fromState, command)
+		if transitionErr != nil {
+			return transitionErr
+		}
+		if autoApprove {
+			approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
+			if approveErr != nil {
+				return approveErr
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
+				return err
+			}
+			fromState, state = state, approved
+			command = core.TaskInterventionApproveReview
 		}
 		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 			if state == core.TaskApproved {
@@ -2322,7 +2424,7 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 		}); err != nil {
 			return err
 		}
-		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state})}); err != nil {
+		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{

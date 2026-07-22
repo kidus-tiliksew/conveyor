@@ -163,7 +163,16 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "task has no decided next stage; record an explicit review redirect instead", http.StatusConflict)
 			return
 		}
-		if err := s.Store.UpdateTaskState(r.Context(), id, core.TaskQueued); err != nil {
+		command := core.TaskRecover
+		switch t.State {
+		case core.TaskAwaiting:
+			command = core.TaskInterventionRedirect
+		case core.TaskApproved:
+			command = core.TaskRefreshReview
+		case core.TaskClaiming:
+			command = core.TaskIntakeFinalize
+		}
+		if err := s.Store.TransitionTaskState(r.Context(), id, command); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -525,7 +534,7 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if err = s.Store.UpdateTaskState(r.Context(), result.Task.ID, core.TaskQueued); err != nil {
+	if err = s.Store.TransitionTaskState(r.Context(), result.Task.ID, core.TaskIntakeFinalize); err != nil {
 		http.Error(w, fmt.Sprintf("task %s remains unqueued because finalization failed: %v", result.Task.ID, err), http.StatusInternalServerError)
 		return
 	}

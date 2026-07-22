@@ -1086,7 +1086,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 		if intervention.Action != core.InterventionRedirect {
 			return nil
 		}
-		if err := st.SetTaskTransition(ctx, task.ID, core.TaskQueued, task.RecoveryStage, ""); err != nil {
+		if err := st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, task.RecoveryStage, ""); err != nil {
 			return err
 		}
 		requeued <- task.ID
@@ -1154,7 +1154,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("running task status = %d", response.Code)
 	}
 
-	if err := st.UpdateTaskState(context.Background(), "running", core.TaskAwaiting); err != nil {
+	if err := st.TransitionTaskState(context.Background(), "running", core.TaskJobFail); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve"}`)))
@@ -1165,7 +1165,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("missing reason status = %d", response.Code)
 	}
 
-	if err := st.UpdateTaskState(context.Background(), "running", core.TaskApproved); err != nil {
+	if err := st.TransitionTaskState(context.Background(), "running", core.TaskInterventionApproveReview); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
@@ -1194,7 +1194,7 @@ func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 	s.OnMerge = func(ctx context.Context, task core.Task) error {
 		mergeCalls++
 		if task.State == core.TaskApproved {
-			return st.SetTaskTransition(ctx, task.ID, core.TaskMerged, "", "")
+			return st.SetTaskTransition(ctx, task.ID, core.TaskMergeConfirm, "", "")
 		}
 		return nil
 	}

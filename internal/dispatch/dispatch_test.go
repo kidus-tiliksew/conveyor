@@ -269,7 +269,7 @@ func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		if attempt == 0 {
-			if err = st.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageTriage, ""); err != nil {
+			if err = st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, core.StageTriage, ""); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -849,7 +849,7 @@ func TestChangedHeadConflictingAutoMergeDispatchesFixBeforeRefresh(t *testing.T)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	if current.ApprovalStale || current.State != core.TaskRunning || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
+	if current.ApprovalStale || current.State != core.TaskQueued || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
 		t.Fatalf("task=%+v orders=%+v", current, orders)
 	}
 }
@@ -868,7 +868,7 @@ func TestChangedHeadConflictingReadinessAutoDispatchesFixBeforeRefresh(t *testin
 	}
 	current, _ := st.GetTask(ctx, task.ID)
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	if current.ApprovalStale || current.State != core.TaskRunning || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
+	if current.ApprovalStale || current.State != core.TaskQueued || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
 		t.Fatalf("task=%+v orders=%+v", current, orders)
 	}
 	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
@@ -1654,6 +1654,9 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round one"); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round two"); err != nil {
 		t.Fatal(err)
 	}
@@ -1668,6 +1671,12 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	// A human redirect grants a fresh window (spec §21.17): the next bounce
 	// re-queues instead of re-parking.
 	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, ActorID: "operator", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "changes-requested", Comment: "keep going"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, core.StageImplement, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round three"); err != nil {
