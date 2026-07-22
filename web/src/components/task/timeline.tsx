@@ -192,6 +192,7 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         </span>
         {entry.detail && !entry.href && <span className="text-xs text-muted">{entry.detail}</span>}
         <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+        {entry.failureDetail && <details className="basis-full text-xs text-muted"><summary className="cursor-pointer">Captured child error</summary><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">{entry.failureDetail}</pre></details>}
       </div>
     </li>
   )

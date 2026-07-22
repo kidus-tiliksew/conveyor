@@ -474,6 +474,34 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 	})
 }
 
+// AdvanceTaskRefreshHead moves a stale approval's refresh target to the head
+// most recently submitted for review, so the next refresh round contracts the
+// pushed fix rather than the head recorded when the approval went stale
+// (spec §21.30). Re-advancing to the current refresh head is an idempotent
+// no-op.
+func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
+	newHeadSHA = strings.TrimSpace(newHeadSHA)
+	if newHeadSHA == "" {
+		return fmt.Errorf("new head SHA is required")
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		task, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if !task.ApprovalStale {
+			return fmt.Errorf("task %s has no stale approval to refresh", id)
+		}
+		if task.RefreshHeadSha == newHeadSHA {
+			return nil
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "approved_head": task.RefreshBaselineSha, "prior_head": task.RefreshHeadSha, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
+	})
+}
+
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
@@ -921,7 +949,7 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	if hasReviewOrders {
 		lifecycleRows, queryErr := s.pool.Query(ctx, `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
 			FROM events e JOIN tasks t ON t.id=e.task_id
-			WHERE t.workspace_id=$1 AND e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted')
+			WHERE t.workspace_id=$1 AND e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
 			AND EXISTS (SELECT 1 FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=e.task_id
 				AND w.stage='review' AND w.state IN ('claimed','queued') AND w.execution_started_at IS NOT NULL)
 			ORDER BY e.at,e.id`, workspace(ctx))
@@ -948,7 +976,7 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
 			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
-			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(ordersByTask[row.TaskID]),
+			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.TaskID], eventsByTask[row.TaskID])),
 		}
 	}
 	return result, nil
@@ -1061,11 +1089,11 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
-last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
-automatic_retry_count, next_retry_at, retry_suppressed,
+last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
+automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 created_at, updated_at`
 
@@ -1326,7 +1354,8 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 			timedOutIDs = append(timedOutIDs, order.ID)
 		}
 	}
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs}
+	retryTask := taskFromDB(before)
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -1404,7 +1433,17 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
 	rows.Close()
-	recovery := store.InterruptedReviewRecoveryNeeded(roundOrders)
+	superseded, err := supersededReviewWorkOrdersTx(ctx, tx, workspaceID, request.TaskID)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	currentOrders := roundOrders[:0]
+	for _, order := range roundOrders {
+		if !superseded[order.ID] {
+			currentOrders = append(currentOrders, order)
+		}
+	}
+	recovery := store.InterruptedReviewRecoveryNeeded(currentOrders)
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
 	}
@@ -1418,16 +1457,22 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 	}
 	actor := store.ActorFromContext(ctx)
 	q := s.queries.WithTx(tx)
+	taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: request.TaskID, WorkspaceID: workspaceID})
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, notFound(err, "task %s", request.TaskID)
+	}
+	recoveryTask := taskFromDB(taskRow)
 	for _, eligible := range recovery.EligibleOrders {
 		priorOutcome := eligible.LastAttemptOutcome
 		eligible.LastAttemptOutcome = ""
 		eligible.RetrySuppressed = false
+		eligible.RetrySuppressionReason = ""
 		eligible.AutomaticRetryCount = 0
 		eligible.NextRetryAt = time.Time{}
 		eligible.QueueEnteredAt, eligible.QueueDeadline = now, now.Add(queueTimeout)
 		eligible.RedispatchCount++
 		eligible.UpdatedAt, eligible.Claimable = now, true
-		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
 		if updateErr != nil {
 			return store.InterruptedReviewRecoveryResult{}, updateErr
 		}
@@ -1435,12 +1480,12 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 			return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: review seat %d changed concurrently", store.ErrReviewRetryConflict, eligible.ReviewSeat)
 		}
 		result.RecoveredOrders = append(result.RecoveredOrders, eligible)
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: eligible.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": eligible.ReviewSeat, "work_order_id": eligible.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": eligible.State, "outcome": "recovered"}), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: eligible.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": eligible.ReviewSeat, "work_order_id": eligible.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": eligible.State, "outcome": "recovered", "setup_name": recoveryTask.SetupName, "setup_contract": recoveryTask.SetupContract}), At: now}); err != nil {
 			return store.InterruptedReviewRecoveryResult{}, err
 		}
 	}
 	for _, retained := range recovery.RetainedOrders {
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed"}), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed", "setup_name": recoveryTask.SetupName, "setup_contract": recoveryTask.SetupContract}), At: now}); err != nil {
 			return store.InterruptedReviewRecoveryResult{}, err
 		}
 	}
@@ -1804,7 +1849,7 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	}
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND session_id='' AND worker_id='' AND lease_expires_at IS NULL AND (last_attempt_outcome<>'' OR retry_suppressed=true OR next_retry_at IS NOT NULL) RETURNING `+workOrderColumns, now, now.Add(queueTimeout), workspace(ctx), id))
+	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND session_id='' AND worker_id='' AND lease_expires_at IS NULL AND (last_attempt_outcome<>'' OR retry_suppressed=true OR next_retry_at IS NOT NULL) RETURNING `+workOrderColumns, now, now.Add(queueTimeout), workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1947,17 +1992,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
 			model_enforcement=$8, queue_entered_at=$9, queue_deadline=$10, execution_started_at=$11,
-			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14,
-			last_failure_exit_status=$15, last_failure_at=$16, automatic_retry_count=$17,
-			next_retry_at=$18, retry_suppressed=$19, redispatch_count=$20, progress=$21,
-			cost_usd=$22, tokens_in=$23, tokens_out=$24, self_reported=$25, updated_at=now()
-			WHERE workspace_id=$26 AND id=$27`, order.State, order.ClaimantID, order.SessionID,
+			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14, last_failure_detail=$15,
+			last_failure_exit_status=$16, last_failure_at=$17, automatic_retry_count=$18,
+			next_retry_at=$19, retry_suppressed=$20, retry_suppression_reason=$21, redispatch_count=$22, progress=$23,
+			cost_usd=$24, tokens_in=$25, tokens_out=$26, self_reported=$27, updated_at=now()
+			WHERE workspace_id=$28 AND id=$29`, order.State, order.ClaimantID, order.SessionID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
-			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage,
+			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureDetail,
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
-			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RedispatchCount, order.Progress,
+			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
 		if err != nil {
 			return err
@@ -2187,10 +2232,34 @@ type reviewRoundResultRecord struct {
 }
 
 func completedReviewRoundTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string, round int, workOrderID string) ([]completedReviewRecord, int, error) {
+	superseded, err := supersededReviewWorkOrdersTx(ctx, tx, workspaceID, taskID)
+	if err != nil {
+		return nil, 0, err
+	}
 	required := 1
 	if round > 0 {
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspaceID, taskID, round).Scan(&required); err != nil {
+		rows, countErr := tx.Query(ctx, `SELECT id FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspaceID, taskID, round)
+		if countErr != nil {
+			return nil, 0, countErr
+		}
+		required = 0
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, 0, err
+			}
+			if !superseded[id] {
+				required++
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
 			return nil, 0, err
+		}
+		rows.Close()
+		if required == 0 {
+			required = 1
 		}
 	}
 	query := `SELECT e.payload_json FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='review.completed' AND COALESCE((e.payload_json->>'review_round')::integer,0)=$3`
@@ -2215,7 +2284,9 @@ func completedReviewRoundTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID 
 		if err = json.Unmarshal(payload, &review); err != nil {
 			return nil, 0, err
 		}
-		reviews = append(reviews, review)
+		if !superseded[review.ReviewWorkOrderID] {
+			reviews = append(reviews, review)
+		}
 	}
 	return reviews, required, rows.Err()
 }
@@ -2381,11 +2452,11 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline, lastFailureAt, nextRetryAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
-		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
+		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
-		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureExitStatus, &lastFailureAt,
-		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed,
+		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
+		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)

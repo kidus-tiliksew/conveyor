@@ -70,6 +70,23 @@ func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
 	return result, rows.Err()
 }
 
+func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
+	rows, err := s.pool.Query(ctx, `SELECT harness,model,detail,work_order_id,observed_at FROM harness_model_failures WHERE workspace_id=$1 ORDER BY harness,model`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.HarnessModelFailure
+	for rows.Next() {
+		var failure core.HarnessModelFailure
+		if err = rows.Scan(&failure.Harness, &failure.Model, &failure.Detail, &failure.WorkOrderID, &failure.ObservedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, failure)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	workspaceID := workspace(ctx)
 	query := `SELECT id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE credential_hash=$1 AND revoked_at IS NULL`
@@ -124,7 +141,7 @@ func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, ses
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -142,13 +159,13 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	now := time.Now().UTC()
 	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
 		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
@@ -157,7 +174,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		if err = tx.Commit(ctx); err != nil {
 			return core.WorkOrder{}, err
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if !current.LeaseExpiresAt.After(now) {
 		if _, err = s.expireWorkOrderClaimTx(ctx, tx, current, now); err != nil {
@@ -166,16 +183,21 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		if err = tx.Commit(ctx); err != nil {
 			return core.WorkOrder{}, err
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	retryCount := current.AutomaticRetryCount
 	nextRetry := time.Time{}
 	suppressed := true
 	lastFailureMessage := current.LastFailureMessage
+	lastFailureDetail := current.LastFailureDetail
 	lastFailureExitStatus := current.LastFailureExitStatus
 	lastFailureAt := current.LastFailureAt
+	suppressionReason := ""
 	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+		detail := strings.TrimSpace(release.FailureDetail)
+		identical := detail != "" && current.LastAttemptOutcome == core.WorkOrderOutcomeChildFailure && detail == current.LastFailureDetail
 		lastFailureMessage = strings.TrimSpace(release.Reason)
+		lastFailureDetail = detail
 		lastFailureExitStatus = release.ExitStatus
 		lastFailureAt = now
 		limit := release.AutomaticRetryLimit
@@ -184,14 +206,20 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		}
 		if retryCount < limit {
 			retryCount++
-			nextRetry = now.Add(postgresRetryDelay(release, retryCount))
-			suppressed = false
+			if identical {
+				suppressionReason = core.IdenticalFailureSuppressionReason
+			} else {
+				nextRetry = now.Add(postgresRetryDelay(release, retryCount))
+				suppressed = false
+			}
 		}
+	} else {
+		lastFailureDetail = ""
 	}
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_exit_status=$3,last_failure_at=$4,automatic_retry_count=$5,next_retry_at=$6,retry_suppressed=$7,updated_at=$8 WHERE workspace_id=$9 AND id=$10 AND worker_id=$11 AND session_id=$12 AND state='claimed' RETURNING `+workOrderColumns,
-		release.Outcome, lastFailureMessage, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, now, workspace(ctx), workOrderID, workerID, release.SessionID))
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_detail=$3,last_failure_exit_status=$4,last_failure_at=$5,automatic_retry_count=$6,next_retry_at=$7,retry_suppressed=$8,retry_suppression_reason=$9,updated_at=$10 WHERE workspace_id=$11 AND id=$12 AND worker_id=$13 AND session_id=$14 AND state='claimed' RETURNING `+workOrderColumns,
+		release.Outcome, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, workspace(ctx), workOrderID, workerID, release.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -199,13 +227,18 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
+	if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && order.LastFailureDetail != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO harness_model_failures (workspace_id,harness,model,detail,work_order_id,observed_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (workspace_id,harness,model) DO UPDATE SET detail=EXCLUDED.detail,work_order_id=EXCLUDED.work_order_id,observed_at=EXCLUDED.observed_at`, workspace(ctx), order.RequiredHarness, order.RequiredModel, order.LastFailureDetail, order.ID, now); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	q := s.queries.WithTx(tx)
 	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
 	kind := "work_order.released"
 	if release.Outcome == core.WorkOrderOutcomeChildFailure {
 		kind = "work_order.child_failed"
 	}
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed}), At: now}); err != nil {
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

@@ -210,13 +210,17 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 }
 
+// authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
+// worker currently holds. A mismatch is a lost or reassigned claim — e.g.
+// the lease expired and ownership returned to the queue (spec §21.9) — not a
+// credential failure, which requireMCPAuth already rejected.
 func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID string) error {
 	if !workerAuth {
 		return nil
 	}
 	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
 	if err != nil || order.WorkerID != worker.ID {
-		return store.ErrWorkerUnauthorized
+		return store.ErrWorkOrderClaimLost
 	}
 	return nil
 }

@@ -63,7 +63,7 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 		t.Fatalf("owning worker read: %v", err)
 	}
 	otherWorkerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-b", Workspace: "demo"}))
-	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkerUnauthorized) {
+	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 		t.Fatalf("other worker read error=%v", err)
 	}
 	wrongWorkspace := maps.Clone(args)

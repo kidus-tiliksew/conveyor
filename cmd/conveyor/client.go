@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // client is a thin wrapper over the control-plane API (spec §17.3).
@@ -111,6 +112,16 @@ func (c *client) redispatchTask(id string) (core.Task, error) {
 	var t core.Task
 	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/redispatch", []byte(`{}`), &t)
 	return t, err
+}
+
+func (c *client) changeTaskSetup(id, setup, reason, requestID string, applyLatest bool) (store.SetupChangeResult, error) {
+	if c.token == "" {
+		return store.SetupChangeResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for setup changes")
+	}
+	payload, _ := json.Marshal(map[string]any{"setup": setup, "reason": reason, "request_id": requestID, "apply_latest": applyLatest})
+	var result store.SetupChangeResult
+	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/setup", payload, &result)
+	return result, err
 }
 
 func (c *client) reviewTask(id string, action core.InterventionAction, reasonCode, comment string) (core.Task, error) {

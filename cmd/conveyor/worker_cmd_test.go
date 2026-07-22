@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,10 +25,32 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
+	secret := "child-only-runtime-secret"
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	tail := &boundedTailWriter{limit: workerservice.FailureDetailLimit}
+	var console bytes.Buffer
+	redactor := redact.New([]string{secret})
+	stdout := &redact.Writer{Destination: io.MultiWriter(&console, tail), Redactor: redactor}
+	stderr := &redact.Writer{Destination: io.MultiWriter(&console, tail), Redactor: redactor}
+	_, _ = stdout.Write([]byte(strings.Repeat("prefix", 500) + "\n"))
+	_, _ = stderr.Write([]byte("raw=" + secret + " encoded=" + encoded + "\nfinal provider error\n"))
+	_ = stdout.Flush()
+	_ = stderr.Flush()
+	detail := tail.String()
+	if len(detail) > workerservice.FailureDetailLimit || strings.Contains(detail, secret) || strings.Contains(detail, encoded) {
+		t.Fatalf("unsafe bounded detail len=%d detail=%q", len(detail), detail)
+	}
+	if !strings.Contains(detail, "[REDACTED:exact]") || !strings.Contains(detail, "[REDACTED:encoded]") || !strings.HasSuffix(detail, "final provider error") {
+		t.Fatalf("captured detail=%q", detail)
+	}
+}
 
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
 	harness := config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
@@ -1098,6 +1122,129 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	exit := 7
 	t.Run("immediate exit", func(t *testing.T) { test(t, "exit", core.WorkOrderOutcomeChildFailure, &exit) })
 	t.Run("cancellation", func(t *testing.T) { test(t, "cancel", core.WorkOrderOutcomeCancelled, nil) })
+}
+
+func TestRunHarnessChildRenewsClaimDuringSlowPreStartSetup(t *testing.T) {
+	previousInterval := workerClaimRenewInterval
+	workerClaimRenewInterval = 100 * time.Millisecond
+	workerPreStartTestHook = func(context.Context) { time.Sleep(1200 * time.Millisecond) }
+	t.Cleanup(func() {
+		workerClaimRenewInterval = previousInterval
+		workerPreStartTestHook = nil
+	})
+
+	// The fake control plane expires unrenewed leases like the real one: a
+	// pre-start setup slower than the lease window only survives when the
+	// worker renews between claim and child launch.
+	const lease = 750 * time.Millisecond
+	var mu sync.Mutex
+	renews := 0
+	var leaseDeadline time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch parts[4] {
+		case "claim":
+			leaseDeadline = time.Now().Add(lease)
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: leaseDeadline})
+		case "renew":
+			if time.Now().After(leaseDeadline) {
+				http.Error(w, "lease expired", http.StatusConflict)
+				return
+			}
+			renews++
+			leaseDeadline = time.Now().Add(lease)
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: leaseDeadline})
+		case "reconcile":
+			reconciliation := workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderSubmitted}, Reason: "submitted"}
+			if time.Now().After(leaseDeadline) {
+				reconciliation.WorkOrder.State = core.WorkOrderQueued
+				reconciliation.Reason = "lease expired without renewal"
+			}
+			_ = json.NewEncoder(w).Encode(reconciliation)
+		case "release":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "slow-setup", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "ok"}}}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr); err != nil {
+		t.Fatalf("slow pre-start setup lost the claim: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if renews < 2 {
+		t.Fatalf("claim was not renewed during pre-start setup: renews=%d", renews)
+	}
+}
+
+func TestRunHarnessChildAuthorityLossDuringPreStartSetupAbortsLaunch(t *testing.T) {
+	previousInterval := workerClaimRenewInterval
+	workerClaimRenewInterval = 50 * time.Millisecond
+	workerPreStartTestHook = func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+		}
+	}
+	t.Cleanup(func() {
+		workerClaimRenewInterval = previousInterval
+		workerPreStartTestHook = nil
+	})
+
+	released := make(chan core.WorkOrderRelease, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "renew":
+			// The server has revoked this claim; renewal reports the order
+			// back in queue.
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		case "release":
+			var request core.WorkOrderRelease
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			released <- request
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "authority-lost", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}}}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "server reports queued") {
+		t.Fatalf("authority loss during setup was not surfaced: %v", err)
+	}
+	select {
+	case release := <-released:
+		if release.Outcome != core.WorkOrderOutcomeReleased || !strings.Contains(release.Reason, "claim authority lost") {
+			t.Fatalf("release=%+v want released with claim-authority-lost reason", release)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("release was not reported")
+	}
+	// The "exit" helper writes marker lines before exiting; setup aborted
+	// before launch, so no child output may exist.
+	if output := stdout.String() + stderr.String(); output != "" {
+		t.Fatalf("child was launched despite authority loss: %q", output)
+	}
 }
 
 func TestRunHarnessChildReadinessFailureReleasesClaimWithoutStartingModel(t *testing.T) {

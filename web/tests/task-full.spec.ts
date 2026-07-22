@@ -13,7 +13,15 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
-	const reviewActivity = taskId === 'live-scroll' || taskId === 'gate' ? {
+	const reviewActivity = taskId === 'stage-aware' ? {
+		jobs: [],
+		events: [{ id: 1, task_id: taskId, job_id: 'stage-aware-spec', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { reason: 'harness exited: status 1', detail: 'provider rejected the configured model', retry_suppressed: true, suppression_reason: 'identical failure output on consecutive attempts' }, at: createdAt }],
+		work_orders: [
+			{ id: 'stage-aware-spec', task_id: taskId, job_id: 'stage-aware-spec', stage: 'spec', state: 'queued', claimable: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'stage-aware-implement', task_id: taskId, job_id: 'stage-aware-implement', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: '2026-07-15T12:01:00Z', queue_deadline: '2026-07-16T12:01:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'stage-aware-review', task_id: taskId, job_id: 'stage-aware-review', stage: 'review', state: 'timed_out', claimable: false, queue_entered_at: '2026-07-15T12:02:00Z', queue_deadline: '2026-07-16T12:02:00Z', execution_deadline: '2026-07-15T12:03:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
+	} : taskId === 'live-scroll' || taskId === 'gate' ? {
 		jobs: [],
 		events: Array.from({ length: liveEventCount }, (_, index) => ({
 			id: index + 1,
@@ -110,6 +118,10 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		jobs: [{ id: 'timeout-review', task_id: taskId, stage: 'review', harness: 'claude', model_tier: 'claude-review', auth_mode: 'byoa', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'failed', started_at: '2026-07-15T12:00:00Z', ended_at: '2026-07-15T12:30:00Z' }],
 		events: [],
 		work_orders: [{ id: 'timeout-review', task_id: taskId, job_id: 'timeout-review', stage: 'review', state: 'timed_out', queue_entered_at: '2026-07-15T11:00:00Z', queue_deadline: '2026-07-16T11:00:00Z', execution_started_at: '2026-07-15T12:00:00Z', execution_deadline: '2026-07-15T12:30:00Z', updated_at: '2026-07-16T08:24:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'checkout-blocked-recovery' ? {
+		jobs: [{ id: 'checkout-blocked-implement-1', task_id: taskId, stage: 'implement', state: 'failed', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
+		events: [],
+		work_orders: [{ id: 'checkout-blocked-implement-1', task_id: taskId, job_id: 'checkout-blocked-implement-1', stage: 'implement', state: 'queued', claimable: false, last_attempt_outcome: 'released', last_failure_message: 'checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE.md and conveyor-spec.md; operator changes preserved', automatic_retry_count: 0, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'recovery' ? {
 		jobs: [{ id: 'recovery-review-1-seat-1', task_id: taskId, stage: 'review', state: 'pending', cost_usd: 0, tokens_in: 0, tokens_out: 0 }],
 		events: [],
@@ -141,6 +153,21 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 2, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human' as const, payload: { version: 2 }, at: '2026-07-15T11:59:00Z' },
 		],
 		work_orders: [],
+	} : taskId === 'setup-submitted' ? {
+		jobs: [],
+		events: [],
+		// A delivered implement attempt awaiting review: does not block a setup
+		// change; only claimed attempts and in-flight verdicts do (spec §21.36).
+		work_orders: [
+			{ id: 'setup-submitted-implement-1', task_id: taskId, job_id: 'setup-submitted-implement-1', stage: 'implement', state: 'submitted', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'setup-submitted-review-1-seat-1', task_id: taskId, job_id: 'setup-submitted-review-1-seat-1', stage: 'review', state: 'queued', claimable: true, review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
+	} : taskId === 'setup-claimed' ? {
+		jobs: [],
+		events: [],
+		work_orders: [
+			{ id: 'setup-claimed-implement-1', task_id: taskId, job_id: 'setup-claimed-implement-1', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -163,8 +190,20 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'merge-unknown' || taskId === 'merge-conflict' || taskId === 'merge-missing' ? 'approved' : 'running',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
+      setup: taskId.startsWith('setup-') ? 'old' : '',
+      setup_contract: taskId.startsWith('setup-') ? {
+        name: 'old',
+        execution_settings: {
+          control_plane: { triage: { model: 'control', timeout: '20m' } },
+          spec: { harness: 'codex', model: 'gpt-spec', model_policy: 'explicit', timeout: '30m' },
+          implementation: { harness: 'codex', model: 'gpt-old', model_policy: 'explicit', effort: 'medium', timeout: '2h' },
+          review: { execution: 'mcp', timeout: '45m', fallback_harness: 'codex' },
+        },
+        review: { seats: [{ harness: 'codex', model: 'gpt-review', effort: 'medium' }] },
+        refresh_review: 'delta',
+      } : undefined,
       created_at: createdAt,
     },
 		jobs: reviewActivity.jobs,
@@ -229,6 +268,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		} : undefined,
 		merge_readiness: taskId === 'merge-unknown' ? { state: 'UNKNOWN', head_sha: 'head-1' }
 			: taskId === 'merge-conflict' ? { state: 'CONFLICTING', head_sha: 'head-1', number: 12 }
+			: taskId === 'merge-delayed' || taskId === 'merge-failure' ? { state: 'MERGEABLE', head_sha: 'head-1', number: 12 }
 			: undefined,
   }
 }
@@ -305,6 +345,60 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
 	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
+test('task detail previews and submits a named future-only setup change', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	const nextSetup = {
+		name: 'next',
+		execution_settings: {
+			control_plane: { triage: { model: 'control', timeout: '20m' } },
+			spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
+			implementation: { harness: 'claude', model: 'claude-next', model_policy: 'explicit', effort: 'high', timeout: '3h' },
+			review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
+		},
+		review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
+		refresh_review: 'delta',
+	}
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-change', false).task.setup_contract, nextSetup], default_setup: 'old', execution: {} } } }))
+	let submitted: Record<string, unknown> | undefined
+	await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
+		submitted = route.request().postDataJSON()
+		await route.fulfill({ json: { task: { ...activity('setup-change', false).task, setup: 'next', setup_contract: nextSetup }, review_transition: 'same_round_reconciled' } })
+	})
+	await page.goto('/tasks/setup-change/full')
+	await expect(page.getByText('affects future work only')).toBeVisible()
+	await page.getByLabel('Named execution setup').selectOption('next')
+	await expect(page.getByText(/After: implement claude \/ explicit \/ high \/ 3h/)).toBeVisible()
+	await page.getByLabel('Setup change reason').fill('repair routing')
+	await page.getByRole('button', { name: 'Change setup' }).click()
+	await expect(page.getByText('Setup changed: same round reconciled.')).toBeVisible()
+	expect(submitted?.setup).toBe('next')
+	expect(submitted?.reason).toBe('repair routing')
+	expect(String(submitted?.request_id)).not.toBe('')
+})
+
+test('task sheet exposes the setup change control behind an expandable section', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-submitted', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-submitted')
+	const summary = page.locator('summary', { hasText: 'Change execution setup' })
+	await expect(summary).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).not.toBeVisible()
+	await summary.click()
+	await expect(page.getByLabel('Named execution setup')).toBeVisible()
+	// The implement attempt is submitted (delivered), not claimed: it must not
+	// disable the control (spec §21.36).
+	await expect(page.getByLabel('Named execution setup')).toBeEnabled()
+	await expect(page.getByLabel('Setup change reason')).toBeEnabled()
+})
+
+test('a claimed attempt disables the setup change control with the specific blocker', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-claimed', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-claimed/full')
+	await expect(page.getByText('An attempt is claimed and executing.')).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).toBeDisabled()
+})
+
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
 	await page.goto('/tasks/null-worker-status/full')
 	await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
@@ -322,8 +416,32 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	await page.goto('/tasks/recovery/full')
 	await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
 	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
+	await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.goto('/tasks/checkout-blocked-recovery/full')
+
+	const failure = page.getByText(/checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE\.md and conveyor-spec\.md/)
+	const resolveFirst = page.locator('p').filter({ hasText: 'Resolve the primary checkout changes first.' })
+	const recoveryEffect = page.locator('p').filter({ hasText: 'requeues the order for another attempt and preserves your checkout changes' })
+	const action = page.getByRole('button', { name: 'Recover work order' })
+
+	await expect(failure).toBeVisible()
+	await expect(resolveFirst).toBeVisible()
+	await expect(resolveFirst).toContainText('commit or stash them')
+	await expect(recoveryEffect).toBeVisible()
+	await expect(recoveryEffect).toContainText('does not clean, commit, stash, or discard them')
+	await expect(action).toBeVisible()
+	for (const guidance of [resolveFirst, recoveryEffect]) {
+		await expect.poll(() => guidance.evaluate((node) => {
+			const action = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Recover work order'))
+			return action != null && Boolean(node.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING)
+		})).toBe(true)
+	}
 })
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
@@ -382,6 +500,20 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
 	const timeoutEntry = page.locator('li').filter({ hasText: 'Review — timed out' })
 	await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
 	await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
+})
+
+test('work-order cards use their actual stage and expose captured failure detail', async ({ page }) => {
+	await page.goto('/tasks/stage-aware/full')
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
+	await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
+	await expect(timeline.getByText(/identical failure output on consecutive attempts/)).toBeVisible()
+	const captured = timeline.getByText('Captured child error')
+	await expect(captured).toBeVisible()
+	await captured.click()
+	await expect(timeline.getByText('provider rejected the configured model', { exact: true })).toBeVisible()
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
@@ -627,6 +759,55 @@ test('merge gate fails closed when readiness is absent', async ({ page }) => {
 	await expect(gate.getByText('Checking merge readiness')).toBeVisible()
 	await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
 	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+})
+
+test('merge gate stays pending until the post-success task and activity refreshes settle', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let merged = false
+	let releaseRefresh = () => {}
+	const refreshReleased = new Promise<void>((resolve) => { releaseRefresh = resolve })
+	await page.route('**/v1/**', async (route) => {
+		const path = new URL(route.request().url()).pathname
+		if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+		if (path === '/v1/tasks/merge-delayed/merge') {
+			merged = true
+			return route.fulfill({ json: { id: 'merge-delayed', state: 'approved' } })
+		}
+		if (!merged || (path !== '/v1/tasks/merge-delayed/activity' && path !== '/v1/activity')) return route.fallback()
+		await refreshReleased
+		if (path === '/v1/activity') return route.fulfill({ json: [] })
+		const refreshed = activity('merge-delayed', false)
+		refreshed.task.state = 'done'
+		await route.fulfill({ json: refreshed })
+	})
+
+	await page.goto('/tasks/merge-delayed/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByRole('button', { name: 'Merging…' })).toBeDisabled()
+	await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+
+	releaseRefresh()
+	await expect(gate).toHaveCount(0)
+})
+
+test('failed merge restores the existing error and retry action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	let attempts = 0
+	await page.route('**/v1/tasks/merge-failure/merge*', async (route) => {
+		attempts++
+		await route.fulfill({ status: 502, body: 'GitHub merge failed' })
+	})
+
+	await page.goto('/tasks/merge-failure/full')
+	const gate = page.getByRole('region', { name: 'Human gate' })
+	const merge = gate.getByRole('button', { name: 'Merge pull request' })
+	await merge.click()
+	await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
+	await expect(merge).toBeEnabled()
+	await merge.click()
+	await expect.poll(() => attempts).toBe(2)
 })
 
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {

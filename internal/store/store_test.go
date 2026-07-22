@@ -498,10 +498,10 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		}
 		priorStart = claimed.ExecutionStartedAt
 		if attempt == 1 {
-			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale renew error=%v", staleErr)
 			}
-			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale release error=%v", staleErr)
 			}
 		}
@@ -544,5 +544,80 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	events, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
 	if events != 1 {
 		t.Fatalf("recovery events=%d", events)
+	}
+}
+
+func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "identical-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
+	job := core.Job{ID: "identical-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		session := fmt.Sprintf("identical-%d", attempt)
+		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		released, err := st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "exit status 1", FailureDetail: "  provider rejected model  ", AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 1 {
+			if released.RetrySuppressed || released.LastFailureDetail != "provider rejected model" {
+				t.Fatalf("first failure=%+v", released)
+			}
+			released.NextRetryAt = now.Add(-time.Second)
+			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if !released.RetrySuppressed || !released.NextRetryAt.IsZero() || released.AutomaticRetryCount != 2 || released.RetrySuppressionReason != core.IdenticalFailureSuppressionReason {
+			t.Fatalf("second failure=%+v", released)
+		}
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload := string(events[len(events)-1].Payload); !strings.Contains(payload, `"detail":"provider rejected model"`) || !strings.Contains(payload, core.IdenticalFailureSuppressionReason) {
+		t.Fatalf("event payload=%s", payload)
+	}
+
+	differentJob := core.Job{ID: "different-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, differentJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: differentJob.ID, TaskID: task.ID, JobID: differentJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt, detail := range []string{"first output", "different output"} {
+		session := fmt.Sprintf("different-%d", attempt)
+		if _, err = st.ClaimWorkOrder(ctx, differentJob.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		var released core.WorkOrder
+		released, err = st.ReleaseWorkerClaim(ctx, differentJob.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: detail, AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if released.RetrySuppressed || released.NextRetryAt.IsZero() {
+			t.Fatalf("different failure %d=%+v", attempt, released)
+		}
+		if attempt == 0 {
+			released.NextRetryAt = time.Now().Add(-time.Second)
+			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
