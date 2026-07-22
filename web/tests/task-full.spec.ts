@@ -8,6 +8,8 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		? '## Specification\n\n```mermaid\ngraph TD\n  A --> B\n```'
 		: taskId === 'mermaid-invalid'
 			? '## Specification\n\n```mermaid\nthis is deliberately malformed\n```'
+		: taskId === 'overflowing' || taskId === 'gate'
+			? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Scrollable specification paragraph ${index + 1}.`), '', 'Regression marker at the bottom of the task content.'].join('\n\n')
 		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
@@ -19,7 +21,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'stage-aware-implement', task_id: taskId, job_id: 'stage-aware-implement', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: '2026-07-15T12:01:00Z', queue_deadline: '2026-07-16T12:01:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 			{ id: 'stage-aware-review', task_id: taskId, job_id: 'stage-aware-review', stage: 'review', state: 'timed_out', claimable: false, queue_entered_at: '2026-07-15T12:02:00Z', queue_deadline: '2026-07-16T12:02:00Z', execution_deadline: '2026-07-15T12:03:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
-	} : taskId === 'live-scroll' ? {
+	} : taskId === 'live-scroll' || taskId === 'gate' ? {
 		jobs: [],
 		events: Array.from({ length: liveEventCount }, (_, index) => ({
 			id: index + 1,
@@ -178,7 +180,11 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       workspace: 'demo',
       source: 'mcp',
       title: overflowing ? 'Overflowing task' : 'Short task',
-      body: overflowing ? Array.from({ length: 80 }, (_, index) => `Description line ${index + 1}`).join('\n') : 'A short description.',
+      body: taskId === 'markdown-body'
+        ? '# Structured context\n\nA **clear** paragraph with [safe link](https://example.test).\n\n- first item\n- [x] completed item\n\n`inline code`\n\n<script data-unsafe>window.hacked = true</script>'
+        : taskId === 'long-body'
+          ? Array.from({ length: 30 }, (_, index) => `Description paragraph ${index + 1}.`).join('\n\n')
+          : overflowing ? Array.from({ length: 80 }, (_, index) => `Description line ${index + 1}`).join('\n') : 'A short description.',
       class: 'bug',
       level: 'L2',
       repo: 'conveyor',
@@ -579,6 +585,38 @@ test('task sheet bounds an overflowing spec and expands and collapses it accessi
 	await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 })
 
+test('task body renders safe GFM in sheet and full-page headers', async ({ page }) => {
+	for (const path of ['/tasks/markdown-body', '/tasks/markdown-body/full']) {
+		await page.goto(path)
+		await expect(page.getByRole('heading', { name: 'Structured context' })).toBeVisible()
+		await expect(page.getByText('clear', { exact: true })).toHaveCSS('font-weight', /^(600|700)$/)
+		await expect(page.getByRole('link', { name: 'safe link' })).toHaveAttribute('href', 'https://example.test')
+		await expect(page.getByText('completed item')).toBeVisible()
+		await expect(page.locator('script[data-unsafe]')).toHaveCount(0)
+		await expect(page.getByText('<script data-unsafe>window.hacked = true</script>')).toBeVisible()
+	}
+})
+
+test('long task body is constrained and expands accessibly in both header variants', async ({ page }) => {
+	for (const path of ['/tasks/long-body', '/tasks/long-body/full']) {
+		await page.goto(path)
+		const expand = page.getByRole('button', { name: 'Show full description' })
+		await expect(expand).toBeVisible()
+		await expect(expand).toHaveAttribute('aria-expanded', 'false')
+		const viewportID = await expand.getAttribute('aria-controls')
+		expect(viewportID).toBeTruthy()
+		const viewport = page.locator(`#${viewportID}`)
+		await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+		await expect(page.locator('[data-task-body-overflow-shadow]')).toBeVisible()
+
+		await expand.click()
+		const collapse = page.getByRole('button', { name: 'Show less description' })
+		await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+		await expect(page.locator('[data-task-body-overflow-shadow]')).toHaveCount(0)
+		await expect(page.getByText('Description paragraph 30.')).toBeVisible()
+	}
+})
+
 test('short side-view specs and full-page specs remain unbounded', async ({ page }) => {
 	await page.goto('/tasks/short')
 	await expect(page.getByRole('button', { name: /Show (more|less)/ })).toHaveCount(0)
@@ -851,7 +889,11 @@ for (const decision of ['approve', 'redirect'] as const) {
 		}
 		await reviewRequest
 
-		const intervention = page.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+		const intervention = page
+			.getByRole('region', { name: 'Execution event timeline' })
+			.locator('ol > li')
+			.filter({ hasText: decision === 'approve' ? 'Approved' : 'Requested changes' })
+			.last()
 		await expect(intervention).toBeVisible()
 		await expect(intervention).toBeInViewport()
 		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)

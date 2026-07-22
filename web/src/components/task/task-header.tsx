@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, GitBranch, GitPullRequest, Hand } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
 import { changeTaskSetup, fetchWorkspaceConfig, setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
@@ -10,6 +10,7 @@ import { useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
+import { MarkdownProse } from '../ui/markdown-prose'
 
 // The task-header facts (spec §13.3, amended by §§21.6–21.7): state badges,
 // the verification chip fed by the §4.1 acceptance block, the PR deep link,
@@ -44,7 +45,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}>
         {item.task.title}
       </Heading>
-      {item.task.body && <p className="mt-1.5 max-w-3xl text-sm leading-6 text-muted">{item.task.body}</p>}
+      {item.task.body && <TaskBody body={item.task.body} />}
 
       <dl className={cn('mt-4 grid gap-x-8 gap-y-2.5 text-xs', variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2')}>
         <Fact label="Repo" value={item.task.repo} />
@@ -114,6 +115,53 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       <SetupChangeControl item={item} variant={variant} />
 
       <Checkout item={item} variant={variant} />
+    </div>
+  )
+}
+
+function TaskBody({ body }: { body: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [hasOverflow, setHasOverflow] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const viewportID = useId()
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport || expanded) return
+    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(viewport)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    return () => observer.disconnect()
+  }, [body, expanded])
+
+  return (
+    <div className="mt-2 max-w-3xl">
+      <div className="relative">
+        <div
+          ref={viewportRef}
+          id={viewportID}
+          className={cn(!expanded && 'max-h-40 overflow-hidden')}
+        >
+          <MarkdownProse className="text-sm text-muted">{body}</MarkdownProse>
+        </div>
+        {hasOverflow && !expanded && (
+          <div aria-hidden="true" className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16" data-task-body-overflow-shadow />
+        )}
+      </div>
+      {hasOverflow && (
+        <button
+          type="button"
+          aria-controls={viewportID}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary"
+        >
+          {expanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+          {expanded ? 'Show less description' : 'Show full description'}
+        </button>
+      )}
     </div>
   )
 }
