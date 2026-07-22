@@ -22,9 +22,9 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "postgres"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	old := config.ExecutionSetup{Name: "old", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", TimeoutText: "1h"}}}
+	old := config.ExecutionSetup{Name: "old", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", Effort: "low", TimeoutText: "1h"}}}
 	next := old
-	next.Name, next.ExecutionSettings.Implementation.Model = "next", "new"
+	next.Name, next.ExecutionSettings.Implementation.Model, next.ExecutionSettings.Implementation.Effort = "next", "new", "high"
 	now := time.Now().UTC()
 	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: old.Name, SetupContract: old, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
@@ -35,19 +35,19 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredEffort: "low", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
 	if err = st.CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	desired := order
-	desired.RequiredModel, desired.QueueEnteredAt, desired.QueueDeadline = "new", now.Add(time.Minute), now.Add(2*time.Hour)
+	desired.RequiredModel, desired.RequiredEffort, desired.QueueEnteredAt, desired.QueueDeadline = "new", "high", now.Add(time.Minute), now.Add(2*time.Hour)
 	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-1", Reason: "repair routing", Setup: next, WorkOrderUpdates: []core.WorkOrder{desired}, ReviewTransition: "none"}
 	result, err := st.ChangeTaskSetup(ctx, request)
 	if err != nil || result.Task.SetupName != next.Name || len(result.UpdatedWorkOrders) != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	updated, _ := st.GetWorkOrder(ctx, order.ID)
-	if updated.RequiredModel != "new" {
+	if updated.RequiredModel != "new" || updated.RequiredEffort != "high" {
 		t.Fatalf("updated=%+v", updated)
 	}
 	duplicate, err := st.ChangeTaskSetup(ctx, request)
@@ -116,7 +116,7 @@ func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testi
 	desired.RequiredModel, desired.RequiredHarness = "new-two", "claude"
 	desired.QueueEnteredAt, desired.QueueDeadline = now.Add(time.Minute), now.Add(2*time.Hour)
 	replacementJob := core.Job{ID: jobs[0].ID + "-replacement", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
-	replacement := core.WorkOrder{ID: replacementJob.ID, TaskID: task.ID, JobID: replacementJob.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "new-one", RequiredHarness: "claude", QueueEnteredAt: now.Add(time.Minute), QueueDeadline: now.Add(2 * time.Hour)}
+	replacement := core.WorkOrder{ID: replacementJob.ID, TaskID: task.ID, JobID: replacementJob.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "new-one", RequiredHarness: "claude", RequiredEffort: "high", QueueEnteredAt: now.Add(time.Minute), QueueDeadline: now.Add(2 * time.Hour)}
 	result, err := st.ChangeTaskSetup(ctx, store.SetupChangeRequest{TaskID: task.ID, RequestID: "review-reconcile", Reason: "replace review contract", Setup: newSetup,
 		WorkOrderUpdates: []core.WorkOrder{desired}, NewJobs: []core.Job{replacementJob}, NewWorkOrders: []core.WorkOrder{replacement}, SupersedeWorkOrderIDs: []string{completed.ID}, ReviewTransition: "same_round_reconciled", PriorReviewRound: 1, ResultingReviewRound: 1})
 	if err != nil || len(result.CreatedWorkOrders) != 1 {
@@ -126,6 +126,9 @@ func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testi
 		order, getErr := st.GetWorkOrder(ctx, id)
 		if getErr != nil {
 			t.Fatal(getErr)
+		}
+		if id == replacement.ID && order.RequiredEffort != "high" {
+			t.Fatalf("replacement effort=%q", order.RequiredEffort)
 		}
 		claimed, claimErr := st.ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "fresh-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour})
 		if claimErr != nil {

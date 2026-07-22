@@ -1061,7 +1061,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
-				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
@@ -2424,7 +2424,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline, lastFailureAt, nextRetryAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
-		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
+		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
 		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
 		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,

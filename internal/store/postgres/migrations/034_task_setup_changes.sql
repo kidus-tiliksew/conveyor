@@ -13,7 +13,9 @@ CREATE INDEX task_setup_changes_task_idx
     ON task_setup_changes (workspace_id, task_id, created_at);
 
 ALTER TABLE work_orders
-    ADD COLUMN review_superseded boolean NOT NULL DEFAULT false;
+    ADD COLUMN review_superseded boolean NOT NULL DEFAULT false,
+    ADD COLUMN required_effort text NOT NULL DEFAULT ''
+        CHECK (required_effort IN ('', 'low', 'medium', 'high'));
 
 DROP INDEX work_orders_review_seat_idx;
 CREATE UNIQUE INDEX work_orders_review_seat_idx

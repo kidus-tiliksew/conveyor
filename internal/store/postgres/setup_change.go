@@ -87,11 +87,11 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 	now := time.Now().UTC()
 	actor := store.ActorFromContext(ctx)
 	for _, desired := range request.WorkOrderUpdates {
-		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET required_model=$1,required_harness=$2,required_harness_config=$3,execution_timeout=$4,
+		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET required_model=$1,required_harness=$2,required_effort=$3,required_harness_config=$4,execution_timeout=$5,
 			last_attempt_outcome='',last_failure_message='',last_failure_detail='',last_failure_exit_status=NULL,last_failure_at=NULL,
-			automatic_retry_count=0,next_retry_at=NULL,retry_suppressed=false,retry_suppression_reason='',queue_entered_at=$5,queue_deadline=$6,
-			redispatch_count=redispatch_count+1,updated_at=$7 WHERE workspace_id=$8 AND task_id=$9 AND id=$10 AND state='queued' AND session_id='' AND worker_id=''`,
-			desired.RequiredModel, desired.RequiredHarness, harnessSnapshotJSON(desired.RequiredHarnessConfig), desired.ExecutionTimeoutText,
+			automatic_retry_count=0,next_retry_at=NULL,retry_suppressed=false,retry_suppression_reason='',queue_entered_at=$6,queue_deadline=$7,
+			redispatch_count=redispatch_count+1,updated_at=$8 WHERE workspace_id=$9 AND task_id=$10 AND id=$11 AND state='queued' AND session_id='' AND worker_id=''`,
+			desired.RequiredModel, desired.RequiredHarness, desired.RequiredEffort, harnessSnapshotJSON(desired.RequiredHarnessConfig), desired.ExecutionTimeoutText,
 			desired.QueueEnteredAt, desired.QueueDeadline, now, workspaceID, task.ID, desired.ID)
 		if updateErr != nil {
 			return store.SetupChangeResult{}, updateErr
@@ -153,13 +153,13 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id,workspace_id,task_id,job_id,stage,state,claimant_id,session_id,client_token_hash,agent,model,worker_id,lease_expires_at,
-			review_round,review_seat,required_model,required_harness,required_harness_config,execution_timeout,model_enforcement,
+			review_round,review_seat,required_model,required_harness,required_effort,required_harness_config,execution_timeout,model_enforcement,
 			reason_code,review_kind,review_scope,baseline_sha,head_sha,queue_entered_at,queue_deadline,execution_started_at,execution_deadline,
 			last_attempt_outcome,last_failure_message,last_failure_detail,last_failure_exit_status,last_failure_at,automatic_retry_count,next_retry_at,
 			retry_suppressed,retry_suppression_reason,redispatch_count,progress,cost_usd,tokens_in,tokens_out,self_reported,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,'queued','','','','','','',NULL,$6,$7,$8,$9,$10,$11,'',$12,$13,$14,$15,$16,$17,$18,NULL,NULL,'','','',NULL,NULL,0,NULL,false,'',0,'',0,0,0,true,$19,$19)`,
+			VALUES ($1,$2,$3,$4,$5,'queued','','','','','','',NULL,$6,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','','',NULL,NULL,0,NULL,false,'',0,'',0,0,0,true,$20,$20)`,
 			order.ID, workspaceID, task.ID, job.ID, order.Stage, order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
-			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
+			order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
 			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
 		if err != nil {
 			return store.SetupChangeResult{}, err
