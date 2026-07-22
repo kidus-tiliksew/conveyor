@@ -9,7 +9,7 @@ import { Button } from '../ui/button'
 function recoveryOrder(item: ActivityItem) {
   return [...(item.work_orders ?? [])]
     .reverse()
-    .find((order) => order.state === 'queued' && !(order.stage === 'review' && (order.review_round ?? 0) > 0) && (order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
+    .find((order) => ['queued', 'stale', 'timed_out'].includes(order.state) && !(order.stage === 'review' && (order.review_round ?? 0) > 0) && (order.state !== 'queued' || order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
 }
 
 function isDirtyPrimaryCheckout(order: WorkOrder) {
@@ -60,7 +60,7 @@ function RecoveryState({ item, order }: { item: ActivityItem; order: WorkOrder }
           <p><strong className="font-medium text-foreground">Recover work order</strong> requeues the order for another attempt and preserves your checkout changes. It does not clean, commit, stash, or discard them.</p>
         </div>
       )}
-      {(order.retry_suppressed || order.next_retry_at) && (
+      {(order.retry_suppressed || order.next_retry_at || order.state === 'stale' || order.state === 'timed_out') && (
         <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
           <RotateCcw />
           {mutation.isPending ? 'Recovering…' : 'Recover work order'}

@@ -347,6 +347,104 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	}
 }
 
+func TestOperatorRecoveryRefreezesNamedSetupAndRepinsOrder(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := store.NewMemory()
+	old := config.ExecutionSetup{Name: "default", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old-model", ModelPolicy: config.ModelPolicyExplicit, Effort: "medium", TimeoutText: "1h"}}}
+	current := config.ExecutionSetup{Name: "default", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "new-model", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"}}}
+	task := core.Task{ID: "refreeze-task", Workspace: "demo", State: core.TaskRunning, SetupName: "default", SetupContract: old, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "refreeze-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old-model", RequiredHarness: "codex", RequiredEffort: "medium", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "old"}, Effort: "medium"}, ExecutionTimeoutText: "1h", LastAttemptOutcome: core.WorkOrderOutcomeChildFailure, RetrySuppressed: true, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Setups: []config.ExecutionSetup{current}, DefaultSetup: "default", Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "exec", "{prompt}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}}}, Routing: config.Routing{Stages: map[string]config.StageRoute{}}}, nil
+	}}
+	recovered, err := service.Recover(ctx, order.ID, "recover-refreeze")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := st.GetTask(ctx, task.ID)
+	if recovered.RequiredModel != "new-model" || recovered.RequiredEffort != "high" || recovered.ExecutionTimeoutText != "2h" || recovered.RequiredHarnessConfig == nil || recovered.RequiredHarnessConfig.Command[1] != "exec" || persisted.SetupContract.ExecutionSettings.Implementation.Model != "new-model" {
+		t.Fatalf("recovered=%+v setup=%+v", recovered, persisted.SetupContract)
+	}
+	events, _ := st.CountEvents(ctx, task.ID, "task.setup.refrozen")
+	if events != 1 {
+		t.Fatalf("refreeze events=%d", events)
+	}
+}
+
+func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	frozen := config.ExecutionSetup{Name: "removed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "frozen-model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}}
+	task := core.Task{ID: "missing-setup-task", Workspace: "demo", State: core.TaskRunning, SetupName: "removed", SetupContract: frozen, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "missing-setup-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderStale, RequiredModel: "frozen-model", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: time.Now().Add(-time.Hour), QueueDeadline: time.Now().Add(-time.Minute)}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}}
+	recovered, err := service.Recover(ctx, order.ID, "recover-missing")
+	if err != nil || recovered.State != core.WorkOrderQueued || recovered.RequiredModel != "frozen-model" {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	events, _ := st.CountEvents(ctx, task.ID, "task.setup.refrozen")
+	if events != 0 {
+		t.Fatalf("refreeze events=%d", events)
+	}
+}
+
+func TestInterruptedReviewRecoveryRefreezesSetupAndRepinsSeat(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := store.NewMemory()
+	old := config.ExecutionSetup{Name: "default", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "old-review", Harness: "codex", Effort: "medium"}}}}
+	current := config.ExecutionSetup{Name: "default", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "new-review", Harness: "codex", Effort: "high"}}}}
+	task := core.Task{ID: "review-refreeze-task", Workspace: "demo", State: core.TaskRunning, SetupName: "default", SetupContract: old, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "review-refreeze-seat", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "old-review", RequiredHarness: "codex", RequiredEffort: "medium", LastAttemptOutcome: core.WorkOrderOutcomeChildFailure, RetrySuppressed: true}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Setups: []config.ExecutionSetup{current}, DefaultSetup: "default", Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "exec", "{prompt}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}}}, Routing: config.Routing{Stages: map[string]config.StageRoute{}}}, nil
+	}}
+	result, err := service.RecoverInterruptedReviewRound(ctx, task.ID, "recover-review-refreeze")
+	if err != nil || len(result.RecoveredOrders) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	recovered := result.RecoveredOrders[0]
+	persisted, _ := st.GetTask(ctx, task.ID)
+	if recovered.RequiredModel != "new-review" || recovered.RequiredEffort != "high" || recovered.RequiredHarnessConfig == nil || recovered.RequiredHarnessConfig.Command[1] != "exec" || persisted.SetupContract.Review.Seats[0].Model != "new-review" {
+		t.Fatalf("recovered=%+v setup=%+v", recovered, persisted.SetupContract)
+	}
+	events, _ := st.CountEvents(ctx, task.ID, "task.setup.refrozen")
+	if events != 1 {
+		t.Fatalf("refreeze events=%d", events)
+	}
+}
+
 func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "stale")

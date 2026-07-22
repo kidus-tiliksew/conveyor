@@ -891,6 +891,9 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, state core.T
 
 func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
 	switch intervention.Action {
+	case core.InterventionCancel:
+		_, err := d.Store.CancelTask(ctx, intervention)
+		return err
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskClosed, "", "")
 	case core.InterventionApprove:

@@ -6,7 +6,8 @@ import { createTask, fetchWorkers } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
-import { Input, Select, Textarea } from '../ui/input'
+import { Input, Select } from '../ui/input'
+import { MarkdownEditor } from '../ui/markdown-editor'
 import { Sheet } from '../ui/sheet'
 import { Switch } from '../ui/switch'
 
@@ -95,11 +96,10 @@ export function TaskCreateSheet() {
           label="Description"
           hint="AI generates the task title from this context, which also becomes the triage and spec prompt."
         >
-          <Textarea
+          <MarkdownEditor
             value={body}
-            onChange={(event) => setBody(event.target.value)}
+            onChange={setBody}
             placeholder={descriptionScaffold}
-            className="min-h-56 leading-6"
           />
         </Field>
 

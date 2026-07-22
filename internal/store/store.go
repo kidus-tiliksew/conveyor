@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,8 @@ var (
 	ErrReviewRetryConflict = errors.New("review round retry conflicts with current state")
 	ErrPairingInvalid      = errors.New("worker pairing token is invalid, expired, or already used")
 	ErrWorkerUnauthorized  = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled  = errors.New("work order was cancelled")
+	ErrTaskTerminal        = errors.New("task is already terminal")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
@@ -84,6 +87,9 @@ type Store interface {
 	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
+	// CancelTask atomically records the human intervention, closes the task,
+	// and cancels every non-terminal work order (spec §21.34).
+	CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
@@ -104,7 +110,7 @@ type Store interface {
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
-	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error)
+	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
@@ -240,6 +246,51 @@ type ActivityMarker struct {
 	ReviewDiagnostics         []ReviewVerdictDiagnostic
 	ReviewRecovery            *ReviewRecoveryState
 	InterruptedReviewRecovery *InterruptedReviewRecoveryState
+	Stalled                   *StalledState
+}
+
+type RecoveryRefreeze struct {
+	Setup                 config.ExecutionSetup
+	RequiredModel         string
+	RequiredHarness       string
+	RequiredEffort        string
+	RequiredHarnessConfig *core.HarnessSnapshot
+	ExecutionTimeoutText  string
+}
+
+// StalledState is derived presentation data for operator-actionable work that
+// cannot make forward progress on its own (spec §21.34).
+type StalledState struct {
+	Needed      bool           `json:"needed"`
+	Reason      string         `json:"reason"`
+	WorkOrder   core.WorkOrder `json:"work_order"`
+	LastFailure string         `json:"last_failure,omitempty"`
+}
+
+func StalledTask(orders []core.WorkOrder) *StalledState {
+	for i := len(orders) - 1; i >= 0; i-- {
+		order := orders[i]
+		if order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		reason := ""
+		switch {
+		case order.RetrySuppressed:
+			reason = "automatic retry is suppressed"
+		case order.State == core.WorkOrderStale:
+			reason = "queue deadline expired"
+		case order.AutomaticRetryCount >= 2 && strings.TrimSpace(order.LastFailureMessage) != "":
+			reason = "dispatch is failing repeatedly"
+		}
+		if reason != "" {
+			failure := strings.TrimSpace(order.LastFailureMessage)
+			if failure == "" {
+				failure = strings.TrimSpace(order.LastFailureDetail)
+			}
+			return &StalledState{Needed: true, Reason: reason, WorkOrder: order, LastFailure: failure}
+		}
+	}
+	return nil
 }
 
 // InterruptedReviewRecoveryState describes only the latest round's incomplete
@@ -257,6 +308,7 @@ type InterruptedReviewRecoveryRequest struct {
 	TaskID    string
 	RequestID string
 	Round     int
+	Refreezes map[string]*RecoveryRefreeze
 }
 
 type InterruptedReviewRecoveryResult struct {
@@ -585,6 +637,9 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
+	if order.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, ErrWorkOrderCancelled
+	}
 	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
 		return order, nil
 	}
@@ -611,6 +666,9 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
+		if ok && order.State == core.WorkOrderCancelled && order.WorkerID == workerID && order.SessionID == release.SessionID {
+			return core.WorkOrder{}, ErrWorkOrderCancelled
+		}
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	clearActiveAttempt(&order)
@@ -1204,7 +1262,7 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 	workspace, _ := WorkspaceFromContext(ctx)
 	key := request.RequestID
 	if prior, ok := m.interruptedReviewRecoveries[key]; ok {
-		if prior.Workspace != workspace || prior.Request != request {
+		if prior.Workspace != workspace || prior.Request.TaskID != request.TaskID || prior.Request.RequestID != request.RequestID || prior.Request.Round != request.Round {
 			return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", ErrReviewRetryConflict, request.RequestID)
 		}
 		return prior.Result, nil
@@ -1236,6 +1294,19 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 	}
 	actor := ActorFromContext(ctx)
 	for _, eligible := range recovery.EligibleOrders {
+		change := request.Refreezes[eligible.ID]
+		if change == nil {
+			continue
+		}
+		priorContract := task.SetupContract
+		task.SetupContract = change.Setup
+		m.tasks[task.ID] = task
+		if !reflect.DeepEqual(priorContract, change.Setup) {
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: eligible.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": request.RequestID, "work_order_id": eligible.ID, "actor": actor.ID}), At: now})
+		}
+		break
+	}
+	for _, eligible := range recovery.EligibleOrders {
 		order := m.workOrders[eligible.ID]
 		priorOutcome := order.LastAttemptOutcome
 		order.LastAttemptOutcome = ""
@@ -1246,6 +1317,10 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 		order.RedispatchCount++
 		order.UpdatedAt, order.Claimable = now, true
+		if change := request.Refreezes[order.ID]; change != nil {
+			order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
+			order.RequiredHarnessConfig, order.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
+		}
 		m.workOrders[order.ID] = order
 		result.RecoveredOrders = append(result.RecoveredOrders, order)
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: order.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": order.State, "outcome": "recovered", "setup_name": task.SetupName, "setup_contract": task.SetupContract}), At: now})
@@ -1448,7 +1523,7 @@ func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string,
 	return order, nil
 }
 
-func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error) {
+func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if strings.TrimSpace(requestID) == "" {
@@ -1476,14 +1551,15 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
-	if order.State != core.WorkOrderQueued || order.SessionID != "" || order.WorkerID != "" || !order.LeaseExpiresAt.IsZero() {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not an unclaimed queued order", id)
-	}
-	if order.LastAttemptOutcome == "" && !order.RetrySuppressed && order.NextRetryAt.IsZero() {
+	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
+	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
+	priorState := order.State
+	clearActiveAttempt(&order)
+	order.State = core.WorkOrderQueued
 	order.LastAttemptOutcome = ""
 	order.RetrySuppressed = false
 	order.RetrySuppressionReason = ""
@@ -1493,9 +1569,27 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	order.RedispatchCount++
 	order.UpdatedAt = now
 	order.Claimable = true
+	if len(refreeze) != 0 && refreeze[0] != nil {
+		change := refreeze[0]
+		task := m.tasks[order.TaskID]
+		priorContract := task.SetupContract
+		task.SetupContract = change.Setup
+		m.tasks[task.ID] = task
+		order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
+		order.RequiredHarnessConfig = change.RequiredHarnessConfig
+		order.ExecutionTimeoutText = change.ExecutionTimeoutText
+		if !reflect.DeepEqual(priorContract, change.Setup) {
+			actor := ActorFromContext(ctx)
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": requestID, "work_order_id": order.ID, "actor": actor.ID}), At: now})
+		}
+	}
 	m.workOrders[id] = order
+	if job, index, exists := m.findJobLocked(order.JobID); exists {
+		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
+		m.jobs[job.TaskID][index] = job
+	}
 	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": core.WorkOrderQueued, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now})
 	return order, nil
 }
 
@@ -1553,6 +1647,9 @@ func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 	}
 	if current.State == core.WorkOrderStale {
 		return fmt.Errorf("%w: %s", ErrWorkOrderStale, order.ID)
+	}
+	if current.State == core.WorkOrderCancelled {
+		return fmt.Errorf("%w: %s", ErrWorkOrderCancelled, order.ID)
 	}
 	if updateRequiresClaim(order.State, current.State) &&
 		(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
@@ -2177,6 +2274,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
 		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))
+		marker.Stalled = StalledTask(ordersByTask[id])
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })
@@ -2225,6 +2323,61 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 		At: intervention.At,
 	})
 	return nil
+}
+
+func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[intervention.TaskID]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
+	}
+	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+		return core.Task{}, ErrTaskTerminal
+	}
+	if strings.TrimSpace(intervention.ReasonCode) == "" || intervention.Action != core.InterventionCancel {
+		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
+	}
+	actor := ActorFromContext(ctx)
+	if intervention.ActorID == "" {
+		intervention.ActorID = actor.ID
+	}
+	if intervention.ActorRole == "" {
+		intervention.ActorRole = actor.Role
+	}
+	if intervention.At.IsZero() {
+		intervention.At = time.Now().UTC()
+	}
+	m.nextReviewID++
+	intervention.ID = m.nextReviewID
+	m.interventions[task.ID] = append(m.interventions[task.ID], intervention)
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At})
+
+	cancelled := make([]string, 0)
+	for id, order := range m.workOrders {
+		if order.TaskID != task.ID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		if order.State == core.WorkOrderClaimed {
+			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
+		}
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderCancelled, false, intervention.At
+		m.workOrders[id] = order
+		cancelled = append(cancelled, id)
+		if jobs := m.jobs[task.ID]; len(jobs) != 0 {
+			for i := range jobs {
+				if jobs[i].ID == order.JobID && jobs[i].State != core.JobDone {
+					jobs[i].State, jobs[i].EndedAt = core.JobFailed, intervention.At
+				}
+			}
+			m.jobs[task.ID] = jobs
+		}
+	}
+	from := task.State
+	task.State, task.NextStage, task.RecoveryStage = core.TaskClosed, "", ""
+	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
+	return task, nil
 }
 
 func (m *memory) ListInterventions(_ context.Context, taskID string) ([]core.Intervention, error) {

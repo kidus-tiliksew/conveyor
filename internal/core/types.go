@@ -244,7 +244,7 @@ const (
 
 func (action InterventionAction) Valid() bool {
 	switch action {
-	case InterventionApprove, InterventionReject, InterventionRedirect, InterventionPull:
+	case InterventionApprove, InterventionReject, InterventionRedirect, InterventionPull, InterventionCancel:
 		return true
 	default:
 		return false
@@ -271,6 +271,7 @@ const (
 	InterventionReject   InterventionAction = "reject"
 	InterventionRedirect InterventionAction = "redirect"
 	InterventionPull     InterventionAction = "pull_to_local"
+	InterventionCancel   InterventionAction = "cancel"
 )
 
 // Intervention is a structured human decision from the review queue (spec

@@ -176,12 +176,36 @@ func taskCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
+		closeTaskCmd(),
 		changeTaskSetupCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
 		reviewTaskCmd(core.InterventionRedirect),
 	)
 	return cmd
+}
+
+func closeTaskCmd() *cobra.Command {
+	var reason string
+	command := &cobra.Command{
+		Use:   "close <id>",
+		Short: "Cancel a non-terminal task",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			reason = strings.TrimSpace(reason)
+			if reason == "" {
+				return fmt.Errorf("--reason is required")
+			}
+			task, err := newClient().closeTask(args[0], reason)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("cancelled task %s (state %s)\n", task.ID, task.State)
+			return nil
+		},
+	}
+	command.Flags().StringVar(&reason, "reason", "", "cancellation reason")
+	return command
 }
 
 func changeTaskSetupCmd() *cobra.Command {

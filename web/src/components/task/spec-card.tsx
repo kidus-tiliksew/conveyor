@@ -1,12 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import mermaid from 'mermaid'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { MarkdownProse } from '../ui/markdown-prose'
 
 // Machine-owned fenced blocks (§4.1) are stripped from the prose and
 // rendered structurally by the acceptance checklist below.
@@ -130,18 +129,15 @@ export function SpecCard({
               className={cn(overflowExpandable && !contentExpanded && 'max-h-96 overflow-hidden')}
             >
               <div>
-                <div className="markdown">
-                  <Markdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code({ className, children, ...props }) {
-                        const source = String(children).replace(/\n$/, '')
-                        if (className === 'language-mermaid') return <MermaidBlock source={source} />
-                        return <code className={className} {...props}>{children}</code>
-                      },
-                    }}
-                  >{prose}</Markdown>
-                </div>
+                <MarkdownProse
+                  components={{
+                    code({ className, children, ...props }) {
+                      const source = String(children).replace(/\n$/, '')
+                      if (className === 'language-mermaid') return <MermaidBlock source={source} />
+                      return <code className={className} {...props}>{children}</code>
+                    },
+                  }}
+                >{prose}</MarkdownProse>
                 {criteria.length > 0 && (
                   <div className="mt-5 border-t border-border pt-4">
                     <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">

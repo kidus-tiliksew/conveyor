@@ -105,6 +105,7 @@ const interventionLabels: Record<InterventionAction, string> = {
   reject: 'Rejected',
   redirect: 'Requested changes',
   pull_to_local: 'Pulled to local',
+	cancel: 'Cancelled',
 }
 
 function keyFor(entry: TimelineEntry) {
