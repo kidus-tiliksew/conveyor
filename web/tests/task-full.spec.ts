@@ -8,6 +8,8 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		? '## Specification\n\n```mermaid\ngraph TD\n  A --> B\n```'
 		: taskId === 'mermaid-invalid'
 			? '## Specification\n\n```mermaid\nthis is deliberately malformed\n```'
+		: taskId === 'overflowing' || taskId === 'gate'
+			? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Scrollable specification paragraph ${index + 1}.`), '', 'Regression marker at the bottom of the task content.'].join('\n\n')
 		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
@@ -19,7 +21,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'stage-aware-implement', task_id: taskId, job_id: 'stage-aware-implement', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: '2026-07-15T12:01:00Z', queue_deadline: '2026-07-16T12:01:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 			{ id: 'stage-aware-review', task_id: taskId, job_id: 'stage-aware-review', stage: 'review', state: 'timed_out', claimable: false, queue_entered_at: '2026-07-15T12:02:00Z', queue_deadline: '2026-07-16T12:02:00Z', execution_deadline: '2026-07-15T12:03:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
-	} : taskId === 'live-scroll' ? {
+	} : taskId === 'live-scroll' || taskId === 'gate' ? {
 		jobs: [],
 		events: Array.from({ length: liveEventCount }, (_, index) => ({
 			id: index + 1,
@@ -151,6 +153,21 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 2, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human' as const, payload: { version: 2 }, at: '2026-07-15T11:59:00Z' },
 		],
 		work_orders: [],
+	} : taskId === 'setup-submitted' ? {
+		jobs: [],
+		events: [],
+		// A delivered implement attempt awaiting review: does not block a setup
+		// change; only claimed attempts and in-flight verdicts do (spec §21.36).
+		work_orders: [
+			{ id: 'setup-submitted-implement-1', task_id: taskId, job_id: 'setup-submitted-implement-1', stage: 'implement', state: 'submitted', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'setup-submitted-review-1-seat-1', task_id: taskId, job_id: 'setup-submitted-review-1-seat-1', stage: 'review', state: 'queued', claimable: true, review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
+	} : taskId === 'setup-claimed' ? {
+		jobs: [],
+		events: [],
+		work_orders: [
+			{ id: 'setup-claimed-implement-1', task_id: taskId, job_id: 'setup-claimed-implement-1', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -163,7 +180,11 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       workspace: 'demo',
       source: 'mcp',
       title: overflowing ? 'Overflowing task' : 'Short task',
-      body: overflowing ? Array.from({ length: 80 }, (_, index) => `Description line ${index + 1}`).join('\n') : 'A short description.',
+      body: taskId === 'markdown-body'
+        ? '# Structured context\n\nA **clear** paragraph with [safe link](https://example.test).\n\n- first item\n- [x] completed item\n\n`inline code`\n\n<script data-unsafe>window.hacked = true</script>'
+        : taskId === 'long-body'
+          ? Array.from({ length: 30 }, (_, index) => `Description paragraph ${index + 1}.`).join('\n\n')
+          : overflowing ? Array.from({ length: 80 }, (_, index) => `Description line ${index + 1}`).join('\n') : 'A short description.',
       class: 'bug',
       level: 'L2',
       repo: 'conveyor',
@@ -171,6 +192,18 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       branch: `conveyor/task-${taskId}`,
 		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
+      setup: taskId.startsWith('setup-') ? 'old' : '',
+      setup_contract: taskId.startsWith('setup-') ? {
+        name: 'old',
+        execution_settings: {
+          control_plane: { triage: { model: 'control', timeout: '20m' } },
+          spec: { harness: 'codex', model: 'gpt-spec', model_policy: 'explicit', timeout: '30m' },
+          implementation: { harness: 'codex', model: 'gpt-old', model_policy: 'explicit', effort: 'medium', timeout: '2h' },
+          review: { execution: 'mcp', timeout: '45m', fallback_harness: 'codex' },
+        },
+        review: { seats: [{ harness: 'codex', model: 'gpt-review', effort: 'medium' }] },
+        refresh_review: 'delta',
+      } : undefined,
       created_at: createdAt,
     },
 		jobs: reviewActivity.jobs,
@@ -316,6 +349,60 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
 	await page.goto('/tasks/no-orders/full')
 	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
 	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
+})
+
+test('task detail previews and submits a named future-only setup change', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	const nextSetup = {
+		name: 'next',
+		execution_settings: {
+			control_plane: { triage: { model: 'control', timeout: '20m' } },
+			spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
+			implementation: { harness: 'claude', model: 'claude-next', model_policy: 'explicit', effort: 'high', timeout: '3h' },
+			review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
+		},
+		review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
+		refresh_review: 'delta',
+	}
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-change', false).task.setup_contract, nextSetup], default_setup: 'old', execution: {} } } }))
+	let submitted: Record<string, unknown> | undefined
+	await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
+		submitted = route.request().postDataJSON()
+		await route.fulfill({ json: { task: { ...activity('setup-change', false).task, setup: 'next', setup_contract: nextSetup }, review_transition: 'same_round_reconciled' } })
+	})
+	await page.goto('/tasks/setup-change/full')
+	await expect(page.getByText('affects future work only')).toBeVisible()
+	await page.getByLabel('Named execution setup').selectOption('next')
+	await expect(page.getByText(/After: implement claude \/ explicit \/ high \/ 3h/)).toBeVisible()
+	await page.getByLabel('Setup change reason').fill('repair routing')
+	await page.getByRole('button', { name: 'Change setup' }).click()
+	await expect(page.getByText('Setup changed: same round reconciled.')).toBeVisible()
+	expect(submitted?.setup).toBe('next')
+	expect(submitted?.reason).toBe('repair routing')
+	expect(String(submitted?.request_id)).not.toBe('')
+})
+
+test('task sheet exposes the setup change control behind an expandable section', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-submitted', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-submitted')
+	const summary = page.locator('summary', { hasText: 'Change execution setup' })
+	await expect(summary).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).not.toBeVisible()
+	await summary.click()
+	await expect(page.getByLabel('Named execution setup')).toBeVisible()
+	// The implement attempt is submitted (delivered), not claimed: it must not
+	// disable the control (spec §21.36).
+	await expect(page.getByLabel('Named execution setup')).toBeEnabled()
+	await expect(page.getByLabel('Setup change reason')).toBeEnabled()
+})
+
+test('a claimed attempt disables the setup change control with the specific blocker', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-claimed', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-claimed/full')
+	await expect(page.getByText('An attempt is claimed and executing.')).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).toBeDisabled()
 })
 
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
@@ -528,6 +615,38 @@ test('task sheet bounds an overflowing spec and expands and collapses it accessi
 	await expect(page.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
 	await expect(page.locator('[data-spec-overflow-shadow]')).toBeVisible()
 	await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+})
+
+test('task body renders safe GFM in sheet and full-page headers', async ({ page }) => {
+	for (const path of ['/tasks/markdown-body', '/tasks/markdown-body/full']) {
+		await page.goto(path)
+		await expect(page.getByRole('heading', { name: 'Structured context' })).toBeVisible()
+		await expect(page.getByText('clear', { exact: true })).toHaveCSS('font-weight', /^(600|700)$/)
+		await expect(page.getByRole('link', { name: 'safe link' })).toHaveAttribute('href', 'https://example.test')
+		await expect(page.getByText('completed item')).toBeVisible()
+		await expect(page.locator('script[data-unsafe]')).toHaveCount(0)
+		await expect(page.getByText('<script data-unsafe>window.hacked = true</script>')).toBeVisible()
+	}
+})
+
+test('long task body is constrained and expands accessibly in both header variants', async ({ page }) => {
+	for (const path of ['/tasks/long-body', '/tasks/long-body/full']) {
+		await page.goto(path)
+		const expand = page.getByRole('button', { name: 'Show full description' })
+		await expect(expand).toBeVisible()
+		await expect(expand).toHaveAttribute('aria-expanded', 'false')
+		const viewportID = await expand.getAttribute('aria-controls')
+		expect(viewportID).toBeTruthy()
+		const viewport = page.locator(`#${viewportID}`)
+		await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+		await expect(page.locator('[data-task-body-overflow-shadow]')).toBeVisible()
+
+		await expand.click()
+		const collapse = page.getByRole('button', { name: 'Show less description' })
+		await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+		await expect(page.locator('[data-task-body-overflow-shadow]')).toHaveCount(0)
+		await expect(page.getByText('Description paragraph 30.')).toBeVisible()
+	}
 })
 
 test('short side-view specs and full-page specs remain unbounded', async ({ page }) => {
@@ -802,7 +921,11 @@ for (const decision of ['approve', 'redirect'] as const) {
 		}
 		await reviewRequest
 
-		const intervention = page.getByText(decision === 'approve' ? 'Approved' : 'Requested changes', { exact: true })
+		const intervention = page
+			.getByRole('region', { name: 'Execution event timeline' })
+			.locator('ol > li')
+			.filter({ hasText: decision === 'approve' ? 'Approved' : 'Requested changes' })
+			.last()
 		await expect(intervention).toBeVisible()
 		await expect(intervention).toBeInViewport()
 		await expect.poll(() => container.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1)

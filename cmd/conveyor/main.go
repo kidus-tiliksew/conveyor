@@ -177,6 +177,7 @@ func taskCmd() *cobra.Command {
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
 		closeTaskCmd(),
+		changeTaskSetupCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
 		reviewTaskCmd(core.InterventionRedirect),
@@ -204,6 +205,33 @@ func closeTaskCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&reason, "reason", "", "cancellation reason")
+	return command
+}
+
+func changeTaskSetupCmd() *cobra.Command {
+	var setup, reason, requestID string
+	var applyLatest bool
+	command := &cobra.Command{
+		Use: "setup <id>", Short: "Change a task's frozen setup for future work only", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
+				return fmt.Errorf("--reason and --request-id are required")
+			}
+			if applyLatest == (strings.TrimSpace(setup) != "") {
+				return fmt.Errorf("exactly one of --setup or --apply-latest is required")
+			}
+			result, err := newClient().changeTaskSetup(args[0], setup, reason, requestID, applyLatest)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "task %s now freezes setup %s; affects future work only (%s)\n", result.Task.ID, result.Task.SetupName, result.ReviewTransition)
+			return nil
+		},
+	}
+	command.Flags().StringVar(&setup, "setup", "", "currently defined named workspace setup")
+	command.Flags().BoolVar(&applyLatest, "apply-latest", false, "re-freeze the latest definition of the task's current setup")
+	command.Flags().StringVarP(&reason, "reason", "r", "", "operator reason")
+	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
 	return command
 }
 

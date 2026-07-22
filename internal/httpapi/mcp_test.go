@@ -63,7 +63,7 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 		t.Fatalf("owning worker read: %v", err)
 	}
 	otherWorkerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-b", Workspace: "demo"}))
-	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkerUnauthorized) {
+	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 		t.Fatalf("other worker read error=%v", err)
 	}
 	wrongWorkspace := maps.Clone(args)
@@ -138,6 +138,14 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			}
 			if !bodyRequired {
 				t.Fatalf("create_task does not require body: %s", data)
+			}
+			body, ok := properties["body"].(map[string]any)
+			if !ok || body["type"] != "string" {
+				t.Fatalf("create_task body is not a string schema: %s", data)
+			}
+			description, _ := body["description"].(string)
+			if !strings.Contains(description, "GitHub-flavored Markdown") || !strings.Contains(description, "headings and lists") {
+				t.Fatalf("create_task body does not publish structured GFM guidance: %s", data)
 			}
 		}
 	}

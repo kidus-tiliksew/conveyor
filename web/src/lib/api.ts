@@ -198,6 +198,14 @@ export async function setTaskHold(taskId: string, token: string, hold: boolean) 
   return response.json() as Promise<Task>
 }
 
+export async function changeTaskSetup(taskId: string, token: string, input: { setup?: string; apply_latest?: boolean; reason: string; request_id: string }) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/setup`), {
+    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ task: Task; review_transition: string }>
+}
+
 export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string) {
 	const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
 		method: 'POST',

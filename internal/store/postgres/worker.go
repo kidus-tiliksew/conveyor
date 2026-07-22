@@ -144,7 +144,7 @@ func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, ses
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -162,7 +162,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	now := time.Now().UTC()
 	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -171,7 +171,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		if current.WorkerID == workerID && current.SessionID == release.SessionID && current.State == core.WorkOrderCancelled {
 			return core.WorkOrder{}, store.ErrWorkOrderCancelled
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
 		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderTimedOut, "work_order.timed_out", now); err != nil {
@@ -180,7 +180,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		if err = tx.Commit(ctx); err != nil {
 			return core.WorkOrder{}, err
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if !current.LeaseExpiresAt.After(now) {
 		if _, err = s.expireWorkOrderClaimTx(ctx, tx, current, now); err != nil {
@@ -189,7 +189,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		if err = tx.Commit(ctx); err != nil {
 			return core.WorkOrder{}, err
 		}
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	retryCount := current.AutomaticRetryCount
 	nextRetry := time.Time{}
@@ -225,7 +225,7 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_detail=$3,last_failure_exit_status=$4,last_failure_at=$5,automatic_retry_count=$6,next_retry_at=$7,retry_suppressed=$8,retry_suppression_reason=$9,updated_at=$10 WHERE workspace_id=$11 AND id=$12 AND worker_id=$13 AND session_id=$14 AND state='claimed' RETURNING `+workOrderColumns,
 		release.Outcome, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, workspace(ctx), workOrderID, workerID, release.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.WorkOrder{}, store.ErrWorkerUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return core.WorkOrder{}, err

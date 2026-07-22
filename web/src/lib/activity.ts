@@ -406,6 +406,8 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
 		return { title: 'Conflict fix dispatched to implementation', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined }
 	case 'approval.stale':
 		return { title: 'Approval became stale after the PR head changed', detail: typeof payload.review_scope === 'string' ? `Refresh scope: ${payload.review_scope}` : undefined, alarm: true }
+	case 'review.refresh_head_advanced':
+		return { title: 'Refresh review retargeted to the newly pushed head', detail: typeof payload.new_head === 'string' ? `Head: ${payload.new_head.slice(0, 8)}` : undefined }
 	case 'review.refresh_round_created':
 		return { title: `Refresh review round ${String(payload.review_round ?? '')} started`, detail: typeof payload.review_scope === 'string' ? `Scope: ${payload.review_scope}` : undefined }
 	case 'review.refresh_skipped':

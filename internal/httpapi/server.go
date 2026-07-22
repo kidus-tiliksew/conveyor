@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
@@ -817,7 +818,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		WorkOrders:                workOrders,
 		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders),
-		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(workOrders),
+		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(workOrders, events)),
 		Stalled:                   stalled,
 		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,

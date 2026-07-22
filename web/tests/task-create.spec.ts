@@ -70,3 +70,74 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
 
   await expect.poll(submitted).toContain('"hold":true')
 })
+
+test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {
+  await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+
+  const editor = page.locator('textarea')
+  const toolbar = page.getByRole('toolbar', { name: 'Markdown formatting' })
+  for (const name of ['Heading', 'Bold', 'Italic', 'Quote', 'Inline code', 'Code block', 'Link', 'Bullet list', 'Numbered list', 'Task list']) {
+    await expect(toolbar.getByRole('button', { name, exact: true })).toBeVisible()
+  }
+  await expect(editor).toHaveCSS('font-family', /monospace|Mono/i)
+
+  await editor.fill('format me')
+  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 6))
+  await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
+  await expect(editor).toHaveValue('**format** me')
+  await expect(editor).toBeFocused()
+  await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([2, 8])
+  await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
+  await expect(editor).toHaveValue('format me')
+
+  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 6))
+  await editor.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
+  await expect(editor).toHaveValue('**format** me')
+  await editor.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
+  await expect(editor).toHaveValue('format me')
+
+  await editor.press(process.platform === 'darwin' ? 'Meta+i' : 'Control+i')
+  await expect(editor).toHaveValue('_format_ me')
+  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(9, 11))
+  await editor.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k')
+  await expect(editor).toHaveValue('_format_ [me](url)')
+  await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => element.value.slice(element.selectionStart, element.selectionEnd))).toBe('url')
+
+  for (const [name, expected] of [
+    ['Heading', '## first\n## second'],
+    ['Quote', '> first\n> second'],
+    ['Bullet list', '- first\n- second'],
+    ['Numbered list', '1. first\n2. second'],
+  ] as const) {
+    await editor.fill('first\nsecond')
+    await editor.selectText()
+    await toolbar.getByRole('button', { name, exact: true }).click()
+    await expect(editor).toHaveValue(expected)
+    await toolbar.getByRole('button', { name, exact: true }).click()
+    await expect(editor).toHaveValue('first\nsecond')
+  }
+
+  for (const [name, expected] of [['Inline code', '`code`'], ['Code block', '```\ncode\n```']] as const) {
+    await editor.fill('code')
+    await editor.selectText()
+    await toolbar.getByRole('button', { name, exact: true }).click()
+    await expect(editor).toHaveValue(expected)
+    await toolbar.getByRole('button', { name, exact: true }).click()
+    await expect(editor).toHaveValue('code')
+  }
+
+  await editor.fill('first\nsecond')
+  await editor.selectText()
+  await toolbar.getByRole('button', { name: 'Task list', exact: true }).click()
+  await expect(editor).toHaveValue('- [ ] first\n- [ ] second')
+  await toolbar.getByRole('button', { name: 'Task list', exact: true }).click()
+  await expect(editor).toHaveValue('first\nsecond')
+
+  await page.getByRole('tab', { name: 'Preview' }).click()
+  await expect(page.getByRole('tabpanel')).toContainText('first')
+  await page.getByRole('tab', { name: 'Write' }).click()
+  await editor.fill('')
+  await page.getByRole('tab', { name: 'Preview' }).click()
+  await expect(page.getByText('Nothing to preview')).toBeVisible()
+})

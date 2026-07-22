@@ -271,6 +271,11 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	orders = store.CurrentReviewOrders(orders, events)
 	recovery := store.InterruptedReviewRecoveryNeeded(orders)
 	if recovery == nil {
 		// The store owns durable idempotency and may still return the original
@@ -657,6 +662,15 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 			scope = config.RefreshReviewDelta
 		}
 		if err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
+			return nil, err
+		}
+	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
+		// A fix submitted while the approval is stale must retarget the
+		// refresh review to the pushed head; each refresh seat order
+		// contracts the baseline and the new head (spec §21.30), so leaving
+		// the recorded head behind would review a snapshot that predates
+		// the fix on every subsequent round.
+		if err = s.Store.AdvanceTaskRefreshHead(ctx, task.ID, reviewedHead); err != nil {
 			return nil, err
 		}
 	}
