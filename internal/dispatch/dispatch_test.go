@@ -53,6 +53,30 @@ type concurrentSpecDispatchStore struct {
 	createCalls    int
 }
 
+type taskReadFailureStore struct{ store.Store }
+
+func (taskReadFailureStore) GetTask(context.Context, string) (core.Task, error) {
+	return core.Task{}, errors.New("task read unavailable")
+}
+
+func TestTransitionDoesNotPersistWithoutKnownDestination(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "transition-read-failure", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	d := &Dispatcher{Store: taskReadFailureStore{Store: st}}
+	if err := d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageImplement, ""); err == nil {
+		t.Fatal("transition succeeded despite task read failure")
+	}
+	persisted, err := st.GetTask(ctx, task.ID)
+	if err != nil || persisted.State != core.TaskRunning {
+		t.Fatalf("task=%+v err=%v", persisted, err)
+	}
+}
+
 func newConcurrentSpecDispatchStore(st store.Store) *concurrentSpecDispatchStore {
 	return &concurrentSpecDispatchStore{
 		Store:          st,

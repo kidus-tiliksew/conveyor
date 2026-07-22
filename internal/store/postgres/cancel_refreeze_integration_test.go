@@ -62,7 +62,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, recoverJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderStale, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), CreatedAt: now}); err != nil {
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	change := &store.RecoveryRefreeze{Setup: next, RequiredModel: "new", RequiredHarness: "codex", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "exec"}, Effort: "high", EffortArgv: []string{"--effort", "high"}}, ExecutionTimeoutText: "2h"}

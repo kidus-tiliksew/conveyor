@@ -41,6 +41,65 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "create-order-state", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderCancelled, core.WorkOrderStale, "unsupported"} {
+		id := job.ID + "-" + string(state)
+		err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: state})
+		var transitionErr *core.ErrInvalidTransition
+		if !errors.As(err, &transitionErr) || transitionErr.Space != core.WorkOrderLifecycle || transitionErr.From != "" || transitionErr.Command != string(core.WorkOrderCmdCreate) {
+			t.Fatalf("state %q error = %v", state, err)
+		}
+		if _, getErr := st.GetWorkOrder(ctx, id); getErr == nil {
+			t.Fatalf("state %q was persisted", state)
+		}
+	}
+}
+
+func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "review-requeue-command", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetTask(ctx, task.ID)
+	if err != nil || persisted.State != core.TaskQueued || persisted.NextStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", persisted, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"stage.advance"`) {
+			return
+		}
+	}
+	t.Fatal("review requeue did not record stage.advance")
+}
+
 func TestMemoryGitHubLifecycleOnlyEmitsActivityForOutcomesAndRealRetries(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(context.Background(), "test")
@@ -565,7 +624,15 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderCompleted}); err != nil {
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	completedOrder, err := st.ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedOrder.State = core.WorkOrderCompleted
+	if err = st.UpdateWorkOrder(ctx, completedOrder, core.WorkOrderCmdSubmitSpec); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})

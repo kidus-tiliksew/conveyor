@@ -880,10 +880,18 @@ func (d *Dispatcher) recordFeatureSuggestion(ctx context.Context, task core.Task
 }
 
 func (d *Dispatcher) transition(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage) error {
+	task, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	destination, err := core.TransitionTask(task.State, command)
+	if err != nil {
+		return err
+	}
 	if err := d.Store.SetTaskTransition(ctx, taskID, command, next, recovery); err != nil {
 		return err
 	}
-	if task, err := d.Store.GetTask(ctx, taskID); err == nil && task.State == core.TaskQueued {
+	if destination == core.TaskQueued {
 		d.Enqueue(ctx, taskID)
 	}
 	return nil

@@ -126,6 +126,9 @@ func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
 	if !strings.Contains(text, "state IN ("+quotedWorkOrderStates()+")") {
 		t.Fatalf("work-order constraint is not core-derived: %s", text)
 	}
+	if migrationChecksum(raw) == migrationChecksum(rendered) {
+		t.Fatal("raw template and rendered migration unexpectedly share a checksum")
+	}
 }
 
 func TestJobCostPersistenceKeepsMissingDistinctFromReportedZero(t *testing.T) {

@@ -173,7 +173,12 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			command = core.TaskIntakeFinalize
 		}
 		if err := s.Store.TransitionTaskState(r.Context(), id, command); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			var transitionErr *core.ErrInvalidTransition
+			if errors.As(err, &transitionErr) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		t.State = core.TaskQueued

@@ -2383,7 +2383,7 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 				return err
 			}
 			if int(window) < decision.MaxBounces {
-				command, next, recovery = core.TaskStageBounce, core.StageImplement, ""
+				command, next, recovery = core.TaskStageAdvance, core.StageImplement, ""
 			} else if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})}); err != nil {
 				return err
 			} else {
@@ -2402,6 +2402,10 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 			if approveErr != nil {
 				return approveErr
 			}
+			// Auto-approval currently projects running -> awaiting_human with
+			// gate.merge even though the merge gate is off. The table has no direct
+			// running -> approved edge; keep this explicit gap workaround visible
+			// until a table amendment supplies the intended command (spec §21.37).
 			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 				return err
 			}
@@ -2424,6 +2428,9 @@ func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 		}); err != nil {
 			return err
 		}
+		// When autoApprove is true, this second projection records an intervention
+		// command without a human intervention. It is the paired gap workaround for
+		// the absent running -> approved table edge (spec §21.37).
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err
 		}

@@ -920,7 +920,7 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		window++
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})})
 		if window < decision.MaxBounces {
-			command, next, recovery = core.TaskStageBounce, core.StageImplement, ""
+			command, next, recovery = core.TaskStageAdvance, core.StageImplement, ""
 		} else {
 			command = core.TaskStageBounceLimit
 			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})})
@@ -938,6 +938,10 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		if approveErr != nil {
 			return approveErr
 		}
+		// Auto-approval currently projects running -> awaiting_human with
+		// gate.merge even though the merge gate is off. The table has no direct
+		// running -> approved edge; keep this explicit gap workaround visible
+		// until a table amendment supplies the intended command (spec §21.37).
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 		fromState, state = state, approved
 		command = core.TaskInterventionApproveReview
@@ -951,6 +955,9 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 	}
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
 	m.tasks[task.ID] = task
+	// When autoApprove is true, this second projection records an intervention
+	// command without a human intervention. It is the paired gap workaround for
+	// the absent running -> approved table edge (spec §21.37).
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
@@ -1117,8 +1124,14 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 		order.QueueDeadline = order.QueueEnteredAt.Add(24 * time.Hour)
 	}
 	order.UpdatedAt = now
+	expected, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+	if err != nil {
+		return err
+	}
 	if order.State == "" {
-		order.State, _ = core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		order.State = expected
+	} else if order.State != expected {
+		return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: "", Command: string(core.WorkOrderCmdCreate), Allowed: []core.TransitionAlternative{{Command: string(core.WorkOrderCmdCreate), To: string(expected)}}}
 	}
 	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[order.ID] = order

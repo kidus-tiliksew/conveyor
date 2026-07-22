@@ -88,16 +88,15 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if err != nil {
 			return err
 		}
-		sql, err := migrationFiles.ReadFile(name)
+		rawSQL, err := migrationFiles.ReadFile(name)
 		if err != nil {
 			return err
 		}
-		sql, err = renderMigration(sql)
+		checksum := migrationChecksum(rawSQL)
+		sql, err := renderMigration(rawSQL)
 		if err != nil {
 			return fmt.Errorf("render migration %s: %w", name, err)
 		}
-		digest := sha256.Sum256(sql)
-		checksum := hex.EncodeToString(digest[:])
 		var appliedName, appliedChecksum string
 		err = tx.QueryRow(ctx,
 			"SELECT name, checksum FROM conveyor_schema_migrations WHERE version = $1",
@@ -196,6 +195,11 @@ func quotedWorkOrderStates() string {
 		values = append(values, "'"+string(state)+"'")
 	}
 	return strings.Join(values, ", ")
+}
+
+func migrationChecksum(sql []byte) string {
+	digest := sha256.Sum256(sql)
+	return hex.EncodeToString(digest[:])
 }
 
 func migrationVersion(name string) (int, error) {
