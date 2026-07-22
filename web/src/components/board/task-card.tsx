@@ -41,6 +41,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent" className="max-w-36 truncate">{provenance.label}</Badge>
       </div>
+      {item.stalled?.last_failure && <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">{item.stalled.last_failure}</p>}
       {item.task.repo && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-faint">
           <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: repoColor(item.task.repo) }} />

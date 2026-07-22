@@ -10,7 +10,7 @@ export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
   { key: 'implement', label: 'Implementing' },
   { key: 'review', label: 'Reviewing' },
   { key: 'verify', label: 'Verifying' },
-  { key: 'human', label: 'Awaiting human' },
+  { key: 'human', label: 'Needs operator' },
   { key: 'done', label: 'Completed' },
 ]
 
@@ -38,6 +38,7 @@ export const defaultReasonCode: Record<InterventionAction, string> = {
   redirect: 'changes-requested',
   reject: 'rejected',
   pull_to_local: 'needs-human',
+	cancel: 'cancelled',
 }
 
 export const stageLabels: Record<string, string> = {

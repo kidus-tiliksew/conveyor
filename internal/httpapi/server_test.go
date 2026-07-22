@@ -165,6 +165,52 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	}
 }
 
+func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "close-running", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "close-running-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	handler := server.Handler()
+	call := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/close?workspace_id=demo", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Conveyor-Actor", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := call(`{}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(`{"reason":"obsolete"}`); response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+		t.Fatalf("close status=%d body=%s", response.Code, response.Body.String())
+	}
+	order, _ := st.GetWorkOrder(ctx, job.ID)
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	if order.State != core.WorkOrderCancelled || len(interventions) != 1 || interventions[0].ActorID != "alice" || interventions[0].Action != core.InterventionCancel {
+		t.Fatalf("order=%+v interventions=%+v", order, interventions)
+	}
+	if response := call(`{"reason":"again"}`); response.Code != http.StatusConflict {
+		t.Fatalf("terminal close status=%d body=%s", response.Code, response.Body.String())
+	}
+	events, _ := st.CountEvents(ctx, task.ID, "task.cancelled")
+	if events != 1 {
+		t.Fatalf("cancel events=%d", events)
+	}
+}
+
 func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")

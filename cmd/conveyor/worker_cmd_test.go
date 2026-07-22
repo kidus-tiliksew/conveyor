@@ -410,6 +410,59 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 	}
 }
 
+func TestRunHarnessChildStopsWithoutRetryWhenOrderIsCancelled(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "cancelled.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+	renewed := make(chan struct{}, 1)
+	releases := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "cancel-active-child", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(300 * time.Millisecond)})
+		case strings.HasSuffix(r.URL.Path, "/renew"):
+			select {
+			case renewed <- struct{}{}:
+			default:
+			}
+			http.Error(w, store.ErrWorkOrderCancelled.Error(), http.StatusConflict)
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			releases++
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "cancel-active-child", State: core.WorkOrderCancelled})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "cancel-active-child", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel"}}}
+	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, io.Discard, io.Discard)
+	if !errors.Is(err, errWorkerOrderCancelled) {
+		t.Fatalf("run error=%v", err)
+	}
+	select {
+	case <-renewed:
+	default:
+		t.Fatal("worker never observed the cancelled order")
+	}
+	if releases != 0 {
+		t.Fatalf("cancelled child released for retry %d times", releases)
+	}
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	process, findErr := os.FindProcess(pid)
+	if findErr != nil {
+		t.Fatal(findErr)
+	}
+	if signalErr := process.Signal(syscall.Signal(0)); signalErr == nil {
+		t.Fatalf("cancelled harness child %d is still running", pid)
+	}
+}
+
 func TestWorkerTransportClassificationIncludesRefusalTimeoutAndRetryableStatus(t *testing.T) {
 	c := &client{base: "http://127.0.0.1:1", workspace: "demo"}
 	_, err := c.workerConfigContext(t.Context(), "credential")

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -110,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/close", s.closeTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.With(s.requireMutationAuth).Post("/features", s.createFeature)
@@ -260,6 +262,66 @@ type reviewRequest struct {
 	Action     core.InterventionAction `json:"action"`
 	ReasonCode string                  `json:"reason_code"`
 	Comment    string                  `json:"comment"`
+}
+
+type closeTaskRequest struct {
+	Reason     string `json:"reason"`
+	ReasonCode string `json:"reason_code"`
+	Comment    string `json:"comment"`
+}
+
+func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	task, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+		http.Error(w, store.ErrTaskTerminal.Error(), http.StatusConflict)
+		return
+	}
+	var request closeTaskRequest
+	if err = json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	reason := strings.TrimSpace(request.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(request.ReasonCode)
+	}
+	if reason == "" || len(reason) > 64 {
+		http.Error(w, "reason is required and must be at most 64 characters", http.StatusBadRequest)
+		return
+	}
+	latest, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !hasJob {
+		latest = core.Job{}
+	}
+	intervention := core.Intervention{TaskID: id, JobID: latest.ID, Action: core.InterventionCancel, ReasonCode: reason, Comment: strings.TrimSpace(request.Comment)}
+	if s.OnIntervention != nil {
+		err = s.OnIntervention(r.Context(), task, latest, intervention)
+	} else {
+		_, err = s.Store.CancelTask(r.Context(), intervention)
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrTaskTerminal) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	updated, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, updated)
 }
 
 func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
@@ -610,6 +672,7 @@ type reviewItem struct {
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
+	Stalled                   *store.StalledState                   `json:"stalled,omitempty"`
 	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
@@ -623,6 +686,7 @@ type activityItem struct {
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
+	Stalled                   *store.StalledState                   `json:"stalled,omitempty"`
 }
 
 func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
@@ -651,15 +715,19 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 	items := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
 		marker := markerByTask[task.ID]
-		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil {
+		if task.State == core.TaskMerged || task.State == core.TaskClosed {
+			marker.Stalled = nil
+		}
+		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil {
 			continue
 		}
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil,
+			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil || marker.Stalled != nil,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
 			InterruptedReviewRecovery: marker.InterruptedReviewRecovery,
+			Stalled:                   marker.Stalled,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -737,15 +805,20 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			workerStatus = &status
 		}
 	}
+	stalled := store.StalledTask(workOrders)
+	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+		stalled = nil
+	}
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil,
 		Spec:                      specPointer,
 		WorkOrders:                workOrders,
 		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders),
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(workOrders),
+		Stalled:                   stalled,
 		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,

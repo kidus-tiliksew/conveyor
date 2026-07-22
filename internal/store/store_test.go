@@ -547,6 +547,74 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	}
 }
 
+func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
+	ctx := WithWorkspace(WithActor(t.Context(), Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "cancel-task", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "cancel-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	completedJob := core.Job{ID: "completed-order", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, completedJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := st.CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+	if err != nil || cancelled.State != core.TaskClosed || cancelled.NextStage != "" {
+		t.Fatalf("cancelled=%+v err=%v", cancelled, err)
+	}
+	order, _ := st.GetWorkOrder(ctx, job.ID)
+	completed, _ := st.GetWorkOrder(ctx, completedJob.ID)
+	if order.State != core.WorkOrderCancelled || order.SessionID != claimed.SessionID || completed.State != core.WorkOrderCompleted {
+		t.Fatalf("orders cancelled=%+v completed=%+v", order, completed)
+	}
+	if _, err = st.RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {
+		t.Fatalf("renew error=%v", err)
+	}
+	claimed.Progress = "must not land"
+	if err = st.UpdateWorkOrder(ctx, claimed); !errors.Is(err, ErrWorkOrderCancelled) {
+		t.Fatalf("update error=%v", err)
+	}
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	cancelEvents, _ := st.CountEvents(ctx, task.ID, "task.cancelled")
+	if len(interventions) != 1 || interventions[0].ActorID != "operator" || cancelEvents != 1 {
+		t.Fatalf("interventions=%+v events=%d", interventions, cancelEvents)
+	}
+	if _, err = st.CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, ErrTaskTerminal) {
+		t.Fatalf("second cancel error=%v", err)
+	}
+	cancelEvents, _ = st.CountEvents(ctx, task.ID, "task.cancelled")
+	if cancelEvents != 1 {
+		t.Fatalf("duplicate cancellation event count=%d", cancelEvents)
+	}
+}
+
+func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
+	stalled := StalledTask([]core.WorkOrder{{ID: "retry", State: core.WorkOrderQueued, RetrySuppressed: true, LastFailureMessage: "provider rejected model"}})
+	if stalled == nil || stalled.WorkOrder.ID != "retry" || stalled.LastFailure == "" {
+		t.Fatalf("stalled=%+v", stalled)
+	}
+	if got := StalledTask([]core.WorkOrder{{ID: "cancelled", State: core.WorkOrderCancelled, RetrySuppressed: true}}); got != nil {
+		t.Fatalf("cancelled order stalled=%+v", got)
+	}
+	if got := StalledTask([]core.WorkOrder{{ID: "loop", State: core.WorkOrderQueued, AutomaticRetryCount: 2, LastFailureMessage: "dispatch failed"}}); got == nil || got.Reason != "dispatch is failing repeatedly" {
+		t.Fatalf("loop stalled=%+v", got)
+	}
+}
+
 func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()

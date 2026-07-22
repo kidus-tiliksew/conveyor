@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -949,6 +950,7 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
 			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(ordersByTask[row.TaskID]),
+			Stalled:                   store.StalledTask(ordersByTask[row.TaskID]),
 		}
 	}
 	return result, nil
@@ -998,6 +1000,82 @@ func (s *Store) CreateIntervention(ctx context.Context, intervention core.Interv
 		}
 		return nil
 	})
+}
+
+func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
+		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Task{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	q := s.queries.WithTx(tx)
+	var priorState string
+	err = tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), intervention.TaskID).Scan(&priorState)
+	if err != nil {
+		return core.Task{}, notFound(err, "task %s", intervention.TaskID)
+	}
+	if core.TaskState(priorState) == core.TaskMerged || core.TaskState(priorState) == core.TaskClosed {
+		return core.Task{}, store.ErrTaskTerminal
+	}
+	actor := store.ActorFromContext(ctx)
+	if intervention.ActorID == "" {
+		intervention.ActorID = actor.ID
+	}
+	if intervention.ActorRole == "" {
+		intervention.ActorRole = actor.Role
+	}
+	if intervention.At.IsZero() {
+		intervention.At = time.Now().UTC()
+	}
+	if intervention.JobID != "" {
+		job, getErr := q.GetJob(ctx, db.GetJobParams{ID: intervention.JobID, WorkspaceID: workspace(ctx)})
+		if getErr != nil || job.TaskID != intervention.TaskID {
+			return core.Task{}, fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
+		}
+	}
+	if _, err = q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
+		return core.Task{}, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
+		return core.Task{}, err
+	}
+	rows, err := tx.Query(ctx, `UPDATE work_orders SET state='cancelled',updated_at=$1 WHERE workspace_id=$2 AND task_id=$3 AND state NOT IN ('completed','cancelled') RETURNING id,job_id`, intervention.At, workspace(ctx), intervention.TaskID)
+	if err != nil {
+		return core.Task{}, err
+	}
+	var cancelled []string
+	var jobIDs []string
+	for rows.Next() {
+		var orderID, jobID string
+		if err = rows.Scan(&orderID, &jobID); err != nil {
+			rows.Close()
+			return core.Task{}, err
+		}
+		cancelled, jobIDs = append(cancelled, orderID), append(jobIDs, jobID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return core.Task{}, err
+	}
+	rows.Close()
+	if len(jobIDs) != 0 {
+		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE task_id=$2 AND id=ANY($3) AND state<>'done'`, intervention.At, intervention.TaskID, jobIDs); err != nil {
+			return core.Task{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE tasks SET state='closed',next_stage='',recovery_stage='',updated_at=$1 WHERE workspace_id=$2 AND id=$3`, intervention.At, workspace(ctx), intervention.TaskID); err != nil {
+		return core.Task{}, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": priorState, "cancelled_work_orders": cancelled}), At: intervention.At}); err != nil {
+		return core.Task{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Task{}, err
+	}
+	return s.GetTask(ctx, intervention.TaskID)
 }
 
 func (s *Store) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
@@ -1419,6 +1497,27 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 	actor := store.ActorFromContext(ctx)
 	q := s.queries.WithTx(tx)
 	for _, eligible := range recovery.EligibleOrders {
+		change := request.Refreezes[eligible.ID]
+		if change == nil {
+			continue
+		}
+		var priorJSON []byte
+		if err = tx.QueryRow(ctx, `SELECT setup_contract FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, request.TaskID).Scan(&priorJSON); err != nil {
+			return store.InterruptedReviewRecoveryResult{}, err
+		}
+		var priorContract config.ExecutionSetup
+		_ = json.Unmarshal(priorJSON, &priorContract)
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, setupContractJSON(change.Setup), now, workspaceID, request.TaskID); err != nil {
+			return store.InterruptedReviewRecoveryResult{}, err
+		}
+		if !reflect.DeepEqual(priorContract, change.Setup) {
+			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: eligible.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": request.RequestID, "work_order_id": eligible.ID, "actor": actor.ID}), At: now}); err != nil {
+				return store.InterruptedReviewRecoveryResult{}, err
+			}
+		}
+		break
+	}
+	for _, eligible := range recovery.EligibleOrders {
 		priorOutcome := eligible.LastAttemptOutcome
 		eligible.LastAttemptOutcome = ""
 		eligible.RetrySuppressed = false
@@ -1428,7 +1527,15 @@ func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store
 		eligible.QueueEnteredAt, eligible.QueueDeadline = now, now.Add(queueTimeout)
 		eligible.RedispatchCount++
 		eligible.UpdatedAt, eligible.Claimable = now, true
-		command, updateErr := tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+		var command pgconn.CommandTag
+		var updateErr error
+		if change := request.Refreezes[eligible.ID]; change != nil {
+			eligible.RequiredModel, eligible.RequiredHarness, eligible.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
+			eligible.RequiredHarnessConfig, eligible.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
+			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,required_model=$3,required_harness=$4,required_effort=$5,required_harness_config=$6,execution_timeout=$7,updated_at=$1 WHERE workspace_id=$8 AND id=$9 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), change.RequiredModel, change.RequiredHarness, change.RequiredEffort, harnessSnapshotJSON(change.RequiredHarnessConfig), change.ExecutionTimeoutText, workspaceID, eligible.ID)
+		} else {
+			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+		}
 		if updateErr != nil {
 			return store.InterruptedReviewRecoveryResult{}, updateErr
 		}
@@ -1770,7 +1877,7 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 	return order, nil
 }
 
-func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration) (core.WorkOrder, error) {
+func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
@@ -1797,15 +1904,35 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 		}
 		return order, nil
 	}
-	if order.State != core.WorkOrderQueued || order.SessionID != "" || order.WorkerID != "" || !order.LeaseExpiresAt.IsZero() {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not an unclaimed queued order", id)
-	}
-	if order.LastAttemptOutcome == "" && !order.RetrySuppressed && order.NextRetryAt.IsZero() {
+	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
+	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND session_id='' AND worker_id='' AND lease_expires_at IS NULL AND (last_attempt_outcome<>'' OR retry_suppressed=true OR next_retry_at IS NOT NULL) RETURNING `+workOrderColumns, now, now.Add(queueTimeout), workspace(ctx), id))
+	priorState := order.State
+	if len(refreeze) != 0 && refreeze[0] != nil {
+		change := refreeze[0]
+		var priorJSON []byte
+		if err = tx.QueryRow(ctx, `SELECT setup_contract FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), order.TaskID).Scan(&priorJSON); err != nil {
+			return core.WorkOrder{}, err
+		}
+		var priorContract config.ExecutionSetup
+		_ = json.Unmarshal(priorJSON, &priorContract)
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, setupContractJSON(change.Setup), now, workspace(ctx), order.TaskID); err != nil {
+			return core.WorkOrder{}, err
+		}
+		order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
+		order.RequiredHarnessConfig, order.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
+		if !reflect.DeepEqual(priorContract, change.Setup) {
+			actor := store.ActorFromContext(ctx)
+			q := s.queries.WithTx(tx)
+			if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": requestID, "work_order_id": order.ID, "actor": actor.ID}), At: now}); err != nil {
+				return core.WorkOrder{}, err
+			}
+		}
+	}
+	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,required_model=$3,required_harness=$4,required_effort=$5,required_harness_config=$6,execution_timeout=$7,updated_at=$1 WHERE workspace_id=$8 AND id=$9 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), order.RequiredModel, order.RequiredHarness, order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1816,7 +1943,10 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": core.WorkOrderQueued, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now}); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -1932,6 +2062,10 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
 		}
 		if current.State == core.WorkOrderStale {
 			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderStale, order.ID)
+			return nil
+		}
+		if current.State == core.WorkOrderCancelled {
+			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderCancelled, order.ID)
 			return nil
 		}
 		if current.State == core.WorkOrderClaimed && !current.LeaseExpiresAt.After(now) {

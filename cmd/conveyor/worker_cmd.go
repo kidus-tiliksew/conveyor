@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -570,7 +571,14 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	ticker := time.NewTicker(10 * time.Second)
+	renewEvery := 10 * time.Second
+	if remaining := time.Until(leaseExpiresAt); remaining > 0 && remaining/3 < renewEvery {
+		renewEvery = remaining / 3
+	}
+	if renewEvery <= 0 {
+		renewEvery = time.Millisecond
+	}
+	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()
 	claimFinalized := false
 	for {
@@ -628,6 +636,9 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 			if renewErr != nil {
 				_ = command.Process.Kill()
 				<-done
+				if workerOrderCancelled(renewErr) {
+					return errWorkerOrderCancelled
+				}
 				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
 				reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, _ = c.reconcileWorkerOrderReadOnlyContext(reconcileCtx, credential, item.Order.ID, sessionID)
@@ -742,6 +753,12 @@ func makeCheckoutWritable(root string) error {
 }
 
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
+var errWorkerOrderCancelled = errors.New("work order was cancelled by an operator")
+
+func workerOrderCancelled(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(response.Message), "work order was cancelled")
+}
 
 func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {
 	safetyDeadline := leaseExpiresAt.Add(-2 * time.Second)

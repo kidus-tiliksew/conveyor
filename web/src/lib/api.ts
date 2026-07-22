@@ -176,6 +176,16 @@ export async function redispatchTask(taskId: string, token: string) {
   return response.json() as Promise<Task>
 }
 
+export async function cancelTask(taskId: string, token: string, reason: string) {
+	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/close`), {
+		method: 'POST',
+		headers: mutationHeaders(token),
+		body: JSON.stringify({ reason }),
+	})
+	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+	return response.json() as Promise<Task>
+}
+
 // Toggle the per-task hold (spec §21.31): while held, workers never claim
 // the task's work orders; operator-attached agents may claim explicitly.
 export async function setTaskHold(taskId: string, token: string, hold: boolean) {

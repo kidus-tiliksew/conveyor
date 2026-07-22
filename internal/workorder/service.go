@@ -145,12 +145,104 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	s.refreshQueuedHarnessSnapshot(ctx, cfg, id)
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if change := recoveryRefreeze(cfg, task, order); change != nil {
+		return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout, change)
+	}
 	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
 }
 
-// refreshQueuedHarnessSnapshot re-resolves an operator-recovered order's pinned
-// harness snapshot from the current registry before it re-enters the queue
+func recoveryRefreeze(cfg *config.Config, task core.Task, order core.WorkOrder) *store.RecoveryRefreeze {
+	name := strings.TrimSpace(task.SetupName)
+	if name == "" {
+		name = strings.TrimSpace(task.SetupContract.Name)
+	}
+	if name == "" {
+		return nil
+	}
+	setup, ok := cfg.Setup(name)
+	if !ok || setup.Name != name {
+		return nil
+	}
+	projected := cfg.WithSetup(setup)
+	route, ok := projected.Routing.Stages[string(order.Stage)]
+	if !ok {
+		return nil
+	}
+	change := &store.RecoveryRefreeze{Setup: setup, ExecutionTimeoutText: route.TimeoutText}
+	if change.ExecutionTimeoutText == "" {
+		change.ExecutionTimeoutText = order.ExecutionTimeoutText
+	}
+	if order.Stage == core.StageReview {
+		round := order.ReviewRound
+		if round <= 0 {
+			round = 1
+		}
+		refrozenTask := task
+		refrozenTask.SetupContract = setup
+		_, candidates, buildErr := dispatch.BuildReviewRound(projected, refrozenTask, route, round)
+		if buildErr != nil || len(candidates) == 0 {
+			return nil
+		}
+		index := order.ReviewSeat - 1
+		if index < 0 || index >= len(candidates) {
+			index = 0
+		}
+		candidate := candidates[index]
+		change.RequiredModel, change.RequiredHarness, change.RequiredEffort = candidate.RequiredModel, candidate.RequiredHarness, candidate.RequiredEffort
+		change.RequiredHarnessConfig, change.ExecutionTimeoutText = candidate.RequiredHarnessConfig, candidate.ExecutionTimeoutText
+		return change
+	}
+	change.RequiredModel = projected.EffectiveModel(string(order.Stage))
+	change.RequiredHarness, change.RequiredEffort = route.Harness, route.Effort
+	if route.Harness != "" {
+		change.RequiredHarnessConfig = recoveryHarnessSnapshot(projected.Harnesses, route.Harness, route.Effort)
+		if change.RequiredHarnessConfig == nil {
+			return nil
+		}
+	}
+	return change
+}
+
+func recoveryHarnessSnapshot(harnesses []config.Harness, name, effort string) *core.HarnessSnapshot {
+	for _, harness := range harnesses {
+		if harness.Name != name {
+			continue
+		}
+		snapshot := &core.HarnessSnapshot{
+			Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment,
+			Command: append([]string(nil), harness.Command...), ModelArgs: append([]string(nil), harness.ModelArgs...),
+			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...), EffortArgs: cloneRecoveryEffortArgs(harness.EffortArgs),
+			Effort: effort, ProbeCommand: append([]string(nil), harness.ProbeCommand...), ProbeTimeoutText: harness.ProbeTimeoutText,
+		}
+		if effort != "" {
+			snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[effort]...)
+		}
+		return snapshot
+	}
+	return nil
+}
+
+func cloneRecoveryEffortArgs(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for effort, args := range source {
+		result[effort] = append([]string(nil), args...)
+	}
+	return result
+}
+
+// refreshQueuedHarnessSnapshot re-resolves an automatically redispatched
+// order's pinned harness definition before it re-enters the queue
 // (spec §21.32). Best-effort: retaining the prior snapshot is the explicit
 // fallback, and the recovery transition that follows reports the authoritative
 // state errors.
@@ -171,7 +263,8 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if requestID == "" {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
 	}
-	if _, err := s.Store.GetTask(ctx, taskID); err != nil {
+	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
 	orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
@@ -195,7 +288,13 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	return s.Store.RecoverInterruptedReviewRound(ctx, store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound}, timeout)
+	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}}
+	for _, order := range recovery.EligibleOrders {
+		if change := recoveryRefreeze(cfg, task, order); change != nil {
+			request.Refreezes[order.ID] = change
+		}
+	}
+	return s.Store.RecoverInterruptedReviewRound(ctx, request, timeout)
 }
 
 func latestReviewRound(orders []core.WorkOrder) int {
@@ -676,6 +775,9 @@ func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (c
 	if session == "" || order.SessionID != session {
 		return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
 	}
+	if order.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, store.ErrWorkOrderCancelled
+	}
 	if order.State == core.WorkOrderSubmitted {
 		// Submission makes the review wait durable; the implementation claim
 		// lease no longer governs this read-only same-session operation.
@@ -805,6 +907,9 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, store.ErrWorkOrderStale
 	}
+	if order.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, store.ErrWorkOrderCancelled
+	}
 	if order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimed", id)
 	}
@@ -827,6 +932,9 @@ func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
 	}
 	if current.State == core.WorkOrderStale {
 		return store.ErrWorkOrderStale
+	}
+	if current.State == core.WorkOrderCancelled {
+		return store.ErrWorkOrderCancelled
 	}
 	return nil
 }

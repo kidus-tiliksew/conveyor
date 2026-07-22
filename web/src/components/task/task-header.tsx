@@ -1,13 +1,17 @@
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, GitBranch, GitPullRequest, Hand } from 'lucide-react'
+import { ExternalLink, GitBranch, GitPullRequest, Hand, Trash2 } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
-import { setTaskHold } from '../../lib/api'
+import { cancelTask, setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { CopyButton } from '../ui/copy-button'
+import { Button } from '../ui/button'
+import { Dialog } from '../ui/dialog'
+import { Textarea } from '../ui/input'
 
 // The task-header facts (spec §13.3, amended by §§21.6–21.7): state badges,
 // the verification chip fed by the §4.1 acceptance block, the PR deep link,
@@ -32,9 +36,10 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
                 : 'outline'
           }
         >
-          {taskStateLabels[item.task.state] ?? item.task.state}
+          {item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)}
         </Badge>
         <HoldControl item={item} />
+        <CancelControl item={item} />
         {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
@@ -111,6 +116,55 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 
       <Checkout item={item} variant={variant} />
     </div>
+  )
+}
+
+function CancelControl({ item }: { item: ActivityItem }) {
+  const token = useOperatorToken()
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const mutation = useMutation({
+    mutationFn: () => cancelTask(item.task.id, token, reason.trim()),
+    onSuccess: () => {
+      setOpen(false)
+      setReason('')
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      void queryClient.invalidateQueries({ queryKey: ['task'] })
+    },
+  })
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  if (!token || terminal) return null
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 rounded-md border border-failure/30 bg-failure-soft px-2 py-0.5 text-[11px] font-medium leading-4 text-failure transition-colors hover:bg-failure/15 [&_svg]:size-3"
+      >
+        <Trash2 /> Cancel task
+      </button>
+      {open && (
+        <Dialog label="Cancel task" onClose={() => !mutation.isPending && setOpen(false)}>
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="font-semibold">Cancel this task?</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">This closes the pipeline and cancels active work orders. It does not delete the branch, worktree, issue, or pull request.</p>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            <label className="block text-sm font-medium">Reason
+              <Textarea autoFocus value={reason} maxLength={64} onChange={(event) => setReason(event.target.value)} placeholder="Why is this task being cancelled?" className="mt-1.5" />
+            </label>
+            {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setOpen(false)} disabled={mutation.isPending}>Keep task</Button>
+              <Button variant="destructive" onClick={() => mutation.mutate()} disabled={mutation.isPending || !reason.trim()}>
+                {mutation.isPending ? 'Cancelling…' : 'Cancel task'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+    </>
   )
 }
 

@@ -138,6 +138,9 @@ func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, ses
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
+		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && current.State == core.WorkOrderCancelled {
+			return core.WorkOrder{}, store.ErrWorkOrderCancelled
+		}
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
@@ -165,6 +168,9 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		return core.WorkOrder{}, err
 	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
+		if current.WorkerID == workerID && current.SessionID == release.SessionID && current.State == core.WorkOrderCancelled {
+			return core.WorkOrder{}, store.ErrWorkOrderCancelled
+		}
 		return core.WorkOrder{}, store.ErrWorkerUnauthorized
 	}
 	if !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {

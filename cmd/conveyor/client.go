@@ -127,6 +127,16 @@ func (c *client) reviewTask(id string, action core.InterventionAction, reasonCod
 	return response.Task, err
 }
 
+func (c *client) closeTask(id, reason string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task close")
+	}
+	payload, _ := json.Marshal(map[string]string{"reason": reason})
+	var task core.Task
+	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/close", payload, &task)
+	return task, err
+}
+
 func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
 	if c.token == "" {
 		return config.VersionedDocument{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")

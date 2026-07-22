@@ -6,6 +6,7 @@ import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent,
 // "Awaiting human"; only terminal states archive under "Completed".
 export function groupForSummary(item: ActivitySummary): GroupKey {
   const { state } = item.task
+  if (item.stalled?.needed && state !== 'merged' && state !== 'closed') return 'human'
   if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
   const stage = item.task.state === 'queued' ? (item.task.next_stage ?? item.latest_stage) : (item.latest_stage ?? item.task.next_stage)
@@ -48,6 +49,7 @@ export function pullRequestURL(events: TaskEvent[]): string | undefined {
 // Board-card gate chip: says what the gate is waiting for instead of a
 // generic alarm, with tone to match ("Ready to merge" is good news).
 export function gateBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'positive' } | undefined {
+  if (item.stalled?.needed) return { label: 'Stalled', variant: 'attention' }
   if (item.task.state === 'approved') return { label: 'Ready to merge', variant: 'positive' }
   if (!item.needs_attention) return undefined
   if (item.task.state === 'parked') return { label: 'Needs a route', variant: 'attention' }
