@@ -319,6 +319,43 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 	return nil, false
 }
 
+// BuildFutureWorkOrderRouting resolves one queued non-review order from the
+// task's frozen setup contract. Setup reassignment uses the same constructor
+// inputs as ordinary dispatch without creating a second routing shape
+// (spec §21.35 changes 3-5).
+func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.Stage) (core.WorkOrder, error) {
+	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement) {
+		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
+	}
+	if task.SetupContract.Name != "" {
+		cfg = cfg.WithSetup(task.SetupContract)
+	}
+	route, ok := cfg.Routing.Stages[string(stage)]
+	if !ok || route.Execution != config.ExecutionMCP {
+		return core.WorkOrder{}, fmt.Errorf("%s does not use an MCP execution route", stage)
+	}
+	var snapshot *core.HarnessSnapshot
+	if route.Harness != "" {
+		var found bool
+		snapshot, found = reviewHarnessSnapshot(cfg, route.Harness)
+		if !found {
+			return core.WorkOrder{}, fmt.Errorf("%s route references unavailable harness %q", stage, route.Harness)
+		}
+		if route.Effort != "" {
+			snapshot.Effort = route.Effort
+			snapshot.EffortArgv = append([]string(nil), snapshot.EffortArgs[route.Effort]...)
+		}
+	}
+	queueTimeout := cfg.WorkOrderQueueTimeout
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	now := time.Now().UTC()
+	return core.WorkOrder{Stage: stage, RequiredModel: cfg.EffectiveModel(string(stage)), RequiredHarness: route.Harness,
+		RequiredEffort: route.Effort, RequiredHarnessConfig: snapshot, ExecutionTimeoutText: route.TimeoutText,
+		QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout)}, nil
+}
+
 func cloneEffortArgs(source map[string][]string) map[string][]string {
 	if len(source) == 0 {
 		return nil

@@ -178,6 +178,11 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	orders = store.CurrentReviewOrders(orders, events)
 	recovery := store.InterruptedReviewRecoveryNeeded(orders)
 	if recovery == nil {
 		// The store owns durable idempotency and may still return the original
