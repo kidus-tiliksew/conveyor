@@ -26,6 +26,12 @@ var (
 	ErrReviewRetryConflict = errors.New("review round retry conflicts with current state")
 	ErrPairingInvalid      = errors.New("worker pairing token is invalid, expired, or already used")
 	ErrWorkerUnauthorized  = errors.New("worker credential is invalid or revoked")
+	// ErrWorkOrderClaimLost is the order-scoped counterpart to
+	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
+	// no longer claimed by it, typically because the claim lease expired and
+	// ownership returned to the queue (spec §21.9). Kept distinct so agents do
+	// not misdiagnose a lapsed claim as a revoked credential.
+	ErrWorkOrderClaimLost = errors.New("work order claim is no longer held by this worker (claim expired or order reassigned)")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -577,13 +583,13 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
-		return core.WorkOrder{}, ErrWorkerUnauthorized
+		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
 		return order, nil
 	}
 	if order.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, ErrWorkerUnauthorized
+		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	expires := now.Add(lease)
 	if !order.ExecutionDeadline.IsZero() && expires.After(order.ExecutionDeadline) {
@@ -605,7 +611,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, ErrWorkerUnauthorized
+		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	clearActiveAttempt(&order)
 	order.State = core.WorkOrderQueued

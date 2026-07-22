@@ -111,20 +111,23 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
-      {variant === 'full' && <SetupChangeControl item={item} />}
+      <SetupChangeControl item={item} variant={variant} />
 
       <Checkout item={item} variant={variant} />
     </div>
   )
 }
 
-function SetupChangeControl({ item }: { item: ActivityItem }) {
+function SetupChangeControl({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
   const config = useQuery({ queryKey: ['workspace-config', item.task.workspace, token], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token) })
   const [selected, setSelected] = useState(item.task.setup)
   const [reason, setReason] = useState('')
-  const active = (item.work_orders ?? []).some((order) => order.state === 'claimed' || order.state === 'submitted')
+  // Submitted spec/implement attempts are delivered, not executing; only
+  // claimed attempts and in-flight review verdicts block (spec §21.36).
+  const claimed = (item.work_orders ?? []).some((order) => order.state === 'claimed')
+  const verdictInFlight = (item.work_orders ?? []).some((order) => order.stage === 'review' && order.state === 'submitted')
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const next = config.data?.document.setups.find((setup) => setup.name === selected)
   const current = item.task.setup_contract
@@ -139,7 +142,13 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
     },
   })
   if (!token || !current) return null
-  const disabledReason = terminal ? 'Terminal tasks cannot change setup.' : active ? 'A work order is claimed or executing.' : ''
+  const disabledReason = terminal
+    ? 'Terminal tasks cannot change setup.'
+    : claimed
+      ? 'An attempt is claimed and executing.'
+      : verdictInFlight
+        ? 'A review verdict is in flight.'
+        : ''
   const oldSeats = current?.review.seats ?? []
   const newSeats = next?.review.seats ?? []
   const interruptedOutcome = item.interrupted_review_recovery
@@ -147,12 +156,8 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
       ? 'Interrupted review: panel size changes, so a whole new round will run.'
       : 'Interrupted review: identical seat assignments are retained; changed seats re-run.'
     : ''
-  return (
-    <section className="mt-4 rounded-lg border border-border bg-surface p-3" aria-label="Change execution setup">
-      <div className="flex flex-wrap items-center gap-2">
-        <strong className="text-xs font-semibold">Change execution setup</strong>
-        <span className="text-xs text-attention">affects future work only</span>
-      </div>
+  const body = (
+    <>
       <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
         <select aria-label="Named execution setup" value={selected} onChange={(event) => setSelected(event.target.value)} disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs">
           {(config.data?.document.setups ?? []).map((setup) => <option key={setup.name} value={setup.name}>{setup.name}</option>)}
@@ -169,7 +174,26 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
       {(disabledReason || interruptedOutcome) && <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>}
       {mutation.error != null && <p className="mt-2 text-xs text-failure">{String(mutation.error)}</p>}
       {mutation.data && <p className="mt-2 text-xs text-positive">Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.</p>}
-    </section>
+    </>
+  )
+  if (variant === 'full') {
+    return (
+      <section className="mt-4 rounded-lg border border-border bg-surface p-3" aria-label="Change execution setup">
+        <div className="flex flex-wrap items-center gap-2">
+          <strong className="text-xs font-semibold">Change execution setup</strong>
+          <span className="text-xs text-attention">affects future work only</span>
+        </div>
+        {body}
+      </section>
+    )
+  }
+  return (
+    <details className="mt-3 rounded-lg border border-border bg-surface p-3">
+      <summary className="cursor-pointer text-xs font-medium text-muted hover:text-foreground">
+        Change execution setup <span className="ml-1 font-normal text-attention">affects future work only</span>
+      </summary>
+      {body}
+    </details>
   )
 }
 

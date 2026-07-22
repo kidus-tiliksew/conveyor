@@ -129,8 +129,13 @@ func (m *memory) ChangeTaskSetup(ctx context.Context, raw SetupChangeRequest) (S
 		}
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 		m.workOrders[id] = order
-		if order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
-			return SetupChangeResult{}, fmt.Errorf("%w: task %s has claimed or executing work", ErrSetupChangeConflict, request.TaskID)
+		// Submitted spec/implement attempts are delivered, not executing; only
+		// claimed attempts and in-flight review verdicts block (spec §21.36).
+		if order.State == core.WorkOrderClaimed {
+			return SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", ErrSetupChangeConflict, request.TaskID)
+		}
+		if order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted {
+			return SetupChangeResult{}, fmt.Errorf("%w: task %s has an in-flight review verdict", ErrSetupChangeConflict, request.TaskID)
 		}
 	}
 	for _, desired := range request.WorkOrderUpdates {

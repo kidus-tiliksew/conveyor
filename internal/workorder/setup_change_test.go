@@ -137,6 +137,66 @@ func TestChangeTaskSetupCreatesWholeRoundWhenPanelSizeChanges(t *testing.T) {
 	}
 }
 
+func TestChangeTaskSetupAllowsSubmittedImplementAttempt(t *testing.T) {
+	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude", Effort: "high"}})
+	if err := st.CreateJob(ctx, core.Job{ID: "setup-change-implement-1", TaskID: task.ID, Stage: core.StageImplement, Harness: "external-mcp", ModelTier: "gpt-old", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	submitted := core.WorkOrder{ID: "setup-change-implement-1", TaskID: task.ID, JobID: "setup-change-implement-1", Stage: core.StageImplement,
+		State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}
+	if err := st.CreateWorkOrder(ctx, submitted); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, submitted.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "reroute review while held", "setup-submitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Task.SetupName != next.Name || result.ReviewTransition != "same_round_reconciled" {
+		t.Fatalf("result=%+v", result)
+	}
+	untouched, _ := st.GetWorkOrder(ctx, submitted.ID)
+	if untouched.State != core.WorkOrderSubmitted {
+		t.Fatalf("delivered attempt mutated=%+v", untouched)
+	}
+}
+
+func TestChangeTaskSetupRejectsInFlightReviewVerdict(t *testing.T) {
+	service, st, ctx, task, old, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.State == core.WorkOrderQueued {
+			order.RetrySuppressed, order.LastAttemptOutcome = false, ""
+			if err := st.UpdateWorkOrder(ctx, order); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed.State = core.WorkOrderSubmitted
+			if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if _, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "verdict in flight", "setup-verdict"); !errors.Is(err, store.ErrSetupChangeConflict) {
+		t.Fatalf("err=%v", err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	if current.SetupName != old.Name {
+		t.Fatalf("task mutated=%+v", current)
+	}
+}
+
 func TestChangeTaskSetupRejectsClaimedAttemptWithoutMutation(t *testing.T) {
 	service, st, ctx, task, old, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)

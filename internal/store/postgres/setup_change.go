@@ -61,12 +61,19 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 	if task.State == core.TaskMerged || task.State == core.TaskClosed {
 		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", store.ErrSetupChangeConflict, task.ID)
 	}
-	var active bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state IN ('claimed','submitted'))`, workspaceID, task.ID).Scan(&active); err != nil {
+	// Submitted spec/implement attempts are delivered, not executing; only
+	// claimed attempts and in-flight review verdicts block (spec §21.36).
+	var claimedAttempt, inFlightVerdict bool
+	if err = tx.QueryRow(ctx, `SELECT
+			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed'),
+			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND state='submitted')`, workspaceID, task.ID).Scan(&claimedAttempt, &inFlightVerdict); err != nil {
 		return store.SetupChangeResult{}, err
 	}
-	if active {
-		return store.SetupChangeResult{}, fmt.Errorf("%w: task %s has claimed or executing work", store.ErrSetupChangeConflict, task.ID)
+	if claimedAttempt {
+		return store.SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", store.ErrSetupChangeConflict, task.ID)
+	}
+	if inFlightVerdict {
+		return store.SetupChangeResult{}, fmt.Errorf("%w: task %s has an in-flight review verdict", store.ErrSetupChangeConflict, task.ID)
 	}
 	for _, desired := range request.WorkOrderUpdates {
 		var valid bool

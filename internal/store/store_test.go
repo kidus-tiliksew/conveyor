@@ -498,10 +498,10 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		}
 		priorStart = claimed.ExecutionStartedAt
 		if attempt == 1 {
-			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale renew error=%v", staleErr)
 			}
-			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkerUnauthorized) {
+			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale release error=%v", staleErr)
 			}
 		}

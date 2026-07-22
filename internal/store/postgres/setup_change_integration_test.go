@@ -71,6 +71,74 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	}
 }
 
+func TestTaskSetupChangePostgresScopesExclusionToExecutingAttempts(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "setup-excl-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "postgres"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	old := config.ExecutionSetup{Name: "old", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", TimeoutText: "1h"}}}
+	next := old
+	next.Name, next.ExecutionSettings.Implementation.Model = "next", "new"
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupName: old.Name, SetupContract: old, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	if err = st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-excl-claimed", Reason: "reroute", Setup: next, ReviewTransition: "none"}
+	if _, err = st.ChangeTaskSetup(ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
+		t.Fatalf("claimed attempt should block: err=%v", err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	request.RequestID = "setup-pg-excl-submitted"
+	result, err := st.ChangeTaskSetup(ctx, request)
+	if err != nil || result.Task.SetupName != next.Name {
+		t.Fatalf("submitted implement attempt should not block: result=%+v err=%v", result, err)
+	}
+	untouched, _ := st.GetWorkOrder(ctx, order.ID)
+	if untouched.State != core.WorkOrderSubmitted {
+		t.Fatalf("delivered attempt mutated=%+v", untouched)
+	}
+	reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	reviewOrder := core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "seat", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	if err = st.CreateReviewRound(ctx, task.ID, []core.Job{reviewJob}, []core.WorkOrder{reviewOrder}); err != nil {
+		t.Fatal(err)
+	}
+	seat, err := st.ClaimWorkOrder(ctx, reviewOrder.ID, core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, seat); err != nil {
+		t.Fatal(err)
+	}
+	request.RequestID = "setup-pg-excl-verdict"
+	if _, err = st.ChangeTaskSetup(ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
+		t.Fatalf("in-flight review verdict should block: err=%v", err)
+	}
+}
+
 func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testing.T) {
 	st, err := Open(t.Context(), integrationDatabaseURL(t))
 	if err != nil {

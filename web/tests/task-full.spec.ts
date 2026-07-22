@@ -151,6 +151,21 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 2, task_id: taskId, kind: 'spec.version_approved', actor_id: 'operator', actor_role: 'human' as const, payload: { version: 2 }, at: '2026-07-15T11:59:00Z' },
 		],
 		work_orders: [],
+	} : taskId === 'setup-submitted' ? {
+		jobs: [],
+		events: [],
+		// A delivered implement attempt awaiting review: does not block a setup
+		// change; only claimed attempts and in-flight verdicts do (spec §21.36).
+		work_orders: [
+			{ id: 'setup-submitted-implement-1', task_id: taskId, job_id: 'setup-submitted-implement-1', stage: 'implement', state: 'submitted', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+			{ id: 'setup-submitted-review-1-seat-1', task_id: taskId, job_id: 'setup-submitted-review-1-seat-1', stage: 'review', state: 'queued', claimable: true, review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
+	} : taskId === 'setup-claimed' ? {
+		jobs: [],
+		events: [],
+		work_orders: [
+			{ id: 'setup-claimed-implement-1', task_id: taskId, job_id: 'setup-claimed-implement-1', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
+		],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -171,8 +186,8 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       branch: `conveyor/task-${taskId}`,
 		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
-      setup: taskId === 'setup-change' ? 'old' : '',
-      setup_contract: taskId === 'setup-change' ? {
+      setup: taskId.startsWith('setup-') ? 'old' : '',
+      setup_contract: taskId.startsWith('setup-') ? {
         name: 'old',
         execution_settings: {
           control_plane: { triage: { model: 'control', timeout: '20m' } },
@@ -353,6 +368,29 @@ test('task detail previews and submits a named future-only setup change', async 
 	expect(submitted?.setup).toBe('next')
 	expect(submitted?.reason).toBe('repair routing')
 	expect(String(submitted?.request_id)).not.toBe('')
+})
+
+test('task sheet exposes the setup change control behind an expandable section', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-submitted', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-submitted')
+	const summary = page.locator('summary', { hasText: 'Change execution setup' })
+	await expect(summary).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).not.toBeVisible()
+	await summary.click()
+	await expect(page.getByLabel('Named execution setup')).toBeVisible()
+	// The implement attempt is submitted (delivered), not claimed: it must not
+	// disable the control (spec §21.36).
+	await expect(page.getByLabel('Named execution setup')).toBeEnabled()
+	await expect(page.getByLabel('Setup change reason')).toBeEnabled()
+})
+
+test('a claimed attempt disables the setup change control with the specific blocker', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-claimed', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
+	await page.goto('/tasks/setup-claimed/full')
+	await expect(page.getByText('An attempt is claimed and executing.')).toBeVisible()
+	await expect(page.getByLabel('Named execution setup')).toBeDisabled()
 })
 
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {

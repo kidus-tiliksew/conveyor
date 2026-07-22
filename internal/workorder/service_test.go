@@ -598,10 +598,10 @@ func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 			t.Fatal(err)
 		}
 		session := "expired-" + string(stage)
-		if _, err := st.RenewWorkerClaim(ctx, id, "worker", session, time.Minute); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		if _, err := st.RenewWorkerClaim(ctx, id, "worker", session, time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 			t.Fatalf("%s stale renewal err=%v", stage, err)
 		}
-		if _, err := st.ReleaseWorkerClaim(ctx, id, "worker", core.WorkOrderRelease{SessionID: session}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		if _, err := st.ReleaseWorkerClaim(ctx, id, "worker", core.WorkOrderRelease{SessionID: session}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 			t.Fatalf("%s stale release err=%v", stage, err)
 		}
 		if stage == core.StageImplement {
