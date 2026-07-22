@@ -44,6 +44,7 @@ type Store interface {
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
+	ChangeTaskSetup(ctx context.Context, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
@@ -388,6 +389,7 @@ func NewMemory() Store {
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
+		setupChanges:                map[string]memorySetupChange{},
 	}
 }
 
@@ -421,6 +423,7 @@ type memory struct {
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
+	setupChanges                map[string]memorySetupChange
 	nextEventID                 int64
 	nextReviewID                int64
 	taskLocks                   sync.Map
@@ -888,9 +891,10 @@ type reviewRoundResult struct {
 }
 
 func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderID string) ([]completedReview, int) {
+	superseded := SupersededReviewWorkOrders(m.events[taskID])
 	required := 0
 	for _, order := range m.workOrders {
-		if order.TaskID == taskID && order.Stage == core.StageReview && order.ReviewRound == round && (round > 0 || order.ID == workOrderID) {
+		if order.TaskID == taskID && order.Stage == core.StageReview && order.ReviewRound == round && !superseded[order.ID] && (round > 0 || order.ID == workOrderID) {
 			required++
 		}
 	}
@@ -900,7 +904,7 @@ func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderI
 			continue
 		}
 		var review completedReview
-		if json.Unmarshal(event.Payload, &review) == nil && review.ReviewRound == round && (round > 0 || review.ReviewWorkOrderID == workOrderID) {
+		if json.Unmarshal(event.Payload, &review) == nil && review.ReviewRound == round && !superseded[review.ReviewWorkOrderID] && (round > 0 || review.ReviewWorkOrderID == workOrderID) {
 			reviews = append(reviews, review)
 		}
 	}
@@ -1170,7 +1174,7 @@ func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryR
 	for _, order := range recovery.TimedOutOrders {
 		timedOutIDs = append(timedOutIDs, order.ID)
 	}
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
@@ -1207,7 +1211,7 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 		m.workOrders[id] = order
 		taskOrders = append(taskOrders, order)
 	}
-	recovery := InterruptedReviewRecoveryNeeded(taskOrders)
+	recovery := InterruptedReviewRecoveryNeeded(CurrentReviewOrders(taskOrders, m.events[request.TaskID]))
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
 	}
@@ -1232,10 +1236,10 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 		order.UpdatedAt, order.Claimable = now, true
 		m.workOrders[order.ID] = order
 		result.RecoveredOrders = append(result.RecoveredOrders, order)
-		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: order.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": order.State, "outcome": "recovered"}), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: order.JobID, Kind: "review.seat_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "request_id": request.RequestID, "prior_state": core.WorkOrderQueued, "prior_outcome": priorOutcome, "resulting_state": order.State, "outcome": "recovered", "setup_name": task.SetupName, "setup_contract": task.SetupContract}), At: now})
 	}
 	for _, retained := range recovery.RetainedOrders {
-		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed"}), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed", "setup_name": task.SetupName, "setup_contract": task.SetupContract}), At: now})
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now})
 	m.interruptedReviewRecoveries[key] = memoryInterruptedReviewRecovery{Workspace: workspace, Request: request, Result: result}
@@ -2136,7 +2140,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		}
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
-		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(ordersByTask[id])
+		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })
