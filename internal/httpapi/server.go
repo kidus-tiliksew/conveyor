@@ -340,7 +340,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !request.Action.Valid() {
+	if !request.Action.Valid() || request.Action == core.InterventionCancel {
 		http.Error(w, "invalid review action", http.StatusBadRequest)
 		return
 	}

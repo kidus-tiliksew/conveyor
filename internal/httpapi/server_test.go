@@ -211,6 +211,33 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	}
 }
 
+func TestReviewEndpointRejectsLifecycleCancelAction(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "review-cannot-cancel", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review?workspace_id=demo", strings.NewReader(`{"action":"cancel","reason_code":"obsolete"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("review cancel status=%d body=%s", response.Code, response.Body.String())
+	}
+	unchanged, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	if unchanged.State != core.TaskAwaiting || len(interventions) != 0 {
+		t.Fatalf("task=%+v interventions=%+v", unchanged, interventions)
+	}
+}
+
 func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")

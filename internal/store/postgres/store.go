@@ -1042,7 +1042,7 @@ func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) 
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 		return core.Task{}, err
 	}
-	rows, err := tx.Query(ctx, `UPDATE work_orders SET state='cancelled',updated_at=$1 WHERE workspace_id=$2 AND task_id=$3 AND state NOT IN ('completed','cancelled') RETURNING id,job_id`, intervention.At, workspace(ctx), intervention.TaskID)
+	rows, err := tx.Query(ctx, `UPDATE work_orders SET state='cancelled',last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,updated_at=$1 WHERE workspace_id=$2 AND task_id=$3 AND state NOT IN ('completed','cancelled') RETURNING id,job_id`, intervention.At, workspace(ctx), intervention.TaskID)
 	if err != nil {
 		return core.Task{}, err
 	}

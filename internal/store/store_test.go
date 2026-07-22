@@ -578,7 +578,7 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	}
 	order, _ := st.GetWorkOrder(ctx, job.ID)
 	completed, _ := st.GetWorkOrder(ctx, completedJob.ID)
-	if order.State != core.WorkOrderCancelled || order.SessionID != claimed.SessionID || completed.State != core.WorkOrderCompleted {
+	if order.State != core.WorkOrderCancelled || order.SessionID != claimed.SessionID || order.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || completed.State != core.WorkOrderCompleted {
 		t.Fatalf("orders cancelled=%+v completed=%+v", order, completed)
 	}
 	if _, err = st.RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {

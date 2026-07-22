@@ -2318,6 +2318,9 @@ func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention)
 		if order.TaskID != task.ID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
 			continue
 		}
+		if order.State == core.WorkOrderClaimed {
+			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
+		}
 		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderCancelled, false, intervention.At
 		m.workOrders[id] = order
 		cancelled = append(cancelled, id)
