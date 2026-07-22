@@ -1,12 +1,14 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, GitBranch, GitPullRequest, Hand } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
-import { setTaskHold } from '../../lib/api'
+import { changeTaskSetup, fetchWorkspaceConfig, setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 
 // The task-header facts (spec §13.3, amended by §§21.6–21.7): state badges,
@@ -109,8 +111,65 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
+      {variant === 'full' && <SetupChangeControl item={item} />}
+
       <Checkout item={item} variant={variant} />
     </div>
+  )
+}
+
+function SetupChangeControl({ item }: { item: ActivityItem }) {
+  const token = useOperatorToken()
+  const queryClient = useQueryClient()
+  const config = useQuery({ queryKey: ['workspace-config', item.task.workspace, token], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token) })
+  const [selected, setSelected] = useState(item.task.setup)
+  const [reason, setReason] = useState('')
+  const active = (item.work_orders ?? []).some((order) => order.state === 'claimed' || order.state === 'submitted')
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  const next = config.data?.document.setups.find((setup) => setup.name === selected)
+  const current = item.task.setup_contract
+  const mutation = useMutation({
+    mutationFn: () => changeTaskSetup(item.task.id, token, selected === item.task.setup
+      ? { apply_latest: true, reason, request_id: crypto.randomUUID() }
+      : { setup: selected, reason, request_id: crypto.randomUUID() }),
+    onSuccess: () => {
+      setReason('')
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+    },
+  })
+  if (!token || !current) return null
+  const disabledReason = terminal ? 'Terminal tasks cannot change setup.' : active ? 'A work order is claimed or executing.' : ''
+  const oldSeats = current?.review.seats ?? []
+  const newSeats = next?.review.seats ?? []
+  const interruptedOutcome = item.interrupted_review_recovery
+    ? oldSeats.length !== newSeats.length
+      ? 'Interrupted review: panel size changes, so a whole new round will run.'
+      : 'Interrupted review: identical seat assignments are retained; changed seats re-run.'
+    : ''
+  return (
+    <section className="mt-4 rounded-lg border border-border bg-surface p-3" aria-label="Change execution setup">
+      <div className="flex flex-wrap items-center gap-2">
+        <strong className="text-xs font-semibold">Change execution setup</strong>
+        <span className="text-xs text-attention">affects future work only</span>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
+        <select aria-label="Named execution setup" value={selected} onChange={(event) => setSelected(event.target.value)} disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs">
+          {(config.data?.document.setups ?? []).map((setup) => <option key={setup.name} value={setup.name}>{setup.name}</option>)}
+        </select>
+        <input aria-label="Setup change reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (required)" disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs" />
+        <Button size="sm" disabled={Boolean(disabledReason) || !next || !reason.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+          {selected === item.task.setup ? 'Apply latest setup' : 'Change setup'}
+        </Button>
+      </div>
+      {next && <div className="mt-2 grid gap-2 text-[11px] text-muted md:grid-cols-2">
+        <p><span className="font-medium text-foreground/80">Before:</span> implement {current.execution_settings.implementation.harness} / {current.execution_settings.implementation.model_policy} / {current.execution_settings.implementation.effort || 'default'} / {current.execution_settings.implementation.timeout}; review {current.execution_settings.review.execution}, {oldSeats.map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`).join(', ')}</p>
+        <p><span className="font-medium text-foreground/80">After:</span> implement {next.execution_settings.implementation.harness} / {next.execution_settings.implementation.model_policy} / {next.execution_settings.implementation.effort || 'default'} / {next.execution_settings.implementation.timeout}; review {next.execution_settings.review.execution}, {newSeats.map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`).join(', ')}</p>
+      </div>}
+      {(disabledReason || interruptedOutcome) && <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>}
+      {mutation.error != null && <p className="mt-2 text-xs text-failure">{String(mutation.error)}</p>}
+      {mutation.data && <p className="mt-2 text-xs text-positive">Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.</p>}
+    </section>
   )
 }
 

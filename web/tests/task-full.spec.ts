@@ -171,6 +171,18 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       branch: `conveyor/task-${taskId}`,
 		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: 'implement',
+      setup: taskId === 'setup-change' ? 'old' : '',
+      setup_contract: taskId === 'setup-change' ? {
+        name: 'old',
+        execution_settings: {
+          control_plane: { triage: { model: 'control', timeout: '20m' } },
+          spec: { harness: 'codex', model: 'gpt-spec', model_policy: 'explicit', timeout: '30m' },
+          implementation: { harness: 'codex', model: 'gpt-old', model_policy: 'explicit', effort: 'medium', timeout: '2h' },
+          review: { execution: 'mcp', timeout: '45m', fallback_harness: 'codex' },
+        },
+        review: { seats: [{ harness: 'codex', model: 'gpt-review', effort: 'medium' }] },
+        refresh_review: 'delta',
+      } : undefined,
       created_at: createdAt,
     },
 		jobs: reviewActivity.jobs,
@@ -310,6 +322,37 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
 	await page.goto('/tasks/no-orders/full')
 	await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
 	await expect(page.getByText('Something went wrong!')).toHaveCount(0)
+})
+
+test('task detail previews and submits a named future-only setup change', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	const nextSetup = {
+		name: 'next',
+		execution_settings: {
+			control_plane: { triage: { model: 'control', timeout: '20m' } },
+			spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
+			implementation: { harness: 'claude', model: 'claude-next', model_policy: 'explicit', effort: 'high', timeout: '3h' },
+			review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
+		},
+		review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
+		refresh_review: 'delta',
+	}
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-change', false).task.setup_contract, nextSetup], default_setup: 'old', execution: {} } } }))
+	let submitted: Record<string, unknown> | undefined
+	await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
+		submitted = route.request().postDataJSON()
+		await route.fulfill({ json: { task: { ...activity('setup-change', false).task, setup: 'next', setup_contract: nextSetup }, review_transition: 'same_round_reconciled' } })
+	})
+	await page.goto('/tasks/setup-change/full')
+	await expect(page.getByText('affects future work only')).toBeVisible()
+	await page.getByLabel('Named execution setup').selectOption('next')
+	await expect(page.getByText(/After: implement claude \/ explicit \/ high \/ 3h/)).toBeVisible()
+	await page.getByLabel('Setup change reason').fill('repair routing')
+	await page.getByRole('button', { name: 'Change setup' }).click()
+	await expect(page.getByText('Setup changed: same round reconciled.')).toBeVisible()
+	expect(submitted?.setup).toBe('next')
+	expect(submitted?.reason).toBe('repair routing')
+	expect(String(submitted?.request_id)).not.toBe('')
 })
 
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
