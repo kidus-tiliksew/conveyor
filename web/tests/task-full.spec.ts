@@ -253,6 +253,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			eligible_orders: [{ id: 'interrupted-review-empty-review-1-seat-1', review_seat: 1, last_attempt_outcome: 'expired' }],
 			retained_orders: null,
 		} : undefined,
+		stalled: taskId === 'recovery' ? {
+			needed: true,
+			reason: 'automatic retry is suppressed',
+			work_order: (reviewActivity.work_orders ?? [])[0],
+			last_failure: 'harness exited: status 1',
+		} : undefined,
 		worker_status: taskId === 'interrupted-review' ? {
 			available: false,
 			required_harnesses: ['claude'],
@@ -419,6 +425,32 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	const item = activity('recovery', false)
+	await page.route('**/v1/workspaces', async (route) => {
+		await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+	})
+	await page.route('**/v1/activity*', async (route) => {
+		await route.fulfill({ json: [{ task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: true, stalled: item.stalled }] })
+	})
+	let cancelBody = ''
+	await page.route('**/v1/tasks/recovery/close*', async (route) => {
+		cancelBody = route.request().postData() ?? ''
+		await route.fulfill({ json: { ...item.task, state: 'closed' } })
+	})
+	await page.goto('/')
+	const tray = page.getByRole('region', { name: 'Needs operator' })
+	await expect(tray.getByText('Stalled')).toBeVisible()
+	await expect(tray.getByText('harness exited: status 1')).toBeVisible()
+	await tray.getByText('Short task').click()
+	await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+	await page.getByRole('button', { name: 'Cancel task' }).click()
+	await page.getByPlaceholder('Why is this task being cancelled?').fill('provider setup is obsolete')
+	await page.getByRole('dialog', { name: 'Cancel task' }).getByRole('button', { name: 'Cancel task' }).click()
+	await expect.poll(() => cancelBody).toContain('provider setup is obsolete')
 })
 
 test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {

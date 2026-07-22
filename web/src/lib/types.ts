@@ -111,7 +111,7 @@ export interface TaskEvent {
   at: string
 }
 
-export type InterventionAction = 'approve' | 'reject' | 'redirect' | 'pull_to_local'
+export type InterventionAction = 'approve' | 'reject' | 'redirect' | 'pull_to_local' | 'cancel'
 
 export interface Intervention {
   id: number
@@ -160,6 +160,14 @@ export interface ActivitySummary {
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
+	stalled?: StalledState
+}
+
+export interface StalledState {
+	needed: boolean
+	reason: string
+	work_order: WorkOrder
+	last_failure?: string
 }
 
 export interface ReviewRecoveryState {
@@ -367,6 +375,7 @@ export interface ActivityItem {
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
+	stalled?: StalledState
   worker_status?: TaskWorkerStatus
   merge_readiness?: { state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'; head_sha?: string; url?: string; number?: number }
 }
