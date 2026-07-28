@@ -73,6 +73,110 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	}
 }
 
+func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	cfg := &config.Config{
+		Workspace: "demo",
+		Harnesses: []config.Harness{{Name: "codex"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Harness: "codex"},
+			"review":    {Execution: config.ExecutionInProcess},
+		}},
+		Repos: []config.Repo{{Name: "api", Base: "main"}},
+	}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
+	worker := core.Worker{
+		ID:             "worker-owner",
+		Workspace:      "demo",
+		LeaseExpiresAt: now.Add(time.Minute),
+		Probes:         []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}},
+	}
+
+	createOrder := func(id string, stage core.Stage) core.WorkOrder {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: now}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: id + "-" + string(stage) + "-1", TaskID: id, Stage: stage, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+		if err := st.CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		created, err := st.GetWorkOrder(ctx, order.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	claim := func(order core.WorkOrder, workerID string, executionTimeout time.Duration) core.WorkOrder {
+		t.Helper()
+		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+			SessionID: order.ID + "-session", ClientToken: order.ID + "-token",
+			ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: executionTimeout,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return claimed
+	}
+	transition := func(order core.WorkOrder, state core.WorkOrderState, command core.WorkOrderCommand) {
+		t.Helper()
+		order.State = state
+		if err := st.UpdateWorkOrder(ctx, order, command); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claimable := createOrder("claimable", core.StageImplement)
+	ownClaimed := claim(createOrder("own-claimed", core.StageImplement), worker.ID, time.Hour)
+	ownSubmitted := claim(createOrder("own-submitted", core.StageImplement), worker.ID, time.Hour)
+	transition(ownSubmitted, core.WorkOrderSubmitted, core.WorkOrderCmdSubmitForReview)
+	claim(createOrder("other-claimed", core.StageImplement), "worker-other", time.Hour)
+	otherSubmitted := claim(createOrder("other-submitted", core.StageImplement), "worker-other", time.Hour)
+	transition(otherSubmitted, core.WorkOrderSubmitted, core.WorkOrderCmdSubmitForReview)
+	ownCompleted := claim(createOrder("own-completed", core.StageSpec), worker.ID, time.Hour)
+	transition(ownCompleted, core.WorkOrderCompleted, core.WorkOrderCmdSubmitSpec)
+	ownCancelled := claim(createOrder("own-cancelled", core.StageImplement), worker.ID, time.Hour)
+	transition(ownCancelled, core.WorkOrderCancelled, core.WorkOrderCmdCancel)
+	claim(createOrder("own-timed-out", core.StageImplement), worker.ID, time.Nanosecond)
+	stale := createOrder("stale", core.StageImplement)
+	stale.QueueDeadline = now.Add(-time.Minute)
+	if err := st.UpdateWorkOrder(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.ConfigProvider, server.WorkOrders, server.Workers = "demo", provider, workOrders, workers
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, worker))
+	result, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := result.([]core.WorkOrder)
+	got := make(map[string]core.WorkOrderState, len(listed))
+	for _, order := range listed {
+		got[order.ID] = order.State
+	}
+	want := map[string]core.WorkOrderState{
+		claimable.ID:    core.WorkOrderQueued,
+		ownClaimed.ID:   core.WorkOrderClaimed,
+		ownSubmitted.ID: core.WorkOrderSubmitted,
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("listed=%v want=%v", got, want)
+	}
+}
+
 func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	t.Parallel()
 	server := NewServer(store.NewMemory())
