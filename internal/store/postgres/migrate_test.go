@@ -107,6 +107,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 36 {
 		t.Fatalf("forge error categories version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/037_cancel_intervention_action.sql")
+	if err != nil || version != 37 {
+		t.Fatalf("cancel intervention action version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
@@ -129,6 +133,24 @@ func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
 	}
 	if !strings.Contains(text, "state IN ("+quotedWorkOrderStates()+")") {
 		t.Fatalf("work-order constraint is not core-derived: %s", text)
+	}
+	if migrationChecksum(raw) == migrationChecksum(rendered) {
+		t.Fatal("raw template and rendered migration unexpectedly share a checksum")
+	}
+}
+
+func TestInterventionActionMigrationRendersFromCoreActionSet(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/037_cancel_intervention_action.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := renderMigration(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "action IN ("+quotedInterventionActions()+")") {
+		t.Fatalf("intervention constraint is not core-derived: %s", text)
 	}
 	if migrationChecksum(raw) == migrationChecksum(rendered) {
 		t.Fatal("raw template and rendered migration unexpectedly share a checksum")

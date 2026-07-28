@@ -445,15 +445,25 @@ test('suppressed worker order exposes failure state and audited recovery action'
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	const item = activity('recovery', false)
+	let cancelled = false
 	await page.route('**/v1/workspaces', async (route) => {
 		await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
 	})
 	await page.route('**/v1/activity*', async (route) => {
 		await route.fulfill({ json: [{ task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: true, stalled: item.stalled }] })
 	})
+	await page.route('**/v1/tasks/recovery/activity*', async (route) => {
+		const current = activity('recovery', false)
+		await route.fulfill({
+			json: cancelled
+				? { ...current, task: { ...current.task, state: 'closed' }, stalled: undefined }
+				: current,
+		})
+	})
 	let cancelBody = ''
 	await page.route('**/v1/tasks/recovery/close*', async (route) => {
 		cancelBody = route.request().postData() ?? ''
+		cancelled = true
 		await route.fulfill({ json: { ...item.task, state: 'closed' } })
 	})
 	await page.goto('/')
@@ -466,6 +476,8 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
 	await page.getByPlaceholder('Why is this task being cancelled?').fill('provider setup is obsolete')
 	await page.getByRole('dialog', { name: 'Cancel task' }).getByRole('button', { name: 'Cancel task' }).click()
 	await expect.poll(() => cancelBody).toContain('provider setup is obsolete')
+	await expect(page.getByText('Closed', { exact: true })).toBeVisible()
+	await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 })
 
 test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {

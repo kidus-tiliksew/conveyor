@@ -180,6 +180,7 @@ func renderMigration(sql []byte) ([]byte, error) {
 	text := string(sql)
 	text = strings.ReplaceAll(text, "{{task_states}}", quotedTaskStates())
 	text = strings.ReplaceAll(text, "{{work_order_states}}", quotedWorkOrderStates())
+	text = strings.ReplaceAll(text, "{{intervention_actions}}", quotedInterventionActions())
 	if strings.Contains(text, "{{") || strings.Contains(text, "}}") {
 		return nil, fmt.Errorf("unknown migration template marker")
 	}
@@ -198,6 +199,14 @@ func quotedWorkOrderStates() string {
 	values := make([]string, 0, len(core.WorkOrderStates()))
 	for _, state := range core.WorkOrderStates() {
 		values = append(values, "'"+string(state)+"'")
+	}
+	return strings.Join(values, ", ")
+}
+
+func quotedInterventionActions() string {
+	values := make([]string, 0, len(core.InterventionActions()))
+	for _, action := range core.InterventionActions() {
+		values = append(values, "'"+string(action)+"'")
 	}
 	return strings.Join(values, ", ")
 }
