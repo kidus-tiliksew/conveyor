@@ -542,11 +542,18 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		repository, _ := cfg.Repo(task.Repo)
 		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Order.Stage != result[j].Order.Stage {
-			return result[i].Order.Stage == core.StageReview
+	// The reserved review slot precedes workspace FIFO; ID breaks equal
+	// queue-entry clocks deterministically (spec §6.3).
+	sort.Slice(result, func(i, j int) bool {
+		iReview := result[i].Order.Stage == core.StageReview
+		jReview := result[j].Order.Stage == core.StageReview
+		if iReview != jReview {
+			return iReview
 		}
-		return result[i].Order.CreatedAt.Before(result[j].Order.CreatedAt)
+		if !result[i].Order.QueueEnteredAt.Equal(result[j].Order.QueueEnteredAt) {
+			return result[i].Order.QueueEnteredAt.Before(result[j].Order.QueueEnteredAt)
+		}
+		return result[i].Order.ID < result[j].Order.ID
 	})
 	return result, nil
 }

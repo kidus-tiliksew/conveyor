@@ -678,6 +678,10 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		}
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
+	queueTimeout := order.QueueDeadline.Sub(order.QueueEnteredAt)
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
 	next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRelease)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -722,6 +726,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		order.RetrySuppressed = true
 	}
 	order.UpdatedAt = now
+	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[workOrderID] = order
 	for taskID, jobs := range m.jobs {
