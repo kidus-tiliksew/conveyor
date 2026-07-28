@@ -25,6 +25,9 @@ Working discipline:
 - Make the change, then run the project's practical checks — build, tests,
   vet, whatever the repository's Makefile or docs indicate — and fix what
   they surface.
+- Run repository validation only through Make targets, including `make test`
+  and `make test-integration` when relevant. Never run raw
+  `docker compose down` commands in this repository.
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
 - Commit all work with clear, conventional messages. Never commit knowingly

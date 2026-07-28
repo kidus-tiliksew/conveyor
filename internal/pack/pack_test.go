@@ -69,3 +69,24 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 		t.Fatalf("in-process review role requires an unavailable MCP tool: %s", inProcess)
 	}
 }
+
+func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
+		role, err := loader.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(role), " ")
+		for _, required := range []string{
+			"validation only through Make targets",
+			"`make test`",
+			"`make test-integration`",
+			"Never run raw `docker compose down` commands",
+		} {
+			if !strings.Contains(normalized, required) {
+				t.Errorf("%s role is missing %q", stage, required)
+			}
+		}
+	}
+}
