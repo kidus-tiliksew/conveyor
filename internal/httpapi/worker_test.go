@@ -121,8 +121,30 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
 	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "rate-health", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "rate-health-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
+		t.Fatal(err)
+	}
+	rateOrder, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "rate-session", ClientToken: "secret", WorkerID: enrollment.Worker.ID, Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := 7.0
+	rateOrder.RateLimit = &core.RateLimitStatus{Status: "limited", Remaining: &remaining}
+	rateOrder.RateLimitObservedAt = time.Now().UTC()
+	if err = st.UpdateWorkOrder(ctx, rateOrder); err != nil {
+		t.Fatal(err)
+	}
 	list := call(http.MethodGet, "/v1/workers", "", "operator")
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"auto_available":true`) {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"auto_available":true`) || !strings.Contains(list.Body.String(), `"rate_limits":[{"work_order_id":"rate-health-implement-1"`) || !strings.Contains(list.Body.String(), `"status":"limited"`) {
 		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
 	}
 	revoke := call(http.MethodDelete, "/v1/workers/"+enrollment.Worker.ID, "", "operator")

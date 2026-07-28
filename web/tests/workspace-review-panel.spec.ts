@@ -19,8 +19,8 @@ const baseDocument = {
     review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
   } },
   harnesses: [
-    { name: 'codex', mcp_transport: 'toml_override', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s' },
-    { name: 'claude', mcp_transport: 'json_file', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s' },
+    { name: 'codex', mcp_transport: 'toml_override', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s', stall_timeout: '10m' },
+    { name: 'claude', mcp_transport: 'json_file', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s', stall_timeout: '10m' },
   ],
   review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude', effort: 'high' }] },
   execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
@@ -57,12 +57,19 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
     }
     if (url.pathname === '/v1/harness-templates') {
       await route.fulfill({ json: { templates: [{ id: 'codex', label: 'Codex CLI', description: "OpenAI's coding agent", harness: {
-        name: 'codex', mcp_transport: 'toml_override', command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['codex', '--version'], probe_timeout: '10s',
+        name: 'codex', mcp_transport: 'toml_override', command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['codex', '--version'], probe_timeout: '10s', stall_timeout: '10m',
       } }] } })
       return
     }
     if (url.pathname === '/v1/workers') {
-      await route.fulfill({ json: { workers: [], auto_available: false, auto_unavailable_reason: 'manual test' } })
+      await route.fulfill({ json: {
+        workers: [], auto_available: false, auto_unavailable_reason: 'manual test',
+        rate_limits: [{
+          work_order_id: 'order-1', harness: 'codex', model: 'gpt-5',
+          rate_limit: { status: 'limited', limit: 1000, remaining: 125, reset_at: '2026-07-28T12:00:00Z' },
+          observed_at: '2026-07-28T11:55:00Z',
+        }],
+      } })
       return
     }
     if (url.pathname === '/v1/workspace') {
@@ -72,6 +79,21 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
     await route.fulfill({ json: [] })
   })
 }
+
+test('workspace renders harness stall configuration and observational rate-limit health', async ({ page }) => {
+  await mockWorkspaceAPIs(page)
+  await page.goto('/workspace')
+
+  await page.getByRole('tab', { name: 'Harnesses' }).click()
+  await page.getByRole('button', { name: 'Toggle codex' }).click()
+  await expect(page.getByLabel('Stall timeout')).toHaveValue('10m')
+
+  await page.getByRole('tab', { name: 'Workers' }).click()
+  await expect(page.getByText('Provider rate limits')).toBeVisible()
+  await expect(page.getByText('codex / gpt-5')).toBeVisible()
+  await expect(page.getByText('125 of 1000 remaining')).toBeVisible()
+  await expect(page.getByText(/does not use it to gate or route work/)).toBeVisible()
+})
 
 async function expandDefaultSetup(page: Page) {
   await page.getByRole('button', { name: 'Toggle default setup' }).click()

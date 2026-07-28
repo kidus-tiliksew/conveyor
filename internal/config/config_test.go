@@ -349,6 +349,51 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestHarnessStallTimeoutDefaultsDisablesAndRejectsInvalidValues(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Harnesses = []Harness{{
+		Name: "codex", Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"},
+		ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+	}}
+	for _, stage := range []string{"spec", "implement", "review"} {
+		route := document.Routing.Stages[stage]
+		route.Harness = "codex"
+		document.Routing.Stages[stage] = route
+	}
+	document.Harnesses[0].StallTimeoutText = ""
+	data, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(data, base, "stall default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Harnesses[0]; got.StallTimeout != DefaultHarnessStallTimeout || got.StallTimeoutText != DefaultHarnessStallTimeoutText {
+		t.Fatalf("default stall timeout=%q (%s)", got.StallTimeoutText, got.StallTimeout)
+	}
+
+	document.Harnesses[0].StallTimeoutText = "0"
+	data, _ = yaml.Marshal(document)
+	parsed, err = ParseWorkspaceDocument(data, base, "stall disabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Harnesses[0].StallTimeout != 0 || parsed.Harnesses[0].StallTimeoutText != "0" {
+		t.Fatalf("disabled stall timeout=%q (%s)", parsed.Harnesses[0].StallTimeoutText, parsed.Harnesses[0].StallTimeout)
+	}
+
+	for _, value := range []string{"0s", "-1s", "not-a-duration"} {
+		t.Run(value, func(t *testing.T) {
+			candidate := document
+			candidate.Harnesses = append([]Harness(nil), document.Harnesses...)
+			candidate.Harnesses[0].StallTimeoutText = value
+			data, _ := yaml.Marshal(candidate)
+			if _, parseErr := ParseWorkspaceDocument(data, base, "invalid stall"); parseErr == nil || !strings.Contains(parseErr.Error(), "harnesses[0].stall_timeout") {
+				t.Fatalf("stall_timeout=%q error=%v", value, parseErr)
+			}
+		})
+	}
+}
+
 func TestEnvironmentHarnessRequiresNonSecretAttachmentAndTransportAwarePlaceholders(t *testing.T) {
 	valid := Harness{
 		Name: "grok", MCPTransport: MCPTransportEnvironment, MCPAttachment: "conveyor",

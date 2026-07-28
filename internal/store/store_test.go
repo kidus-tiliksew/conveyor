@@ -629,6 +629,55 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	}
 }
 
+func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "stalled-retry-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "stalled-retry-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	var released core.WorkOrder
+	for attempt := 0; attempt < 4; attempt++ {
+		session := fmt.Sprintf("stall-session-%d", attempt)
+		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute}); err != nil {
+			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		var err error
+		released, err = st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
+			SessionID: session, Outcome: core.WorkOrderOutcomeStalled, Reason: "no child output",
+			AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond, MaximumRetryDelay: 4 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("release %d: %v", attempt, err)
+		}
+		if attempt < 3 {
+			if released.RetrySuppressed || released.AutomaticRetryCount != attempt+1 {
+				t.Fatalf("retry %d state=%+v", attempt, released)
+			}
+			released.NextRetryAt = time.Now().Add(-time.Millisecond)
+			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !released.RetrySuppressed || released.LastAttemptOutcome != core.WorkOrderOutcomeStalled || released.AutomaticRetryCount != 3 {
+		t.Fatalf("stalled exhaustion=%+v", released)
+	}
+	if stalled := StalledTask([]core.WorkOrder{released}); stalled == nil || !strings.Contains(stalled.Reason, "retry") {
+		t.Fatalf("needs-operator projection=%+v", stalled)
+	}
+	if events, err := st.CountEvents(ctx, task.ID, "work_order.stalled"); err != nil || events != 4 {
+		t.Fatalf("stalled events=%d err=%v", events, err)
+	}
+}
+
 func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()

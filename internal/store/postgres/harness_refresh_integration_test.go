@@ -37,19 +37,21 @@ func TestHarnessSnapshotRefreshIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	pinned := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
+	pinned := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}, StallTimeoutText: "10m"}
 	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	refresh := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}
+	refresh := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}, StallTimeoutText: "2m"}
 	refreshed, err := st.RefreshWorkOrderHarnessSnapshot(ctx, job.ID, refresh)
 	if err != nil || refreshed.RequiredHarnessConfig == nil ||
-		!strings.Contains(strings.Join(refreshed.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
+		!strings.Contains(strings.Join(refreshed.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") ||
+		refreshed.RequiredHarnessConfig.StallTimeoutText != "2m" {
 		t.Fatalf("refreshed=%+v err=%v", refreshed, err)
 	}
 	stored, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || stored.RequiredHarnessConfig == nil ||
-		!strings.Contains(strings.Join(stored.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
+		!strings.Contains(strings.Join(stored.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") ||
+		stored.RequiredHarnessConfig.StallTimeoutText != "2m" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 	refreshEvents, err := st.CountEvents(ctx, task.ID, "work_order.harness_refreshed")

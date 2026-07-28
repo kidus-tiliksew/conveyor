@@ -172,7 +172,21 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		in, _ := numberArg(args["tokens_in"])
 		out, _ := numberArg(args["tokens_out"])
 		cost, _ := floatArg(args["cost_usd"])
-		return s.WorkOrders.Usage(ctx, stringArg("work_order_id"), session, in, out, cost)
+		var rateLimit *core.RateLimitStatus
+		if raw, ok := args["rate_limit"]; ok && raw != nil {
+			data, marshalErr := json.Marshal(raw)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("invalid rate_limit: %w", marshalErr)
+			}
+			var status core.RateLimitStatus
+			decoder := json.NewDecoder(strings.NewReader(string(data)))
+			decoder.DisallowUnknownFields()
+			if decodeErr := decoder.Decode(&status); decodeErr != nil {
+				return nil, fmt.Errorf("invalid rate_limit: %w", decodeErr)
+			}
+			rateLimit = &status
+		}
+		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, cost, rateLimit)
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_spec":
@@ -304,6 +318,12 @@ func mcpTools() []map[string]any {
 	}
 	str := map[string]string{"type": "string"}
 	num := map[string]string{"type": "number"}
+	rateLimit := object(map[string]any{
+		"status":    str,
+		"limit":     num,
+		"remaining": num,
+		"reset_at":  map[string]any{"type": "string", "format": "date-time"},
+	}, "status")
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "setup": str, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; an operator-attached agent claims it explicitly (spec §21.31)."}, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}, "description": "Deprecated (spec §21.31): manual maps to hold=true, auto is a no-op."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
@@ -315,7 +335,7 @@ func mcpTools() []map[string]any {
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
-		{"name": "report_usage", "description": "Record cumulative self-reported token and cost usage as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
+		{"name": "report_usage", "description": "Record cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_spec", "description": "Validate and submit a structured specification for a claimed spec order. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": str, "acceptance": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "criterion": str, "verify": str, "ref": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"id", "criterion", "verify"}, "additionalProperties": false}}, "decomposition": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "acceptance", "decomposition")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},

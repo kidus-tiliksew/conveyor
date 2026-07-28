@@ -27,6 +27,7 @@ func HarnessTemplates() []HarnessTemplate {
 				EffortArgs:       map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}},
 				ProbeCommand:     []string{"codex", "--version"},
 				ProbeTimeoutText: "10s",
+				StallTimeoutText: DefaultHarnessStallTimeoutText,
 			},
 		},
 		{
@@ -41,6 +42,7 @@ func HarnessTemplates() []HarnessTemplate {
 				EffortArgs:       map[string][]string{"high": {"--effort", "high"}},
 				ProbeCommand:     []string{"claude", "--version"},
 				ProbeTimeoutText: "10s",
+				StallTimeoutText: DefaultHarnessStallTimeoutText,
 			},
 		},
 		{
@@ -62,6 +64,7 @@ func HarnessTemplates() []HarnessTemplate {
 				},
 				ProbeCommand:     []string{"grok", "--version"},
 				ProbeTimeoutText: "30s",
+				StallTimeoutText: DefaultHarnessStallTimeoutText,
 			},
 		},
 	}
