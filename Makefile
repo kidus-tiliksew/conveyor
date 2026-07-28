@@ -9,7 +9,7 @@ TEST_POSTGRES_PORT ?= 5433
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui test compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui test test-ui compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -23,12 +23,15 @@ ui:
 test: compose-check
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
 
+test-ui: ui
+	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+
 compose-check:
 	python3 scripts/validate_compose_isolation.py
 
 test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 test-db-up:
 	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test up -d --wait postgres-test
