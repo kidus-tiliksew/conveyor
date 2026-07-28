@@ -6,9 +6,32 @@ package queue
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"time"
 )
 
 const ControlQueue = "control"
+
+const (
+	DispatchTaskMaxAttempts   = 5
+	DispatchRetryInitialDelay = 10 * time.Second
+	DispatchRetryMaximumDelay = 5 * time.Minute
+)
+
+// DispatchTaskRetryDelay returns the bounded T12/T13 backoff for the attempt
+// that just failed (spec §3.3, §21.41).
+func DispatchTaskRetryDelay(attempt int) time.Duration {
+	delay := DispatchRetryInitialDelay
+	for step := 1; step < attempt && delay < DispatchRetryMaximumDelay; step++ {
+		if delay > DispatchRetryMaximumDelay/2 {
+			return DispatchRetryMaximumDelay
+		}
+		delay *= 2
+	}
+	if delay > DispatchRetryMaximumDelay {
+		return DispatchRetryMaximumDelay
+	}
+	return delay
+}
 
 type DispatchTaskArgs struct {
 	WorkspaceID string `json:"workspace_id" river:"unique"`

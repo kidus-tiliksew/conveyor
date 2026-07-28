@@ -163,7 +163,7 @@ func TestDispatchGenuineFailureStillRequeues(t *testing.T) {
 	}
 }
 
-func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
+func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	t.Parallel()
 	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
 	wantErr := errors.New("database unavailable")
@@ -172,7 +172,7 @@ func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
 		t.Fatalf("failure error = %v, want %v", err, wantErr)
 	}
 	current, err := st.GetTask(ctx, taskID)
-	if err != nil || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+	if err != nil || current.State != core.TaskParked || current.RecoveryStage != core.StageImplement {
 		t.Fatalf("task=%+v err=%v", current, err)
 	}
 	events, err := st.ListEvents(ctx, taskID)
@@ -180,11 +180,34 @@ func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"job.fail"`) {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"dispatch.fail_final"`) {
 			return
 		}
 	}
-	t.Fatal("final dispatch failure did not record job.fail")
+	t.Fatal("final dispatch failure did not record dispatch.fail_final")
+}
+
+func TestDispatchRetryPolicyMatchesSpec(t *testing.T) {
+	t.Parallel()
+	if queueargs.DispatchTaskMaxAttempts != 5 {
+		t.Fatalf("max attempts = %d, want 5", queueargs.DispatchTaskMaxAttempts)
+	}
+	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
+	worker := &dispatchTaskWorker{}
+	for attempt, want := range wants {
+		attempt := attempt + 1
+		if got := queueargs.DispatchTaskRetryDelay(attempt); got != want {
+			t.Fatalf("attempt %d retry delay = %s, want %s", attempt, got, want)
+		}
+		before := time.Now().UTC()
+		next := worker.NextRetry(dispatchTaskJob("retry-policy", attempt, queueargs.DispatchTaskMaxAttempts))
+		if got := next.Sub(before); got < want || got > want+time.Second {
+			t.Fatalf("attempt %d next retry in %s, want %s", attempt, got, want)
+		}
+	}
+	if got := queueargs.DispatchTaskRetryDelay(6); got != queueargs.DispatchRetryMaximumDelay {
+		t.Fatalf("retry cap = %s, want %s", got, queueargs.DispatchRetryMaximumDelay)
+	}
 }
 
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {

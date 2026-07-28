@@ -90,6 +90,9 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if claim.ClaimantID == "" {
 		claim.ClaimantID = "mcp-agent"
 	}
+	if claim.Lease <= 0 {
+		claim.Lease = core.DefaultWorkOrderClaimLease
+	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err

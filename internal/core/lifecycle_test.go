@@ -91,14 +91,12 @@ func TestWorkOrderLifecycleW1ThroughW15(t *testing.T) {
 			to      WorkOrderState
 		}{"W13", from, WorkOrderCmdRecover, WorkOrderQueued})
 	}
-	for _, from := range []WorkOrderState{WorkOrderQueued, WorkOrderClaimed, WorkOrderSubmitted} {
-		tests = append(tests, struct {
-			name    string
-			from    WorkOrderState
-			command WorkOrderCommand
-			to      WorkOrderState
-		}{"W14", from, WorkOrderCmdRedispatch, WorkOrderQueued})
-	}
+	tests = append(tests, struct {
+		name    string
+		from    WorkOrderState
+		command WorkOrderCommand
+		to      WorkOrderState
+	}{"W14", WorkOrderStale, WorkOrderCmdRedispatch, WorkOrderQueued})
 	for _, from := range []WorkOrderState{WorkOrderQueued, WorkOrderClaimed, WorkOrderSubmitted, WorkOrderStale, WorkOrderTimedOut} {
 		tests = append(tests, struct {
 			name    string
@@ -112,6 +110,16 @@ func TestWorkOrderLifecycleW1ThroughW15(t *testing.T) {
 			got, err := TransitionWorkOrder(test.from, test.command)
 			if err != nil || got != test.to {
 				t.Fatalf("transition = %q, %v; want %q", got, err, test.to)
+			}
+		})
+	}
+}
+
+func TestWorkOrderLifecycleRejectsRedispatchOutsideW14(t *testing.T) {
+	for _, from := range []WorkOrderState{WorkOrderQueued, WorkOrderClaimed, WorkOrderSubmitted, WorkOrderTimedOut} {
+		t.Run(string(from), func(t *testing.T) {
+			if _, err := TransitionWorkOrder(from, WorkOrderCmdRedispatch); err == nil {
+				t.Fatalf("order.redispatch unexpectedly allowed from %q", from)
 			}
 		})
 	}

@@ -126,17 +126,20 @@ func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.Wor
 	case "work_order.stale":
 		return core.WorkOrderCmdMarkStale, true
 	case "work_order.redispatched":
-		// Before canonical commands were recorded, the stale-order redispatch
-		// endpoint emitted this kind for W13 recovery. Retry-suppressed queued
-		// recovery is W14 redispatch.
-		if from == core.WorkOrderStale || from == core.WorkOrderTimedOut {
-			return core.WorkOrderCmdRecover, true
+		// W14 is stale -> queued for never-claimed queue timeouts. Historical
+		// queued recovery events were state-preserving metadata resets, so they
+		// carry no lifecycle command (spec §3.3, §21.41).
+		if from == core.WorkOrderQueued {
+			return "", true
 		}
 		return core.WorkOrderCmdRedispatch, true
 	case "work_order.recovered":
-		// Historical queued recovery is the W14 queued self-edge; stale and
-		// timed-out recovery is W13.
-		if from == core.WorkOrderQueued || from == core.WorkOrderClaimed || from == core.WorkOrderSubmitted {
+		// Historical queued recovery was a state-preserving metadata reset;
+		// stale and timed-out recovery is W13.
+		if from == core.WorkOrderQueued {
+			return "", true
+		}
+		if from == core.WorkOrderClaimed || from == core.WorkOrderSubmitted {
 			return core.WorkOrderCmdRedispatch, true
 		}
 		return core.WorkOrderCmdRecover, true
