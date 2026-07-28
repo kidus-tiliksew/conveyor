@@ -61,7 +61,16 @@ func setupChangeFixture(t *testing.T, nextSeats []config.ReviewSeat) (*Service, 
 func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) {
 	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude", Effort: "high"}})
 	ordersBefore, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	retained := ordersBefore[0]
+	var retained core.WorkOrder
+	for _, order := range ordersBefore {
+		if order.ReviewSeat == 1 {
+			retained = order
+			break
+		}
+	}
+	if retained.ID == "" {
+		t.Fatal("review seat 1 not found")
+	}
 	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: retained.JobID, ReviewWorkOrderID: retained.ID,
 		Verdict: "approve", ReasonCode: "approved", Summary: "compatible", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: 1,
 		RequiredModel: retained.RequiredModel, RequiredHarness: retained.RequiredHarness, RequiredEffort: retained.RequiredEffort, MaxBounces: 4}); err != nil {

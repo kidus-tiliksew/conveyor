@@ -1,9 +1,11 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.1, accepted —
-the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41 supervision
-hygiene; the body §§1–20 is normative, §21 is the change record). When code and spec disagree, the spec wins; spec
-changes go by amendment with a version bump (§21), never silent edits.
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.2,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41
+supervision hygiene and §21.42 worker first-activity liveness; the body
+§§1–20 is normative, §21 is the change record). When code and spec disagree,
+the spec wins; spec changes go by amendment with a version bump (§21), never
+silent edits.
 
 ## Conventions
 

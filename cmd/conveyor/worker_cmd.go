@@ -223,6 +223,7 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 		if err = validateWorkerConfig(document); err != nil {
 			return fmt.Errorf("invalid worker configuration: %w", err)
 		}
+		firstActivityTimeout, _ := time.ParseDuration(document.Execution.FirstActivityTimeoutText)
 		probes := probeWorkerConfig(ctx, document)
 		if _, err = c.heartbeatWorkerContext(ctx, credential, probes); err != nil {
 			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat worker", err); retryErr != nil {
@@ -272,14 +273,14 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 			counts[item.Order.Stage]++
 			started = true
 			children.Add(1)
-			go func(order workerservice.DispatchOrder) {
+			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration) {
 				defer children.Done()
-				err := runHarnessChild(ctx, c, credential, order)
+				err := runHarnessChildWithFirstActivityTimeout(ctx, c, credential, order, firstActivityTimeout)
 				completions <- childResult{stage: order.Order.Stage, err: err}
 				mu.Lock()
 				delete(active, order.Order.ID)
 				mu.Unlock()
-			}(item)
+			}(item, firstActivityTimeout)
 		}
 		mu.Lock()
 		activeCount := len(active)
@@ -334,6 +335,23 @@ func waitForWorkerReconnect(ctx context.Context, reconnect workerReconnectPolicy
 func validateWorkerConfig(document workerservice.WorkerConfig) error {
 	if strings.TrimSpace(document.Workspace) == "" {
 		return fmt.Errorf("workspace is required")
+	}
+	firstActivityTimeout, err := time.ParseDuration(document.Execution.FirstActivityTimeoutText)
+	if err != nil || firstActivityTimeout <= 0 {
+		return fmt.Errorf("execution.first_activity_timeout must be a positive duration")
+	}
+	for _, stage := range []string{"spec", "implement", "review"} {
+		route, ok := document.Routing.Stages[stage]
+		if !ok || route.Execution != config.ExecutionMCP {
+			continue
+		}
+		stageTimeout, parseErr := time.ParseDuration(route.TimeoutText)
+		if parseErr != nil || stageTimeout <= 0 {
+			return fmt.Errorf("routing stage %s: timeout must be a positive duration", stage)
+		}
+		if firstActivityTimeout >= stageTimeout {
+			return fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stage)
+		}
 	}
 	validate := func(harness config.Harness) error {
 		if strings.TrimSpace(harness.Name) == "" || len(harness.Command) == 0 || len(harness.ProbeCommand) == 0 {
@@ -437,11 +455,14 @@ func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessPro
 	return result
 }
 
-func runHarnessChild(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder) error {
-	return runHarnessChildWithOutput(ctx, c, credential, item, os.Stdout, os.Stderr)
+func runHarnessChildWithFirstActivityTimeout(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration) error {
+	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr)
 }
 
-func runHarnessChildWithOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, stdout, stderr io.Writer) error {
+func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer) error {
+	if firstActivityTimeout <= 0 {
+		return fmt.Errorf("first activity timeout must be positive")
+	}
 	session, err := randomHex(16)
 	if err != nil {
 		return fmt.Errorf("generate worker session: %w", err)
@@ -576,6 +597,9 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
 	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdout, failureTail), Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
+	// Both redacted streams share one first-write signal; either stream
+	// permanently disarms output-start liveness (spec §21.42).
+	firstActivity := newFirstActivitySignal()
 	defer flushOutput()
 	// Hand lease authority to the running-child loop: stop pre-start renewal
 	// before launch so exactly one renewer owns the claim at a time.
@@ -590,7 +614,8 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	}
 	leaseExpiresAt = handoffLease
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	command.Stdout, command.Stderr = redactedStdout, redactedStderr
+	command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
+	command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
 	command.Env = childEnv
 	command.Dir = workingDirectory
 	if err = command.Start(); err != nil {
@@ -603,6 +628,10 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
+	firstActivityTimer := time.NewTimer(firstActivityTimeout)
+	defer firstActivityTimer.Stop()
+	firstActivityDeadline := firstActivityTimer.C
+	firstActivityObserved := firstActivity.observed
 	renewEvery := workerClaimRenewInterval
 	if remaining := time.Until(leaseExpiresAt); remaining > 0 && remaining/3 < renewEvery {
 		renewEvery = remaining / 3
@@ -613,53 +642,131 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()
 	claimFinalized := false
+	handleChildExit := func(waitErr error) error {
+		if ctx.Err() != nil {
+			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			return ctx.Err()
+		}
+		var exitStatus *int
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				status := exitErr.ExitCode()
+				exitStatus = &status
+			}
+		}
+		// Preserve the generic implementation failure path. Review children
+		// reconcile terminal state because a verdict can commit before a
+		// harness reports a later non-zero exit.
+		if item.Order.Stage != core.StageReview && waitErr != nil {
+			_ = release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
+			return waitErr
+		}
+		reconciled, reconcileErr := reconcileWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+		if reconcileErr != nil {
+			_ = release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
+			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
+		}
+		renewed := reconciled.WorkOrder
+		if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
+			reason := "harness exited before completing work order"
+			if item.Order.Stage == core.StageReview {
+				reason = "harness exited without terminal verdict submission"
+			}
+			if releaseErr := release(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
+				return fmt.Errorf("%s: release claim: %w", reason, releaseErr)
+			}
+			if waitErr != nil {
+				return fmt.Errorf("%s: %w", reason, waitErr)
+			}
+			return errors.New(reason)
+		}
+		if renewed.State != core.WorkOrderSubmitted && renewed.State != core.WorkOrderCompleted {
+			return fmt.Errorf("harness exited without authorized completion; server reports %s (%s)", renewed.State, reconciled.Reason)
+		}
+		// A successful review verdict submission is authoritative even when
+		// the review child subsequently reports a non-zero exit.
+		return nil
+	}
 	for {
 		select {
 		case waitErr := <-done:
-			if ctx.Err() != nil {
-				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
-				return ctx.Err()
+			return handleChildExit(waitErr)
+		case <-firstActivityObserved:
+			if !firstActivityTimer.Stop() {
+				select {
+				case <-firstActivityDeadline:
+				default:
+				}
 			}
+			firstActivityObserved = nil
+			firstActivityDeadline = nil
+		case <-firstActivityDeadline:
+			// Prefer output or normal child exit when either raced the timer.
+			select {
+			case <-firstActivity.observed:
+				firstActivityObserved = nil
+				firstActivityDeadline = nil
+				continue
+			default:
+			}
+			select {
+			case waitErr := <-done:
+				return handleChildExit(waitErr)
+			default:
+			}
+			if claimFinalized {
+				firstActivityObserved = nil
+				firstActivityDeadline = nil
+				continue
+			}
+			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			if renewErr != nil {
+				_ = command.Process.Kill()
+				<-done
+				if workerOrderCancelled(renewErr) {
+					return errWorkerOrderCancelled
+				}
+				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				return renewErr
+			}
+			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
+				claimFinalized = true
+				firstActivityObserved = nil
+				firstActivityDeadline = nil
+				continue
+			}
+			if renewed.State != core.WorkOrderClaimed {
+				_ = command.Process.Kill()
+				<-done
+				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+			}
+			leaseExpiresAt = renewed.LeaseExpiresAt
+			// The authority check may have overlapped the first byte or exit.
+			select {
+			case <-firstActivity.observed:
+				firstActivityObserved = nil
+				firstActivityDeadline = nil
+				continue
+			default:
+			}
+			select {
+			case waitErr := <-done:
+				return handleChildExit(waitErr)
+			default:
+			}
+			_ = command.Process.Kill()
+			waitErr := <-done
 			var exitStatus *int
-			if waitErr != nil {
-				var exitErr *exec.ExitError
-				if errors.As(waitErr, &exitErr) {
-					status := exitErr.ExitCode()
-					exitStatus = &status
-				}
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				status := exitErr.ExitCode()
+				exitStatus = &status
 			}
-			// Preserve the generic implementation failure path. Review children
-			// reconcile terminal state because a verdict can commit before a
-			// harness reports a later non-zero exit.
-			if item.Order.Stage != core.StageReview && waitErr != nil {
-				_ = release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
-				return waitErr
+			if releaseErr := release(core.WorkOrderOutcomeChildFailure, workerFirstActivityTimeoutReason, exitStatus); releaseErr != nil {
+				return fmt.Errorf("%s: release claim: %w", workerFirstActivityTimeoutReason, releaseErr)
 			}
-			reconciled, reconcileErr := reconcileWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
-			if reconcileErr != nil {
-				_ = release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
-				return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
-			}
-			renewed := reconciled.WorkOrder
-			if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
-				reason := "harness exited before completing work order"
-				if item.Order.Stage == core.StageReview {
-					reason = "harness exited without terminal verdict submission"
-				}
-				if releaseErr := release(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
-					return fmt.Errorf("%s: release claim: %w", reason, releaseErr)
-				}
-				if waitErr != nil {
-					return fmt.Errorf("%s: %w", reason, waitErr)
-				}
-				return errors.New(reason)
-			}
-			if renewed.State != core.WorkOrderSubmitted && renewed.State != core.WorkOrderCompleted {
-				return fmt.Errorf("harness exited without authorized completion; server reports %s (%s)", renewed.State, reconciled.Reason)
-			}
-			// A successful review verdict submission is authoritative even when
-			// the review child subsequently reports a non-zero exit.
-			return nil
+			return errors.New(workerFirstActivityTimeoutReason)
 		case <-ticker.C:
 			if claimFinalized {
 				continue
@@ -694,6 +801,29 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 			return ctx.Err()
 		}
 	}
+}
+
+const workerFirstActivityTimeoutReason = "harness produced no output before first_activity_timeout"
+
+type firstActivitySignal struct {
+	once     sync.Once
+	observed chan struct{}
+}
+
+func newFirstActivitySignal() *firstActivitySignal {
+	return &firstActivitySignal{observed: make(chan struct{})}
+}
+
+type firstActivityWriter struct {
+	Destination io.Writer
+	Signal      *firstActivitySignal
+}
+
+func (w *firstActivityWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.Signal.once.Do(func() { close(w.Signal.observed) })
+	}
+	return w.Destination.Write(p)
 }
 
 type boundedTailWriter struct {

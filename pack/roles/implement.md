@@ -38,3 +38,11 @@ Working discipline:
   `submit_for_review`. Do not open the PR yourself; Conveyor coordinates the
   review handoff from the pushed branch. Do not touch paths outside the
   configured repository checkout.
+
+Review wait discipline:
+
+- After `submit_for_review`, `pending` means the review panel is still within
+  its execution window. Keep calling `await_review` until it returns a terminal
+  result or `latest_seat_execution_deadline` has passed.
+- Use the pending payload's seat deadlines to bound the maximum wait. Repeated
+  pending responses alone do not mean the lifecycle is stalled.

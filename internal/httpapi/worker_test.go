@@ -71,7 +71,8 @@ func TestWorkerConfigHTTPUsesConfiguredProvider(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &workerConfig); err != nil {
 		t.Fatal(err)
 	}
-	if providerCalls != 1 || workerConfig.Workspace != "demo" || workerConfig.ActiveHarnesses == nil {
+	if providerCalls != 1 || workerConfig.Workspace != "demo" || workerConfig.ActiveHarnesses == nil ||
+		workerConfig.Execution.FirstActivityTimeoutText != config.DefaultFirstActivityTimeoutText {
 		t.Fatalf("provider calls=%d config=%+v", providerCalls, workerConfig)
 	}
 }

@@ -108,6 +108,10 @@ type Store interface {
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
+	// ListTaskWorkOrdersSnapshot returns persisted order state without applying
+	// clock-driven lifecycle transitions. It is for observational responses
+	// whose reads must not mutate the work-order lifecycle.
+	ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
@@ -1406,6 +1410,24 @@ func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.
 		}
 	}
 	return out, nil
+}
+
+func (m *memory) ListTaskWorkOrdersSnapshot(_ context.Context, taskID string) ([]core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	orders := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		if order.TaskID == taskID {
+			orders = append(orders, order)
+		}
+	}
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
+	return orders, nil
 }
 
 func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
