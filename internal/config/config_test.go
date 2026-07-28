@@ -15,16 +15,45 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	cfg := validConfig()
 	cfg.Harnesses = nil
 	cfg.Repos = nil
+	cfg.Monitor.Repositories = nil
 	document := cfg.WorkspaceDocument()
-	if document.Harnesses == nil || document.Repos == nil {
+	if document.Harnesses == nil || document.Repos == nil || document.Monitor.Repositories == nil {
 		t.Fatalf("workspace document contains nil collections: %+v", document)
 	}
 	data, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"harnesses":[]`) || !strings.Contains(string(data), `"repos":[]`) {
+	if !strings.Contains(string(data), `"harnesses":[]`) || !strings.Contains(string(data), `"repos":[]`) || !strings.Contains(string(data), `"repositories":[]`) {
 		t.Fatalf("workspace document JSON contains nullable collections: %s", data)
+	}
+}
+
+func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
+	cfg := validConfig()
+	cfg.Monitor = MonitorConfig{
+		Enabled: true, Repositories: []string{cfg.Repos[0].Name},
+		PollIntervalText: "30s", StartupWindowText: "12h",
+	}
+	normalized, err := normalize(cfg, "/tmp/conveyor.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !normalized.Monitor.Enabled || normalized.Monitor.PollInterval != 30*time.Second ||
+		normalized.Monitor.StartupWindow != 12*time.Hour {
+		t.Fatalf("monitor=%+v", normalized.Monitor)
+	}
+	for _, mutate := range []func(*Config){
+		func(value *Config) { value.Monitor.Repositories = []string{"unknown"} },
+		func(value *Config) { value.Monitor.Repositories = nil },
+		func(value *Config) { value.Monitor.PollIntervalText = "0s" },
+	} {
+		candidate := validConfig()
+		candidate.Monitor = MonitorConfig{Enabled: true, Repositories: []string{candidate.Repos[0].Name}, PollIntervalText: "1m", StartupWindowText: "24h"}
+		mutate(candidate)
+		if _, err := normalize(candidate, "/tmp/conveyor.yaml"); err == nil {
+			t.Fatalf("accepted invalid monitor config %+v", candidate.Monitor)
+		}
 	}
 }
 

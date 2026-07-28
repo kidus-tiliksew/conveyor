@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { FolderGit2, Kanban, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
+import { Activity, FolderGit2, Kanban, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
 import { fetchActivity, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
@@ -153,6 +153,7 @@ function NavSidebar() {
         </NavItem>
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
+        <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
 			<ThemeSwitcher />

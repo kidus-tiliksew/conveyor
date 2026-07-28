@@ -325,6 +325,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if !reflect.DeepEqual(before.Repos, after.Repos) {
 		sections = append(sections, "repos")
 	}
+	if !reflect.DeepEqual(before.Monitor, after.Monitor) {
+		sections = append(sections, "monitor")
+	}
 	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
 		sections = append(sections, "harnesses")
 	}

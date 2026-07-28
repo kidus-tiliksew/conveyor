@@ -19,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -156,6 +157,28 @@ func main() {
 		return cfg, nil
 	}}
 	srv.WorkOrders = workOrders
+	if monitorStore, ok := st.(monitor.Store); ok {
+		repositories := make(map[string]struct{}, len(cfg.Monitor.Repositories))
+		for _, repository := range cfg.Monitor.Repositories {
+			repositories[repository] = struct{}{}
+		}
+		srv.Monitor = &monitor.Service{
+			Store: monitorStore, Intake: srv.CreateMonitorTask,
+			WorkspaceID: cfg.Workspace, Enabled: cfg.Monitor.Enabled,
+			Repositories: repositories,
+			ResolveScope: func(ctx context.Context) (string, bool, map[string]struct{}, error) {
+				current, configErr := workOrders.ConfigProvider(ctx)
+				if configErr != nil {
+					return "", false, nil, configErr
+				}
+				scoped := make(map[string]struct{}, len(current.Monitor.Repositories))
+				for _, repository := range current.Monitor.Repositories {
+					scoped[repository] = struct{}{}
+				}
+				return current.Workspace, current.Monitor.Enabled, scoped, nil
+			},
+		}
+	}
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
 	if pgStore != nil {
 		srv.Workspaces = pgStore
@@ -236,6 +259,81 @@ func main() {
 					}
 				} else if cfg.Workspace != "" {
 					d.PollOnce(store.WithWorkspace(ctx, cfg.Workspace))
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
+
+	if srv.Monitor != nil {
+		go func() {
+			lastPoll := map[string]time.Time{}
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				var workspaceIDs []string
+				if pgStore != nil {
+					items, listErr := pgStore.ListWorkspaces(ctx)
+					if listErr != nil {
+						log.Printf("list workspaces for monitor: %v", listErr)
+					} else {
+						for _, item := range items {
+							workspaceIDs = append(workspaceIDs, item.ID)
+						}
+					}
+				} else if cfg.Workspace != "" {
+					workspaceIDs = append(workspaceIDs, cfg.Workspace)
+				}
+				for _, workspaceID := range workspaceIDs {
+					workspaceCtx := store.WithWorkspace(ctx, workspaceID)
+					current, configErr := workOrders.ConfigProvider(workspaceCtx)
+					if configErr != nil || !current.Monitor.Enabled {
+						continue
+					}
+					if previous := lastPoll[workspaceID]; !previous.IsZero() && time.Since(previous) < current.Monitor.PollInterval {
+						continue
+					}
+					lastPoll[workspaceID] = time.Now()
+					for _, repositoryName := range current.Monitor.Repositories {
+						repository, ok := current.Repo(repositoryName)
+						if !ok || repository.GitHub == "" {
+							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, "forge_response",
+								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
+							continue
+						}
+						source := monitor.GitHubSource{
+							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub,
+							KnownTask: func(taskID string) bool {
+								_, taskErr := st.GetTask(workspaceCtx, taskID)
+								return taskErr == nil
+							},
+						}
+						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
+							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
+						}
+						source.LoadHints = func(ctx context.Context, revision string) (*monitor.HintContext, error) {
+							return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, nil)
+						}
+						poller := monitor.Poller{
+							Service: srv.Monitor, Source: source, StartupWindow: current.Monitor.StartupWindow,
+							RetryInitial: time.Second, RetryMaximum: 30 * time.Second,
+							Sleep: func(ctx context.Context, delay time.Duration) error {
+								select {
+								case <-ctx.Done():
+									return ctx.Err()
+								case <-time.After(delay):
+									return nil
+								}
+							},
+						}
+						if pollErr := poller.Poll(workspaceCtx); pollErr != nil {
+							log.Printf("monitor workspace %s repository %s: %v", workspaceID, repositoryName, pollErr)
+						}
+					}
 				}
 				select {
 				case <-ctx.Done():
