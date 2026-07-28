@@ -198,7 +198,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId.startsWith('merge-') ? 'approved' : 'running',
+		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -248,6 +248,30 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       approved_at: createdAt,
     },
 		work_orders: reviewActivity.work_orders,
+		verification_evidence: taskId === 'evidence' ? [
+			{
+				id: 'evidence-image',
+				workspace: 'demo',
+				name: 'proof screenshot.png',
+				content_type: 'image/png',
+				size_bytes: 68,
+				role: 'verification_evidence' as const,
+				task_id: taskId,
+				download_url: '/v1/artifacts/evidence-image',
+				created_at: createdAt,
+			},
+			{
+				id: 'evidence-video',
+				workspace: 'demo',
+				name: 'proof recording.webm',
+				content_type: 'video/webm',
+				size_bytes: 128,
+				role: 'verification_evidence' as const,
+				task_id: taskId,
+				download_url: '/v1/artifacts/evidence-video',
+				created_at: createdAt,
+			},
+		] : [],
 		review_diagnostics: reviewDiagnostics,
 		review_recovery: taskId === 'review-retry' ? {
 			needed: true,
@@ -727,6 +751,52 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 	await expect(timelineRows).toHaveCount(2)
 	await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
 	await expect(timelineRows.nth(1)).toContainText('Pull request opened')
+})
+
+test('review card renders authorized verification evidence with accessible preview and download fallback', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator-token'))
+	const authorizationHeaders: string[] = []
+	let videoRequests = 0
+	let allowVideoDownload = false
+	const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+	await page.route('**/v1/artifacts/evidence-image*', async (route) => {
+		authorizationHeaders.push(await route.request().headerValue('authorization') ?? '')
+		await route.fulfill({ contentType: 'image/png', body: png })
+	})
+	await page.route('**/v1/artifacts/evidence-video*', async (route) => {
+		videoRequests++
+		authorizationHeaders.push(await route.request().headerValue('authorization') ?? '')
+		if (!allowVideoDownload) {
+			await route.fulfill({ status: 503, body: 'preview unavailable' })
+			return
+		}
+		await route.fulfill({ contentType: 'video/webm', body: 'downloadable recording' })
+	})
+
+	await page.goto('/tasks/evidence/full')
+	const reviewCard = page.getByRole('region', { name: 'Human gate' })
+	await expect(reviewCard.getByRole('heading', { name: 'Verification evidence' })).toBeVisible()
+	await expect(reviewCard.getByRole('img', { name: 'proof screenshot.png' })).toBeVisible()
+	await expect(reviewCard.getByRole('button', { name: 'Expand proof recording.webm' })).toBeVisible()
+
+	await reviewCard.getByRole('button', { name: 'Expand proof screenshot.png' }).click()
+	const screenshotDialog = page.getByRole('dialog', { name: 'proof screenshot.png' })
+	await expect(screenshotDialog.getByRole('img', { name: 'proof screenshot.png' })).toBeVisible()
+	await screenshotDialog.getByRole('button', { name: 'Close preview' }).click()
+
+	await reviewCard.getByRole('button', { name: 'Expand proof recording.webm' }).click()
+	const recordingDialog = page.getByRole('dialog', { name: 'proof recording.webm' })
+	await expect(recordingDialog.getByText('This evidence could not be loaded for preview. Use the authorized download instead.')).toBeVisible()
+	await expect(recordingDialog.getByRole('button', { name: 'Download' })).toBeEnabled()
+	const previewRequestCount = videoRequests
+	allowVideoDownload = true
+	const downloadPromise = page.waitForEvent('download')
+	await recordingDialog.getByRole('button', { name: 'Download' }).click()
+	const download = await downloadPromise
+	expect(download.suggestedFilename()).toBe('proof recording.webm')
+	expect(videoRequests).toBe(previewRequestCount + 1)
+	expect(authorizationHeaders.length).toBeGreaterThanOrEqual(3)
+	expect(authorizationHeaders.every((header) => header === 'Bearer operator-token')).toBe(true)
 })
 
 test('spec approval keeps the human marker without a duplicate versioned event', async ({ page }) => {
