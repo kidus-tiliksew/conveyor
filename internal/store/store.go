@@ -91,7 +91,6 @@ type Store interface {
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order (spec §21.34).
 	CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error)
-	CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
@@ -130,7 +129,6 @@ type Store interface {
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
 	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
-	AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error
 	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
 	CreateWorker(ctx context.Context, worker core.Worker) error
@@ -1080,12 +1078,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
-}
-
-// AcceptReviewDecision is a compatibility facade; the write still enters the
-// command plane, which alone can mint the required lifecycle lease.
-func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
-	return taskops.New(m).AcceptReviewDecision(ctx, decision)
 }
 
 type completedReview struct {
@@ -2930,11 +2922,6 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
 	return task, nil
-}
-
-// CancelTask is a compatibility facade over the capability-protected plane.
-func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
-	return taskops.New(m).Cancel(ctx, intervention)
 }
 
 func (m *memory) ListInterventions(_ context.Context, taskID string) ([]core.Intervention, error) {

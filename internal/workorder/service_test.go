@@ -311,14 +311,6 @@ type flakyReviewAcceptanceStore struct {
 	failures int
 }
 
-func (st *flakyReviewAcceptanceStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
-	if st.failures > 0 {
-		st.failures--
-		return errors.New("review acceptance unavailable")
-	}
-	return st.Store.AcceptReviewDecision(ctx, decision)
-}
-
 func (st *flakyReviewAcceptanceStore) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--

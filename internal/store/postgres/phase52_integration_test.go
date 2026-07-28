@@ -118,7 +118,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	firstDecision := base
 	firstDecision.JobID, firstDecision.ReviewWorkOrderID, firstDecision.ReviewSeat = first.JobID, first.ID, 1
 	firstDecision.Verdict, firstDecision.ReasonCode, firstDecision.Summary, firstDecision.Feedback, firstDecision.RequiredModel = "approve", "approved", "approved", "seat one feedback", "gpt-review"
-	if err = st.AcceptReviewDecision(ctx, firstDecision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, firstDecision); err != nil {
 		t.Fatal(err)
 	}
 	if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskRunning {
@@ -127,7 +127,7 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	secondDecision := base
 	secondDecision.JobID, secondDecision.ReviewWorkOrderID, secondDecision.ReviewSeat = second.JobID, second.ID, 2
 	secondDecision.Verdict, secondDecision.ReasonCode, secondDecision.Summary, secondDecision.Feedback, secondDecision.RequiredModel, secondDecision.RequiredHarness = "changes_requested", "tests", "changes", "seat two feedback", "claude-review", "claude"
-	if err = st.AcceptReviewDecision(ctx, secondDecision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, secondDecision); err != nil {
 		t.Fatal(err)
 	}
 	events, err := st.ListEvents(ctx, task.ID)

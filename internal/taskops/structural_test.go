@@ -11,26 +11,27 @@ import (
 	"testing"
 )
 
-// TestProductionWorkOrderWritersEnterTaskOps prevents the command-plane
-// bypasses that §21.38 removed from the service layer. Store implementations
-// may retain compatibility facades for fixtures, but production consumers must
-// call a capability-protected *Command method inside taskops admission.
-func TestProductionWorkOrderWritersEnterTaskOps(t *testing.T) {
+// TestProductionLifecycleWritersEnterTaskOps prevents the command-plane
+// bypasses that §21.38 removed from the production Store surface. Test-only
+// fixture adapters may enter taskops without exposing a production facade.
+func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve test source")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	legacy := map[string]bool{
+		"CancelTask": true, "AcceptReviewDecision": true,
 		"CreateWorkOrder": true, "CreateStageWorkOrder": true, "CreateReviewRound": true,
 		"RetryReviewRound": true, "RecoverInterruptedReviewRound": true,
 		"ClaimWorkOrder": true, "RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
 		"RenewWorkerClaim": true, "ReleaseWorkerClaim": true,
 	}
 	guarded := map[string]bool{
+		"CancelTaskCommand": true, "AcceptReviewDecisionCommand": true,
 		"CreateWorkOrderCommand": true, "CreateStageWorkOrderCommand": true, "CreateReviewRoundCommand": true,
 		"RetryReviewRoundCommand": true, "RecoverInterruptedReviewRoundCommand": true,
-		"RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,
+		"ClaimWorkOrderCommand": true, "RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,
 		"RenewWorkerClaimCommand": true, "ReleaseWorkerClaimCommand": true,
 	}
 	fset := token.NewFileSet()
@@ -95,7 +96,8 @@ func TestProductionWorkOrderWritersEnterTaskOps(t *testing.T) {
 		if parseErr != nil {
 			return parseErr
 		}
-		hasAdmission := strings.Contains(string(source), "taskops.ExecuteWorkOrder")
+		hasAdmission := strings.HasPrefix(rel, filepath.Join("internal", "taskops")+string(filepath.Separator)) ||
+			strings.Contains(string(source), "taskops.ExecuteWorkOrder")
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			call, isCall := node.(*ast.CallExpr)
 			if !isCall {

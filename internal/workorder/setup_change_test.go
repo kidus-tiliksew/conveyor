@@ -72,7 +72,7 @@ func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) 
 	if retained.ID == "" {
 		t.Fatal("review seat 1 not found")
 	}
-	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: retained.JobID, ReviewWorkOrderID: retained.ID,
+	if err := storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: retained.JobID, ReviewWorkOrderID: retained.ID,
 		Verdict: "approve", ReasonCode: "approved", Summary: "compatible", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: 1,
 		RequiredModel: retained.RequiredModel, RequiredHarness: retained.RequiredHarness, RequiredEffort: retained.RequiredEffort, MaxBounces: 4}); err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) 
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: claimed.JobID, ReviewWorkOrderID: claimed.ID,
+	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: claimed.JobID, ReviewWorkOrderID: claimed.ID,
 		Verdict: "approve", ReasonCode: "approved", Summary: "fresh", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: 2,
 		RequiredModel: claimed.RequiredModel, RequiredHarness: claimed.RequiredHarness, RequiredEffort: claimed.RequiredEffort, MaxBounces: 4}); err != nil {
 		t.Fatal(err)

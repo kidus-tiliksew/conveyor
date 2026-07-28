@@ -296,7 +296,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		Reviewer: "integration", ReviewerModel: "reviewer", ReviewerSession: "distinct",
 		SameModelAsImplementer: "false", PublicationEligible: true, Level: core.L0, MaxBounces: 2,
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err == nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err == nil {
 		t.Fatal("invalid publication verdict unexpectedly committed")
 	}
 	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 0 {
@@ -309,10 +309,10 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatal("publication persisted despite transaction rollback")
 	}
 	decision.Verdict = "approve"
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
 	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 1 {

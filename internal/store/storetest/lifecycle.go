@@ -48,6 +48,12 @@ func (a Adapter) RenewWorkerClaim(ctx context.Context, id, workerID, sessionID s
 func (a Adapter) ReleaseWorkerClaim(ctx context.Context, id, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	return ReleaseWorkerClaim(ctx, a.Store, id, workerID, release)
 }
+func (a Adapter) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+	return taskops.New(a.Store).Cancel(ctx, intervention)
+}
+func (a Adapter) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+	return taskops.New(a.Store).AcceptReviewDecision(ctx, decision)
+}
 
 func CreateWorkOrder(ctx context.Context, st store.Store, order core.WorkOrder) error {
 	_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {

@@ -82,7 +82,7 @@ func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, ReviewRound: 1, ReviewSeat: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+	if err := storetestFor(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
 		t.Fatal(err)
 	}
 	persisted, err := st.GetTask(ctx, task.ID)
@@ -815,7 +815,7 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := st.CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+	cancelled, err := storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
 	if err != nil || cancelled.State != core.TaskClosed || cancelled.NextStage != "" {
 		t.Fatalf("cancelled=%+v err=%v", cancelled, err)
 	}
@@ -836,7 +836,7 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if len(interventions) != 1 || interventions[0].ActorID != "operator" || cancelEvents != 1 {
 		t.Fatalf("interventions=%+v events=%d", interventions, cancelEvents)
 	}
-	if _, err = st.CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, ErrTaskTerminal) {
+	if _, err = storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, ErrTaskTerminal) {
 		t.Fatalf("second cancel error=%v", err)
 	}
 	cancelEvents, _ = st.CountEvents(ctx, task.ID, "task.cancelled")

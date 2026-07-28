@@ -80,7 +80,7 @@ func TestMemoryRetryReviewRoundPreservesHistoryAndIsIdempotent(t *testing.T) {
 	if err != nil || result.NewRound != 2 || len(result.WorkOrders) != 2 || result.WorkOrders[1].RequiredHarnessConfig.Command[0] != "current-claude" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 2, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "new seat one approved", PolicyVersion: 1}); err != nil {
+	if err = storetestFor(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 2, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "new seat one approved", PolicyVersion: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if completed, _ := st.CountEvents(ctx, task.ID, "review.round_completed"); completed != 0 {

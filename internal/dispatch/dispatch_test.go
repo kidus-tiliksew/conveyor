@@ -1235,14 +1235,6 @@ func TestReviewRoundStatusUsesAggregateVerdict(t *testing.T) {
 	}
 }
 
-func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
-	if st.failures > 0 {
-		st.failures--
-		return errors.New("review acceptance unavailable")
-	}
-	return st.Store.AcceptReviewDecision(ctx, decision)
-}
-
 func (st *reviewAcceptanceFlakyStore) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--

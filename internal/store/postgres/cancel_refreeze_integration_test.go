@@ -214,7 +214,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 		}
 		orderIDs = append(orderIDs, job.ID)
 	}
-	closed, err := st.CancelTask(ctx, core.Intervention{TaskID: cancelTask.ID, JobID: cancelJob.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+	closed, err := storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: cancelTask.ID, JobID: cancelJob.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
 	if err != nil || closed.State != core.TaskClosed {
 		t.Fatalf("closed=%+v err=%v", closed, err)
 	}
@@ -249,7 +249,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "session", time.Minute); !errors.Is(err, store.ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)
 	}
-	if _, err = st.CancelTask(ctx, core.Intervention{TaskID: cancelTask.ID, JobID: cancelJob.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, store.ErrTaskTerminal) {
+	if _, err = storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: cancelTask.ID, JobID: cancelJob.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, store.ErrTaskTerminal) {
 		t.Fatalf("repeated cancellation error=%v", err)
 	}
 	interventions, _ = st.ListInterventions(ctx, cancelTask.ID)
@@ -264,7 +264,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 		if err = st.CreateTask(ctx, task); err != nil {
 			t.Fatalf("create %s task: %v", state, err)
 		}
-		got, cancelErr := st.CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "state-coverage"})
+		got, cancelErr := storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "state-coverage"})
 		if cancelErr != nil || got.State != core.TaskClosed {
 			t.Fatalf("cancel %s task=%+v err=%v", state, got, cancelErr)
 		}

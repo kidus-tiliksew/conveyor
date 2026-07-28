@@ -173,7 +173,7 @@ func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testi
 	if err = storetest.For(st).UpdateWorkOrder(ctx, completed); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: completed.JobID, ReviewWorkOrderID: completed.ID, Verdict: "approve", ReasonCode: "approved", Summary: "old evidence", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: 1, RequiredModel: completed.RequiredModel, RequiredHarness: completed.RequiredHarness, MaxBounces: 4}); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: completed.JobID, ReviewWorkOrderID: completed.ID, Verdict: "approve", ReasonCode: "approved", Summary: "old evidence", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: 1, RequiredModel: completed.RequiredModel, RequiredHarness: completed.RequiredHarness, MaxBounces: 4}); err != nil {
 		t.Fatal(err)
 	}
 	interrupted, _ := st.GetWorkOrder(ctx, orders[1].ID)
@@ -207,7 +207,7 @@ func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testi
 		if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 			t.Fatal(err)
 		}
-		if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: claimed.JobID, ReviewWorkOrderID: claimed.ID, Verdict: "approve", ReasonCode: "approved", Summary: "fresh evidence", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: order.ReviewSeat, RequiredModel: order.RequiredModel, RequiredHarness: order.RequiredHarness, MaxBounces: 4}); err != nil {
+		if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: claimed.JobID, ReviewWorkOrderID: claimed.ID, Verdict: "approve", ReasonCode: "approved", Summary: "fresh evidence", ReviewedCommitSHA: "head", ReviewRound: 1, ReviewSeat: order.ReviewSeat, RequiredModel: order.RequiredModel, RequiredHarness: order.RequiredHarness, MaxBounces: 4}); err != nil {
 			t.Fatal(err)
 		}
 	}

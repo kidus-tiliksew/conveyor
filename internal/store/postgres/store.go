@@ -1180,10 +1180,6 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	return s.GetTask(ctx, intervention.TaskID)
 }
 
-func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
-	return taskops.New(s).Cancel(ctx, intervention)
-}
-
 func (s *Store) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
 	rows, err := s.queries.ListInterventions(ctx, db.ListInterventionsParams{TaskID: taskID, WorkspaceID: workspace(ctx)})
 	if err != nil {
@@ -2673,10 +2669,6 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		}
 		return nil
 	})
-}
-
-func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
-	return taskops.New(s).AcceptReviewDecision(ctx, decision)
 }
 
 type completedReviewRecord struct {

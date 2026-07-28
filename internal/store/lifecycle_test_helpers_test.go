@@ -91,3 +91,9 @@ func (a testLifecycleAdapter) ReleaseWorkerClaim(ctx context.Context, id, worker
 		return a.ReleaseWorkerClaimCommand(ctx, lease, id, workerID, release)
 	})
 }
+func (a testLifecycleAdapter) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+	return taskops.New(a.Store).Cancel(ctx, intervention)
+}
+func (a testLifecycleAdapter) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+	return taskops.New(a.Store).AcceptReviewDecision(ctx, decision)
+}

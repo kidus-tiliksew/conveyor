@@ -304,7 +304,7 @@ func TestReviewPublicationWorkerPostgresProjectionLifecycleIntegration(t *testin
 		SameModelAsImplementer: "false", PublicationEligible: true,
 		ReviewRound: 1, ReviewSeat: 1, PolicyVersion: 1, MergeApproval: true, MaxBounces: 3,
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatal(err)
 	}
 	publication, err := st.GetReviewPublication(ctx, job.ID)
