@@ -1023,9 +1023,19 @@ func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
 }
 
 func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
-	body := PRBody(core.Task{ID: "task-1", Source: "cli", GitHub: &core.GitHubLifecycle{IssueNumber: 42}})
+	task := core.Task{ID: "task-1", Source: "cli", GitHub: &core.GitHubLifecycle{IssueNumber: 42}}
+	body := PRBody(task, core.Artifact{
+		ID: "abc123", Name: "proof `shot`.png", ContentType: "image/png", SizeBytes: 42,
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+		DownloadURL: "https://private.invalid/artifact?token=secret",
+	})
 	if !strings.Contains(body, "Closes #42") {
 		t.Fatalf("body=%q", body)
+	}
+	if strings.Count(body, "<!-- conveyor:verification-evidence -->") != 1 ||
+		!strings.Contains(body, "abc123") || !strings.Contains(body, "proof 'shot'.png") ||
+		strings.Contains(body, "private.invalid") || strings.Contains(body, "token=secret") {
+		t.Fatalf("unsafe or incomplete evidence body=%q", body)
 	}
 }
 

@@ -108,6 +108,42 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	}
 }
 
+func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-evidence-gate", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Workspace: "demo", Execution: config.ExecutionPolicy{RequireVerificationEvidence: true},
+		Repos: []config.Repo{{Name: "api", Base: "main"}},
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	_, err := server.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil), "submit_for_review", map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+	})
+	if err == nil || !strings.Contains(err.Error(), "POST /v1/artifacts") || !strings.Contains(err.Error(), "role=verification_evidence") {
+		t.Fatalf("MCP evidence gate error=%v", err)
+	}
+	order, getErr := st.GetWorkOrder(ctx, job.ID)
+	if getErr != nil || order.State != core.WorkOrderClaimed {
+		t.Fatalf("order advanced after MCP rejection: %+v err=%v", order, getErr)
+	}
+}
+
 func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")

@@ -8,7 +8,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"mime"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -708,16 +711,63 @@ const (
 	// ArtifactRoleGeneratedOutput reserves the same fail-closed input behavior
 	// for future task-linked pipeline outputs that are not audit transcripts.
 	ArtifactRoleGeneratedOutput ArtifactRole = "generated_output"
+	// ArtifactRoleVerificationEvidence is implementer-supplied proof of an
+	// exercised change. It is a review aid, never model input or CI authority
+	// (spec §12, §21.12 change 6).
+	ArtifactRoleVerificationEvidence ArtifactRole = "verification_evidence"
 )
 
 func (r ArtifactRole) Valid() bool {
-	return r == ArtifactRoleTaskContext || r == ArtifactRoleGeneratedAudit || r == ArtifactRoleGeneratedOutput
+	return r == ArtifactRoleTaskContext || r == ArtifactRoleGeneratedAudit ||
+		r == ArtifactRoleGeneratedOutput || r == ArtifactRoleVerificationEvidence
 }
 
 func (r ArtifactRole) ModelInputEligible() bool {
 	// Empty is the compatibility value for artifacts created by an older
 	// in-memory process. Persisted links are backfilled by migration 027.
 	return r == "" || r == ArtifactRoleTaskContext
+}
+
+const (
+	MaxVerificationScreenshotBytes int64 = 10 << 20
+	MaxVerificationRecordingBytes  int64 = 25 << 20
+)
+
+var verificationEvidenceLimits = map[string]int64{
+	"image/jpeg": MaxVerificationScreenshotBytes,
+	"image/png":  MaxVerificationScreenshotBytes,
+	"image/webp": MaxVerificationScreenshotBytes,
+	"video/mp4":  MaxVerificationRecordingBytes,
+	"video/webm": MaxVerificationRecordingBytes,
+}
+
+// NormalizeVerificationEvidenceContentType is the control-plane eligibility
+// policy. Parameters and casing are normalized; filenames are never consulted.
+func NormalizeVerificationEvidenceContentType(contentType string, sizeBytes int64) (string, error) {
+	normalized, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		return "", fmt.Errorf("verification evidence content type %q is invalid", contentType)
+	}
+	normalized = strings.ToLower(normalized)
+	limit, ok := verificationEvidenceLimits[normalized]
+	if !ok {
+		return "", fmt.Errorf("verification evidence content type %q is unsupported; use image/png, image/jpeg, image/webp, video/mp4, or video/webm", normalized)
+	}
+	if sizeBytes <= 0 {
+		return "", fmt.Errorf("verification evidence must not be empty")
+	}
+	if sizeBytes > limit {
+		return "", fmt.Errorf("verification evidence %s exceeds the %d byte limit", normalized, limit)
+	}
+	return normalized, nil
+}
+
+func (a Artifact) EligibleVerificationEvidence() bool {
+	if a.Role != ArtifactRoleVerificationEvidence || a.TaskID == "" || a.FeatureID != "" {
+		return false
+	}
+	_, err := NormalizeVerificationEvidenceContentType(a.ContentType, a.SizeBytes)
+	return err == nil
 }
 
 type Artifact struct {

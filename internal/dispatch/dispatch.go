@@ -1403,10 +1403,21 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 // PollOnce runs one explicit-workspace GitHub intake pass.
 func (d *Dispatcher) PollOnce(ctx context.Context) { d.pollOnce(ctx) }
 
-func PRBody(task core.Task) string {
+func PRBody(task core.Task, evidence ...core.Artifact) string {
 	body := fmt.Sprintf("<!-- conveyor:task-link -->\nConveyor task `%s`\n\nSource: %s\n", task.ID, task.Source)
 	if task.GitHub != nil && task.GitHub.IssueNumber > 0 {
 		body += fmt.Sprintf("\nCloses #%d\n", task.GitHub.IssueNumber)
+	}
+	if len(evidence) > 0 {
+		body += "\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n"
+		for _, artifact := range evidence {
+			if !artifact.EligibleVerificationEvidence() || artifact.TaskID != task.ID {
+				continue
+			}
+			name := strings.NewReplacer("`", "'", "\r", " ", "\n", " ").Replace(strings.TrimSpace(artifact.Name))
+			body += fmt.Sprintf("- `%s` — `%s`, %d bytes, SHA-256 `%s`\n", name, artifact.ContentType, artifact.SizeBytes, artifact.ID)
+		}
+		body += "\nEvidence media remains in Conveyor's task-scoped artifact store. This PR mirror intentionally publishes durable metadata only—no control-plane credentials or private artifact URLs.\n"
 	}
 	return body
 }

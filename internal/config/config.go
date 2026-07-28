@@ -108,6 +108,9 @@ type ExecutionPolicy struct {
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
+	// RequireVerificationEvidence fails review submission closed until the
+	// task owns an eligible screenshot or short recording (spec §21.12 change 6).
+	RequireVerificationEvidence bool `yaml:"require_verification_evidence" json:"require_verification_evidence"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
 	// the claim lease and fixed execution deadline (spec §21.42).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
@@ -635,7 +638,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	}
 	// An absent execution block means the shipped default: both gates on
 	// (§21.12 change 2; the mode axis itself is removed by §21.31).
-	if c.Execution == (ExecutionPolicy{}) {
+	executionDefaultsProbe := c.Execution
+	executionDefaultsProbe.RequireVerificationEvidence = false
+	if executionDefaultsProbe == (ExecutionPolicy{}) {
 		c.Execution.SpecApproval = true
 		c.Execution.MergeApproval = true
 	}

@@ -32,6 +32,19 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	}
 }
 
+func TestReconcilePullRequestBodyUpdatesOneEvidenceSection(t *testing.T) {
+	existing := "Human context."
+	first := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `old.png`"
+	second := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `new.png`"
+	updated := reconcilePullRequestBody(reconcilePullRequestBody(existing, first), second)
+	if !strings.Contains(updated, "Human context.") || !strings.Contains(updated, "new.png") ||
+		strings.Contains(updated, "old.png") ||
+		strings.Count(updated, pullRequestLifecycleMarker) != 1 ||
+		strings.Count(updated, "<!-- conveyor:verification-evidence -->") != 1 {
+		t.Fatalf("reconciled body=%q", updated)
+	}
+}
+
 func TestPublishIssueCreatesOneMarkedIssue(t *testing.T) {
 	var calls [][]string
 	prepared := false

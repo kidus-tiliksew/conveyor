@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.3**
+**Specification — v2.4**
 **Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -357,7 +357,7 @@ the needs-operator tray (§13.2, §21.41).
 | W3 | `claimed` | `claim.renew` | `claimed` | lease extension (never extends the execution deadline) |
 | W4 | `claimed` | `claim.release` | `queued` | worker or agent releases |
 | W5 | `claimed` | `claim.expire` | `queued` | lease expiry returns the order to queue |
-| W6 | `claimed` | `submit_for_review` | `submitted` | implementation delivered (evidence gate arrives in Phase 5.4) |
+| W6 | `claimed` | `submit_for_review` | `submitted` | implementation delivered; when configured, eligible task-owned verification evidence is required (§12, §21.44) |
 | W7 | `claimed` | `submit_spec` | `completed` | spec order completes |
 | W8 | `claimed` | `submit_review_verdict` | `completed` | review order completes |
 | W9 | `submitted` | `review.terminal` | `completed` | review round reaches a terminal verdict |
@@ -1082,11 +1082,14 @@ behavior**. Current mechanics, in order of arrival:
 
 1. **Repository CI is the mechanical verifier** (now). PR checks gate
    merge; automatic merge requires green checks.
-2. **Evidence-gated submission** *(Phase 5.4, planned)*: a workspace
+2. **Evidence-gated submission** *(Phase 5.4, delivered)*: a workspace
    toggle refuses `submit_for_review` until at least one
    verification-evidence artifact (screenshots or a short recording of
    the exercised change) is attached; evidence lists in review work
-   orders, renders on the review card, and mirrors to the PR.
+   orders, renders on the review card, and mirrors to the PR. Eligibility is
+   explicit: role `verification_evidence`; PNG, JPEG, or WebP screenshots up
+   to 10 MiB; MP4 or WebM recordings up to 25 MiB; direct ownership by the
+   submitting task in the active workspace. Filenames do not establish type.
 3. **The verification agent** *(Phase 8, demand-triggered)*: scripted
    Playwright flows and computer-use judgment against the spec's
    acceptance criteria, with evidence attached per `AC-n`. With
@@ -1390,7 +1393,7 @@ demand-triggered.
 | **5.1** | Worker: enrollment, harness registry, health-gated dispatch, stage-aware capacity, gate toggles (modes since removed by §21.31) | Complete |
 | **5.2** | Adversarial review panel: per-seat pinned models/efforts, unanimous round-local aggregation, independence labels | Complete (operational; extensions continue by amendment) |
 | **5.3** | Factory-coordinated GitHub: issue create/update on spec approval, portable aggregate review status, deterministic PR verdict/resolution comment (§21.22, §21.43) | Complete |
-| **5.4** | Evidence-gated `submit_for_review` (§12) | Planned |
+| **5.4** | Evidence-gated `submit_for_review` (§12, §21.44) | Complete |
 | **5.5** | Worker service packaging: `conveyor worker install`/`uninstall`/`status` (§6.5) | Planned |
 | **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints | Planned |
 | **—** | Lifecycle state machines & command plane implementation (§3.3–§3.4, accepted §21.37–§21.38): machine module + event-corpus audit, then staged `taskops` migration — lands ahead of further 5.2+ lifecycle growth | In flight (factory-executed) |
@@ -3679,7 +3682,7 @@ the surface. Seven changes:
    | W3 | `claimed` | `claim.renew` | `claimed` | lease extension (§21.9) |
    | W4 | `claimed` | `claim.release` | `queued` | worker releases (§21.13) |
    | W5 | `claimed` | `claim.expire` | `queued` | lease expiry returns the order to queue (§21.9) |
-   | W6 | `claimed` | `submit_for_review` | `submitted` | implementation delivered (§17.4; evidence gate arrives in Phase 5.4) |
+   | W6 | `claimed` | `submit_for_review` | `submitted` | implementation delivered (§17.4; configured evidence gate enforced by §21.44) |
    | W7 | `claimed` | `submit_spec` | `completed` | spec order completes (§21.33) |
    | W8 | `claimed` | `submit_review_verdict` | `completed` | review order completes (§17.4) |
    | W9 | `submitted` | `review.terminal` | `completed` | review round reaches a terminal verdict |
@@ -4205,11 +4208,61 @@ persistence, single and panel publications, retry/reconciliation idempotency,
 requested-changes-to-approval history, and preservation of internal authority
 when GitHub publication fails.
 
+### 21.44 v2.4 — Complete Phase 5.4 verification evidence (July 28, 2026)
+
+Phase 5.4 delivers §12 and §21.12 change 6 without adding an automated verifier
+or a second artifact system:
+
+1. **The workspace policy is live configuration.** The versioned
+   `execution.require_verification_evidence` boolean defaults off. Validated
+   writes persist through the existing workspace configuration store, emit the
+   ordinary `config.updated` audit event, and hot-reload through the existing
+   configuration provider. It is intentionally not frozen into an execution
+   setup.
+
+2. **Eligibility is explicit and fail-closed.** Only a direct task link with
+   role `verification_evidence` can satisfy the gate. Accepted screenshots are
+   `image/png`, `image/jpeg`, and `image/webp` up to 10 MiB. Accepted short
+   recordings are `video/mp4` and `video/webm` up to 25 MiB. MIME parameters and
+   casing normalize at the control-plane boundary; filenames are never used as
+   type evidence. Empty, unsupported, oversized, feature-only, cross-task, and
+   cross-workspace artifacts are ineligible.
+
+3. **Rejection has no lifecycle side effects.** After claim authorization and
+   current configuration resolution, `submit_for_review` evaluates task-owned
+   evidence before opening or updating a PR, recording a reviewed head,
+   submitting the implementation order, advancing the task, or dispatching a
+   review round. Rejection leaves the implementation claim active and tells the
+   implementer the accepted types, limits, task ID, role, and attachment
+   boundary.
+
+4. **Every review seat receives authorized evidence.** Review work-order
+   context repeats eligible evidence as immutable metadata plus that order's
+   `read_artifact` reference. The artifact ID alone remains non-authorizing.
+   The task detail and human review card render screenshots and recordings
+   through the authenticated artifact download path, with accessible labels,
+   explicit controls, and a download fallback.
+
+5. **The GitHub mirror is deterministic and credential-free.** The reconciled
+   PR lifecycle body contains one task-marked verification-evidence section.
+   It publishes portable filename, normalized MIME type, byte size, and SHA-256
+   identity, replacing the prior marked section on retry rather than
+   duplicating it. Because the current artifact transport is private
+   control-plane storage, the PR never receives bearer credentials, private
+   URLs, or an inaccessible pseudo-link; media bytes remain available through
+   each authorized Conveyor review surface.
+
+Repository CI remains the mechanical verifier. Evidence is implementer-supplied
+review context and cannot count as a passing check. The Phase 8 independent
+Playwright/computer-use verifier, managed execution, runners, adapters,
+snapshots, secret references, and broader artifact redesign remain out of
+scope.
+
 ---
 
-*End of specification. v2.3 accepted July 28, 2026 — the v2.0 consolidated
+*End of specification. v2.4 accepted July 28, 2026 — the v2.0 consolidated
 restatement of v1.0–v1.40 (§21.40), supervision hygiene (§21.41), and
 worker-side first-activity liveness (§21.42), with the completed Phase 5.3
-review projection (§21.43). The body (§§1–20) is the normative authority; §21
-is the change record. Subsequent changes proceed by amendment with version
-bumps.*
+review projection (§21.43) and Phase 5.4 verification evidence (§21.44). The
+body (§§1–20) is the normative authority; §21 is the change record. Subsequent
+changes proceed by amendment with version bumps.*

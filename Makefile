@@ -7,9 +7,10 @@ LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
 TEST_POSTGRES_PORT ?= 5433
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
+PLAYWRIGHT_ARGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui test test-ui compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui test test-ui test-ui-evidence compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -25,6 +26,9 @@ test: compose-check
 
 test-ui: ui
 	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+
+test-ui-evidence: ui
+	cd web && npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
 
 compose-check:
 	python3 scripts/validate_compose_isolation.py

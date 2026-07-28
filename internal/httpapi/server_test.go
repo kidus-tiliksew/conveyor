@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,76 @@ func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]by
 	request.Header.Set("Authorization", "Bearer token")
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	return request
+}
+
+func artifactUploadRequest(t *testing.T, taskID string, role core.ArtifactRole, filename, contentType string, content []byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("task_id", taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("role", string(role)); err != nil {
+		t.Fatal(err)
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename))
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/artifacts?workspace_id=demo", &body)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func TestVerificationEvidenceUploadAndTaskActivityUseExplicitRole(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "evidence-api", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.BearerToken = "token"
+	server.Workspace = "demo"
+
+	valid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(valid, artifactUploadRequest(t, task.ID, core.ArtifactRoleVerificationEvidence, "proof.png", "IMAGE/PNG; charset=binary", []byte("png evidence")))
+	if valid.Code != http.StatusCreated ||
+		!strings.Contains(valid.Body.String(), `"role":"verification_evidence"`) ||
+		!strings.Contains(valid.Body.String(), `"content_type":"image/png"`) {
+		t.Fatalf("valid upload status=%d body=%s", valid.Code, valid.Body)
+	}
+
+	unsupported := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unsupported, artifactUploadRequest(t, task.ID, core.ArtifactRoleVerificationEvidence, "proof.gif", "image/gif", []byte("gif evidence")))
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "unsupported") {
+		t.Fatalf("unsupported status=%d body=%s", unsupported.Code, unsupported.Body)
+	}
+
+	internalRole := httptest.NewRecorder()
+	server.Handler().ServeHTTP(internalRole, artifactUploadRequest(t, task.ID, core.ArtifactRoleGeneratedAudit, "audit.txt", "text/plain", []byte("not operator-generated")))
+	if internalRole.Code != http.StatusBadRequest || !strings.Contains(internalRole.Body.String(), "task_context or verification_evidence") {
+		t.Fatalf("internal role status=%d body=%s", internalRole.Code, internalRole.Body)
+	}
+
+	activity := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK ||
+		!strings.Contains(activity.Body.String(), `"verification_evidence":[`) ||
+		!strings.Contains(activity.Body.String(), `"role":"verification_evidence"`) ||
+		!strings.Contains(activity.Body.String(), `"attachments":[]`) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body)
+	}
 }
 
 func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *testing.T) {

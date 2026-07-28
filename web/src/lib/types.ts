@@ -298,6 +298,7 @@ export interface WorkspaceReviewSeat {
 export interface ExecutionPolicy {
   spec_approval: boolean
   merge_approval: boolean
+  require_verification_evidence: boolean
   implement_concurrency: number
   review_concurrency: number
   first_activity_timeout: string
@@ -384,6 +385,7 @@ export interface ActivityItem {
   forge_failure?: ForgeFailure
   spec?: SpecVersion
   attachments?: Artifact[]
+  verification_evidence?: Artifact[]
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
@@ -445,5 +447,5 @@ export interface WorkOrder {
 }
 
 export interface Feature { id: string; workspace: string; parent_id?: string; name: string; description?: string; created_at: string }
-export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; task_id?: string; feature_id?: string; download_url?: string; created_at: string }
+export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; feature_id?: string; download_url?: string; created_at: string }
 export interface RequirementNode { feature: Feature; tasks: Task[] | null; approved_specs: SpecVersion[] | null; events: TaskEvent[] | null }
