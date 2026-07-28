@@ -103,10 +103,12 @@ func HarnessFingerprint(harness config.Harness) string {
 		EffortArgs            map[string][]string `json:"effort_args"`
 		ProbeCommand          []string            `json:"probe_command"`
 		ProbeTimeout          string              `json:"probe_timeout"`
+		StallTimeout          string              `json:"stall_timeout"`
 	}{
 		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: canonicalArgs(harness.Command),
 		ModelArgs: canonicalArgs(harness.ModelArgs), DefaultModelSentinels: canonicalArgs(harness.DefaultModelSentinels),
 		EffortArgs: harness.EffortArgs, ProbeCommand: canonicalArgs(harness.ProbeCommand), ProbeTimeout: harness.ProbeTimeoutText,
+		StallTimeout: harness.StallTimeoutText,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -273,6 +275,50 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 			return result[i].Harness.Name < result[j].Harness.Name
 		}
 		return result[i].Fingerprint < result[j].Fingerprint
+	})
+	return result, nil
+}
+
+// RateLimitHealth projects the latest self-reported provider status for each
+// harness/model pair. This method is used only by operator health views; no
+// dispatch, claim, retry, or model-selection path consults it (spec §14).
+func (s *Service) RateLimitHealth(ctx context.Context) ([]core.RateLimitHealth, error) {
+	orders, err := s.Store.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest := map[string]core.RateLimitHealth{}
+	for _, order := range orders {
+		if order.RateLimit == nil || order.RateLimitObservedAt.IsZero() {
+			continue
+		}
+		harness := order.RequiredHarness
+		if harness == "" {
+			harness = order.Agent
+		}
+		model := order.RequiredModel
+		if model == "" {
+			model = order.Model
+		}
+		key := harness + "\x00" + model
+		current, ok := latest[key]
+		if ok && !order.RateLimitObservedAt.After(current.ObservedAt) {
+			continue
+		}
+		latest[key] = core.RateLimitHealth{
+			WorkOrderID: order.ID, WorkerID: order.WorkerID, Harness: harness, Model: model,
+			RateLimit: *order.RateLimit, ObservedAt: order.RateLimitObservedAt,
+		}
+	}
+	result := make([]core.RateLimitHealth, 0, len(latest))
+	for _, status := range latest {
+		result = append(result, status)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Harness != result[j].Harness {
+			return result[i].Harness < result[j].Harness
+		}
+		return result[i].Model < result[j].Model
 	})
 	return result, nil
 }
@@ -668,6 +714,7 @@ func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, 
 
 func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 	probeTimeout, _ := time.ParseDuration(snapshot.ProbeTimeoutText)
+	stallTimeout, _ := time.ParseDuration(snapshot.StallTimeoutText)
 	transport := snapshot.MCPTransport
 	if transport == "" {
 		transport = config.MCPTransportJSONFile
@@ -679,6 +726,7 @@ func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 		EffortArgs:            cloneEffortArgs(snapshot.EffortArgs),
 		ProbeCommand:          append([]string(nil), snapshot.ProbeCommand...),
 		ProbeTimeoutText:      snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
+		StallTimeoutText: snapshot.StallTimeoutText, StallTimeout: stallTimeout,
 	}
 }
 
@@ -716,6 +764,7 @@ func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
 		DefaultModelSentinels: harness.DefaultModelSentinels,
 		EffortArgs:            harness.EffortArgs, Effort: route.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+		StallTimeoutText: harness.StallTimeoutText,
 	}
 	if route.Effort != "" {
 		snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[route.Effort]...)
@@ -768,6 +817,7 @@ func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) b
 		DefaultModelSentinels: harness.DefaultModelSentinels,
 		EffortArgs:            harness.EffortArgs, Effort: seat.Effort,
 		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
+		StallTimeoutText: harness.StallTimeoutText,
 	}
 	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
@@ -819,7 +869,7 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	if release.Outcome == "" {
 		release.Outcome = core.WorkOrderOutcomeReleased
 	}
-	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
+	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeStalled && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
 		return core.WorkOrder{}, fmt.Errorf("invalid worker release outcome %q", release.Outcome)
 	}
 	release.InitialRetryDelay = s.RetryDelay

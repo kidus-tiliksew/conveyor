@@ -208,7 +208,7 @@ function HarnessesTab({ draft, setDraft, workerHealth, templates }: { draft: Wor
   const addHarness = (template?: HarnessTemplate) => {
     const harness: WorkspaceHarness = template
       ? { ...structuredClone(template.harness), name: uniqueName(template.id) }
-      : { name: '', mcp_transport: 'json_file', command: [], probe_command: [], probe_timeout: '10s' }
+      : { name: '', mcp_transport: 'json_file', command: [], probe_command: [], probe_timeout: '10s', stall_timeout: '10m' }
     update({ harnesses: [...draft.harnesses, harness] })
     setExpanded({ ...expanded, [draft.harnesses.length]: true })
   }
@@ -243,6 +243,22 @@ function WorkersTab({ data, pairing, onPair, onRevoke }: { data?: WorkerList; pa
     <CardContent className="space-y-3">
       {pairing && <p className="break-all rounded-md border border-border bg-surface p-2 font-mono text-xs">{pairing}</p>}
       {!data?.auto_available && <div className="rounded-md border border-attention/40 bg-attention-soft p-3 text-xs leading-5 text-muted"><p>{data?.auto_unavailable_reason}</p><p>Restart an enrolled worker with its saved credential; ordinary restarts do not require a new pairing token.</p></div>}
+      {(data?.rate_limits?.length ?? 0) > 0 && <div className="rounded-md border border-border bg-surface p-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-faint">Provider rate limits</p>
+        <div className="mt-2 space-y-2">{data!.rate_limits!.map((entry) => {
+          const values = [
+            entry.rate_limit.remaining != null && entry.rate_limit.limit != null ? `${entry.rate_limit.remaining} of ${entry.rate_limit.limit} remaining` : undefined,
+            entry.rate_limit.reset_at ? `resets ${new Date(entry.rate_limit.reset_at).toLocaleString()}` : undefined,
+            `observed ${new Date(entry.observed_at).toLocaleString()}`,
+          ].filter(Boolean).join(' · ')
+          return <div key={`${entry.harness}-${entry.model ?? ''}`} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+            <span className="font-mono font-medium">{entry.harness}{entry.model ? ` / ${entry.model}` : ''}</span>
+            <Badge variant="mono">{entry.rate_limit.status}</Badge>
+            <span className="text-muted">{values}</span>
+          </div>
+        })}</div>
+        <p className="mt-2 text-[11px] text-faint">Self-reported telemetry only; Conveyor does not use it to gate or route work.</p>
+      </div>}
       {(data?.workers ?? []).map((worker) => <div key={worker.id} className="rounded-md border border-border p-3">
         <div className="flex items-center justify-between">
           <div><p className="text-sm font-medium">{worker.name}</p><p className="font-mono text-xs text-faint">{worker.id}</p><p className="text-xs text-muted">{worker.last_seen_at ? `Last heartbeat ${new Date(worker.last_seen_at).toLocaleString()}` : 'No heartbeat recorded'}{worker.lease_expires_at && new Date(worker.lease_expires_at) <= new Date() ? ' · disconnected' : ''}</p></div>

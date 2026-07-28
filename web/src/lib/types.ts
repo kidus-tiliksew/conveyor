@@ -271,6 +271,7 @@ export interface WorkspaceHarness {
   effort_args?: Partial<Record<'low' | 'medium' | 'high', string[]>>
   probe_command: string[]
   probe_timeout: string
+  stall_timeout?: string
 }
 
 export interface HarnessTemplate {
@@ -345,9 +346,11 @@ export interface WorkspaceConfigDocument {
 
 export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
 export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
+export interface RateLimitStatus { status: string; limit?: number; remaining?: number; reset_at?: string }
+export interface RateLimitHealth { work_order_id: string; worker_id?: string; harness: string; model?: string; rate_limit: RateLimitStatus; observed_at: string }
 export interface HarnessModelFailure { harness: string; model: string; detail: string; work_order_id: string; observed_at: string }
 export interface SetupServiceability { auto_available: boolean; auto_unavailable_reason?: string; model_failures?: HarnessModelFailure[] }
-export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string; setup_serviceability?: Record<string, SetupServiceability> }
+export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string; setup_serviceability?: Record<string, SetupServiceability>; rate_limits?: RateLimitHealth[] }
 export interface TaskWorkerStatus { available: boolean; required_harnesses: string[]; reason: string; last_heartbeat_at?: string; last_heartbeat_age?: string; queue_context: 'never_started' | 'interrupted' }
 
 export interface VersionedWorkspaceConfig {
@@ -411,7 +414,7 @@ export interface WorkOrder {
   queue_deadline: string
   execution_started_at?: string
   execution_deadline?: string
-  last_attempt_outcome?: 'child_failure' | 'released' | 'cancelled' | 'expired'
+  last_attempt_outcome?: 'child_failure' | 'stalled' | 'released' | 'cancelled' | 'expired'
   last_failure_message?: string
   last_failure_detail?: string
   last_failure_exit_status?: number
@@ -426,6 +429,10 @@ export interface WorkOrder {
   tokens_in: number
   tokens_out: number
   self_reported: boolean
+  rate_limit?: RateLimitStatus
+  rate_limit_observed_at?: string
+  last_agent_activity_at?: string
+  last_agent_activity_label?: string
 }
 
 export interface Feature { id: string; workspace: string; parent_id?: string; name: string; description?: string; created_at: string }

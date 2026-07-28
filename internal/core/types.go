@@ -341,6 +341,7 @@ type HarnessSnapshot struct {
 	EffortArgv            []string            `json:"effort_argv,omitempty"`
 	ProbeCommand          []string            `json:"probe_command"`
 	ProbeTimeoutText      string              `json:"probe_timeout"`
+	StallTimeoutText      string              `json:"stall_timeout"`
 }
 
 // RefreshedHarnessSnapshot re-resolves a pinned harness snapshot against the
@@ -367,6 +368,7 @@ func RefreshedHarnessSnapshot(harnesses []config.Harness, prior *HarnessSnapshot
 			Effort:                prior.Effort,
 			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
 			ProbeTimeoutText:      harness.ProbeTimeoutText,
+			StallTimeoutText:      harness.StallTimeoutText,
 		}
 		if prior.Effort != "" {
 			argv := harness.EffortArgs[prior.Effort]
@@ -398,6 +400,25 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 // omits an explicit duration. It is distinct from worker liveness (spec §3.2,
 // §21.41).
 const DefaultWorkOrderClaimLease = 5 * time.Minute
+
+// RateLimitStatus is normalized provider telemetry reported by an agent.
+// It is observational only and must never participate in dispatch decisions
+// (spec §14, §21.41).
+type RateLimitStatus struct {
+	Status    string     `json:"status"`
+	Limit     *float64   `json:"limit,omitempty"`
+	Remaining *float64   `json:"remaining,omitempty"`
+	ResetAt   *time.Time `json:"reset_at,omitempty"`
+}
+
+type RateLimitHealth struct {
+	WorkOrderID string          `json:"work_order_id"`
+	WorkerID    string          `json:"worker_id,omitempty"`
+	Harness     string          `json:"harness"`
+	Model       string          `json:"model,omitempty"`
+	RateLimit   RateLimitStatus `json:"rate_limit"`
+	ObservedAt  time.Time       `json:"observed_at"`
+}
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent (spec §21.33).
@@ -447,6 +468,10 @@ type WorkOrder struct {
 	TokensIn               int64            `json:"tokens_in"`
 	TokensOut              int64            `json:"tokens_out"`
 	SelfReported           bool             `json:"self_reported"`
+	RateLimit              *RateLimitStatus `json:"rate_limit,omitempty"`
+	RateLimitObservedAt    time.Time        `json:"rate_limit_observed_at,omitempty"`
+	LastAgentActivityAt    time.Time        `json:"last_agent_activity_at,omitempty"`
+	LastAgentActivityLabel string           `json:"last_agent_activity_label,omitempty"`
 	CreatedAt              time.Time        `json:"created_at"`
 	UpdatedAt              time.Time        `json:"updated_at"`
 }
@@ -458,11 +483,13 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 	type workOrderAlias WorkOrder
 	wired := struct {
 		workOrderAlias
-		LeaseExpiresAt     *time.Time `json:"lease_expires_at,omitempty"`
-		ExecutionStartedAt *time.Time `json:"execution_started_at,omitempty"`
-		ExecutionDeadline  *time.Time `json:"execution_deadline,omitempty"`
-		LastFailureAt      *time.Time `json:"last_failure_at,omitempty"`
-		NextRetryAt        *time.Time `json:"next_retry_at,omitempty"`
+		LeaseExpiresAt      *time.Time `json:"lease_expires_at,omitempty"`
+		ExecutionStartedAt  *time.Time `json:"execution_started_at,omitempty"`
+		ExecutionDeadline   *time.Time `json:"execution_deadline,omitempty"`
+		LastFailureAt       *time.Time `json:"last_failure_at,omitempty"`
+		NextRetryAt         *time.Time `json:"next_retry_at,omitempty"`
+		RateLimitObservedAt *time.Time `json:"rate_limit_observed_at,omitempty"`
+		LastAgentActivityAt *time.Time `json:"last_agent_activity_at,omitempty"`
 	}{workOrderAlias: workOrderAlias(w)}
 	if !w.LeaseExpiresAt.IsZero() {
 		wired.LeaseExpiresAt = &w.LeaseExpiresAt
@@ -478,6 +505,12 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 	}
 	if !w.NextRetryAt.IsZero() {
 		wired.NextRetryAt = &w.NextRetryAt
+	}
+	if !w.RateLimitObservedAt.IsZero() {
+		wired.RateLimitObservedAt = &w.RateLimitObservedAt
+	}
+	if !w.LastAgentActivityAt.IsZero() {
+		wired.LastAgentActivityAt = &w.LastAgentActivityAt
 	}
 	return json.Marshal(wired)
 }
@@ -500,11 +533,16 @@ type WorkOrderClaim struct {
 
 const (
 	WorkOrderOutcomeChildFailure      = "child_failure"
+	WorkOrderOutcomeStalled           = "stalled"
 	WorkOrderOutcomeReleased          = "released"
 	WorkOrderOutcomeCancelled         = "cancelled"
 	WorkOrderOutcomeExpired           = "expired"
 	IdenticalFailureSuppressionReason = "identical failure output on consecutive attempts"
 )
+
+func WorkOrderOutcomeConsumesRetry(outcome string) bool {
+	return outcome == WorkOrderOutcomeChildFailure || outcome == WorkOrderOutcomeStalled
+}
 
 type WorkOrderRelease struct {
 	SessionID           string

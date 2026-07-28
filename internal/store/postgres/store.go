@@ -1223,7 +1223,7 @@ queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
-created_at, updated_at`
+rate_limit, rate_limit_observed_at, created_at, updated_at`
 
 func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
 	if order.CreatedAt.IsZero() {
@@ -2260,15 +2260,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, comma
 			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14, last_failure_detail=$15,
 			last_failure_exit_status=$16, last_failure_at=$17, automatic_retry_count=$18,
 			next_retry_at=$19, retry_suppressed=$20, retry_suppression_reason=$21, redispatch_count=$22, progress=$23,
-			cost_usd=$24, tokens_in=$25, tokens_out=$26, self_reported=$27, updated_at=now()
-			WHERE workspace_id=$28 AND id=$29`, order.State, order.ClaimantID, order.SessionID,
+			cost_usd=$24, tokens_in=$25, tokens_out=$26, self_reported=$27,
+			rate_limit=$28, rate_limit_observed_at=$29, updated_at=now()
+			WHERE workspace_id=$30 AND id=$31`, order.State, order.ClaimantID, order.SessionID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
 			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureDetail,
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
 			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
-			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported, workspace(ctx), order.ID)
+			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported,
+			rateLimitJSON(order.RateLimit), nullableTimeValue(order.RateLimitObservedAt), workspace(ctx), order.ID)
 		if err != nil {
 			return err
 		}
@@ -2811,8 +2813,8 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
 	var order core.WorkOrder
 	var stage, state string
-	var harnessConfig []byte
-	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline, lastFailureAt, nextRetryAt pgtype.Timestamptz
+	var harnessConfig, rateLimit []byte
+	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -2821,7 +2823,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.SelfReported, &order.CreatedAt, &order.UpdatedAt)
+		&order.TokensOut, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(harnessConfig) > 0 && string(harnessConfig) != "{}" {
 		var snapshot core.HarnessSnapshot
@@ -2854,6 +2856,18 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
 	}
+	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
+		var status core.RateLimitStatus
+		if err == nil {
+			err = json.Unmarshal(rateLimit, &status)
+		}
+		if err == nil && status.Status != "" {
+			order.RateLimit = &status
+		}
+	}
+	if rateLimitObservedAt.Valid {
+		order.RateLimitObservedAt = rateLimitObservedAt.Time
+	}
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return order, err
 }
@@ -2865,6 +2879,17 @@ func harnessSnapshotJSON(snapshot *core.HarnessSnapshot) []byte {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return []byte("{}")
+	}
+	return data
+}
+
+func rateLimitJSON(status *core.RateLimitStatus) []byte {
+	if status == nil {
+		return nil
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return nil
 	}
 	return data
 }

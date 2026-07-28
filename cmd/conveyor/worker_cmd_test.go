@@ -1231,6 +1231,121 @@ func TestRunHarnessChildFirstActivityDisarmsTimeoutWithoutAddingSilenceLimit(t *
 	}
 }
 
+func TestRunHarnessChildStallTimeoutStopsAndReleasesSilentChild(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "stalled-harness.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+	releases := make(chan core.WorkOrderRelease, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim", "renew":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "release":
+			var release core.WorkOrderRelease
+			if err := json.NewDecoder(r.Body).Decode(&release); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			releases <- release
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "stalled-silent-child", Stage: core.StageImplement},
+		Harness: config.Harness{
+			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"},
+			StallTimeoutText: "150ms",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, time.Second, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), workerStallTimeoutReason) {
+		t.Fatalf("stall error=%v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("silent harness produced output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	select {
+	case release := <-releases:
+		if release.Outcome != core.WorkOrderOutcomeStalled || release.Reason != workerStallTimeoutReason {
+			t.Fatalf("release=%+v", release)
+		}
+	default:
+		t.Fatal("stalled harness was not released")
+	}
+	select {
+	case duplicate := <-releases:
+		t.Fatalf("stalled harness was released more than once: %+v", duplicate)
+	default:
+	}
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("stalled harness process %d was not reaped: %v", pid, err)
+	}
+}
+
+func TestRunHarnessChildContinuousOutputResetsStallTimeout(t *testing.T) {
+	released := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim", "renew":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "reconcile":
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderSubmitted}, Reason: "submitted"})
+		case "release":
+			released <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "continuous-output", Stage: core.StageImplement},
+		Harness: config.Harness{
+			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "continuous-output"},
+			StallTimeoutText: "100ms",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	if err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, time.Second, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 250*time.Millisecond {
+		t.Fatalf("continuous child ended too quickly to exercise stall resets: %s", elapsed)
+	}
+	if strings.Count(stdout.String(), "activity") < 6 {
+		t.Fatalf("continuous output=%q", stdout.String())
+	}
+	select {
+	case <-released:
+		t.Fatal("continuously active harness was released")
+	default:
+	}
+}
+
 func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
 		t.Helper()
@@ -1499,6 +1614,14 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	case "early-error":
 		fmt.Fprintln(os.Stderr, "first activity")
 		time.Sleep(400 * time.Millisecond)
+	case "early-then-silent":
+		fmt.Fprintln(os.Stdout, "first activity")
+		time.Sleep(30 * time.Second)
+	case "continuous-output":
+		for i := 0; i < 8; i++ {
+			fmt.Fprintf(os.Stdout, "activity %d\n", i)
+			time.Sleep(40 * time.Millisecond)
+		}
 	}
 }
 
