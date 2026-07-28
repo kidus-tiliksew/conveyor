@@ -291,6 +291,7 @@ export interface ExecutionPolicy {
   merge_approval: boolean
   implement_concurrency: number
   review_concurrency: number
+  first_activity_timeout: string
 }
 
 export interface WorkspaceExecutionSettings {

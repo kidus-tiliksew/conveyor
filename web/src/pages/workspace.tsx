@@ -179,6 +179,7 @@ function ExecutionTab({ draft, setDraft, workerHealth }: { draft: WorkspaceConfi
         <div className="grid grid-cols-2 gap-3">
           <Field label="Parallel implementations"><Input type="number" min={1} value={draft.execution.implement_concurrency} onChange={(event) => update({ execution: { ...draft.execution, implement_concurrency: Number(event.target.value) } })} /></Field>
           <Field label="Reserved review slots" hint="Worker capacity held back so reviews never wait behind implementations."><Input type="number" min={1} value={draft.execution.review_concurrency} onChange={(event) => update({ execution: { ...draft.execution, review_concurrency: Number(event.target.value) } })} /></Field>
+          <div className="col-span-2"><Field label="First activity timeout" hint="Maximum time a launched harness may remain completely silent before worker recovery."><Input value={draft.execution.first_activity_timeout} onChange={(event) => update({ execution: { ...draft.execution, first_activity_timeout: event.target.value } })} /></Field></div>
         </div>
       </CardContent>
     </Card>

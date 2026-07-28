@@ -24,7 +24,7 @@ const baseDocument = {
   review: { seats: [{ model: 'gpt-5.6-sol', harness: 'codex', effort: 'medium' }, { model: 'grok-4.5', harness: 'grok', effort: 'high' }] },
   setups: [] as unknown[],
   default_setup: '',
-  execution: { default_mode: 'auto', spec_approval: true, merge_approval: true, implement_concurrency: 5, review_concurrency: 2 },
+  execution: { default_mode: 'auto', spec_approval: true, merge_approval: true, implement_concurrency: 5, review_concurrency: 2, first_activity_timeout: '2m' },
   repos: [{ name: 'conveyor', url: 'https://github.com/kidus-tiliksew/conveyor', github: 'kidus-tiliksew/conveyor', base: 'main' }],
 }
 baseDocument.setups = [

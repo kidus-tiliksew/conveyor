@@ -736,6 +736,72 @@ func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 	}
 }
 
+func TestMemoryFirstActivityTimeoutUsesExistingRetryAuditAndStallEvidence(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "first-activity-timeout-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
+	job := core.Job{ID: "first-activity-timeout-order", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "harness produced no output before first_activity_timeout"
+	var released core.WorkOrder
+	for attempt := 1; attempt <= 2; attempt++ {
+		session := fmt.Sprintf("first-activity-timeout-%d", attempt)
+		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		released, err = st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
+			SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, Reason: reason,
+			AutomaticRetryLimit: 1, InitialRetryDelay: time.Millisecond, MaximumRetryDelay: time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 1 {
+			if released.RetrySuppressed || released.NextRetryAt.IsZero() {
+				t.Fatalf("first timeout did not enter bounded retry: %+v", released)
+			}
+			released.NextRetryAt = now.Add(-time.Second)
+			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !released.RetrySuppressed || released.LastFailureMessage != reason || released.State != core.WorkOrderQueued {
+		t.Fatalf("suppressed timeout=%+v", released)
+	}
+	stalled := StalledTask([]core.WorkOrder{released})
+	if stalled == nil || stalled.LastFailure != reason || stalled.WorkOrder.ID != released.ID {
+		t.Fatalf("stalled evidence=%+v", stalled)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childFailures := 0
+	for _, event := range events {
+		if event.Kind != "work_order.child_failed" {
+			continue
+		}
+		childFailures++
+		if !strings.Contains(string(event.Payload), reason) {
+			t.Fatalf("timeout event omitted stable reason: %s", event.Payload)
+		}
+	}
+	if childFailures != 2 || !strings.Contains(string(events[len(events)-1].Payload), `"retry_suppressed":true`) {
+		t.Fatalf("child failure events=%d final=%s", childFailures, events[len(events)-1].Payload)
+	}
+}
+
 func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()

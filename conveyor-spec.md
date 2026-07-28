@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.0**
+**Specification — v2.1**
 **Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). This v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). This v2.1 text builds on the **consolidated restatement** of v1.0–v1.40 (§21.40): the body (§§1–20) states the current design directly, including worker-side first-activity liveness (§21.41). The amendment log (§21) is the change record and review rationale. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -131,10 +131,12 @@ API/UI with one shared validator, optimistic concurrency
 reload — a routing or registry change takes effect from the next
 dispatch, never on in-flight work (§21.3). The document contains: repos
 (`{name, url, github, base}`), the harness registry (§5), **setups** and
-`default_setup` (§6.1), `max_bounces` (default 10, §4), and
-`work_order_queue_timeout` (default 24h, §3.3). `conveyor config export`
-/ `import` round-trip the database copy for git-versioned backup. Secret
-values never appear in configuration in any form.
+`default_setup` (§6.1), `max_bounces` (default 10, §4),
+`work_order_queue_timeout` (default 24h, §3.3), and
+`first_activity_timeout` (default 2m, positive and shorter than every
+MCP stage execution timeout, §6.4). `conveyor config export` / `import`
+round-trip the database copy for git-versioned backup. Secret values
+never appear in configuration in any form.
 
 **Task scope (frozen at intake).** A task resolves and persists **by
 value** at creation: its effective setup contract (§6.2), gate toggles
@@ -746,6 +748,19 @@ review, push, submit).
   automatic retries recorded on the order; failure after that leaves the
   queued order **retry-suppressed** — visible in the needs-operator tray
   (§13.2) and recoverable by audited operator action.
+- **First-activity liveness is separate from the lease** (§21.41): the
+  effective worker configuration explicitly carries
+  `first_activity_timeout` (default 2m, positive, and shorter than every
+  configured MCP stage execution timeout). For spec, implementation, and
+  review children, the clock starts only after successful launch; the
+  first non-empty stdout or stderr write through the redacted output path
+  permanently disarms it. If a still-authoritative, still-running child
+  remains silent through the deadline, the worker terminates and reaps it,
+  then releases the exact claim once as `child_failure` with reason
+  `harness produced no output before first_activity_timeout`, entering
+  the ordinary bounded retry, suppression, and audit path. There is no
+  later-silence heuristic; the fixed execution deadline remains the only
+  total-duration backstop.
 - **Reconnection is safe, authority is not assumed** (§21.26): idle
   transport failures retry with bounded jittered backoff on the saved
   enrollment; active renewal retries only inside the lease's safety
@@ -3888,7 +3903,55 @@ as their work-order context. This amendment consolidates. Four changes:
 
 ---
 
-*End of specification. v2.0 accepted July 28, 2026 — the consolidated
-restatement of v1.0–v1.40 (§21.40). The body (§§1–20) is the normative
-authority; §21 is the change record. Subsequent changes proceed by
-amendment with version bumps.*
+### 21.41 v2.1 — Worker first-activity liveness (July 28, 2026)
+
+The claim lease proves that the worker supervisor can still reach the control
+plane; it does not prove that the launched harness is making progress. The
+worker therefore owns a separate, output-based time-to-first-activity signal
+for worker-launched spec, implementation, and review children.
+
+1. **Explicit execution policy.** Workspace execution policy gains
+   `first_activity_timeout`, a duration with a canonical default of `2m`.
+   Existing documents that omit it normalize to that explicit value. It must
+   be positive and shorter than every configured MCP stage execution timeout;
+   invalid deployment files and workspace writes fail validation. The
+   normalized value is present in the effective worker configuration, so a
+   worker has no hidden process-local policy default.
+
+2. **First output is the sole signal.** The watchdog begins only after
+   successful child-process launch. The existing redacted stdout and stderr
+   destinations are wrapped by one concurrency-safe first-write signal; any
+   non-empty write to either stream permanently disarms the watchdog. Output
+   redaction, console forwarding, and the bounded failure tail are unchanged.
+   No silence-between-outputs or total-duration heuristic is introduced, so a
+   harness that emits once may remain quiet while it works.
+
+3. **Conditional recovery through the existing path.** If the deadline
+   arrives before output, the worker first preserves the precedence of an
+   already-observed write, normal child exit, durable completion, cancellation,
+   and claim-authority loss. It may act only while the child is still running
+   and the same worker/session still owns the claimed order. The worker then
+   terminates and reaps the child and releases that exact claim once as
+   `child_failure` with the stable reason
+   `harness produced no output before first_activity_timeout`. The existing
+   conditional release, bounded retry/backoff, identical-failure suppression,
+   and stale-claim protections remain authoritative.
+
+4. **Existing clocks and observability remain authoritative.** Pre-launch
+   checkout, MCP configuration, probes, and other setup remain governed by
+   claim renewal and their existing bounds. The fixed execution deadline
+   (§21.9, §21.21) remains the hard attempt backstop and is never extended or
+   replaced. Existing `work_order.child_failed` events, failure fields, retry
+   fields, and the §21.34 stalled-task tray expose detection, recovery, and
+   retry suppression without a new lifecycle state or tray category.
+
+**Explicitly out of scope.** No MCP heartbeat, server-side inference from MCP
+calls, rollout files, CPU use, or session-file mtimes; no change to claim lease
+semantics, execution deadlines, retry policy, review-round recovery, harness
+snapshots, credentials, redaction, or operator recovery authority; and no
+second worker protocol or later Phase 5/Phase 8 work.
+
+*End of specification. v2.1 accepted July 28, 2026 — the consolidated
+restatement of v1.0–v1.40 (§21.40) plus worker-side first-activity liveness
+(§21.41). The body (§§1–20) is the normative authority; §21 is the change
+record. Subsequent changes proceed by amendment with version bumps.*

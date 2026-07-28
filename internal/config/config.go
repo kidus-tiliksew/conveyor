@@ -106,10 +106,16 @@ type ExecutionPolicy struct {
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
+	// FirstActivityTimeout is worker child-output liveness, independent of
+	// the claim lease and fixed execution deadline (spec §21.41).
+	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
+	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
 }
 
 const (
 	DefaultStageTimeout              = 2 * time.Hour
+	DefaultFirstActivityTimeout      = 2 * time.Minute
+	DefaultFirstActivityTimeoutText  = "2m"
 	DefaultWorkOrderQueueTimeout     = 24 * time.Hour
 	DefaultWorkOrderQueueTimeoutText = "24h"
 )
@@ -285,7 +291,9 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" || document.Review.Seats == nil || document.ExecutionSettings == nil || document.Setups == nil
+	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" ||
+		document.Execution.FirstActivityTimeoutText == "" || document.Review.Seats == nil ||
+		document.ExecutionSettings == nil || document.Setups == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -645,6 +653,16 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if c.Execution.ReviewConcurrency < 1 {
 		return nil, fmt.Errorf("execution.review_concurrency must be at least 1")
 	}
+	if c.Execution.FirstActivityTimeoutText == "" {
+		c.Execution.FirstActivityTimeout = DefaultFirstActivityTimeout
+		c.Execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
+	} else {
+		parsed, parseErr := time.ParseDuration(c.Execution.FirstActivityTimeoutText)
+		if parseErr != nil || parsed <= 0 {
+			return nil, fmt.Errorf("execution.first_activity_timeout must be a positive duration")
+		}
+		c.Execution.FirstActivityTimeout = parsed
+	}
 	harnesses := make(map[string]Harness, len(c.Harnesses))
 	for i := range c.Harnesses {
 		harness := &c.Harnesses[i]
@@ -844,6 +862,12 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		// explicit; it is retained only for compatibility (spec §21.18 change 4).
 		c.Routing.Stages["review"] = reviewRoute
 	}
+	for _, stage := range []string{"spec", "implement", "review"} {
+		route := c.Routing.Stages[stage]
+		if route.Execution == ExecutionMCP && c.Execution.FirstActivityTimeout >= route.Timeout {
+			return nil, fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stageName(stage))
+		}
+	}
 	c.ExecutionSettings = contextualExecutionSettings(c.Routing)
 	repoNames := make(map[string]struct{}, len(c.Repos))
 	for i := range c.Repos {
@@ -875,6 +899,11 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 			reviewSeats = append(reviewSeats, ReviewSeat{Model: route.Model, Harness: route.Harness})
 		}
 	}
+	execution := c.Execution
+	if execution.FirstActivityTimeoutText == "" {
+		execution.FirstActivityTimeout = DefaultFirstActivityTimeout
+		execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
+	}
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
@@ -884,7 +913,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Review:                    ReviewPanel{Seats: reviewSeats},
 		Setups:                    append([]ExecutionSetup(nil), c.Setups...),
 		DefaultSetup:              c.DefaultSetup,
-		Execution:                 c.Execution,
+		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 	}
 	for stage, route := range c.Routing.Stages {
