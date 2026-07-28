@@ -200,6 +200,86 @@ func TestMergePullRequestUsesNormalGitHubMerge(t *testing.T) {
 	}
 }
 
+func TestForgeBoundariesClassifyStableFailureCategories(t *testing.T) {
+	t.Run("issue publication transport", func(t *testing.T) {
+		calls := 0
+		_, err := publishIssue(t.Context(), IssuePublication{
+			Repo: "acme/api", TaskID: "task-1", Title: "Title", ApprovedSpec: "approved",
+			SpecVersion: 1, AllowCreate: true, BeforeCreate: func(context.Context) error { return nil },
+		}, func(context.Context, ...string) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return []byte(`[[]]`), nil
+			}
+			return nil, context.DeadlineExceeded
+		})
+		assertForgeCategory(t, err, ForgeRequest, "deadline exceeded")
+	})
+
+	t.Run("merge non-success status", func(t *testing.T) {
+		err := mergePullRequest(t.Context(), "acme/api", 12, func(context.Context, ...string) ([]byte, error) {
+			return nil, errors.New("HTTP 500 Internal Server Error")
+		})
+		assertForgeCategory(t, err, ForgeStatus, "HTTP 500")
+	})
+
+	t.Run("merge readiness malformed response", func(t *testing.T) {
+		_, err := pullRequestForBranch(t.Context(), "acme/api", "conveyor/task-1", func(context.Context, ...string) ([]byte, error) {
+			return []byte(`{"number":`), nil
+		})
+		assertForgeCategory(t, err, ForgeResponse, "parse pull request")
+	})
+
+	t.Run("review comment rate limit precedes status", func(t *testing.T) {
+		calls := 0
+		_, err := publishReview(t.Context(), ReviewPublication{
+			Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+			ReviewedCommitSHA: "abc123", Verdict: "approve",
+		}, func(context.Context, ...string) ([]byte, error) {
+			calls++
+			switch calls {
+			case 1:
+				return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","headRefOid":"abc123"}`), nil
+			case 2:
+				return []byte(`{"statuses":[]}`), nil
+			case 3:
+				return nil, nil
+			default:
+				return nil, errors.New("HTTP 403 API rate limit exceeded")
+			}
+		})
+		assertForgeCategory(t, err, ForgeRateLimited, "rate limit")
+	})
+
+	t.Run("review status permission precedes status", func(t *testing.T) {
+		calls := 0
+		_, err := publishReview(t.Context(), ReviewPublication{
+			Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+			ReviewedCommitSHA: "abc123", Verdict: "approve",
+		}, func(context.Context, ...string) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","headRefOid":"abc123"}`), nil
+			}
+			return nil, errors.New("HTTP 403 Resource not accessible by integration")
+		})
+		assertForgeCategory(t, err, ForgePermission, "Resource not accessible")
+	})
+}
+
+func assertForgeCategory(t *testing.T, err error, want ForgeErrorCategory, detail string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected %s failure", want)
+	}
+	if got := ErrorCategory(err); got != want {
+		t.Fatalf("category=%q want=%q err=%v", got, want, err)
+	}
+	if !strings.Contains(err.Error(), detail) {
+		t.Fatalf("error %q does not retain detail %q", err, detail)
+	}
+}
+
 func TestMarkIssueDispatchedDoesNotEditWhenLabelSetupFails(t *testing.T) {
 	calls := 0
 	run := func(_ context.Context, _ ...string) ([]byte, error) {
@@ -366,7 +446,7 @@ func TestPublishReviewRetryUpdatesAggregateStatusAndStickyComment(t *testing.T) 
 		calls = append(calls, append([]string(nil), args...))
 		switch len(calls) {
 		case 1:
-			return []byte(`{"number":7,"headRefOid":"def456"}`), nil
+			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"def456"}`), nil
 		case 2:
 			return []byte(`{"statuses":[{"state":"pending","context":"Conveyor / Code review","description":"Waiting for the remaining independent review verdicts"}]}`), nil
 		case 3:

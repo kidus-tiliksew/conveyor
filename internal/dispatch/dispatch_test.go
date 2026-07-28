@@ -614,14 +614,17 @@ func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 		view       func(context.Context, string, string) (githubtrigger.PullRequest, error)
 		merge      func(context.Context, string, int) error
 		reason     string
+		category   githubtrigger.ForgeErrorCategory
 	}{
 		{name: "non GitHub repository", reason: "unsupported_repository"},
-		{name: "missing pull request", githubRepo: "acme/app", reason: "missing_pull_request", view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
-			return githubtrigger.PullRequest{}, githubtrigger.ErrPullRequestNotFound
+		{name: "missing pull request", githubRepo: "acme/app", reason: "missing_pull_request", category: githubtrigger.ForgeStatus, view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{}, &githubtrigger.Error{Category: githubtrigger.ForgeStatus, Err: githubtrigger.ErrPullRequestNotFound}
 		}},
-		{name: "forge merge failure", githubRepo: "acme/app", reason: "forge_merge_failed", view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		{name: "forge merge failure", githubRepo: "acme/app", reason: "forge_merge_failed", category: githubtrigger.ForgePermission, view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE"}, nil
-		}, merge: func(context.Context, string, int) error { return errors.New("branch protection") }},
+		}, merge: func(context.Context, string, int) error {
+			return &githubtrigger.Error{Category: githubtrigger.ForgePermission, Err: errors.New("branch protection")}
+		}},
 		{name: "unconfirmed result", githubRepo: "acme/app", reason: "merge_unconfirmed", view: func() func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			calls := 0
 			return func(context.Context, string, string) (githubtrigger.PullRequest, error) {
@@ -649,6 +652,15 @@ func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 			last := events[len(events)-1]
 			if last.Kind != "merge.failed" || !strings.Contains(string(last.Payload), test.reason) {
 				t.Fatalf("last event=%+v", last)
+			}
+			var payload struct {
+				ForgeErrorCategory string `json:"forge_error_category"`
+			}
+			if err := json.Unmarshal(last.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.ForgeErrorCategory != string(test.category) {
+				t.Fatalf("category=%q want=%q payload=%s", payload.ForgeErrorCategory, test.category, last.Payload)
 			}
 		})
 	}
@@ -705,6 +717,26 @@ func TestMergeReadinessUnknownIsPendingWithoutMergeFailure(t *testing.T) {
 	for _, event := range events {
 		if event.Kind == "merge.failed" {
 			t.Fatalf("UNKNOWN recorded merge failure: %+v", event)
+		}
+	}
+}
+
+func TestMergeReadinessSurfacesForgeCategoryWithoutRecordingGetNoise(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{}, &githubtrigger.Error{Category: githubtrigger.ForgeRequest, Err: errors.New("request timed out")}
+	}
+	_, err := d.ReadMergeReadiness(ctx, task)
+	if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeRequest || !strings.Contains(err.Error(), "forge_request: request timed out") {
+		t.Fatalf("readiness error=%v category=%q", err, githubtrigger.ErrorCategory(err))
+	}
+	events, listErr := st.ListEvents(ctx, task.ID)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	for _, event := range events {
+		if event.Kind == "merge.failed" {
+			t.Fatalf("GET-driven readiness recorded merge noise: %+v", event)
 		}
 	}
 }

@@ -54,6 +54,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 	}
 	lifecycle.Attempts++
 	lifecycle.State = core.GitHubPublicationRetrying
+	lifecycle.ForgeErrorCategory = ""
 	lifecycle.LastError = ""
 	if err = w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
 		return err
@@ -106,6 +107,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		if errors.Is(publishErr, github.ErrIssueReconciliationPending) {
 			lifecycle.ReconcileMisses++
 		}
+		lifecycle.ForgeErrorCategory = string(github.ErrorCategory(publishErr))
 		lifecycle.LastError = publishErr.Error()
 		if job.Attempt >= job.MaxAttempts {
 			lifecycle.State = core.GitHubPublicationFailed
@@ -125,6 +127,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		lifecycle.Outcome = "reused"
 	}
 	lifecycle.LastError = ""
+	lifecycle.ForgeErrorCategory = ""
 	if err = w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
 		return err
 	}
@@ -140,6 +143,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	}
 	publication.Attempts++
 	publication.State = core.ReviewPublicationRetrying
+	publication.ForgeErrorCategory = ""
 	publication.LastError = ""
 	if err = w.dispatcher.Store.UpdateReviewPublication(ctx, publication); err != nil {
 		return err
@@ -201,6 +205,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		publishErr = errors.New("publish review: required aggregate comment returned no comment ID")
 	}
 	if publishErr != nil {
+		publication.ForgeErrorCategory = string(github.ErrorCategory(publishErr))
 		publication.LastError = publishErr.Error()
 		if job.Attempt >= job.MaxAttempts {
 			publication.State = core.ReviewPublicationFailed
@@ -214,6 +219,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	publication.CheckRunID = result.CheckRunID
 	publication.CommentID = result.CommentID
 	publication.ReviewedCommitSHA = result.ReviewedCommitSHA
+	publication.ForgeErrorCategory = ""
 	publication.LastError = ""
 	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
 }

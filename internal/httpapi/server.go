@@ -699,6 +699,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
 	WorkOrders                []core.WorkOrder                      `json:"work_orders"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
@@ -715,6 +716,7 @@ type activityItem struct {
 	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
@@ -750,12 +752,13 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 		if task.State == core.TaskMerged || task.State == core.TaskClosed {
 			marker.Stalled = nil
 		}
-		if reviewsOnly && !reviewable(task.State) && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil {
+		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil {
 			continue
 		}
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil || marker.Stalled != nil,
+			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ForgeFailure != nil || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil || marker.Stalled != nil,
+			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
 			InterruptedReviewRecovery: marker.InterruptedReviewRecovery,
@@ -844,7 +847,8 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.ReviewRecoveryNeeded(workOrders) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil,
+		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
 		WorkOrders:                workOrders,
 		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),

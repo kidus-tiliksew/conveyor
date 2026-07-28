@@ -42,6 +42,76 @@ var (
 	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
 )
 
+// ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
+// operator evidence (spec §11.1, §21.41). It deliberately remains local to
+// the one supported forge instead of introducing a provider abstraction.
+type ForgeErrorCategory string
+
+const (
+	ForgeRequest     ForgeErrorCategory = "forge_request"
+	ForgeStatus      ForgeErrorCategory = "forge_status"
+	ForgeResponse    ForgeErrorCategory = "forge_response"
+	ForgeRateLimited ForgeErrorCategory = "forge_rate_limited"
+	ForgePermission  ForgeErrorCategory = "forge_permission"
+)
+
+// Error carries a stable category while preserving the underlying GitHub
+// failure detail and errors.Is/errors.As behavior.
+type Error struct {
+	Category ForgeErrorCategory
+	Err      error
+}
+
+func (e *Error) Error() string { return e.Err.Error() }
+func (e *Error) Unwrap() error { return e.Err }
+
+// ErrorCategory returns the stable category carried by a GitHub boundary
+// failure. Empty means the error did not originate from a forge call.
+func ErrorCategory(err error) ForgeErrorCategory {
+	var categorized *Error
+	if errors.As(err, &categorized) {
+		return categorized.Category
+	}
+	return ""
+}
+
+func forgeCallError(err error) error {
+	if err == nil || ErrorCategory(err) != "" {
+		return err
+	}
+	detail := strings.ToLower(err.Error())
+	category := ForgeRequest
+	switch {
+	case strings.Contains(detail, "rate limit"),
+		strings.Contains(detail, "rate-limit"),
+		strings.Contains(detail, "http 429"),
+		strings.Contains(detail, "status 429"):
+		category = ForgeRateLimited
+	case strings.Contains(detail, "bad credentials"),
+		strings.Contains(detail, "authentication"),
+		strings.Contains(detail, "not authorized"),
+		strings.Contains(detail, "unauthorized"),
+		strings.Contains(detail, "permission"),
+		strings.Contains(detail, "resource not accessible"),
+		strings.Contains(detail, "http 401"),
+		strings.Contains(detail, "status 401"),
+		strings.Contains(detail, "http 403"),
+		strings.Contains(detail, "status 403"):
+		category = ForgePermission
+	case strings.Contains(detail, "http 4"),
+		strings.Contains(detail, "http 5"),
+		strings.Contains(detail, "status 4"),
+		strings.Contains(detail, "status 5"),
+		strings.Contains(detail, "exit status"):
+		category = ForgeStatus
+	}
+	return &Error{Category: category, Err: err}
+}
+
+func forgeResponseError(format string, args ...any) error {
+	return &Error{Category: ForgeResponse, Err: fmt.Errorf(format, args...)}
+}
+
 type Issue struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -99,26 +169,26 @@ func publishIssue(ctx context.Context, publication IssuePublication, run ghRunne
 		}
 		out, err := run(ctx, "issue", "create", "--repo", publication.Repo, "--title", publication.Title, "--body", section)
 		if err != nil {
-			return IssuePublicationResult{}, fmt.Errorf("create task issue: %w", err)
+			return IssuePublicationResult{}, fmt.Errorf("create task issue: %w", forgeCallError(err))
 		}
 		issueURL := strings.TrimSpace(string(out))
 		parts := strings.Split(strings.TrimRight(issueURL, "/"), "/")
 		if len(parts) == 0 {
-			return IssuePublicationResult{}, fmt.Errorf("parse created issue URL %q", issueURL)
+			return IssuePublicationResult{}, forgeResponseError("parse created issue URL %q", issueURL)
 		}
 		parsed, err := strconv.Atoi(parts[len(parts)-1])
 		if err != nil || parsed <= 0 {
-			return IssuePublicationResult{}, fmt.Errorf("parse created issue URL %q", issueURL)
+			return IssuePublicationResult{}, forgeResponseError("parse created issue URL %q", issueURL)
 		}
 		return IssuePublicationResult{Number: parsed, URL: issueURL}, nil
 	}
 	view, err := run(ctx, "issue", "view", strconv.Itoa(number), "--repo", publication.Repo, "--json", "number,url,body")
 	if err != nil {
-		return IssuePublicationResult{}, fmt.Errorf("read associated issue: %w", err)
+		return IssuePublicationResult{}, fmt.Errorf("read associated issue: %w", forgeCallError(err))
 	}
 	var existing Issue
 	if err = json.Unmarshal(view, &existing); err != nil || existing.Number != number || existing.URL == "" {
-		return IssuePublicationResult{}, fmt.Errorf("parse associated issue %s#%d", publication.Repo, number)
+		return IssuePublicationResult{}, forgeResponseError("parse associated issue %s#%d", publication.Repo, number)
 	}
 	body := strings.TrimSpace(existing.Body)
 	if index := strings.Index(body, issueLifecycleMarkerPrefix); index >= 0 {
@@ -129,7 +199,7 @@ func publishIssue(ctx context.Context, publication IssuePublication, run ghRunne
 	}
 	body += section
 	if _, err = run(ctx, "issue", "edit", strconv.Itoa(number), "--repo", publication.Repo, "--body", body); err != nil {
-		return IssuePublicationResult{}, fmt.Errorf("update associated issue: %w", err)
+		return IssuePublicationResult{}, fmt.Errorf("update associated issue: %w", forgeCallError(err))
 	}
 	return IssuePublicationResult{Number: number, URL: existing.URL, Reused: reused}, nil
 }
@@ -146,11 +216,14 @@ func findIssueByMarker(ctx context.Context, repo, marker string, run ghRunner) (
 	endpoint := fmt.Sprintf("repos/%s/%s/issues?state=all&sort=created&direction=asc&per_page=100", owner, name)
 	out, err := run(ctx, "api", "--paginate", "--slurp", endpoint)
 	if err != nil {
-		return 0, fmt.Errorf("find task issue: %w", err)
+		return 0, fmt.Errorf("find task issue: %w", forgeCallError(err))
 	}
 	var pages [][]Issue
 	if err = json.Unmarshal(out, &pages); err != nil {
-		return 0, fmt.Errorf("parse exhaustive task issue listing: %w", err)
+		return 0, forgeResponseError("parse exhaustive task issue listing: %v", err)
+	}
+	if pages == nil {
+		return 0, forgeResponseError("parse exhaustive task issue listing: missing page array")
 	}
 	for _, page := range pages {
 		for _, issue := range page {
@@ -207,9 +280,9 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid")
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
-			return PullRequest{}, fmt.Errorf("%w for branch %s", ErrPullRequestNotFound, branch)
+			return PullRequest{}, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for branch %s: %v", ErrPullRequestNotFound, branch, err)}
 		}
-		return PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, err)
+		return PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, forgeCallError(err))
 	}
 	var view struct {
 		Number    int        `json:"number"`
@@ -219,8 +292,8 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 		Mergeable string     `json:"mergeable"`
 		HeadSHA   string     `json:"headRefOid"`
 	}
-	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 {
-		return PullRequest{}, fmt.Errorf("parse pull request for branch %s", branch)
+	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 || view.URL == "" || view.State == "" || view.Mergeable == "" || view.HeadSHA == "" {
+		return PullRequest{}, forgeResponseError("parse pull request for branch %s", branch)
 	}
 	return PullRequest{
 		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
@@ -237,7 +310,7 @@ func MergePullRequest(ctx context.Context, repo string, number int) error {
 func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {
 	_, err := run(ctx, "pr", "merge", strconv.Itoa(number), "--repo", repo, "--merge")
 	if err != nil {
-		return fmt.Errorf("merge pull request %s#%d: %w", repo, number, err)
+		return fmt.Errorf("merge pull request %s#%d: %w", repo, number, forgeCallError(err))
 	}
 	return nil
 }
@@ -450,11 +523,11 @@ func ReviewTargetForBranch(ctx context.Context, repo, branch string) (ReviewTarg
 func reviewTarget(ctx context.Context, repo, branch string, run ghRunner) (reviewTargetResult, error) {
 	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,headRefOid")
 	if err != nil {
-		return reviewTargetResult{}, fmt.Errorf("resolve reviewed PR: %w", err)
+		return reviewTargetResult{}, fmt.Errorf("resolve reviewed PR: %w", forgeCallError(err))
 	}
 	var target reviewTargetResult
-	if err := json.Unmarshal(out, &target); err != nil || target.Number == 0 || target.HeadSHA == "" {
-		return reviewTargetResult{}, fmt.Errorf("parse reviewed PR target")
+	if err := json.Unmarshal(out, &target); err != nil || target.Number == 0 || target.URL == "" || target.HeadSHA == "" {
+		return reviewTargetResult{}, forgeResponseError("parse reviewed PR target")
 	}
 	return target, nil
 }
@@ -478,7 +551,7 @@ func upsertReviewStatus(ctx context.Context, publication ReviewPublication, targ
 	endpoint := fmt.Sprintf("repos/%s/commits/%s/status", publication.Repo, publication.ReviewedCommitSHA)
 	out, err := run(ctx, "api", endpoint)
 	if err != nil {
-		return fmt.Errorf("read review status: %w", err)
+		return fmt.Errorf("read review status: %w", forgeCallError(err))
 	}
 	var combined struct {
 		Statuses []struct {
@@ -489,7 +562,10 @@ func upsertReviewStatus(ctx context.Context, publication ReviewPublication, targ
 		} `json:"statuses"`
 	}
 	if err := json.Unmarshal(out, &combined); err != nil {
-		return fmt.Errorf("parse review status: %w", err)
+		return forgeResponseError("parse review status: %v", err)
+	}
+	if combined.Statuses == nil {
+		return forgeResponseError("parse review status: missing statuses")
 	}
 	for _, status := range combined.Statuses {
 		if status.Context == ReviewStatusContext && status.State == state && status.Description == description && status.TargetURL == targetURL {
@@ -499,7 +575,7 @@ func upsertReviewStatus(ctx context.Context, publication ReviewPublication, targ
 	_, err = run(ctx, "api", "--method", "POST", "repos/"+publication.Repo+"/statuses/"+publication.ReviewedCommitSHA,
 		"-f", "state="+state, "-f", "context="+ReviewStatusContext, "-f", "description="+description, "-f", "target_url="+targetURL)
 	if err != nil {
-		return fmt.Errorf("publish review status: %w", err)
+		return fmt.Errorf("publish review status: %w", forgeCallError(err))
 	}
 	return nil
 }
@@ -507,14 +583,14 @@ func upsertReviewStatus(ctx context.Context, publication ReviewPublication, targ
 func upsertReviewComment(ctx context.Context, repo string, pr int, taskID, body string, run ghRunner) (int64, error) {
 	out, err := run(ctx, "api", fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repo, pr), "--paginate", "--slurp")
 	if err != nil {
-		return 0, fmt.Errorf("list review comments: %w", err)
+		return 0, fmt.Errorf("list review comments: %w", forgeCallError(err))
 	}
 	var pages [][]struct {
 		ID   int64  `json:"id"`
 		Body string `json:"body"`
 	}
 	if err := json.Unmarshal(out, &pages); err != nil {
-		return 0, fmt.Errorf("parse review comments: %w", err)
+		return 0, forgeResponseError("parse review comments: %v", err)
 	}
 	marker := reviewPublicationMarkerPrefix + "task=" + taskID + " -->"
 	commentID := int64(0)
@@ -532,13 +608,13 @@ func upsertReviewComment(ctx context.Context, repo string, pr int, taskID, body 
 	}
 	out, err = run(ctx, args...)
 	if err != nil {
-		return 0, fmt.Errorf("publish review comment: %w", err)
+		return 0, fmt.Errorf("publish review comment: %w", forgeCallError(err))
 	}
 	var result struct {
 		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil || result.ID == 0 {
-		return 0, fmt.Errorf("parse published review comment")
+		return 0, forgeResponseError("parse published review comment")
 	}
 	return result.ID, nil
 }

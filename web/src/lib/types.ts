@@ -157,6 +157,7 @@ export interface ActivitySummary {
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
+  forge_failure?: ForgeFailure
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
@@ -168,6 +169,13 @@ export interface StalledState {
 	reason: string
 	work_order: WorkOrder
 	last_failure?: string
+}
+
+export interface ForgeFailure {
+  category: string
+  detail: string
+  surface: string
+  at: string
 }
 
 export interface ReviewRecoveryState {
@@ -370,6 +378,7 @@ export interface ActivityItem {
   checkout_available: boolean
   checkout_guidance: string
   needs_attention: boolean
+  forge_failure?: ForgeFailure
   spec?: SpecVersion
   attachments?: Artifact[]
   work_orders: WorkOrder[]

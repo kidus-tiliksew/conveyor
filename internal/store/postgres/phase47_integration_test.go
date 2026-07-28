@@ -59,19 +59,14 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	storedLifecycle.CreateAttempts = 1
 	storedLifecycle.ReconcileMisses = 2
 	storedLifecycle.Attempts = 3
-	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
-		t.Fatal(err)
-	}
-	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 0 {
-		t.Fatalf("state-only retry events=%d err=%v", count, countErr)
-	}
-	storedLifecycle, ok, err = st.GetGitHubLifecycle(ctx, task.ID)
-	if err != nil || !ok || storedLifecycle.CreateAttempts != 1 || storedLifecycle.ReconcileMisses != 2 {
-		t.Fatalf("reconciliation lifecycle=%+v ok=%t err=%v", storedLifecycle, ok, err)
-	}
+	storedLifecycle.ForgeErrorCategory = "forge_status"
 	storedLifecycle.LastError = "GitHub returned 503"
 	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
 		t.Fatal(err)
+	}
+	storedLifecycle, ok, err = st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil || !ok || storedLifecycle.CreateAttempts != 1 || storedLifecycle.ReconcileMisses != 2 || storedLifecycle.ForgeErrorCategory != "forge_status" || storedLifecycle.LastError != "GitHub returned 503" {
+		t.Fatalf("reconciliation lifecycle=%+v ok=%t err=%v", storedLifecycle, ok, err)
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "github_issue.publication_retry"); countErr != nil || count != 1 {
 		t.Fatalf("real retry events=%d err=%v", count, countErr)
@@ -81,6 +76,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	storedLifecycle.ReconcileMisses = 0
 	storedLifecycle.IssueNumber = 42
 	storedLifecycle.IssueURL = "https://github.com/acme/api/issues/42"
+	storedLifecycle.ForgeErrorCategory = ""
 	storedLifecycle.LastError = ""
 	if err = st.UpdateGitHubLifecycle(ctx, storedLifecycle); err != nil {
 		t.Fatal(err)
@@ -210,9 +206,21 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || storedPublication.State != core.ReviewPublicationQueued || storedPublication.RequiredEffort != "high" {
 		t.Fatalf("publication=%+v err=%v", storedPublication, err)
 	}
-	storedPublication.State = core.ReviewPublicationPublished
+	storedPublication.State = core.ReviewPublicationRetrying
 	storedPublication.Attempts = 1
+	storedPublication.ForgeErrorCategory = "forge_permission"
+	storedPublication.LastError = "GitHub denied comment publication"
+	if err = st.UpdateReviewPublication(ctx, storedPublication); err != nil {
+		t.Fatal(err)
+	}
+	storedPublication, err = st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || storedPublication.ForgeErrorCategory != "forge_permission" || storedPublication.LastError != "GitHub denied comment publication" {
+		t.Fatalf("retrying publication=%+v err=%v", storedPublication, err)
+	}
+	storedPublication.State = core.ReviewPublicationPublished
 	storedPublication.CheckRunID = 41
+	storedPublication.ForgeErrorCategory = ""
+	storedPublication.LastError = ""
 	if err = st.UpdateReviewPublication(ctx, storedPublication); err == nil {
 		t.Fatal("published PostgreSQL review projection accepted a missing required comment")
 	}
