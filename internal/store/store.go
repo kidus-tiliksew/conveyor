@@ -274,7 +274,9 @@ type StalledState struct {
 func StalledTask(orders []core.WorkOrder) *StalledState {
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
-		if order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+		switch order.State {
+		case core.WorkOrderQueued, core.WorkOrderStale, core.WorkOrderTimedOut:
+		default:
 			continue
 		}
 		reason := ""
