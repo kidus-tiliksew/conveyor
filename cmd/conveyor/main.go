@@ -36,6 +36,7 @@ func main() {
 	root.AddCommand(
 		taskCmd(),
 		configCmd(),
+		monitorCmd(),
 		workerCmd(),
 		checkoutCmd(),
 		doneCmd(),
@@ -46,6 +47,40 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func monitorCmd() *cobra.Command {
+	command := &cobra.Command{Use: "monitor", Short: "Inspect monitor health and repository drift"}
+	status := &cobra.Command{
+		Use: "status", Short: "Show workspace monitor health and unresolved drift",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			current, err := newClient().monitorStatus()
+			if err != nil {
+				return err
+			}
+			out, _ := json.MarshalIndent(current, "", "  ")
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			return err
+		},
+	}
+	var outcome string
+	resolve := &cobra.Command{
+		Use: "resolve <drift-id>", Short: "Record an audited drift reconciliation outcome", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(outcome) == "" {
+				return fmt.Errorf("--outcome is required")
+			}
+			drift, err := newClient().resolveMonitorDrift(args[0], outcome)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "resolved drift %s via %s (task %s)\n", drift.ID, drift.Outcome, drift.TaskID)
+			return nil
+		},
+	}
+	resolve.Flags().StringVar(&outcome, "outcome", "", "requirements_amended, conflict_resolved, or change_reverted")
+	command.AddCommand(status, resolve)
+	return command
 }
 
 func configCmd() *cobra.Command {

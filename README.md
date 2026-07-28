@@ -219,6 +219,12 @@ Postgres. They are editable through the UI/API or `conveyor config import`.
 The deployment file retains the database connection, prompt-pack path, and
 bare repository cache path.
 
+Phase 5.6 monitoring is enabled per workspace and explicit repository. The
+Monitor dashboard and `conveyor monitor status` show last success,
+categorized errors/backoff, task links, and unresolved drift count/age.
+`conveyor monitor resolve <drift-id> --outcome <outcome>` records the audited
+reconciliation outcome; it does not silently modify requirements.
+
 All workspace-scoped REST calls accept `workspace_id` or `X-Workspace-ID`.
 The CLI accepts `--workspace` (or `CONVEYOR_WORKSPACE`) and MCP tools accept
 `workspace_id`. Omission remains compatible only when exactly one workspace

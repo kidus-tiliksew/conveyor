@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -170,6 +171,22 @@ func (c *client) updateWorkspaceConfig(document config.WorkspaceDocument, versio
 		"If-Match": strconv.FormatInt(version, 10),
 	})
 	return receipt, err
+}
+
+func (c *client) monitorStatus() (monitor.Status, error) {
+	var status monitor.Status
+	err := c.do(http.MethodGet, "/v1/monitor", nil, &status)
+	return status, err
+}
+
+func (c *client) resolveMonitorDrift(id, outcome string) (monitor.Drift, error) {
+	if c.token == "" {
+		return monitor.Drift{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for drift reconciliation")
+	}
+	payload, _ := json.Marshal(map[string]string{"outcome": outcome})
+	var drift monitor.Drift
+	err := c.do(http.MethodPost, "/v1/monitor/drift/"+id+"/resolve", payload, &drift)
+	return drift, err
 }
 
 func (c *client) do(method, path string, body []byte, out any) error {

@@ -21,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -60,6 +61,7 @@ type Server struct {
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
 	Workers               *workerservice.Service
+	Monitor               *monitor.Service
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -101,11 +103,14 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
+			r.Get("/monitor", s.getMonitorStatus)
 			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
 			r.Get("/requirements", s.listRequirements)
 			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
+			r.With(s.requireMutationAuth).Post("/monitor/observations", s.observeMonitorSignal)
+			r.With(s.requireMutationAuth).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)

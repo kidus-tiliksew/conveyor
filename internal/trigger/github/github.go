@@ -75,6 +75,10 @@ func ErrorCategory(err error) ForgeErrorCategory {
 	return ""
 }
 
+// CategorizeError applies the stable one-forge taxonomy to a new GitHub
+// boundary such as the Phase 5.6 monitor.
+func CategorizeError(err error) error { return forgeCallError(err) }
+
 func forgeCallError(err error) error {
 	if err == nil || ErrorCategory(err) != "" {
 		return err
