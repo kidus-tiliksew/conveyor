@@ -1038,6 +1038,9 @@ func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (Me
 		for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
 			pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 			if err != nil {
+				if category := github.ErrorCategory(err); category != "" {
+					return fmt.Errorf("%s: %w", category, err)
+				}
 				return err
 			}
 			if pr.Mergeable != "UNKNOWN" {
@@ -1264,7 +1267,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
 		if errors.Is(err, github.ErrPullRequestNotFound) {
-			return d.recordMergeFailure(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging", current.Branch))
+			return d.recordMergeFailure(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err))
 		}
 		return d.recordMergeFailure(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err))
 	}
@@ -1333,7 +1336,11 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 }
 
 func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": reason, "error": mergeErr.Error()})}); err != nil {
+	payload := map[string]any{"reason_code": reason, "error": mergeErr.Error()}
+	if category := github.ErrorCategory(mergeErr); category != "" {
+		payload["forge_error_category"] = category
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(payload)}); err != nil {
 		return fmt.Errorf("%v; record merge failure: %w", mergeErr, err)
 	}
 	return mergeErr

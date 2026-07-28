@@ -103,6 +103,18 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 33 {
 		t.Fatalf("child failure detail version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/036_forge_error_categories.sql")
+	if err != nil || version != 36 {
+		t.Fatalf("forge error categories version=%d err=%v", version, err)
+	}
+	version, err = migrationVersion("migrations/037_cancel_intervention_action.sql")
+	if err != nil || version != 37 {
+		t.Fatalf("cancel intervention action version=%d err=%v", version, err)
+	}
+	version, err = migrationVersion("migrations/038_rate_limit_telemetry.sql")
+	if err != nil || version != 38 {
+		t.Fatalf("rate limit telemetry version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
@@ -128,6 +140,28 @@ func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
 	}
 	if migrationChecksum(raw) == migrationChecksum(rendered) {
 		t.Fatal("raw template and rendered migration unexpectedly share a checksum")
+	}
+}
+
+func TestInterventionActionMigrationIsImmutableAndMatchesCoreActionSet(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/037_cancel_intervention_action.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := renderMigration(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	values := make([]string, 0, len(core.InterventionActions()))
+	for _, action := range core.InterventionActions() {
+		values = append(values, "'"+string(action)+"'")
+	}
+	if !strings.Contains(text, "action IN ("+strings.Join(values, ", ")+")") {
+		t.Fatalf("static intervention constraint does not match the core action set: %s", text)
+	}
+	if migrationChecksum(raw) != migrationChecksum(rendered) {
+		t.Fatal("immutable intervention migration changed while rendering")
 	}
 }
 

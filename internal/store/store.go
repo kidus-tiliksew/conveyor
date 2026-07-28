@@ -247,10 +247,79 @@ type ActivityMarker struct {
 	TaskID                    string
 	LatestStage               core.Stage
 	LastEventAt               time.Time
+	ForgeFailure              *ForgeFailure
 	ReviewDiagnostics         []ReviewVerdictDiagnostic
 	ReviewRecovery            *ReviewRecoveryState
 	InterruptedReviewRecovery *InterruptedReviewRecoveryState
 	Stalled                   *StalledState
+}
+
+// ForgeFailure is the latest unresolved GitHub projection or merge failure
+// that belongs in the needs-operator surface (spec §11.1, §13.2).
+type ForgeFailure struct {
+	Category string    `json:"category"`
+	Detail   string    `json:"detail"`
+	Surface  string    `json:"surface"`
+	At       time.Time `json:"at"`
+}
+
+// LatestForgeFailure reduces durable projection events to the current
+// operator-actionable GitHub failure.
+func LatestForgeFailure(events []core.Event) *ForgeFailure {
+	var issue *ForgeFailure
+	reviews := make(map[string]*ForgeFailure)
+	var merge *ForgeFailure
+	for _, event := range events {
+		var payload struct {
+			ReviewWorkOrderID  string `json:"review_work_order_id"`
+			ForgeErrorCategory string `json:"forge_error_category"`
+			LastError          string `json:"last_error"`
+			Error              string `json:"error"`
+		}
+		switch event.Kind {
+		case "github_issue.publication_failed":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				issue = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub issue publication", At: event.At}
+			}
+		case "github_issue.publication_published":
+			issue = nil
+		case "review.publication_failed":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				key := payload.ReviewWorkOrderID
+				if key == "" {
+					key = event.JobID
+				}
+				reviews[key] = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub review publication", At: event.At}
+			}
+		case "review.publication_published":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				key := payload.ReviewWorkOrderID
+				if key == "" {
+					key = event.JobID
+				}
+				delete(reviews, key)
+			}
+		case "merge.failed":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				merge = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.Error, Surface: "GitHub merge", At: event.At}
+			}
+		case "merge.confirmed", "merge.reconciled":
+			merge = nil
+		}
+	}
+	var latest *ForgeFailure
+	consider := func(candidate *ForgeFailure) {
+		if candidate != nil && (latest == nil || candidate.At.After(latest.At)) {
+			copy := *candidate
+			latest = &copy
+		}
+	}
+	consider(issue)
+	for _, review := range reviews {
+		consider(review)
+	}
+	consider(merge)
+	return latest
 }
 
 type RecoveryRefreeze struct {
@@ -849,6 +918,7 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 					missing = append(missing, publication)
 				} else if existing.State == core.ReviewPublicationPublished && existing.CommentID <= 0 {
 					existing.State = core.ReviewPublicationRetrying
+					existing.ForgeErrorCategory = ""
 					existing.LastError = "reconciling published review projection without required comment"
 					existing.UpdatedAt = time.Now().UTC()
 					m.publications[existing.ReviewWorkOrderID] = existing
@@ -2551,6 +2621,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		if events := m.events[id]; len(events) != 0 {
 			marker.LastEventAt = events[len(events)-1].At
 		}
+		marker.ForgeFailure = LatestForgeFailure(m.events[id])
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
 		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))

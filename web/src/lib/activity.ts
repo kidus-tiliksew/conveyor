@@ -7,6 +7,7 @@ import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent,
 export function groupForSummary(item: ActivitySummary): GroupKey {
   const { state } = item.task
   if (item.stalled?.needed && state !== 'merged' && state !== 'closed') return 'human'
+  if (item.forge_failure && state !== 'merged' && state !== 'closed') return 'human'
   if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
   const stage = item.task.state === 'queued' ? (item.task.next_stage ?? item.latest_stage) : (item.latest_stage ?? item.task.next_stage)
@@ -82,6 +83,12 @@ export function attentionReason(task: Task, events: TaskEvent[]): string {
   }
   if (task.state === 'approved') return 'Approved — awaiting merge'
   return 'At a human gate — review the work below'
+}
+
+function forgeFailureDetail(payload: Record<string, unknown>, detailKey: 'last_error' | 'error'): string | undefined {
+  const category = typeof payload.forge_error_category === 'string' ? payload.forge_error_category.trim() : ''
+  const detail = typeof payload[detailKey] === 'string' ? payload[detailKey].trim() : ''
+  return [category, detail].filter(Boolean).join(' · ') || undefined
 }
 
 export type TimelineEntry =
@@ -380,12 +387,16 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'github_issue.publication_queued':
       return { title: 'GitHub issue publication queued' }
     case 'github_issue.publication_retry':
-      return { title: 'GitHub issue publication retrying', detail: typeof payload.last_error === 'string' ? payload.last_error : undefined, alarm: Boolean(payload.last_error) }
+      return { title: 'GitHub issue publication retrying', detail: forgeFailureDetail(payload, 'last_error'), alarm: Boolean(payload.last_error) }
     case 'github_issue.publication_published':
     case 'github_issue.associated':
       return { title: 'GitHub issue associated', detail: typeof payload.issue_url === 'string' ? payload.issue_url : undefined, href: typeof payload.issue_url === 'string' ? payload.issue_url : undefined }
     case 'github_issue.publication_failed':
-      return { title: 'GitHub issue publication failed', detail: typeof payload.last_error === 'string' ? payload.last_error : undefined, alarm: true }
+      return { title: 'GitHub issue publication failed', detail: forgeFailureDetail(payload, 'last_error'), alarm: true }
+    case 'review.publication_retry':
+      return { title: 'GitHub review publication retrying', detail: forgeFailureDetail(payload, 'last_error'), alarm: Boolean(payload.last_error) }
+    case 'review.publication_failed':
+      return { title: 'GitHub review publication failed', detail: forgeFailureDetail(payload, 'last_error'), alarm: true }
     case 'github.review_redirected':
       return { title: 'GitHub review comments redirected the task (spec §9)' }
     case 'review.round_completed':
@@ -405,7 +416,7 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'merge.reconciled':
       return { title: 'Already-merged pull request reconciled', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.failed':
-      return { title: 'Merge needs operator action', detail: typeof payload.error === 'string' ? payload.error : undefined, alarm: true }
+      return { title: 'Merge needs operator action', detail: forgeFailureDetail(payload, 'error'), alarm: true }
 	case 'merge.blocked':
 		return { title: 'Merge blocked — conflict fix required', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined, alarm: true }
 	case 'merge.conflict_fix_dispatched':

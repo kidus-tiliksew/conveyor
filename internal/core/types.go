@@ -157,22 +157,23 @@ const (
 // exact approved spec. TaskID is the idempotency key; SourceIssueNumber is
 // retained separately so provenance remains reconstructible after publication.
 type GitHubLifecycle struct {
-	TaskID            string                 `json:"task_id"`
-	Repository        string                 `json:"repository"`
-	SpecVersion       int                    `json:"spec_version"`
-	Source            string                 `json:"source"`
-	SourceIssueNumber int                    `json:"source_issue_number,omitempty"`
-	IssueNumber       int                    `json:"issue_number,omitempty"`
-	IssueURL          string                 `json:"issue_url,omitempty"`
-	Outcome           string                 `json:"outcome,omitempty"` // created | reused
-	State             GitHubPublicationState `json:"state"`
-	CreateState       GitHubCreateState      `json:"create_state"`
-	CreateAttempts    int                    `json:"create_attempts"`
-	ReconcileMisses   int                    `json:"reconcile_misses"`
-	Attempts          int                    `json:"attempts"`
-	LastError         string                 `json:"last_error,omitempty"`
-	CreatedAt         time.Time              `json:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
+	TaskID             string                 `json:"task_id"`
+	Repository         string                 `json:"repository"`
+	SpecVersion        int                    `json:"spec_version"`
+	Source             string                 `json:"source"`
+	SourceIssueNumber  int                    `json:"source_issue_number,omitempty"`
+	IssueNumber        int                    `json:"issue_number,omitempty"`
+	IssueURL           string                 `json:"issue_url,omitempty"`
+	Outcome            string                 `json:"outcome,omitempty"` // created | reused
+	State              GitHubPublicationState `json:"state"`
+	CreateState        GitHubCreateState      `json:"create_state"`
+	CreateAttempts     int                    `json:"create_attempts"`
+	ReconcileMisses    int                    `json:"reconcile_misses"`
+	Attempts           int                    `json:"attempts"`
+	ForgeErrorCategory string                 `json:"forge_error_category,omitempty"`
+	LastError          string                 `json:"last_error,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 // Workspace is a durable control-plane boundary. ID and Name are immutable in
@@ -243,12 +244,12 @@ const (
 )
 
 func (action InterventionAction) Valid() bool {
-	switch action {
-	case InterventionApprove, InterventionReject, InterventionRedirect, InterventionPull, InterventionCancel:
-		return true
-	default:
-		return false
+	for _, valid := range InterventionActions() {
+		if action == valid {
+			return true
+		}
 	}
+	return false
 }
 
 // Event is the append-only source of truth for task state. Tasks and jobs are
@@ -273,6 +274,19 @@ const (
 	InterventionPull     InterventionAction = "pull_to_local"
 	InterventionCancel   InterventionAction = "cancel"
 )
+
+// InterventionActions is the canonical persisted action set shared by API
+// validation and migration-alignment tests. Applied migrations stay immutable;
+// adding an action requires a new forward migration.
+func InterventionActions() []InterventionAction {
+	return []InterventionAction{
+		InterventionApprove,
+		InterventionReject,
+		InterventionRedirect,
+		InterventionPull,
+		InterventionCancel,
+	}
+}
 
 // Intervention is a structured human decision from the review queue (spec
 // §13.2). ReasonCode is intentionally data rather than an enum so workspaces
@@ -631,11 +645,12 @@ type ReviewPublication struct {
 	Attempts               int                    `json:"attempts"`
 	// CheckRunID is retained for historical v1.22 publications. Portable v1.23
 	// commit-status publications leave it zero (spec §21.22).
-	CheckRunID int64     `json:"check_run_id,omitempty"`
-	CommentID  int64     `json:"comment_id,omitempty"`
-	LastError  string    `json:"last_error,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	CheckRunID         int64     `json:"check_run_id,omitempty"`
+	CommentID          int64     `json:"comment_id,omitempty"`
+	ForgeErrorCategory string    `json:"forge_error_category,omitempty"`
+	LastError          string    `json:"last_error,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // ReviewDecision is the atomic internal acceptance record for one completed

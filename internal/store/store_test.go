@@ -145,6 +145,29 @@ func TestMemoryGitHubLifecycleOnlyEmitsActivityForOutcomesAndRealRetries(t *test
 	}
 }
 
+func TestLatestForgeFailureTracksOnlyUnresolvedOperatorEvidence(t *testing.T) {
+	at := time.Now().UTC()
+	events := []core.Event{
+		{Kind: "github_issue.publication_failed", At: at, Payload: core.JSONPayload(map[string]any{"forge_error_category": "forge_request", "last_error": "request timed out"})},
+		{Kind: "github_issue.publication_published", At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{})},
+		{Kind: "review.publication_failed", JobID: "review-1", At: at.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1", "forge_error_category": "forge_permission", "last_error": "comment denied"})},
+		{Kind: "merge.failed", At: at.Add(3 * time.Second), Payload: core.JSONPayload(map[string]any{"forge_error_category": "forge_rate_limited", "error": "rate limit exceeded"})},
+	}
+	failure := LatestForgeFailure(events)
+	if failure == nil || failure.Category != "forge_rate_limited" || failure.Detail != "rate limit exceeded" || failure.Surface != "GitHub merge" {
+		t.Fatalf("failure=%+v", failure)
+	}
+	events = append(events, core.Event{Kind: "merge.confirmed", At: at.Add(4 * time.Second), Payload: core.JSONPayload(map[string]any{})})
+	failure = LatestForgeFailure(events)
+	if failure == nil || failure.Category != "forge_permission" || failure.Detail != "comment denied" {
+		t.Fatalf("failure after merge resolution=%+v", failure)
+	}
+	events = append(events, core.Event{Kind: "review.publication_published", JobID: "review-1", At: at.Add(5 * time.Second), Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1"})})
+	if failure = LatestForgeFailure(events); failure != nil {
+		t.Fatalf("resolved failures remain actionable: %+v", failure)
+	}
+}
+
 func TestReviewVerdictDiagnosticsDistinguishClaimedExpiredAndReleased(t *testing.T) {
 	now := time.Now().UTC()
 	claimed := core.WorkOrder{

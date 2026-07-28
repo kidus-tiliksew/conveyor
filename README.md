@@ -75,10 +75,15 @@ make test-integration
 ```
 
 That target starts `postgres-test` on `127.0.0.1:5433`, runs the Postgres store
-and dispatch integration suites against the `conveyor_test` database, and
-removes the test container afterward. Its data directory is a tmpfs. Regular
-`make test` explicitly clears `CONVEYOR_TEST_DATABASE_URL`; integration tests
-also refuse database names that do not end in `_test`.
+and dispatch integration suites serially against the shared `conveyor_test`
+database, and removes the test container afterward. Its data directory is a
+tmpfs. Regular `make test` explicitly clears `CONVEYOR_TEST_DATABASE_URL`;
+integration tests also refuse database names that do not end in `_test`.
+
+`make test-integration` is the required database-backed lane for cancellation
+and migration coverage. Those tests require `CONVEYOR_TEST_DATABASE_URL` and
+skip when it is absent, so a passing `make test` does not exercise PostgreSQL
+constraints or task-cancellation persistence.
 
 To run an already-built daemon without rebuilding or changing the database:
 

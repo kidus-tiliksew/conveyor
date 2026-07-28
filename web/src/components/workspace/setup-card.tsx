@@ -106,10 +106,11 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
 
 		  <div className="border-b border-border px-4 py-4">
 			<GroupTitle title="Specification" note="runs on your worker over MCP without git changes" />
-			<div className="grid gap-3 md:grid-cols-4">
+			<div className="grid gap-3 md:grid-cols-5">
 			  <Field label="Harness"><Select aria-label="Spec harness" value={settings.spec.harness} onChange={(event) => updateSpec({ harness: event.target.value, model: '' })}><option value="">Select harness</option>{document.harnesses.map((harness) => <option key={harness.name} value={harness.name}>{harness.name}</option>)}</Select></Field>
 			  <Field label="Model policy"><Select aria-label="Spec model policy" value={settings.spec.model_policy} onChange={(event) => updateSpec({ model_policy: event.target.value as 'explicit' | 'harness_default', model: '' })}><option value="explicit">Explicit model</option><option value="harness_default">Harness default</option></Select></Field>
 			  {settings.spec.model_policy === 'explicit' ? <Field label="Model"><Input aria-label="Spec model" className="font-mono" value={settings.spec.model ?? ''} onChange={(event) => updateSpec({ model: event.target.value })} /></Field> : <Field label="Default sentinel"><Select aria-label="Spec default sentinel" value={settings.spec.model ?? ''} onChange={(event) => updateSpec({ model: event.target.value })}><option value="">Omit model arguments</option>{(specHarness?.default_model_sentinels ?? []).map((sentinel) => <option key={sentinel} value={sentinel}>{sentinel}</option>)}</Select></Field>}
+			  <Field label="Reasoning effort"><Select aria-label="spec reasoning effort" value={settings.spec.effort ?? ''} onChange={(event) => updateSpec({ effort: (event.target.value || undefined) as typeof settings.spec.effort })}><option value="">Harness default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></Select></Field>
 			  <Field label="Time limit"><Input aria-label="spec timeout" value={settings.spec.timeout} onChange={(event) => updateSpec({ timeout: event.target.value })} /></Field>
 			</div>
 		  </div>

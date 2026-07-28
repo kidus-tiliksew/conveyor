@@ -134,3 +134,35 @@ func TestClientReviewUsesAuthenticatedEndpoint(t *testing.T) {
 		t.Fatalf("state = %s", task.State)
 	}
 }
+
+func TestClientCloseTaskUsesAuthenticatedEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/task-1/close" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Workspace-ID"); got != "demo" {
+			t.Fatalf("X-Workspace-ID = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["reason"] != "obsolete" {
+			t.Fatalf("body = %v", body)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1", State: core.TaskClosed})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, token: "secret-token", workspace: "demo"}
+	task, err := c.closeTask("task-1", "obsolete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != core.TaskClosed {
+		t.Fatalf("state = %s", task.State)
+	}
+}

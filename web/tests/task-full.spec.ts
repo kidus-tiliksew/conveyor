@@ -168,6 +168,14 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		work_orders: [
 			{ id: 'setup-claimed-implement-1', task_id: taskId, job_id: 'setup-claimed-implement-1', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
+	} : taskId === 'forge-failure' ? {
+		jobs: [],
+		events: [
+			{ id: 1, task_id: taskId, kind: 'github_issue.publication_failed', actor_id: 'system', actor_role: 'system' as const, payload: { forge_error_category: 'forge_request', last_error: 'create task issue: request timed out' }, at: '2026-07-15T12:00:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'review-1', kind: 'review.publication_failed', actor_id: 'system', actor_role: 'system' as const, payload: { review_work_order_id: 'review-1', forge_error_category: 'forge_permission', last_error: 'publish review comment: resource not accessible' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 3, task_id: taskId, kind: 'merge.failed', actor_id: 'system', actor_role: 'system' as const, payload: { reason_code: 'forge_merge_failed', forge_error_category: 'forge_rate_limited', error: 'merge pull request: API rate limit exceeded' }, at: '2026-07-15T12:02:00Z' },
+		],
+		work_orders: [],
 	} : { jobs: [], events: [], work_orders: taskId === 'no-orders' ? null : [] }
 	const reviewDiagnostics = taskId === 'diagnostics' ? [
 		{ status: 'claimed_without_verdict', work_order_id: 'diagnostics-review-1-seat-1', review_round: 1, review_seat: 1, claimed_at: '2026-07-15T12:00:00Z', lease_expires_at: '2026-07-15T12:15:00Z', reason: 'review claim is active without a successful submit_review_verdict response' },
@@ -221,7 +229,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 	}] : [],
     checkout_available: false,
     checkout_guidance: 'Use the assigned worktree.',
-    needs_attention: false,
+    needs_attention: taskId === 'forge-failure',
+    forge_failure: taskId === 'forge-failure' ? {
+      category: 'forge_rate_limited',
+      detail: 'merge pull request: API rate limit exceeded',
+      surface: 'GitHub merge',
+      at: '2026-07-15T12:02:00Z',
+    } : undefined,
     spec: {
       task_id: taskId,
       version: 1,
@@ -431,15 +445,25 @@ test('suppressed worker order exposes failure state and audited recovery action'
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	const item = activity('recovery', false)
+	let cancelled = false
 	await page.route('**/v1/workspaces', async (route) => {
 		await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
 	})
 	await page.route('**/v1/activity*', async (route) => {
 		await route.fulfill({ json: [{ task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: true, stalled: item.stalled }] })
 	})
+	await page.route('**/v1/tasks/recovery/activity*', async (route) => {
+		const current = activity('recovery', false)
+		await route.fulfill({
+			json: cancelled
+				? { ...current, task: { ...current.task, state: 'closed' }, stalled: undefined }
+				: current,
+		})
+	})
 	let cancelBody = ''
 	await page.route('**/v1/tasks/recovery/close*', async (route) => {
 		cancelBody = route.request().postData() ?? ''
+		cancelled = true
 		await route.fulfill({ json: { ...item.task, state: 'closed' } })
 	})
 	await page.goto('/')
@@ -452,6 +476,32 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
 	await page.getByPlaceholder('Why is this task being cancelled?').fill('provider setup is obsolete')
 	await page.getByRole('dialog', { name: 'Cancel task' }).getByRole('button', { name: 'Cancel task' }).click()
 	await expect.poll(() => cancelBody).toContain('provider setup is obsolete')
+	await expect(page.getByText('Closed', { exact: true })).toBeVisible()
+	await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
+})
+
+test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {
+	const item = activity('forge-failure', false)
+	await page.route('**/v1/activity*', async (route) => {
+		await route.fulfill({
+			json: [{
+				task: item.task,
+				latest_stage: 'merge',
+				last_event_at: '2026-07-15T12:02:00Z',
+				needs_attention: true,
+				forge_failure: item.forge_failure,
+			}],
+		})
+	})
+
+	await page.goto('/')
+	const tray = page.getByRole('region', { name: 'Needs operator' })
+	await expect(tray.getByText('forge_rate_limited')).toBeVisible()
+	await expect(tray.getByText(/GitHub merge: merge pull request/)).toBeVisible()
+	await tray.getByText('Short task').click()
+	await expect(page.getByText(/forge_request · create task issue: request timed out/)).toBeVisible()
+	await expect(page.getByText(/forge_permission · publish review comment: resource not accessible/)).toBeVisible()
+	await expect(page.getByText(/forge_rate_limited · merge pull request: API rate limit exceeded/)).toBeVisible()
 })
 
 test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {
