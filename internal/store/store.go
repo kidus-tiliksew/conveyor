@@ -799,8 +799,12 @@ func (m *memory) GetReviewPublication(_ context.Context, id string) (core.Review
 func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.publications[publication.ReviewWorkOrderID]; !ok {
+	current, ok := m.publications[publication.ReviewWorkOrderID]
+	if !ok {
 		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
+	}
+	if err := ValidateReviewPublicationTransition(current.State, publication.State); err != nil {
+		return err
 	}
 	publication.UpdatedAt = time.Now().UTC()
 	m.publications[publication.ReviewWorkOrderID] = publication
@@ -1541,7 +1545,7 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
 		m.jobs[job.TaskID][index] = job
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRecover, "reason": "stale queue redispatch"}), At: now})
 	return order, nil
 }
 
@@ -1610,13 +1614,17 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	prior := order.LastAttemptOutcome
 	priorState := order.State
 	clearActiveAttempt(&order)
-	if priorState == core.WorkOrderStale || priorState == core.WorkOrderTimedOut {
-		next, transitionErr := core.TransitionWorkOrder(priorState, core.WorkOrderCmdRecover)
-		if transitionErr != nil {
-			return core.WorkOrder{}, transitionErr
-		}
-		order.State = next
+	lifecycleCommand := core.WorkOrderCmdRecover
+	eventKind := "work_order.recovered"
+	if priorState == core.WorkOrderQueued {
+		lifecycleCommand = core.WorkOrderCmdRedispatch
+		eventKind = "work_order.redispatched"
 	}
+	next, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand)
+	if transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
+	order.State = next
 	order.LastAttemptOutcome = ""
 	order.RetrySuppressed = false
 	order.RetrySuppressionReason = ""
@@ -1646,7 +1654,7 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 		m.jobs[job.TaskID][index] = job
 	}
 	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now})
 	return order, nil
 }
 
@@ -1772,6 +1780,78 @@ func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCo
 		return core.WorkOrderCmdReviewRevise, true
 	default:
 		return "", false
+	}
+}
+
+// ValidateJobTransition keeps whole-record metadata updates compatible while
+// rejecting every state change absent from the canonical job machine.
+func ValidateJobTransition(from, to core.JobState) error {
+	if from == to {
+		return nil
+	}
+	command := ""
+	switch to {
+	case core.JobRunning:
+		command = "job.start"
+	case core.JobDone:
+		command = "job.complete"
+	case core.JobFailed:
+		command = "job.fail"
+	case core.JobPending:
+		command = "job.retry"
+	default:
+		command = "job.invalid"
+	}
+	expected, err := core.TransitionJob(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("job command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func ValidateGitHubPublicationTransition(from, to core.GitHubPublicationState) error {
+	if from == to {
+		return nil
+	}
+	command := publicationCommand(string(to), string(core.GitHubPublicationRetrying), string(core.GitHubPublicationPublished), string(core.GitHubPublicationFailed))
+	expected, err := core.TransitionGitHubPublication(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("GitHub publication command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func ValidateReviewPublicationTransition(from, to core.ReviewPublicationState) error {
+	if from == to {
+		return nil
+	}
+	command := publicationCommand(string(to), string(core.ReviewPublicationRetrying), string(core.ReviewPublicationPublished), string(core.ReviewPublicationFailed))
+	expected, err := core.TransitionReviewPublication(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("review publication command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func publicationCommand(to, retrying, published, failed string) string {
+	switch to {
+	case retrying:
+		return "publication.retry"
+	case published:
+		return "publication.publish"
+	case failed:
+		return "publication.fail"
+	default:
+		return "publication.invalid"
 	}
 }
 
@@ -1994,8 +2074,12 @@ func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitH
 func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.github[lifecycle.TaskID]; !ok {
+	current, ok := m.github[lifecycle.TaskID]
+	if !ok {
 		return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)
+	}
+	if err := ValidateGitHubPublicationTransition(current.State, lifecycle.State); err != nil {
+		return err
 	}
 	lifecycle.UpdatedAt = time.Now().UTC()
 	m.github[lifecycle.TaskID] = lifecycle
@@ -2266,6 +2350,9 @@ func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
 	jobs := m.jobs[j.TaskID]
 	for i := range jobs {
 		if jobs[i].ID == j.ID {
+			if err := ValidateJobTransition(jobs[i].State, j.State); err != nil {
+				return err
+			}
 			jobs[i] = j
 			m.jobs[j.TaskID] = jobs
 			m.appendEventLocked(ctx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.updated", Payload: core.JSONPayload(j)})

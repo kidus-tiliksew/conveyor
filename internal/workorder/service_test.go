@@ -503,9 +503,9 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
-	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
-	if staleEvents != 1 || redispatchEvents != 1 {
-		t.Fatalf("audit events stale=%d redispatch=%d", staleEvents, redispatchEvents)
+	recoveryEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.recovered")
+	if staleEvents != 1 || recoveryEvents != 1 {
+		t.Fatalf("audit events stale=%d recovered=%d", staleEvents, recoveryEvents)
 	}
 }
 

@@ -201,9 +201,9 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	if response := call("token", "recover-2"); response.Code != http.StatusConflict {
 		t.Fatalf("new request after recovery status=%d body=%s", response.Code, response.Body.String())
 	}
-	count, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	count, _ := st.CountEvents(ctx, task.ID, "work_order.redispatched")
 	if count != 1 {
-		t.Fatalf("recovery events=%d", count)
+		t.Fatalf("redispatch events=%d", count)
 	}
 }
 

@@ -32,9 +32,17 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 		}
 		return ordered[i].At.Before(ordered[j].At)
 	})
+	taskStates := map[string]core.TaskState{}
 	workOrderStates := map[string]core.WorkOrderState{}
 	var violations []LifecycleAuditViolation
 	for _, event := range ordered {
+		if event.Kind == "task.created" {
+			var task core.Task
+			if json.Unmarshal(event.Payload, &task) == nil && task.State != "" {
+				taskStates[event.TaskID] = task.State
+			}
+			continue
+		}
 		if event.Kind == "task.state_changed" {
 			var payload struct {
 				From    core.TaskState   `json:"from"`
@@ -45,6 +53,9 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 				violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, "", "", "", "invalid state-change payload: "+err.Error()))
 				continue
 			}
+			if current, ok := taskStates[event.TaskID]; ok && current != payload.From {
+				violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(current), string(payload.Command), string(payload.To), fmt.Sprintf("event records source %q, prior history resolves to %q", payload.From, current)))
+			}
 			if payload.Command != "" {
 				to, err := core.TransitionTask(payload.From, payload.Command)
 				if err != nil || to != payload.To {
@@ -53,14 +64,17 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 			} else if !taskEdgeExists(payload.From, payload.To) {
 				violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(payload.From), "<historical>", string(payload.To), "edge is absent from the canonical table"))
 			}
-			continue
-		}
-		command, relevant := workOrderEventCommand(event.Kind)
-		if !relevant || event.JobID == "" {
+			if payload.To != "" {
+				taskStates[event.TaskID] = payload.To
+			}
 			continue
 		}
 		from := workOrderStates[event.JobID]
-		to := workOrderStateFromEvent(event, from)
+		command, relevant := workOrderEventCommand(event, from)
+		if !relevant || event.JobID == "" {
+			continue
+		}
+		to := workOrderStateFromEvent(event)
 		if command != "" {
 			expected, err := core.TransitionWorkOrder(from, command)
 			if err != nil || (to != "" && expected != to) {
@@ -68,7 +82,7 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 			} else {
 				to = expected
 			}
-		} else if to != from && !workOrderEdgeExists(from, to) {
+		} else if to != "" && to != from && !workOrderEdgeExists(from, to) {
 			violations = append(violations, auditViolation(core.WorkOrderLifecycle, event.JobID, event, string(from), "<historical>", string(to), "edge is absent from the canonical table"))
 		}
 		if to != "" {
@@ -95,8 +109,8 @@ func workOrderEdgeExists(from, to core.WorkOrderState) bool {
 	return false
 }
 
-func workOrderEventCommand(kind string) (core.WorkOrderCommand, bool) {
-	switch kind {
+func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.WorkOrderCommand, bool) {
+	switch event.Kind {
 	case "work_order.created":
 		return core.WorkOrderCmdCreate, true
 	case "work_order.claimed":
@@ -111,7 +125,20 @@ func workOrderEventCommand(kind string) (core.WorkOrderCommand, bool) {
 		return core.WorkOrderCmdTimeout, true
 	case "work_order.stale":
 		return core.WorkOrderCmdMarkStale, true
-	case "work_order.redispatched", "work_order.recovered":
+	case "work_order.redispatched":
+		// Before canonical commands were recorded, the stale-order redispatch
+		// endpoint emitted this kind for W13 recovery. Retry-suppressed queued
+		// recovery is W14 redispatch.
+		if from == core.WorkOrderStale || from == core.WorkOrderTimedOut {
+			return core.WorkOrderCmdRecover, true
+		}
+		return core.WorkOrderCmdRedispatch, true
+	case "work_order.recovered":
+		// Historical queued recovery is the W14 queued self-edge; stale and
+		// timed-out recovery is W13.
+		if from == core.WorkOrderQueued || from == core.WorkOrderClaimed || from == core.WorkOrderSubmitted {
+			return core.WorkOrderCmdRedispatch, true
+		}
 		return core.WorkOrderCmdRecover, true
 	case "work_order.cancelled":
 		return core.WorkOrderCmdCancel, true
@@ -122,13 +149,13 @@ func workOrderEventCommand(kind string) (core.WorkOrderCommand, bool) {
 	}
 }
 
-func workOrderStateFromEvent(event core.Event, fallback core.WorkOrderState) core.WorkOrderState {
+func workOrderStateFromEvent(event core.Event) core.WorkOrderState {
 	var payload struct {
 		State    core.WorkOrderState `json:"state"`
 		NewState core.WorkOrderState `json:"new_state"`
 	}
 	if json.Unmarshal(event.Payload, &payload) != nil {
-		return fallback
+		return ""
 	}
 	if payload.NewState != "" {
 		return payload.NewState
@@ -136,7 +163,7 @@ func workOrderStateFromEvent(event core.Event, fallback core.WorkOrderState) cor
 	if payload.State != "" {
 		return payload.State
 	}
-	return fallback
+	return ""
 }
 
 func auditViolation(space core.LifecycleSpace, entity string, event core.Event, from, command, to, reason string) LifecycleAuditViolation {

@@ -679,7 +679,14 @@ func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job core.Job) error {
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current core.JobState
+		if err := tx.QueryRow(ctx, `SELECT state FROM jobs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), job.ID).Scan(&current); err != nil {
+			return notFound(err, "job %s", job.ID)
+		}
+		if err := store.ValidateJobTransition(current, job.State); err != nil {
+			return err
+		}
 		row, err := q.UpdateJob(ctx, jobUpdateParams(job, workspace(ctx)))
 		if err != nil {
 			return notFound(err, "job %s", job.ID)
@@ -815,6 +822,13 @@ func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.Git
 
 func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current core.GitHubPublicationState
+		if err := tx.QueryRow(ctx, `SELECT state FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2 FOR UPDATE`, workspace(ctx), lifecycle.TaskID).Scan(&current); err != nil {
+			return notFound(err, "GitHub lifecycle for task %s", lifecycle.TaskID)
+		}
+		if err := store.ValidateGitHubPublicationTransition(current, lifecycle.State); err != nil {
+			return err
+		}
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
 			last_error=$6, create_state=$7, create_attempts=$8, reconcile_misses=$9,
@@ -1928,7 +1942,7 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRecover, "reason": "stale queue redispatch"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2010,10 +2024,14 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
 	priorState := order.State
-	if priorState == core.WorkOrderStale || priorState == core.WorkOrderTimedOut {
-		if _, transitionErr := core.TransitionWorkOrder(priorState, core.WorkOrderCmdRecover); transitionErr != nil {
-			return core.WorkOrder{}, transitionErr
-		}
+	lifecycleCommand := core.WorkOrderCmdRecover
+	eventKind := "work_order.recovered"
+	if priorState == core.WorkOrderQueued {
+		lifecycleCommand = core.WorkOrderCmdRedispatch
+		eventKind = "work_order.redispatched"
+	}
+	if _, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand); transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
 	}
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		change := refreeze[0]
@@ -2050,7 +2068,7 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2578,6 +2596,13 @@ func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.Revie
 
 func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current core.ReviewPublicationState
+		if err := tx.QueryRow(ctx, `SELECT state FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2 FOR UPDATE`, workspace(ctx), publication.ReviewWorkOrderID).Scan(&current); err != nil {
+			return notFound(err, "review publication %s", publication.ReviewWorkOrderID)
+		}
+		if err := store.ValidateReviewPublicationTransition(current, publication.State); err != nil {
+			return err
+		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
 			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, last_error=$6,
 			updated_at=now() WHERE workspace_id=$7 AND review_work_order_id=$8`,

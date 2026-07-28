@@ -116,8 +116,8 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 			t.Fatalf("concurrent recovery: %v", recoverErr)
 		}
 	}
-	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.recovered"); countErr != nil || count != 2 {
-		t.Fatalf("recovery events=%d err=%v", count, countErr)
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.redispatched"); countErr != nil || count != 2 {
+		t.Fatalf("redispatch events=%d err=%v", count, countErr)
 	}
 
 	expiredTask := task

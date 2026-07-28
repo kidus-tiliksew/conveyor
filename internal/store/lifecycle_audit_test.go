@@ -41,3 +41,27 @@ func TestAuditLifecycleHistoryAcceptsCommandedCancellation(t *testing.T) {
 		t.Fatalf("violations = %#v", violations)
 	}
 }
+
+func TestAuditLifecycleHistoryDetectsDisconnectedTaskEdges(t *testing.T) {
+	events := []core.Event{
+		{ID: 1, TaskID: "task", Kind: "task.created", Payload: core.JSONPayload(core.Task{ID: "task", State: core.TaskQueued})},
+		{ID: 2, TaskID: "task", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskQueued, "to": core.TaskRunning, "command": core.TaskDispatchStart})},
+		{ID: 3, TaskID: "task", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskClaiming, "to": core.TaskQueued, "command": core.TaskIntakeFinalize})},
+	}
+	violations := AuditLifecycleHistory(events)
+	if len(violations) != 1 || violations[0].EventID != 3 || violations[0].Reason == "" {
+		t.Fatalf("violations = %#v", violations)
+	}
+}
+
+func TestAuditLifecycleHistoryClassifiesHistoricalQueuedRecoveryAsRedispatch(t *testing.T) {
+	events := []core.Event{
+		{ID: 1, TaskID: "task", JobID: "order", Kind: "work_order.created", Payload: core.JSONPayload(core.WorkOrder{ID: "order", State: core.WorkOrderQueued})},
+		{ID: 2, TaskID: "task", JobID: "order", Kind: "work_order.claimed", Payload: core.JSONPayload(core.WorkOrder{ID: "order", State: core.WorkOrderClaimed})},
+		{ID: 3, TaskID: "task", JobID: "order", Kind: "work_order.child_failed", Payload: core.JSONPayload(map[string]any{"outcome": core.WorkOrderOutcomeChildFailure})},
+		{ID: 4, TaskID: "task", JobID: "order", Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"prior_state": core.WorkOrderQueued, "new_state": core.WorkOrderQueued})},
+	}
+	if violations := AuditLifecycleHistory(events); len(violations) != 0 {
+		t.Fatalf("violations = %#v", violations)
+	}
+}

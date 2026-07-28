@@ -600,9 +600,63 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
-	events, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	events, _ := st.CountEvents(ctx, task.ID, "work_order.redispatched")
 	if events != 1 {
-		t.Fatalf("recovery events=%d", events)
+		t.Fatalf("redispatch events=%d", events)
+	}
+}
+
+func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "terminal-state-guards", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "terminal-job", TaskID: task.ID, State: core.JobRunning}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	job.State = core.JobDone
+	if err := st.UpdateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	job.State = core.JobRunning
+	if err := st.UpdateJob(ctx, job); err == nil {
+		t.Fatal("terminal job reentry succeeded")
+	}
+
+	if err := st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, _, err := st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.State = core.GitHubPublicationPublished
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.State = core.GitHubPublicationRetrying
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err == nil {
+		t.Fatal("terminal GitHub publication reentry succeeded")
+	}
+
+	publication := core.ReviewPublication{ReviewWorkOrderID: "review-publication", TaskID: task.ID, JobID: job.ID}
+	if err = st.QueueReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	publication, err = st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication.State = core.ReviewPublicationPublished
+	if err = st.UpdateReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	publication.State = core.ReviewPublicationFailed
+	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
+		t.Fatal("terminal review publication transition succeeded")
 	}
 }
 
