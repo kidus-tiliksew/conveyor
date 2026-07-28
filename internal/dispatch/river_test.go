@@ -58,7 +58,7 @@ func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *
 		if err := publication.BeforeCreate(publishCtx); err != nil {
 			t.Fatal(err)
 		}
-		return githubtrigger.IssuePublicationResult{}, wantErr
+		return githubtrigger.IssuePublicationResult{}, &githubtrigger.Error{Category: githubtrigger.ForgeRequest, Err: wantErr}
 	}
 
 	if err := worker.Work(ctx, githubIssuePublicationJob(taskID, 1)); !errors.Is(err, wantErr) {
@@ -68,7 +68,7 @@ func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *
 	if err != nil || !ok {
 		t.Fatalf("lifecycle ok=%t err=%v", ok, err)
 	}
-	if lifecycle.State != core.GitHubPublicationRetrying || lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 1 || lifecycle.CreateAttempts != 1 || lifecycle.LastError != wantErr.Error() {
+	if lifecycle.State != core.GitHubPublicationRetrying || lifecycle.CreateState != core.GitHubCreateReconciling || lifecycle.Attempts != 1 || lifecycle.CreateAttempts != 1 || lifecycle.ForgeErrorCategory != string(githubtrigger.ForgeRequest) || lifecycle.LastError != wantErr.Error() {
 		t.Fatalf("lifecycle=%+v", lifecycle)
 	}
 	events, err := st.ListEvents(ctx, taskID)
@@ -85,8 +85,8 @@ func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *
 		if err = json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.LastError != wantErr.Error() {
-			t.Fatalf("retry last_error=%q", payload.LastError)
+		if payload.ForgeErrorCategory != string(githubtrigger.ForgeRequest) || payload.LastError != wantErr.Error() {
+			t.Fatalf("retry category=%q last_error=%q", payload.ForgeErrorCategory, payload.LastError)
 		}
 	}
 	if retries != 1 {
@@ -168,14 +168,29 @@ func TestReviewPublicationFailureKeepsInternalReviewAuthoritative(t *testing.T) 
 	ctx, st, worker, publication := reviewPublicationFixture(t, "approve")
 	wantErr := errors.New("GitHub comment publication failed")
 	worker.dispatcher.PublishReview = func(context.Context, githubtrigger.ReviewPublication) (githubtrigger.ReviewPublicationResult, error) {
-		return githubtrigger.ReviewPublicationResult{}, wantErr
+		return githubtrigger.ReviewPublicationResult{}, &githubtrigger.Error{Category: githubtrigger.ForgePermission, Err: wantErr}
 	}
 	if err := worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 1)); !errors.Is(err, wantErr) {
 		t.Fatalf("publication error=%v, want %v", err, wantErr)
 	}
 	stored, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
-	if err != nil || stored.State != core.ReviewPublicationRetrying || stored.CommentID != 0 || stored.LastError != wantErr.Error() {
+	if err != nil || stored.State != core.ReviewPublicationRetrying || stored.CommentID != 0 || stored.ForgeErrorCategory != string(githubtrigger.ForgePermission) || stored.LastError != wantErr.Error() {
 		t.Fatalf("retrying publication=%+v err=%v", stored, err)
+	}
+	events, err := st.ListEvents(ctx, publication.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failurePayload core.ReviewPublication
+	for _, event := range events {
+		if event.Kind == "review.publication_retry" {
+			if err = json.Unmarshal(event.Payload, &failurePayload); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if failurePayload.ForgeErrorCategory != string(githubtrigger.ForgePermission) || failurePayload.LastError != wantErr.Error() {
+		t.Fatalf("review retry payload=%+v", failurePayload)
 	}
 	task, err := st.GetTask(ctx, publication.TaskID)
 	if err != nil || task.State != core.TaskRunning || task.NextStage != core.StageReview {

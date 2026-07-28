@@ -774,7 +774,7 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 
 const githubLifecycleColumns = `task_id, repository, spec_version, source,
 source_issue_number, issue_number, issue_url, outcome, state, create_state,
-create_attempts, reconcile_misses, attempts, last_error,
+create_attempts, reconcile_misses, attempts, forge_error_category, last_error,
 created_at, updated_at`
 
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
@@ -835,11 +835,11 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		}
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
-			last_error=$6, create_state=$7, create_attempts=$8, reconcile_misses=$9,
+			forge_error_category=$6, last_error=$7, create_state=$8, create_attempts=$9, reconcile_misses=$10,
 			updated_at=now()
-			WHERE workspace_id=$10 AND task_id=$11`, lifecycle.IssueNumber,
+			WHERE workspace_id=$11 AND task_id=$12`, lifecycle.IssueNumber,
 			lifecycle.IssueURL, lifecycle.Outcome, lifecycle.State, lifecycle.Attempts,
-			lifecycle.LastError, lifecycle.CreateState, lifecycle.CreateAttempts,
+			lifecycle.ForgeErrorCategory, lifecycle.LastError, lifecycle.CreateState, lifecycle.CreateAttempts,
 			lifecycle.ReconcileMisses, workspace(ctx), lifecycle.TaskID)
 		if err != nil {
 			return err
@@ -897,7 +897,8 @@ func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecy
 	err := row.Scan(&lifecycle.TaskID, &lifecycle.Repository, &lifecycle.SpecVersion,
 		&lifecycle.Source, &lifecycle.SourceIssueNumber, &lifecycle.IssueNumber,
 		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState,
-		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts, &lifecycle.LastError,
+		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts,
+		&lifecycle.ForgeErrorCategory, &lifecycle.LastError,
 		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
 	lifecycle.State = core.GitHubPublicationState(state)
 	lifecycle.CreateState = core.GitHubCreateState(createState)
@@ -997,10 +998,35 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 		}
 		lifecycleRows.Close()
 	}
+	forgeEventsByTask := make(map[string][]core.Event)
+	forgeRows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+		FROM events e JOIN tasks t ON t.id=e.task_id
+		WHERE t.workspace_id=$1 AND e.kind IN (
+			'github_issue.publication_failed','github_issue.publication_published',
+			'review.publication_failed','review.publication_published',
+			'merge.failed','merge.confirmed','merge.reconciled'
+		) ORDER BY e.at,e.id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	for forgeRows.Next() {
+		var event core.Event
+		if scanErr := forgeRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
+			forgeRows.Close()
+			return nil, scanErr
+		}
+		forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
+	}
+	if err = forgeRows.Err(); err != nil {
+		forgeRows.Close()
+		return nil, err
+	}
+	forgeRows.Close()
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
 		result[i] = store.ActivityMarker{
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
+			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.TaskID]),
 			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
 			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.TaskID], eventsByTask[row.TaskID])),
@@ -2294,7 +2320,7 @@ const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
 required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
-comment_id, last_error, created_at, updated_at`
+comment_id, forge_error_category, last_error, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -2639,10 +2665,10 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 			return err
 		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
-			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, last_error=$6,
-			updated_at=now() WHERE workspace_id=$7 AND review_work_order_id=$8`,
+			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, forge_error_category=$6, last_error=$7,
+			updated_at=now() WHERE workspace_id=$8 AND review_work_order_id=$9`,
 			publication.State, publication.Attempts, publication.CheckRunID,
-			publication.CommentID, publication.ReviewedCommitSHA, publication.LastError,
+			publication.CommentID, publication.ReviewedCommitSHA, publication.ForgeErrorCategory, publication.LastError,
 			workspace(ctx), publication.ReviewWorkOrderID)
 		if err != nil {
 			return err
@@ -2738,7 +2764,7 @@ func (s *Store) repairPublishedReviewPublication(ctx context.Context, publicatio
 	repaired := false
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		result, err := tx.Exec(ctx, `UPDATE review_publications
-			SET state='retrying', last_error=$1, updated_at=now()
+			SET state='retrying', forge_error_category='', last_error=$1, updated_at=now()
 			WHERE workspace_id=$2 AND review_work_order_id=$3
 				AND state='published' AND comment_id=0`,
 			"reconciling published review projection without required comment",
@@ -2751,6 +2777,7 @@ func (s *Store) repairPublishedReviewPublication(ctx context.Context, publicatio
 		}
 		repaired = true
 		publication.State = core.ReviewPublicationRetrying
+		publication.ForgeErrorCategory = ""
 		publication.LastError = "reconciling published review projection without required comment"
 		if err = insertEvent(ctx, q, core.Event{
 			TaskID: publication.TaskID, JobID: publication.JobID,
@@ -2803,7 +2830,7 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.ReviewRound, &publication.ReviewSeat, &publication.RequiredModel,
 		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
-		&publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
+		&publication.ForgeErrorCategory, &publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
 	publication.State = core.ReviewPublicationState(state)
 	return publication, err
 }
