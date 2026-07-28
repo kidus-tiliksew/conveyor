@@ -227,8 +227,9 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	}
 	select {
 	case err = <-riverDone:
-		if err != nil {
-			t.Fatal(err)
+		var snooze *river.JobSnoozeError
+		if !errors.As(err, &snooze) || snooze.Duration != time.Second {
+			t.Fatalf("River dispatch result=%v, want one-second stage snooze", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("River dispatch did not finish")
@@ -252,7 +253,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 		t.Fatalf("pipeline.transition_decided events = %d, err = %v", count, countErr)
 	}
 	current, err := st.GetTask(ctx, task.ID)
-	if err != nil || current.State != core.TaskRunning || current.NextStage != core.StageImplement {
+	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageImplement {
 		t.Fatalf("task after overlap = %+v, err = %v", current, err)
 	}
 

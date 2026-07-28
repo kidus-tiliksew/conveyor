@@ -26,6 +26,7 @@ func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

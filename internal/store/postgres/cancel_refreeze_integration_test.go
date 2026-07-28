@@ -27,6 +27,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	now := time.Now().UTC()
 
 	cancelTask := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	cancelTask.Branch = "conveyor/task-" + cancelTask.ID
 	if err = st.CreateTask(ctx, cancelTask); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +56,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	prior := config.ExecutionSetup{Name: "default", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}}
 	next := config.ExecutionSetup{Name: "default", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "new", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"}}}
 	recoverTask := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", State: core.TaskRunning, SetupName: "default", SetupContract: prior, CreatedAt: now}
+	recoverTask.Branch = "conveyor/task-" + recoverTask.ID
 	if err = st.CreateTask(ctx, recoverTask); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, recoverJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), CreatedAt: now}); err != nil {
+	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), LastAttemptOutcome: "child_failure", RetrySuppressed: true, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	change := &store.RecoveryRefreeze{Setup: next, RequiredModel: "new", RequiredHarness: "codex", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "exec"}, Effort: "high", EffortArgv: []string{"--effort", "high"}}, ExecutionTimeoutText: "2h"}
