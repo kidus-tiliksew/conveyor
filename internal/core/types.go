@@ -276,7 +276,8 @@ const (
 )
 
 // InterventionActions is the canonical persisted action set shared by API
-// validation and database constraint rendering.
+// validation and migration-alignment tests. Applied migrations stay immutable;
+// adding an action requires a new forward migration.
 func InterventionActions() []InterventionAction {
 	return []InterventionAction{
 		InterventionApprove,
