@@ -394,6 +394,11 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 	return result
 }
 
+// DefaultWorkOrderClaimLease is the renewable lease used whenever a claim
+// omits an explicit duration. It is distinct from worker liveness (spec §3.2,
+// §21.41).
+const DefaultWorkOrderClaimLease = 5 * time.Minute
+
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent (spec §21.33).
 type WorkOrder struct {

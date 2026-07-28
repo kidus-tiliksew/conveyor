@@ -73,6 +73,41 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	}
 }
 
+func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-default-lease", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Timeout: time.Hour},
+		}}}, nil
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	result, err := server.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil), "claim_work_order", map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session", "client_token": "token", "agent": "codex", "model": "gpt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := result.(core.WorkOrder)
+	if got := claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt); got != core.DefaultWorkOrderClaimLease {
+		t.Fatalf("MCP default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
+	}
+}
+
 func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")

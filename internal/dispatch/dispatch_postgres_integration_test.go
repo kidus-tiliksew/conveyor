@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -26,6 +30,103 @@ type observedTaskLockStore struct {
 	secondAttempt chan struct{}
 	orderCreated  chan struct{}
 	releaseOrder  chan struct{}
+}
+
+type failingTaskLockStore struct {
+	store.Store
+	err error
+}
+
+func (s *failingTaskLockStore) WithTaskLock(context.Context, string, func() error) error {
+	return s.err
+}
+
+func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	suffix := core.NewTaskID()
+	workspace := "dispatch-retry-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Dispatch retry "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := store.WithWorkspace(ctx, workspace)
+	task := core.Task{
+		ID: "dispatch-retry-" + suffix, Workspace: workspace, Repo: "repo", Title: "Retry dispatch",
+		BaseBranch: "main", Branch: "conveyor/dispatch-retry-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(taskCtx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	wantFailure := errors.New("forced dispatch failure")
+	dispatcher := New(&failingTaskLockStore{Store: st, err: wantFailure}, cfg, nil)
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, &dispatchTaskWorker{dispatcher: dispatcher})
+	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
+	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
+	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
+	var result *rivertest.WorkResult
+	for index, want := range wants {
+		attempt := index + 1
+		if index == 0 {
+			result, err = testWorker.Work(ctx, t, tx, args, opts)
+		} else {
+			result, err = testWorker.WorkJob(ctx, t, tx, result.Job)
+		}
+		if !errors.Is(err, wantFailure) {
+			t.Fatalf("attempt %d error=%v, want %v", attempt, err, wantFailure)
+		}
+		if result.Job.Attempt != attempt || result.Job.MaxAttempts != queueargs.DispatchTaskMaxAttempts || result.Job.AttemptedAt == nil {
+			t.Fatalf("attempt %d row=%+v", attempt, result.Job)
+		}
+		if result.Job.State != rivertype.JobStateRetryable {
+			t.Fatalf("attempt %d state=%s, want retryable", attempt, result.Job.State)
+		}
+		if got := result.Job.ScheduledAt.Sub(*result.Job.AttemptedAt); got < want || got > want+2*time.Second {
+			t.Fatalf("attempt %d persisted retry delay=%s, want %s", attempt, got, want)
+		}
+	}
+
+	result, err = testWorker.WorkJob(ctx, t, tx, result.Job)
+	if !errors.Is(err, wantFailure) {
+		t.Fatalf("final attempt error=%v, want %v", err, wantFailure)
+	}
+	if result.Job.Attempt != queueargs.DispatchTaskMaxAttempts || result.Job.MaxAttempts != queueargs.DispatchTaskMaxAttempts ||
+		result.Job.State != rivertype.JobStateDiscarded || len(result.Job.Errors) != queueargs.DispatchTaskMaxAttempts {
+		t.Fatalf("final River row=%+v", result.Job)
+	}
+	parked, err := st.GetTask(taskCtx, task.ID)
+	if err != nil || parked.State != core.TaskParked || parked.RecoveryStage != core.StageImplement {
+		t.Fatalf("parked task=%+v err=%v", parked, err)
+	}
+	events, err := st.ListEvents(taskCtx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		var payload struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if event.Kind == "task.state_changed" && json.Unmarshal(event.Payload, &payload) == nil && payload.Command == core.TaskDispatchFailFinal {
+			return
+		}
+	}
+	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
 func (s *observedTaskLockStore) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {

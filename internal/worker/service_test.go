@@ -87,6 +87,12 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || claimed.WorkerID != worker.ID {
 		t.Fatalf("claimed=%+v err=%v", claimed, err)
 	}
+	if DefaultClaimLease != 5*time.Minute || claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt) != DefaultClaimLease {
+		t.Fatalf("claim lease=%s default=%s, want 5m", claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt), DefaultClaimLease)
+	}
+	if DefaultLivenessLease != 15*time.Second {
+		t.Fatalf("worker liveness lease changed to %s", DefaultLivenessLease)
+	}
 	deadline := claimed.ExecutionDeadline
 	now = now.Add(10 * time.Second)
 	renewed, err := service.Renew(workerCtx, worker, claimed.ID, "session-a")

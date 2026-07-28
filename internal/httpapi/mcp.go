@@ -132,7 +132,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.List(ctx)
 	case "claim_work_order":
-		lease := 15 * time.Minute
+		lease := core.DefaultWorkOrderClaimLease
 		if value, ok := numberArg(args["lease_seconds"]); ok && value > 0 && value <= 3600 {
 			lease = time.Duration(value) * time.Second
 		}

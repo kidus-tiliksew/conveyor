@@ -1502,7 +1502,7 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	}
 	lease := claim.Lease
 	if lease <= 0 {
-		lease = 15 * time.Minute
+		lease = core.DefaultWorkOrderClaimLease
 	}
 	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdClaim)
 	if transitionErr != nil {
@@ -1553,10 +1553,13 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 	if order.State != core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 	}
+	if !order.ExecutionStartedAt.IsZero() {
+		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+	}
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRecover)
+	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch)
 	if transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
@@ -1574,7 +1577,7 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
 		m.jobs[job.TaskID][index] = job
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRecover, "reason": "stale queue redispatch"}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now})
 	return order, nil
 }
 
@@ -1646,12 +1649,19 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	lifecycleCommand := core.WorkOrderCmdRecover
 	eventKind := "work_order.recovered"
 	if priorState == core.WorkOrderQueued {
-		lifecycleCommand = core.WorkOrderCmdRedispatch
+		// Resetting retry metadata on an already-queued order is not a lifecycle
+		// transition. Keep the historical event kind without mislabeling this
+		// operator action as W14 (spec §3.3, §21.41).
+		lifecycleCommand = ""
 		eventKind = "work_order.redispatched"
 	}
-	next, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand)
-	if transitionErr != nil {
-		return core.WorkOrder{}, transitionErr
+	next := priorState
+	if lifecycleCommand != "" {
+		var transitionErr error
+		next, transitionErr = core.TransitionWorkOrder(priorState, lifecycleCommand)
+		if transitionErr != nil {
+			return core.WorkOrder{}, transitionErr
+		}
 	}
 	order.State = next
 	order.LastAttemptOutcome = ""

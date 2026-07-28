@@ -26,6 +26,10 @@ type dispatchTaskWorker struct {
 	dispatcher *Dispatcher
 }
 
+func (w *dispatchTaskWorker) NextRetry(job *river.Job[queueargs.DispatchTaskArgs]) time.Time {
+	return time.Now().UTC().Add(queueargs.DispatchTaskRetryDelay(job.Attempt))
+}
+
 type reviewPublicationWorker struct {
 	river.WorkerDefaults[queueargs.ReviewPublicationArgs]
 	dispatcher *Dispatcher
@@ -354,11 +358,15 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 		}
 	}
 	if job.Attempt >= job.MaxAttempts {
-		command := core.TaskDispatchFailFinal
 		if task.State == core.TaskRunning {
-			command = core.TaskJobFail
+			// Return the failed stage to queued before applying T13. This preserves
+			// the canonical queued -> parked edge and records dispatch.fail_final
+			// for operator visibility (spec §3.3, §21.41).
+			if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskStageBounce, recoveryStage, ""); stateErr != nil {
+				return fmt.Errorf("dispatch failed: %v; requeue before final River failure: %w", err, stateErr)
+			}
 		}
-		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, command, "", recoveryStage); stateErr != nil {
+		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskDispatchFailFinal, "", recoveryStage); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; park after final River attempt: %w", err, stateErr)
 		}
 	} else {

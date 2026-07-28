@@ -25,7 +25,7 @@ import (
 const (
 	DefaultPairingTTL    = 10 * time.Minute
 	DefaultLivenessLease = 15 * time.Second
-	DefaultClaimLease    = 30 * time.Second
+	DefaultClaimLease    = core.DefaultWorkOrderClaimLease
 	DefaultRetryDelay    = time.Second
 	DefaultRetryMaximum  = 4 * time.Second
 	DefaultRetryLimit    = 3

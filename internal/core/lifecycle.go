@@ -102,11 +102,13 @@ var taskLifecycleTable = lifecycleTable{
 
 var workOrderLifecycleTable = lifecycleTable{
 	"":                         {string(WorkOrderCmdCreate): string(WorkOrderQueued)},
-	string(WorkOrderQueued):    {string(WorkOrderCmdClaim): string(WorkOrderClaimed), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdRedispatch): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
-	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdRedispatch): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
-	string(WorkOrderSubmitted): {string(WorkOrderCmdReviewTerminal): string(WorkOrderCompleted), string(WorkOrderCmdReviewRevise): string(WorkOrderClaimed), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdRedispatch): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	string(WorkOrderQueued):    {string(WorkOrderCmdClaim): string(WorkOrderClaimed), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	string(WorkOrderSubmitted): {string(WorkOrderCmdReviewTerminal): string(WorkOrderCompleted), string(WorkOrderCmdReviewRevise): string(WorkOrderClaimed), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderTimedOut):  {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
-	string(WorkOrderStale):     {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	// W14 is intentionally narrower than W13: its handler additionally guards
+	// this stale edge to never-claimed orders (spec §3.3, §21.41).
+	string(WorkOrderStale): {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdRedispatch): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 }
 
 var jobLifecycleTable = lifecycleTable{

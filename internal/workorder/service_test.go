@@ -605,9 +605,48 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
-	recoveryEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.recovered")
-	if staleEvents != 1 || recoveryEvents != 1 {
-		t.Fatalf("audit events stale=%d recovered=%d", staleEvents, recoveryEvents)
+	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
+	if staleEvents != 1 || redispatchEvents != 1 {
+		t.Fatalf("audit events stale=%d redispatched=%d", staleEvents, redispatchEvents)
+	}
+}
+
+func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		state core.WorkOrderState
+	}{
+		{name: "claimed", state: core.WorkOrderClaimed},
+		{name: "submitted", state: core.WorkOrderSubmitted},
+		{name: "timed-out", state: core.WorkOrderTimedOut},
+		{name: "previously-claimed-stale", state: core.WorkOrderStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, st, service, order := newLifecycleService(t, "redispatch-reject-"+tc.name)
+			claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+				SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.state != core.WorkOrderClaimed {
+				claimed.State = tc.state
+				command := core.WorkOrderCmdSubmitForReview
+				if tc.state == core.WorkOrderTimedOut {
+					command = core.WorkOrderCmdTimeout
+				} else if tc.state == core.WorkOrderStale {
+					command = core.WorkOrderCmdMarkStale
+				}
+				if err = st.UpdateWorkOrder(ctx, claimed, command); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = service.Redispatch(ctx, order.ID); err == nil {
+				t.Fatalf("redispatch unexpectedly accepted %s order", tc.name)
+			}
+		})
 	}
 }
 
@@ -737,6 +776,28 @@ func TestExpiredLeaseReturnsWorkOrderToQueue(t *testing.T) {
 	queued, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || queued.State != core.WorkOrderQueued {
 		t.Fatalf("expired order = %+v err=%v", queued, err)
+	}
+}
+
+func TestOmittedClaimLeaseDefaultsToFiveMinutesAndExpiresToQueued(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "default-claim-lease")
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
+		SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt); got != core.DefaultWorkOrderClaimLease {
+		t.Fatalf("default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
+	}
+	claimed.LeaseExpiresAt = time.Now().Add(-time.Second)
+	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || expired.State != core.WorkOrderQueued {
+		t.Fatalf("expired order = %+v err=%v", expired, err)
 	}
 }
 
