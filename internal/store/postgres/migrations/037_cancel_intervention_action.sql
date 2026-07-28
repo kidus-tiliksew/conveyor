@@ -1,8 +1,8 @@
 -- Keep the persisted intervention invariant aligned with the canonical action
--- set in internal/core/types.go. This forward-only repair leaves the
--- checksummed Phase 2 migration and existing valid rows untouched.
+-- set accepted when this immutable migration ships. Future action additions
+-- require another forward migration; never template an applied constraint.
 ALTER TABLE interventions
     DROP CONSTRAINT interventions_action_check,
     ADD CONSTRAINT interventions_action_check CHECK (
-        action IN ({{intervention_actions}})
+        action IN ('approve', 'reject', 'redirect', 'pull_to_local', 'cancel')
     );

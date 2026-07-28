@@ -58,6 +58,13 @@ WHERE r.kind = 'review_publication'
 }
 
 func migrateControlPlane(ctx context.Context, pool *pgxpool.Pool) error {
+	return migrateControlPlaneToVersion(ctx, pool, 0)
+}
+
+// migrateControlPlaneToVersion runs the production migration path through an
+// optional upper bound. Production passes zero for every embedded migration;
+// integration coverage uses a historical bound to exercise real upgrades.
+func migrateControlPlaneToVersion(ctx context.Context, pool *pgxpool.Pool, maxVersion int) error {
 	files, err := fs.Glob(migrationFiles, "migrations/*.sql")
 	if err != nil {
 		return err
@@ -87,6 +94,9 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		version, err := migrationVersion(name)
 		if err != nil {
 			return err
+		}
+		if maxVersion > 0 && version > maxVersion {
+			break
 		}
 		rawSQL, err := migrationFiles.ReadFile(name)
 		if err != nil {
@@ -180,7 +190,6 @@ func renderMigration(sql []byte) ([]byte, error) {
 	text := string(sql)
 	text = strings.ReplaceAll(text, "{{task_states}}", quotedTaskStates())
 	text = strings.ReplaceAll(text, "{{work_order_states}}", quotedWorkOrderStates())
-	text = strings.ReplaceAll(text, "{{intervention_actions}}", quotedInterventionActions())
 	if strings.Contains(text, "{{") || strings.Contains(text, "}}") {
 		return nil, fmt.Errorf("unknown migration template marker")
 	}
@@ -199,14 +208,6 @@ func quotedWorkOrderStates() string {
 	values := make([]string, 0, len(core.WorkOrderStates()))
 	for _, state := range core.WorkOrderStates() {
 		values = append(values, "'"+string(state)+"'")
-	}
-	return strings.Join(values, ", ")
-}
-
-func quotedInterventionActions() string {
-	values := make([]string, 0, len(core.InterventionActions()))
-	for _, action := range core.InterventionActions() {
-		values = append(values, "'"+string(action)+"'")
 	}
 	return strings.Join(values, ", ")
 }

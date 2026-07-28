@@ -139,7 +139,7 @@ func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
 	}
 }
 
-func TestInterventionActionMigrationRendersFromCoreActionSet(t *testing.T) {
+func TestInterventionActionMigrationIsImmutableAndMatchesCoreActionSet(t *testing.T) {
 	raw, err := migrationFiles.ReadFile("migrations/037_cancel_intervention_action.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -149,11 +149,15 @@ func TestInterventionActionMigrationRendersFromCoreActionSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(rendered)
-	if !strings.Contains(text, "action IN ("+quotedInterventionActions()+")") {
-		t.Fatalf("intervention constraint is not core-derived: %s", text)
+	values := make([]string, 0, len(core.InterventionActions()))
+	for _, action := range core.InterventionActions() {
+		values = append(values, "'"+string(action)+"'")
 	}
-	if migrationChecksum(raw) == migrationChecksum(rendered) {
-		t.Fatal("raw template and rendered migration unexpectedly share a checksum")
+	if !strings.Contains(text, "action IN ("+strings.Join(values, ", ")+")") {
+		t.Fatalf("static intervention constraint does not match the core action set: %s", text)
+	}
+	if migrationChecksum(raw) != migrationChecksum(rendered) {
+		t.Fatal("immutable intervention migration changed while rendering")
 	}
 }
 

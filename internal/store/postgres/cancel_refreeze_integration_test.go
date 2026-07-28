@@ -3,72 +3,116 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
-func TestInterventionActionMigrationUpgradesVersion35ConstraintIntegration(t *testing.T) {
+func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	admin, err := pgxpool.New(t.Context(), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer admin.Close()
+	if err = admin.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	schema := "migration_v35_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = pool.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrateControlPlaneToVersion(t.Context(), pool, 35); err != nil {
+		t.Fatalf("migrate isolated schema to version 35: %v", err)
+	}
+	var beforeName, beforeChecksum string
+	var beforeVersion int
+	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&beforeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if beforeVersion != 35 {
+		t.Fatalf("pre-upgrade migration version=%d", beforeVersion)
+	}
+	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&beforeName, &beforeChecksum); err != nil {
+		t.Fatal(err)
+	}
 
-	conn, err := st.pool.Acquire(t.Context())
-	if err != nil {
+	workspace := "migration-v35-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	st := &Store{pool: pool, queries: db.New(pool)}
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Release()
-	tx, err := conn.Begin(t.Context())
-	if err != nil {
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "repo", Branch: "conveyor/task-" + taskID, State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(t.Context()) //nolint:errcheck
-	if _, err = tx.Exec(t.Context(), `
-CREATE TEMP TABLE interventions (
-    marker text NOT NULL,
-    action text NOT NULL CONSTRAINT interventions_action_check
-        CHECK (action IN ('approve', 'reject', 'redirect', 'pull_to_local'))
-) ON COMMIT DROP;
-INSERT INTO interventions (marker, action) VALUES ('existing-version-35-row', 'approve')`); err != nil {
+	if _, err = pool.Exec(ctx, `
+INSERT INTO interventions (task_id, actor_id, actor_role, action, reason_code)
+VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
+		task.ID); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := migrationFiles.ReadFile("migrations/037_cancel_intervention_action.sql")
-	if err != nil {
+
+	if err = migrateControlPlane(t.Context(), pool); err != nil {
+		t.Fatalf("upgrade isolated version-35 schema: %v", err)
+	}
+	var afterName, afterChecksum string
+	var afterVersion int
+	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := renderMigration(raw)
-	if err != nil {
+	if afterVersion != 37 {
+		t.Fatalf("post-upgrade migration version=%d", afterVersion)
+	}
+	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Exec(t.Context(), string(rendered)); err != nil {
-		t.Fatalf("apply intervention action migration: %v", err)
-	}
-	for _, action := range core.InterventionActions() {
-		if _, err = tx.Exec(t.Context(), "INSERT INTO interventions (marker, action) VALUES ($1, $2)", "canonical-"+string(action), action); err != nil {
-			t.Fatalf("insert canonical action %q after upgrade: %v", action, err)
-		}
-	}
-	if _, err = tx.Exec(t.Context(), "SAVEPOINT reject_unknown_action"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = tx.Exec(t.Context(), "INSERT INTO interventions (marker, action) VALUES ('unknown', 'not_canonical')"); err == nil {
-		t.Fatal("upgraded constraint accepted a non-canonical action")
-	}
-	if _, err = tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT reject_unknown_action"); err != nil {
-		t.Fatal(err)
+	if afterName != beforeName || afterChecksum != beforeChecksum {
+		t.Fatalf("historical migration changed: before=(%q,%q) after=(%q,%q)", beforeName, beforeChecksum, afterName, afterChecksum)
 	}
 	var existing int
-	if err = tx.QueryRow(t.Context(), "SELECT count(*) FROM interventions WHERE marker='existing-version-35-row'").Scan(&existing); err != nil {
+	if err = pool.QueryRow(ctx, "SELECT count(*) FROM interventions WHERE task_id=$1 AND actor_id='existing-version-35-row' AND action='approve'", task.ID).Scan(&existing); err != nil {
 		t.Fatal(err)
 	}
 	if existing != 1 {
 		t.Fatalf("existing version-35 row count=%d", existing)
+	}
+	for _, action := range core.InterventionActions() {
+		if _, err = pool.Exec(ctx, `
+INSERT INTO interventions (task_id, actor_id, actor_role, action, reason_code)
+VALUES ($1, $2, 'human', $3, 'post-upgrade')`,
+			task.ID, "canonical-"+string(action), action); err != nil {
+			t.Fatalf("insert canonical action %q after upgrade: %v", action, err)
+		}
+	}
+	if _, err = pool.Exec(ctx, `
+INSERT INTO interventions (task_id, actor_id, actor_role, action, reason_code)
+VALUES ($1, 'unknown', 'human', 'not_canonical', 'post-upgrade')`,
+		task.ID); err == nil {
+		t.Fatal("upgraded constraint accepted a non-canonical action")
 	}
 }
 
