@@ -24,7 +24,7 @@ func TestProductionWorkOrderWritersEnterTaskOps(t *testing.T) {
 	legacy := map[string]bool{
 		"CreateWorkOrder": true, "CreateStageWorkOrder": true, "CreateReviewRound": true,
 		"RetryReviewRound": true, "RecoverInterruptedReviewRound": true,
-		"RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
+		"ClaimWorkOrder": true, "RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
 		"RenewWorkerClaim": true, "ReleaseWorkerClaim": true,
 	}
 	guarded := map[string]bool{
