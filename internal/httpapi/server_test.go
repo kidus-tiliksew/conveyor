@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -1359,7 +1360,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 		if intervention.Action != core.InterventionRedirect {
 			return nil
 		}
-		if err := st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, task.RecoveryStage, ""); err != nil {
+		if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionRedirect, NextStage: task.RecoveryStage, ProjectStages: true}); err != nil {
 			return err
 		}
 		requeued <- task.ID
@@ -1442,7 +1443,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("parked interventions=%+v err=%v", parkedInterventions, err)
 	}
 
-	if err := st.TransitionTaskState(context.Background(), "running", core.TaskJobFail); err != nil {
+	if _, err := taskops.New(st).Perform(context.Background(), "running", taskops.Command{Kind: core.TaskJobFail}); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve"}`)))
@@ -1453,7 +1454,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("missing reason status = %d", response.Code)
 	}
 
-	if err := st.TransitionTaskState(context.Background(), "running", core.TaskInterventionApproveReview); err != nil {
+	if _, err := taskops.New(st).Perform(context.Background(), "running", taskops.Command{Kind: core.TaskInterventionApproveReview}); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
@@ -1482,7 +1483,8 @@ func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 	s.OnMerge = func(ctx context.Context, task core.Task) error {
 		mergeCalls++
 		if task.State == core.TaskApproved {
-			return st.SetTaskTransition(ctx, task.ID, core.TaskMergeConfirm, "", "")
+			_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskMergeConfirm, ProjectStages: true})
+			return err
 		}
 		return nil
 	}

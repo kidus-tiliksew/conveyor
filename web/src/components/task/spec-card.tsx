@@ -20,7 +20,7 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
 
-function MermaidBlock({ source }: { source: string }) {
+export function MermaidBlock({ source }: { source: string }) {
   const id = `mermaid-${useId().replace(/:/g, '')}`
   const [svg, setSvg] = useState<string>()
   const [failed, setFailed] = useState(false)

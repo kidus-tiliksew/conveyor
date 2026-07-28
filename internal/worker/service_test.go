@@ -483,7 +483,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 		t.Fatal(err)
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}

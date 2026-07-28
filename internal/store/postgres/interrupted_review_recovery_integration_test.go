@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
@@ -48,6 +49,9 @@ func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
 	}
 	if expired, getErr := st.GetWorkOrder(ctx, orders[1].ID); getErr != nil || expired.State != core.WorkOrderQueued || !expired.RetrySuppressed {
 		t.Fatalf("expired=%+v err=%v", expired, getErr)
+	}
+	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
+		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
 	requests := []store.InterruptedReviewRecoveryRequest{{TaskID: task.ID, RequestID: "recover-a", Round: 1}, {TaskID: task.ID, RequestID: "recover-b", Round: 1}}
 	start := make(chan struct{})

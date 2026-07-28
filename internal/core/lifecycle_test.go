@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -137,5 +138,19 @@ func TestInvalidTransitionCarriesAllowedAlternatives(t *testing.T) {
 	_, err = TransitionWorkOrder(WorkOrderSubmitted, WorkOrderCmdClaim)
 	if !errors.As(err, &invalid) || len(invalid.Allowed) == 0 {
 		t.Fatalf("allowed alternatives missing: %#v", invalid)
+	}
+}
+
+func TestLifecycleStateDiagramIsGeneratedFromCanonicalTables(t *testing.T) {
+	diagram := LifecycleStateDiagram()
+	for _, edge := range []string{
+		"task_claiming --> task_queued: intake.finalize",
+		"task_approved --> task_merged: merge.confirm",
+		"order_claimed --> order_queued: claim.expire",
+		"order_queued --> order_timed_out: order.timeout",
+	} {
+		if !strings.Contains(diagram, edge) {
+			t.Fatalf("diagram missing %q:\n%s", edge, diagram)
+		}
 	}
 }

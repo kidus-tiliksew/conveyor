@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
@@ -19,7 +20,7 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateIntervention(ctx, core.Intervention{

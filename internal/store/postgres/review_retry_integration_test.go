@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
@@ -53,6 +54,9 @@ func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, orders1[1].ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
+		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
 	jobs2 := []core.Job{
 		{ID: task.ID + "-review-2-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending},

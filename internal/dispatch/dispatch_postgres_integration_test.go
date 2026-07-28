@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,19 +25,17 @@ import (
 
 type observedTaskLockStore struct {
 	store.Store
-	attempts      atomic.Int32
-	secondAttempt chan struct{}
-	orderCreated  chan struct{}
-	releaseOrder  chan struct{}
+	orderCreated chan struct{}
+	releaseOrder chan struct{}
 }
 
-type failingTaskLockStore struct {
+type failingStageOrderStore struct {
 	store.Store
 	err error
 }
 
-func (s *failingTaskLockStore) WithTaskLock(context.Context, string, func() error) error {
-	return s.err
+func (s *failingStageOrderStore) CreateStageWorkOrder(context.Context, core.Job, core.WorkOrder) (bool, error) {
+	return false, s.err
 }
 
 func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
@@ -75,7 +72,7 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	wantFailure := errors.New("forced dispatch failure")
-	dispatcher := New(&failingTaskLockStore{Store: st, err: wantFailure}, cfg, nil)
+	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
 	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, &dispatchTaskWorker{dispatcher: dispatcher})
 	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
 	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
@@ -129,22 +126,16 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
-func (s *observedTaskLockStore) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
-	if s.attempts.Add(1) == 2 {
-		close(s.secondAttempt)
-	}
-	return s.Store.WithTaskLock(ctx, taskID, fn)
-}
-
-func (s *observedTaskLockStore) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
-	if err := s.Store.CreateWorkOrder(ctx, order); err != nil {
-		return err
+func (s *observedTaskLockStore) CreateStageWorkOrder(ctx context.Context, job core.Job, order core.WorkOrder) (bool, error) {
+	created, err := s.Store.CreateStageWorkOrder(ctx, job, order)
+	if err != nil {
+		return false, err
 	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		close(s.orderCreated)
 		<-s.releaseOrder
 	}
-	return nil
+	return created, nil
 }
 
 func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
@@ -177,8 +168,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	}
 
 	observed := &observedTaskLockStore{
-		Store: st, secondAttempt: make(chan struct{}),
-		orderCreated: make(chan struct{}), releaseOrder: make(chan struct{}),
+		Store: st, orderCreated: make(chan struct{}), releaseOrder: make(chan struct{}),
 	}
 	releasedOrder := false
 	defer func() {
@@ -210,11 +200,6 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 			Args:   queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID},
 		})
 	}()
-	select {
-	case <-observed.secondAttempt:
-	case <-time.After(5 * time.Second):
-		t.Fatal("River dispatch did not reach the shared task lock")
-	}
 	close(observed.releaseOrder)
 	releasedOrder = true
 	select {

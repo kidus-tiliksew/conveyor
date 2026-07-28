@@ -18,12 +18,25 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type dispatchTaskWorker struct {
 	river.WorkerDefaults[queueargs.DispatchTaskArgs]
 	dispatcher *Dispatcher
+}
+
+type orderClockWorker struct {
+	river.WorkerDefaults[queueargs.OrderClockArgs]
+	dispatcher *Dispatcher
+}
+
+func (w *orderClockWorker) Work(ctx context.Context, job *river.Job[queueargs.OrderClockArgs]) error {
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%d", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
+	_, err := taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
+	return err
 }
 
 func (w *dispatchTaskWorker) NextRetry(job *river.Job[queueargs.DispatchTaskArgs]) time.Time {
@@ -366,11 +379,11 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 			// Return the failed stage to queued before applying T13. This preserves
 			// the canonical queued -> parked edge and records dispatch.fail_final
 			// for operator visibility (spec §3.3, §21.41).
-			if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskStageBounce, recoveryStage, ""); stateErr != nil {
+			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 				return fmt.Errorf("dispatch failed: %v; requeue before final River failure: %w", err, stateErr)
 			}
 		}
-		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskDispatchFailFinal, "", recoveryStage); stateErr != nil {
+		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; park after final River attempt: %w", err, stateErr)
 		}
 	} else {
@@ -381,7 +394,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 			// the lifecycle table is amended (spec §21.37).
 			command = core.TaskStageBounce
 		}
-		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, command, recoveryStage, ""); stateErr != nil {
+		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
 		}
 	}
@@ -396,20 +409,34 @@ func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []str
 	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &githubIssuePublicationWorker{dispatcher: dispatcher})
+	river.AddWorker(workers, &orderClockWorker{dispatcher: dispatcher})
 	queues := map[string]river.QueueConfig{queueargs.ControlQueue: {MaxWorkers: 1}}
+	periodicJobs := make([]*river.PeriodicJob, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		queues[queueargs.DispatchQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
 		queues[queueargs.ReviewPublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
 		queues[queueargs.GitHubIssuePublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
+		periodicJobs = append(periodicJobs, orderClockPeriodicJob(workspace))
 	}
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
 		// limits. River's one-minute default would cancel long harness runs and
 		// handoff artifact collection before those limits (spec §14).
-		JobTimeout: -1,
-		Queues:     queues,
-		Workers:    workers,
+		JobTimeout:   -1,
+		Queues:       queues,
+		Workers:      workers,
+		PeriodicJobs: periodicJobs,
 	})
+}
+
+func orderClockPeriodicJob(workspace string) *river.PeriodicJob {
+	return river.NewPeriodicJob(
+		river.PeriodicInterval(5*time.Second),
+		func() (river.JobArgs, *river.InsertOpts) {
+			return queueargs.OrderClockArgs{WorkspaceID: workspace}, &river.InsertOpts{Queue: queueargs.ControlQueue}
+		},
+		&river.PeriodicJobOpts{ID: queueargs.OrderClockPeriodicID(workspace), RunOnStart: true},
+	)
 }
 
 func AddWorkspaceQueues(client *river.Client[pgx.Tx], workspace string) error {
@@ -423,8 +450,9 @@ func AddWorkspaceQueues(client *river.Client[pgx.Tx], workspace string) error {
 		return err
 	}
 	err = client.Queues().Add(queueargs.GitHubIssuePublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
-	if errors.Is(err, &river.QueueAlreadyAddedError{}) {
-		return nil
+	if err != nil && !errors.Is(err, &river.QueueAlreadyAddedError{}) {
+		return err
 	}
+	_, err = client.PeriodicJobs().AddSafely(orderClockPeriodicJob(workspace))
 	return err
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"gopkg.in/yaml.v3"
 )
 
@@ -189,6 +190,9 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	clockClaim.ExecutionDeadline = deadline
 	if err = st.UpdateWorkOrder(ctx, clockClaim); err != nil {
 		t.Fatal(err)
+	}
+	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
+		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)

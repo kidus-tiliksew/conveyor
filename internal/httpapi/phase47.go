@@ -142,6 +142,10 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, nodes)
 }
 
+func (s *Server) getLifecycleDiagram(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"mermaid": core.LifecycleStateDiagram()})
+}
+
 func (s *Server) createFeature(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ParentID    string `json:"parent_id"`

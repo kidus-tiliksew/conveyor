@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -103,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/work-orders", s.listWorkOrders)
 			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
 			r.Get("/requirements", s.listRequirements)
+			r.Get("/lifecycle-diagram", s.getLifecycleDiagram)
 			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
 			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
@@ -181,9 +183,9 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			// A triage park records the stage in RecoveryStage and clears
 			// NextStage. Recovery restores that stage as the next dispatch
 			// target (spec §3.3 T21).
-			transitionErr = s.Store.SetTaskTransition(r.Context(), id, command, nextStage, "")
+			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command, NextStage: nextStage, ProjectStages: true})
 		} else {
-			transitionErr = s.Store.TransitionTaskState(r.Context(), id, command)
+			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command})
 		}
 		if transitionErr != nil {
 			status := http.StatusInternalServerError
@@ -338,7 +340,7 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	if s.OnIntervention != nil {
 		err = s.OnIntervention(r.Context(), task, latest, intervention)
 	} else {
-		_, err = s.Store.CancelTask(r.Context(), intervention)
+		_, err = taskops.New(s.Store).Cancel(r.Context(), intervention)
 	}
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -556,7 +558,7 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if err = s.Store.TransitionTaskState(r.Context(), result.Task.ID, core.TaskIntakeFinalize); err != nil {
+	if _, err = taskops.New(s.Store).Perform(r.Context(), result.Task.ID, taskops.Command{Kind: core.TaskIntakeFinalize}); err != nil {
 		http.Error(w, fmt.Sprintf("task %s remains unqueued because finalization failed: %v", result.Task.ID, err), http.StatusInternalServerError)
 		return
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -728,7 +729,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 			return nil, err
 		}
 	}
-	if err = s.Store.SetTaskTransition(ctx, task.ID, core.TaskStageAdvance, core.StageReview, ""); err != nil {
+	if _, err = taskops.New(s.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
 		return nil, err
 	}
 	reviewExecution := cfg.Routing.Stages["review"].Execution

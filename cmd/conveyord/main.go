@@ -105,7 +105,6 @@ func main() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
-		d.UseDurableQueue()
 		workspaceRecords, listErr := pgStore.ListWorkspaces(ctx)
 		if listErr != nil {
 			log.Fatalf("list workspaces: %v", listErr)

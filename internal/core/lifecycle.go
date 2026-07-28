@@ -190,3 +190,40 @@ func TaskStates() []TaskState {
 func WorkOrderStates() []WorkOrderState {
 	return []WorkOrderState{WorkOrderQueued, WorkOrderClaimed, WorkOrderSubmitted, WorkOrderCompleted, WorkOrderCancelled, WorkOrderStale, WorkOrderTimedOut}
 }
+
+// LifecycleStateDiagram generates the requirements UI diagram directly from
+// the canonical transition tables, so documentation cannot drift from the
+// machine that admits lifecycle commands (spec §§3.3-3.4, §21.38).
+func LifecycleStateDiagram() string {
+	var out strings.Builder
+	out.WriteString("stateDiagram-v2\n")
+	writeLifecycleDiagram(&out, "Task", "task", taskLifecycleTable)
+	writeLifecycleDiagram(&out, "Work order", "order", workOrderLifecycleTable)
+	return out.String()
+}
+
+func writeLifecycleDiagram(out *strings.Builder, label, prefix string, table lifecycleTable) {
+	fmt.Fprintf(out, "  state %q as %s_lifecycle {\n", label, prefix)
+	states := make([]string, 0, len(table))
+	for from := range table {
+		states = append(states, from)
+	}
+	sort.Strings(states)
+	for _, from := range states {
+		commands := make([]string, 0, len(table[from]))
+		for command := range table[from] {
+			commands = append(commands, command)
+		}
+		sort.Strings(commands)
+		for _, command := range commands {
+			to := table[from][command]
+			source := prefix + "_" + strings.ReplaceAll(from, "-", "_")
+			if from == "" {
+				source = "[*]"
+			}
+			target := prefix + "_" + strings.ReplaceAll(to, "-", "_")
+			fmt.Fprintf(out, "    %s --> %s: %s\n", source, target, command)
+		}
+	}
+	out.WriteString("  }\n")
+}

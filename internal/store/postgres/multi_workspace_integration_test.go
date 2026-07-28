@@ -148,7 +148,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 	ctx := store.WithWorkspace(root, "lock-workspace")
 	entered, release, done := make(chan int, 2), make(chan struct{}), make(chan error, 2)
 	go func() {
-		done <- st.WithTaskLock(ctx, "same-task", func() error {
+		done <- st.WithTaskSideEffectLock(ctx, "same-task", func() error {
 			entered <- 1
 			<-release
 			return nil
@@ -159,7 +159,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 	}
 	otherWorkspace := make(chan error, 1)
 	go func() {
-		otherWorkspace <- st.WithTaskLock(store.WithWorkspace(root, "other-workspace"), "same-task", func() error {
+		otherWorkspace <- st.WithTaskSideEffectLock(store.WithWorkspace(root, "other-workspace"), "same-task", func() error {
 			return nil
 		})
 	}()
@@ -172,7 +172,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 		t.Fatal("another workspace was blocked by the task lock")
 	}
 	go func() {
-		done <- st.WithTaskLock(ctx, "same-task", func() error {
+		done <- st.WithTaskSideEffectLock(ctx, "same-task", func() error {
 			entered <- 2
 			return nil
 		})

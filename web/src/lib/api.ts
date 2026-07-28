@@ -61,6 +61,7 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
 }
 
 export function fetchRequirements() { return getJSON<RequirementNode[]>(workspaceURL('/v1/requirements')) }
+export function fetchLifecycleDiagram() { return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram')) }
 export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
 export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
 export async function uploadArtifact(token: string, file: File, taskId?: string, featureId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (featureId) body.set('feature_id', featureId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }

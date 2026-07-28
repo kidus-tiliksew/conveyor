@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -315,6 +316,14 @@ func (st *flakyReviewAcceptanceStore) AcceptReviewDecision(ctx context.Context, 
 		return errors.New("review acceptance unavailable")
 	}
 	return st.Store.AcceptReviewDecision(ctx, decision)
+}
+
+func (st *flakyReviewAcceptanceStore) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	if st.failures > 0 {
+		st.failures--
+		return errors.New("review acceptance unavailable")
+	}
+	return st.Store.AcceptReviewDecisionCommand(ctx, lease, decision)
 }
 
 func (agent *staticAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
@@ -893,7 +902,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		}},
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
 		t.Fatal(err)
@@ -1069,7 +1078,7 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	opened := 0
 	var body string
 	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, OpenPR: func(_ context.Context, _, _, _, _ string, value string) (string, error) {
@@ -1120,7 +1129,7 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
 			return "https://github.com/acme/app/pull/7", nil
@@ -1328,7 +1337,7 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	flaky := &flakyReviewAcceptanceStore{Store: base, failures: 1}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
 	dispatcher := dispatch.New(flaky, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	service := &Service{Store: flaky, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}
 	if _, err := service.SubmitVerdict(ctx, job.ID, "review-session", review); err == nil || !strings.Contains(err.Error(), "review acceptance unavailable") {
@@ -1381,7 +1390,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 		"review":    {Execution: config.ExecutionMCP, Timeout: time.Hour},
 	}}}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	openCalls := 0
 	service := &Service{
 		Store: st, Dispatcher: dispatcher,
@@ -1417,7 +1426,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if firstReview.ID == "" {
 		t.Fatalf("review order missing: %+v", orders)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = service.SubmitVerdict(ctx, firstReview.ID, "independent-review-1", pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "add coverage", Feedback: "add the loop test"}); err != nil {
@@ -1440,7 +1449,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondImplement.ID == "" {
 		t.Fatalf("follow-up implement order missing: %+v", orders)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession)
@@ -1460,7 +1469,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondReview.ID == "" {
 		t.Fatalf("second review order missing: %+v", orders)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self-review error = %v", err)
 	}
 }
