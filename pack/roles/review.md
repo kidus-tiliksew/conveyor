@@ -9,6 +9,9 @@ Method:
 
 - Walk the spec's acceptance criteria (AC-n) one by one: verify each is
   satisfied by the diff, or note precisely which are not and how.
+- Run repository validation only through Make targets, including `make test`
+  and `make test-integration` when relevant. Never run raw
+  `docker compose down` commands in this repository.
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
 - Weigh correctness over style: broken behavior, hallucinated APIs, missing

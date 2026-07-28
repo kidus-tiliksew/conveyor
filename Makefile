@@ -7,8 +7,9 @@ LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
 TEST_POSTGRES_PORT ?= 5433
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
+DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui test test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui test compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -19,10 +20,13 @@ build: ui
 ui:
 	cd web && npm ci && npm run build
 
-test:
+test: compose-check
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
 
-test-integration: test-db-up
+compose-check:
+	python3 scripts/validate_compose_isolation.py
+
+test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
@@ -48,10 +52,10 @@ clean:
 	rm -rf $(BIN)
 
 db-up:
-	docker compose --env-file $(ENV_FILE) up -d --wait postgres
+	$(DEV_COMPOSE) up -d --wait postgres
 
 db-down:
-	docker compose --env-file $(ENV_FILE) down
+	$(DEV_COMPOSE) down
 
 run:
 	CONVEYOR_ENV_FILE=$(abspath $(ENV_FILE)) $(BIN)/conveyord -config $(CONVEYOR_CONFIG) -addr $(LISTEN_ADDR) -poll-github $(POLL_GITHUB)
