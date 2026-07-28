@@ -213,6 +213,9 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	storedPublication.State = core.ReviewPublicationPublished
 	storedPublication.Attempts = 1
 	storedPublication.CheckRunID = 41
+	if err = st.UpdateReviewPublication(ctx, storedPublication); err == nil {
+		t.Fatal("published PostgreSQL review projection accepted a missing required comment")
+	}
 	storedPublication.CommentID = 51
 	if err = st.UpdateReviewPublication(ctx, storedPublication); err != nil {
 		t.Fatal(err)

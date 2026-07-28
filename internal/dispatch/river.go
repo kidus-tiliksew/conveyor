@@ -135,7 +135,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%d", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
 	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, job.Args.ReviewWorkOrderID)
-	if err != nil || publication.State == core.ReviewPublicationPublished {
+	if err != nil || (publication.State == core.ReviewPublicationPublished && publication.CommentID > 0) {
 		return err
 	}
 	publication.Attempts++
@@ -157,12 +157,8 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		return fmt.Errorf("GitHub repository is not configured for %s", task.Repo)
 	}
 	var bounceHistory []string
-	skipComment := false
 	events, _ := w.dispatcher.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
-		if event.Kind == "review.completed" && event.At.After(publication.CreatedAt) {
-			skipComment = true
-		}
 		if event.Kind != "pipeline.bounced" {
 			continue
 		}
@@ -189,7 +185,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 	}
 	history := reviewHistory(events)
 	statusState := reviewRoundStatus(events, publication.ReviewRound, publication.Verdict)
-	result, publishErr := github.PublishReview(ctx, github.ReviewPublication{
+	result, publishErr := w.dispatcher.PublishReview(ctx, github.ReviewPublication{
 		Repo: repo.GitHub, Branch: task.Branch, TaskID: task.ID, TaskLink: taskLink,
 		ReviewWorkOrderID: publication.ReviewWorkOrderID, Verdict: publication.Verdict,
 		ReasonCode: publication.ReasonCode, Summary: publication.Summary, Feedback: publication.Feedback,
@@ -199,9 +195,11 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		RequiredModel: publication.RequiredModel, RequiredEffort: publication.RequiredEffort, ModelEnforcement: publication.ModelEnforcement,
 		History:       history,
 		BounceHistory: bounceHistory,
-		SkipComment:   skipComment,
 		StatusState:   statusState,
 	})
+	if publishErr == nil && result.CommentID <= 0 {
+		publishErr = errors.New("publish review: required aggregate comment returned no comment ID")
+	}
 	if publishErr != nil {
 		publication.LastError = publishErr.Error()
 		if job.Attempt >= job.MaxAttempts {

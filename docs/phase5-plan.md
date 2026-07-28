@@ -261,14 +261,26 @@ an approved refresh visibly returns to merge readiness.
 *Proves: the task's trail is legible on GitHub alone (§21.12 change 5).
 Independent of 5.1/5.2 — parallelizable with 5.2.*
 
-1. **Issue on spec approval:** the factory creates a GitHub issue carrying
+**Status: complete (§21.43).**
+
+1. **Issue on spec approval (shipped):** the factory creates a GitHub issue carrying
    the approved spec (intent + acceptance criteria) and links it to the
    task; a task that originated from an issue (§9) updates that issue
    instead of duplicating it; the eventual PR carries `Closes #N`.
-2. **Verdict mirroring:** review verdicts and their resolutions post to the
-   PR, extending the existing aggregate commit-status + factory-comment machinery into a
-   complete review trail; redirect rounds show as review threads with their
-   resolutions.
+2. **Verdict mirroring (shipped):** every eligible review publication upserts
+   the portable aggregate commit status and one deterministic task-marked PR
+   comment. The comment carries the complete single-seat or panel history;
+   requested changes remain unresolved until a later approving round updates
+   the same comment with resolved history. PostgreSQL-backed coverage verifies
+   the production transaction/event ordering, nonzero persisted comment IDs,
+   retry and reconciliation idempotency, and external-failure isolation.
+
+The durable publication identity is `review_work_order_id`; timestamps are not
+an idempotency or suppression signal. A publication cannot be recorded as
+`published` when its required comment is missing. Parked task `260728-c0f858`
+remains responsible for implementing the §21.41 forge error taxonomy; Phase
+5.3 preserves the publication failure boundary for that later categorization
+without duplicating its scope.
 
 PR creation is deliberately *not* part of this phase: the factory opens the
 PR at `submit_for_review`, the behavior already specified and implemented

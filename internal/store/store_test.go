@@ -651,12 +651,28 @@ func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T)
 		t.Fatal(err)
 	}
 	publication.State = core.ReviewPublicationPublished
+	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
+		t.Fatal("review publication without required comment ID succeeded")
+	}
+	publication.CommentID = 51
 	if err = st.UpdateReviewPublication(ctx, publication); err != nil {
 		t.Fatal(err)
 	}
 	publication.State = core.ReviewPublicationFailed
 	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
 		t.Fatal("terminal review publication transition succeeded")
+	}
+	legacy := core.ReviewPublication{
+		ReviewWorkOrderID: "legacy-publication", State: core.ReviewPublicationPublished,
+	}
+	retry := legacy
+	retry.State = core.ReviewPublicationRetrying
+	if err = ValidateReviewPublicationUpdate(legacy, retry); err != nil {
+		t.Fatalf("legacy missing-comment repair rejected: %v", err)
+	}
+	legacy.CommentID = 51
+	if err = ValidateReviewPublicationUpdate(legacy, retry); err == nil {
+		t.Fatal("valid terminal publication was reopened")
 	}
 }
 

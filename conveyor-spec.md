@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.2**
+**Specification — v2.3**
 **Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1028,9 +1028,10 @@ SHA (`pending` until the round aggregate exists, then `success` /
 `failure`) plus a deterministic factory PR comment. Internal state is
 authoritative: a publication failure never rolls back a verdict, and
 retries rebuild both projections from the event stream. Issue creation
-on spec approval and full verdict/resolution mirroring onto the PR are
-Phase 5.3 scope (partially delivered via the publication machinery
-above).
+or source-issue update on spec approval and the complete aggregate
+verdict/resolution trail are delivered Phase 5.3 behavior (§21.43).
+A required review publication is not `published` until the deterministic
+comment upsert returns a nonzero comment ID.
 
 Forge-call failures record a stable error category on the failure
 event — `forge_request` (transport), `forge_status` (non-success
@@ -1388,7 +1389,7 @@ demand-triggered.
 | **4.7** | MCP execution pivot (§21.4–§21.5): sandbox plane retired; work-order lifecycle; requirements tree; artifacts; idempotent MCP intake | Complete — **Beta achieved July 15, 2026** |
 | **5.1** | Worker: enrollment, harness registry, health-gated dispatch, stage-aware capacity, gate toggles (modes since removed by §21.31) | Complete |
 | **5.2** | Adversarial review panel: per-seat pinned models/efforts, unanimous round-local aggregation, independence labels | Complete (operational; extensions continue by amendment) |
-| **5.3** | Factory-coordinated GitHub: portable verdict publication (shipped, §21.22); issue on spec approval + full PR mirroring (outstanding) | Partially delivered |
+| **5.3** | Factory-coordinated GitHub: issue create/update on spec approval, portable aggregate review status, deterministic PR verdict/resolution comment (§21.22, §21.43) | Complete |
 | **5.4** | Evidence-gated `submit_for_review` (§12) | Planned |
 | **5.5** | Worker service packaging: `conveyor worker install`/`uninstall`/`status` (§6.5) | Planned |
 | **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints | Planned |
@@ -4055,8 +4056,9 @@ second protocol (§6.4).
    failure events, replacing stringly-typed evidence in the
    needs-operator tray. Adopted from Symphony's adapter error-category
    contract, scoped to our one forge — this is a taxonomy, not an
-   adapter interface. Phase 5.3's outstanding issue-creation and
-   verdict-mirroring work adopts it from the start.
+   adapter interface. The original assumption that both Phase 5.3
+   projections were outstanding is corrected by §21.43; categorized
+   publication failures remain separately sequenced implementation work.
 
 6. **Observational rate-limit telemetry (§14, §17.4).** `report_usage`
    MAY carry the provider's latest rate-limit status, persisted
@@ -4153,10 +4155,61 @@ snapshots, credentials, redaction, the separate §21.41 ongoing-stall policy,
 or operator recovery authority; and no second worker protocol or later Phase
 5/Phase 8 work.
 
+### 21.43 v2.3 — Complete Phase 5.3 review projection (July 28, 2026)
+
+PostgreSQL dogfooding exposed a transaction-ordering defect in the delivered
+Phase 5.3 review publisher. A publication row receives PostgreSQL's transaction
+timestamp, while its own `review.completed` event receives a later application
+timestamp in the same transaction. Treating any later event as proof that the
+comment was already represented therefore suppressed the publication's own
+required aggregate comment and allowed `published` rows with `comment_id = 0`.
+This amendment refines §11.1, §19, §21.12 change 5(c), §21.15, and §21.22:
+
+1. **Durable identity, not time, controls idempotency.** The
+   `review_work_order_id` publication record is the authoritative identity.
+   Review round and seat are lifecycle context. Event or row timestamps never
+   suppress the current publication. Every eligible publication upserts the
+   one task-marked aggregate PR comment; panel seats, retries, reconciliation,
+   and later rounds update that comment rather than creating another.
+
+2. **Both projections are required.** An eligible publication completes only
+   after the portable aggregate commit status and deterministic comment
+   succeed. `review_publications.state = published` requires a nonzero
+   `comment_id`; a missing or failed comment remains retrying or becomes failed
+   under the existing bounded River policy. Startup reconciliation reopens and
+   re-enqueues legacy `published`/zero-comment rows as the same durable
+   publication identity. The durable verdict, bounce, round aggregate, and task
+   gate remain authoritative and are never rolled back by an external
+   publication failure.
+
+3. **Resolution history is cumulative.** Requested changes remain visible as
+   `unresolved` until a later approving round resolves them. That later round
+   updates the same comment with the prior resolved entry and the new accepted
+   approval. Single-seat and panel histories use the same deterministic task
+   marker.
+
+4. **Phase 5.3 is delivered.** Issue creation/update on spec approval, PR
+   creation at `submit_for_review`, portable aggregate status, and deterministic
+   verdict/resolution comment projection are shipped. §19 and the Phase 5
+   documentation no longer describe both core Phase 5.3 capabilities as
+   unimplemented.
+
+5. **Forge taxonomy remains separately sequenced.** Parked task
+   `260728-c0f858` owns implementation of the §21.41 forge error categories.
+   This repair preserves the existing publication failure boundary and
+   `last_error` evidence for that work but does not implement or rename the
+   taxonomy.
+
+Validation covers PostgreSQL transaction/event ordering, nonzero comment
+persistence, single and panel publications, retry/reconciliation idempotency,
+requested-changes-to-approval history, and preservation of internal authority
+when GitHub publication fails.
+
 ---
 
-*End of specification. v2.2 accepted July 28, 2026 — the v2.0 consolidated
+*End of specification. v2.3 accepted July 28, 2026 — the v2.0 consolidated
 restatement of v1.0–v1.40 (§21.40), supervision hygiene (§21.41), and
-worker-side first-activity liveness (§21.42). The body (§§1–20) is the
-normative authority; §21 is the change record. Subsequent changes proceed by
-amendment with version bumps.*
+worker-side first-activity liveness (§21.42), with the completed Phase 5.3
+review projection (§21.43). The body (§§1–20) is the normative authority; §21
+is the change record. Subsequent changes proceed by amendment with version
+bumps.*
