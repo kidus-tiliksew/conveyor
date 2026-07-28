@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 }
 
 func auditPersistedLifecycles(ctx context.Context, tx pgx.Tx) ([]controlstore.LifecycleAuditViolation, error) {
-	rows, err := tx.Query(ctx, `SELECT id,task_id,job_id,kind,payload_json,at FROM events ORDER BY at,id`)
+	// Workspace-scoped events (worker heartbeats, config updates, pairing)
+	// carry no task and are not lifecycle edges (spec §21.37 change 6).
+	rows, err := tx.Query(ctx, `SELECT id,task_id,job_id,kind,payload_json,at FROM events WHERE task_id IS NOT NULL ORDER BY at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -156,9 +158,12 @@ func auditPersistedLifecycles(ctx context.Context, tx pgx.Tx) ([]controlstore.Li
 	var events []core.Event
 	for rows.Next() {
 		var event core.Event
-		var jobID *string
-		if err = rows.Scan(&event.ID, &event.TaskID, &jobID, &event.Kind, &event.Payload, &event.At); err != nil {
+		var taskID, jobID *string
+		if err = rows.Scan(&event.ID, &taskID, &jobID, &event.Kind, &event.Payload, &event.At); err != nil {
 			return nil, err
+		}
+		if taskID != nil {
+			event.TaskID = *taskID
 		}
 		if jobID != nil {
 			event.JobID = *jobID

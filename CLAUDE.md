@@ -1,8 +1,9 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v1.39, accepted).
-When code and spec disagree, the spec wins; spec changes go by amendment
-with a version bump (§21), never silent edits.
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.0, accepted —
+the consolidated restatement of v1.0–v1.40; the body §§1–20 is normative,
+§21 is the change record). When code and spec disagree, the spec wins; spec
+changes go by amendment with a version bump (§21), never silent edits.
 
 ## Conventions
 

@@ -246,7 +246,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 
 // RuntimeConfig overlays the latest database document onto immutable
 // deployment settings. Callers take one value per dispatch so running jobs do
-// not observe mid-flight policy changes (spec §14.1, §21.3).
+// not observe mid-flight policy changes (spec §2.1, §21.3).
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
 	id := workspace(ctx)
 	row, err := s.queries.GetWorkspaceConfig(ctx, id)
