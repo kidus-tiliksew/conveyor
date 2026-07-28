@@ -12,7 +12,10 @@ import (
 const ControlQueue = "control"
 
 const (
-	DispatchTaskMaxAttempts   = 5
+	// River counts the initial execution in MaxAttempts, so five scheduled
+	// retries require six total executions (spec §3.3, §21.41).
+	DispatchTaskRetryLimit    = 5
+	DispatchTaskMaxAttempts   = DispatchTaskRetryLimit + 1
 	DispatchRetryInitialDelay = 10 * time.Second
 	DispatchRetryMaximumDelay = 5 * time.Minute
 )

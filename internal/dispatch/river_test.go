@@ -168,7 +168,7 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
 	wantErr := errors.New("database unavailable")
 
-	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, 5, 5), wantErr); !errors.Is(err, wantErr) {
+	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queueargs.DispatchTaskMaxAttempts, queueargs.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
 		t.Fatalf("failure error = %v, want %v", err, wantErr)
 	}
 	current, err := st.GetTask(ctx, taskID)
@@ -187,22 +187,16 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	t.Fatal("final dispatch failure did not record dispatch.fail_final")
 }
 
-func TestDispatchRetryPolicyMatchesSpec(t *testing.T) {
+func TestDispatchRetryDelayTableMatchesSpec(t *testing.T) {
 	t.Parallel()
-	if queueargs.DispatchTaskMaxAttempts != 5 {
-		t.Fatalf("max attempts = %d, want 5", queueargs.DispatchTaskMaxAttempts)
+	if queueargs.DispatchTaskRetryLimit != 5 || queueargs.DispatchTaskMaxAttempts != 6 {
+		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queueargs.DispatchTaskRetryLimit, queueargs.DispatchTaskMaxAttempts)
 	}
 	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
-	worker := &dispatchTaskWorker{}
 	for attempt, want := range wants {
 		attempt := attempt + 1
 		if got := queueargs.DispatchTaskRetryDelay(attempt); got != want {
 			t.Fatalf("attempt %d retry delay = %s, want %s", attempt, got, want)
-		}
-		before := time.Now().UTC()
-		next := worker.NextRetry(dispatchTaskJob("retry-policy", attempt, queueargs.DispatchTaskMaxAttempts))
-		if got := next.Sub(before); got < want || got > want+time.Second {
-			t.Fatalf("attempt %d next retry in %s, want %s", attempt, got, want)
 		}
 	}
 	if got := queueargs.DispatchTaskRetryDelay(6); got != queueargs.DispatchRetryMaximumDelay {
