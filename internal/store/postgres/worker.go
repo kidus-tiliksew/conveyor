@@ -207,9 +207,9 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	lastFailureExitStatus := current.LastFailureExitStatus
 	lastFailureAt := current.LastFailureAt
 	suppressionReason := ""
-	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		detail := strings.TrimSpace(release.FailureDetail)
-		identical := detail != "" && current.LastAttemptOutcome == core.WorkOrderOutcomeChildFailure && detail == current.LastFailureDetail
+		identical := detail != "" && current.LastAttemptOutcome == release.Outcome && detail == current.LastFailureDetail
 		lastFailureMessage = strings.TrimSpace(release.Reason)
 		lastFailureDetail = detail
 		lastFailureExitStatus = release.ExitStatus
@@ -249,8 +249,11 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	q := s.queries.WithTx(tx)
 	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
 	kind := "work_order.released"
-	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		kind = "work_order.child_failed"
+		if release.Outcome == core.WorkOrderOutcomeStalled {
+			kind = "work_order.stalled"
+		}
 	}
 	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now}); err != nil {
 		return core.WorkOrder{}, err

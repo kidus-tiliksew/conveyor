@@ -417,6 +417,11 @@ func TestHarnessFingerprintCanonicalizesEmptyArguments(t *testing.T) {
 	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
 		t.Fatal("different MCP attachment identities produced the same fingerprint")
 	}
+	changed = base
+	changed.StallTimeoutText = "2m"
+	if HarnessFingerprint(base) == HarnessFingerprint(changed) {
+		t.Fatal("different stall timeouts produced the same fingerprint")
+	}
 }
 
 func TestLegacyHarnessSnapshotDefaultsToJSONFileTransport(t *testing.T) {

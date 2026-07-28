@@ -319,6 +319,7 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 			EffortArgs:            cloneEffortArgs(harness.EffortArgs),
 			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
 			ProbeTimeoutText:      harness.ProbeTimeoutText,
+			StallTimeoutText:      harness.StallTimeoutText,
 		}, true
 	}
 	return nil, false

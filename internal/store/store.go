@@ -763,7 +763,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 	order.LastAttemptOutcome = release.Outcome
 	order.NextRetryAt = time.Time{}
 	order.RetrySuppressionReason = ""
-	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		previousDetail := order.LastFailureDetail
 		detail := strings.TrimSpace(release.FailureDetail)
 		order.LastFailureMessage = strings.TrimSpace(release.Reason)
@@ -774,7 +774,7 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		if limit <= 0 {
 			limit = 3
 		}
-		identical := detail != "" && previousOutcome == core.WorkOrderOutcomeChildFailure && detail == previousDetail
+		identical := detail != "" && previousOutcome == release.Outcome && detail == previousDetail
 		if order.AutomaticRetryCount < limit {
 			order.AutomaticRetryCount++
 			if identical {
@@ -811,8 +811,11 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		}
 	}
 	kind := "work_order.released"
-	if release.Outcome == core.WorkOrderOutcomeChildFailure {
+	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		kind = "work_order.child_failed"
+		if release.Outcome == core.WorkOrderOutcomeStalled {
+			kind = "work_order.stalled"
+		}
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil

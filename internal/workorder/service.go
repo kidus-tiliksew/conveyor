@@ -229,6 +229,7 @@ func recoveryHarnessSnapshot(harnesses []config.Harness, name, effort string) *c
 			Command: append([]string(nil), harness.Command...), ModelArgs: append([]string(nil), harness.ModelArgs...),
 			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...), EffortArgs: cloneRecoveryEffortArgs(harness.EffortArgs),
 			Effort: effort, ProbeCommand: append([]string(nil), harness.ProbeCommand...), ProbeTimeoutText: harness.ProbeTimeoutText,
+			StallTimeoutText: harness.StallTimeoutText,
 		}
 		if effort != "" {
 			snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[effort]...)
@@ -538,11 +539,21 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 		order.Progress = order.Progress[:4000]
 	}
 	order.SelfReported = true
-	err = s.Store.UpdateWorkOrder(ctx, order)
+	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+		return core.WorkOrder{}, err
+	}
+	err = s.Store.AppendEvent(ctx, core.Event{
+		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.progress_reported",
+		Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "message": order.Progress}),
+	})
 	return order, err
 }
 
 func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64) (core.WorkOrder, error) {
+	return s.UsageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, nil)
+}
+
+func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
 	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -554,6 +565,21 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 	order.TokensOut = tokensOut
 	order.CostUSD = cost
 	order.SelfReported = true
+	if rateLimit != nil {
+		status := *rateLimit
+		status.Status = strings.TrimSpace(status.Status)
+		if status.Status == "" || len(status.Status) > 200 {
+			return core.WorkOrder{}, fmt.Errorf("rate_limit.status is required and must be at most 200 characters")
+		}
+		if status.Limit != nil && *status.Limit < 0 {
+			return core.WorkOrder{}, fmt.Errorf("rate_limit.limit cannot be negative")
+		}
+		if status.Remaining != nil && *status.Remaining < 0 {
+			return core.WorkOrder{}, fmt.Errorf("rate_limit.remaining cannot be negative")
+		}
+		order.RateLimit = &status
+		order.RateLimitObservedAt = time.Now().UTC()
+	}
 	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -563,6 +589,15 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 		job.TokensOut = tokensOut
 		job.CostUSD = &cost
 		_ = s.Store.UpdateJob(ctx, job)
+	}
+	if err = s.Store.AppendEvent(ctx, core.Event{
+		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.usage_reported",
+		Payload: core.JSONPayload(map[string]any{
+			"work_order_id": order.ID, "tokens_in": tokensIn, "tokens_out": tokensOut,
+			"cost_usd": cost, "rate_limit": rateLimit,
+		}),
+	}); err != nil {
+		return core.WorkOrder{}, err
 	}
 	return order, nil
 }

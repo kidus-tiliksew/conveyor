@@ -1046,6 +1046,41 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 	}
 }
 
+func TestTaskActivityExposesLatestAgentProgressWithLabelAndTimestamp(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "latest-agent-activity", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	service := &workorder.Service{Store: st}
+	if _, err := service.Progress(ctx, job.ID, "activity-session", "Running focused worker tests"); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"last_agent_activity_label":"Progress: Running focused worker tests"`) ||
+		!strings.Contains(body, `"last_agent_activity_at":`) ||
+		!strings.Contains(body, `"kind":"work_order.progress_reported"`) {
+		t.Fatalf("latest agent activity missing: %s", body)
+	}
+}
+
 func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := context.Background()

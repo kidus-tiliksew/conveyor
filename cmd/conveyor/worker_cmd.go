@@ -463,6 +463,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	if firstActivityTimeout <= 0 {
 		return fmt.Errorf("first activity timeout must be positive")
 	}
+	stallTimeout := item.Harness.StallTimeout
+	if stallTimeout == 0 && item.Harness.StallTimeoutText != "" {
+		var parseErr error
+		stallTimeout, parseErr = time.ParseDuration(item.Harness.StallTimeoutText)
+		if parseErr != nil || stallTimeout < 0 {
+			return fmt.Errorf("stall timeout must be 0 to disable or a positive duration")
+		}
+	}
 	session, err := randomHex(16)
 	if err != nil {
 		return fmt.Errorf("generate worker session: %w", err)
@@ -632,6 +640,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	defer firstActivityTimer.Stop()
 	firstActivityDeadline := firstActivityTimer.C
 	firstActivityObserved := firstActivity.observed
+	var stallTimer *time.Timer
+	var stallDeadline <-chan time.Time
+	var stallGeneration uint64
+	var stallDue time.Time
+	if stallTimeout > 0 {
+		stallTimer = time.NewTimer(stallTimeout)
+		stallDeadline = stallTimer.C
+		stallDue = time.Now().Add(stallTimeout)
+		defer stallTimer.Stop()
+	}
+	activityObserved := firstActivity.activity
 	renewEvery := workerClaimRenewInterval
 	if remaining := time.Until(leaseExpiresAt); remaining > 0 && remaining/3 < renewEvery {
 		renewEvery = remaining / 3
@@ -701,6 +720,12 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			firstActivityObserved = nil
 			firstActivityDeadline = nil
+		case <-activityObserved:
+			if stallTimer != nil {
+				drainActivity(activityObserved)
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+			}
 		case <-firstActivityDeadline:
 			// Prefer output or normal child exit when either raced the timer.
 			select {
@@ -767,6 +792,87 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				return fmt.Errorf("%s: release claim: %w", workerFirstActivityTimeoutReason, releaseErr)
 			}
 			return errors.New(workerFirstActivityTimeoutReason)
+		case firedAt := <-stallDeadline:
+			// Output and normal completion win races at the inactivity boundary.
+			if hook := workerStallDeadlineTestHook; hook != nil {
+				hook()
+			}
+			drainActivity(activityObserved)
+			generation, _ := firstActivity.snapshot()
+			if generation != stallGeneration {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
+			}
+			if firedAt.Before(stallDue) {
+				resetTimer(stallTimer, durationUntil(stallDue))
+				stallDeadline = stallTimer.C
+				continue
+			}
+			select {
+			case waitErr := <-done:
+				return handleChildExit(waitErr)
+			default:
+			}
+			if claimFinalized {
+				stallDeadline = nil
+				continue
+			}
+			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			if renewErr != nil {
+				_ = command.Process.Kill()
+				<-done
+				if workerOrderCancelled(renewErr) {
+					return errWorkerOrderCancelled
+				}
+				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				return renewErr
+			}
+			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
+				claimFinalized = true
+				stallDeadline = nil
+				continue
+			}
+			if renewed.State != core.WorkOrderClaimed {
+				_ = command.Process.Kill()
+				<-done
+				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+			}
+			leaseExpiresAt = renewed.LeaseExpiresAt
+			drainActivity(activityObserved)
+			generation, _ = firstActivity.snapshot()
+			if generation != stallGeneration {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
+			}
+			if time.Now().Before(stallDue) {
+				resetTimer(stallTimer, durationUntil(stallDue))
+				stallDeadline = stallTimer.C
+				continue
+			}
+			select {
+			case waitErr := <-done:
+				return handleChildExit(waitErr)
+			default:
+			}
+			if !firstActivity.generationUnchanged(stallGeneration) {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
+			}
+			_ = command.Process.Kill()
+			waitErr := <-done
+			var exitStatus *int
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				status := exitErr.ExitCode()
+				exitStatus = &status
+			}
+			if releaseErr := release(core.WorkOrderOutcomeStalled, workerStallTimeoutReason, exitStatus); releaseErr != nil {
+				return fmt.Errorf("%s: release claim: %w", workerStallTimeoutReason, releaseErr)
+			}
+			return errors.New(workerStallTimeoutReason)
 		case <-ticker.C:
 			if claimFinalized {
 				continue
@@ -804,14 +910,44 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 }
 
 const workerFirstActivityTimeoutReason = "harness produced no output before first_activity_timeout"
+const workerStallTimeoutReason = "harness produced no output before stall_timeout"
 
 type firstActivitySignal struct {
-	once     sync.Once
-	observed chan struct{}
+	once       sync.Once
+	observed   chan struct{}
+	activity   chan struct{}
+	mu         sync.Mutex
+	last       time.Time
+	generation uint64
 }
 
 func newFirstActivitySignal() *firstActivitySignal {
-	return &firstActivitySignal{observed: make(chan struct{})}
+	return &firstActivitySignal{observed: make(chan struct{}), activity: make(chan struct{}, 1)}
+}
+
+func (s *firstActivitySignal) observe() {
+	now := time.Now()
+	s.mu.Lock()
+	s.last = now
+	s.generation++
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.observed) })
+	select {
+	case s.activity <- struct{}{}:
+	default:
+	}
+}
+
+func (s *firstActivitySignal) snapshot() (uint64, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation, s.last
+}
+
+func (s *firstActivitySignal) generationUnchanged(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation == generation
 }
 
 type firstActivityWriter struct {
@@ -821,9 +957,51 @@ type firstActivityWriter struct {
 
 func (w *firstActivityWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
-		w.Signal.once.Do(func() { close(w.Signal.observed) })
+		w.Signal.observe()
 	}
 	return w.Destination.Write(p)
+}
+
+func resetStallTimerForActivity(timer *time.Timer, signal *firstActivitySignal, timeout time.Duration) (uint64, time.Time) {
+	generation, observedAt := signal.snapshot()
+	due := observedAt.Add(timeout)
+	now := time.Now()
+	// A stale timer generation may be handled after the replacement deadline
+	// has technically elapsed. Give the newly observed generation one complete
+	// supervision window so the stale timer cannot classify it as stalled.
+	if observedAt.IsZero() || !due.After(now) {
+		due = now.Add(timeout)
+	}
+	resetTimer(timer, durationUntil(due))
+	return generation, due
+}
+
+func durationUntil(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
+
+func drainActivity(activity <-chan struct{}) {
+	for {
+		select {
+		case <-activity:
+		default:
+			return
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
 }
 
 type boundedTailWriter struct {
@@ -856,6 +1034,10 @@ var workerClaimRenewInterval = 10 * time.Second
 // between a successful claim and child launch to simulate slow pre-start
 // setup.
 var workerPreStartTestHook func(context.Context)
+
+// workerStallDeadlineTestHook lets tests hold a selected stall-timer
+// generation while child output races that boundary.
+var workerStallDeadlineTestHook func()
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the

@@ -73,6 +73,8 @@ type Harness struct {
 	ProbeCommand          []string            `yaml:"probe_command" json:"probe_command"`
 	ProbeTimeout          time.Duration       `yaml:"-" json:"-"`
 	ProbeTimeoutText      string              `yaml:"probe_timeout" json:"probe_timeout"`
+	StallTimeout          time.Duration       `yaml:"-" json:"-"`
+	StallTimeoutText      string              `yaml:"stall_timeout,omitempty" json:"stall_timeout,omitempty"`
 }
 
 const (
@@ -119,6 +121,8 @@ const (
 	DefaultStageTimeout              = 2 * time.Hour
 	DefaultFirstActivityTimeout      = 2 * time.Minute
 	DefaultFirstActivityTimeoutText  = "2m"
+	DefaultHarnessStallTimeout       = 10 * time.Minute
+	DefaultHarnessStallTimeoutText   = "10m"
 	DefaultWorkOrderQueueTimeout     = 24 * time.Hour
 	DefaultWorkOrderQueueTimeoutText = "24h"
 )
@@ -681,12 +685,16 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			harness.MCPTransport = MCPTransportJSONFile
 		}
 		harness.MCPAttachment = strings.TrimSpace(harness.MCPAttachment)
-		harnesses[harness.Name] = *harness
+		if harness.StallTimeoutText == "" {
+			harness.StallTimeoutText = DefaultHarnessStallTimeoutText
+		}
 		if err := validateHarness(*harness, i); err != nil {
 			return nil, err
 		}
 		parsed, _ := time.ParseDuration(harness.ProbeTimeoutText)
 		harness.ProbeTimeout = parsed
+		harness.StallTimeout, _ = time.ParseDuration(harness.StallTimeoutText)
+		harnesses[harness.Name] = *harness
 	}
 	for stage, route := range c.Routing.Stages {
 		if stage == "spec" {
@@ -1057,6 +1065,12 @@ func validateHarness(h Harness, index int) error {
 	parsed, parseErr := time.ParseDuration(h.ProbeTimeoutText)
 	if parseErr != nil || parsed <= 0 {
 		return fmt.Errorf("harnesses[%d].probe_timeout must be a positive duration", index)
+	}
+	if h.StallTimeoutText != "" {
+		parsed, parseErr = time.ParseDuration(h.StallTimeoutText)
+		if parseErr != nil || parsed < 0 || parsed == 0 && strings.TrimSpace(h.StallTimeoutText) != "0" {
+			return fmt.Errorf("harnesses[%d].stall_timeout must be 0 to disable or a positive duration", index)
+		}
 	}
 	return nil
 }

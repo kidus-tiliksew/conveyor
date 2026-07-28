@@ -1391,7 +1391,7 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	harness := config.Harness{Name: "codex", MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
+	harness := config.Harness{Name: "codex", MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s", StallTimeoutText: "45s"}
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Model: "gpt-5", ModelPolicy: config.ModelPolicyExplicit, EffectiveModel: "gpt-5", Harness: "codex", Effort: "high", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP},
 	}}}
@@ -1404,11 +1404,12 @@ func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) 
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
 	order := orders[0]
-	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredEffort != "high" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" || order.RequiredHarnessConfig.MCPTransport != config.MCPTransportTOMLOverride || !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
+	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredEffort != "high" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" || order.RequiredHarnessConfig.MCPTransport != config.MCPTransportTOMLOverride || order.RequiredHarnessConfig.StallTimeoutText != "45s" || !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
 		t.Fatalf("snapshotted order=%+v", order)
 	}
 	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
-	if !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
+	cfg.Harnesses[0].StallTimeoutText = "2s"
+	if !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) || order.RequiredHarnessConfig.StallTimeoutText != "45s" {
 		t.Fatalf("hot reload mutated in-flight effort argv: %+v", order.RequiredHarnessConfig)
 	}
 	events, err := st.ListEvents(ctx, task.ID)

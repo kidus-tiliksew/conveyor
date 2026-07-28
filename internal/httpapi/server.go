@@ -808,6 +808,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if workOrders == nil {
 		workOrders = []core.WorkOrder{}
 	}
+	decorateWorkOrderAgentActivity(workOrders, events)
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	// Attachments are the operator-supplied task_context artifacts uploaded at
 	// intake (spec §21.5); the task detail view previews them below the spec.
@@ -882,6 +883,60 @@ func (s *Server) taskVerificationEvidence(ctx context.Context, taskID string) ([
 		evidence = append(evidence, artifact)
 	}
 	return evidence, nil
+}
+
+func decorateWorkOrderAgentActivity(orders []core.WorkOrder, events []core.Event) {
+	byJob := make(map[string][]int, len(orders))
+	for i := range orders {
+		byJob[orders[i].JobID] = append(byJob[orders[i].JobID], i)
+	}
+	for _, event := range events {
+		label := agentActivityLabel(event)
+		if label == "" {
+			continue
+		}
+		for _, index := range byJob[event.JobID] {
+			if orders[index].LastAgentActivityAt.After(event.At) {
+				continue
+			}
+			orders[index].LastAgentActivityAt = event.At
+			orders[index].LastAgentActivityLabel = label
+		}
+	}
+}
+
+func agentActivityLabel(event core.Event) string {
+	var payload map[string]any
+	_ = json.Unmarshal(event.Payload, &payload)
+	switch event.Kind {
+	case "work_order.claimed":
+		return "Work order claimed"
+	case "work_order.lease_renewed":
+		return "Claim lease renewed"
+	case "work_order.progress_reported":
+		message, _ := payload["message"].(string)
+		message = strings.TrimSpace(message)
+		if len(message) > 120 {
+			message = message[:120] + "…"
+		}
+		if message != "" {
+			return "Progress: " + message
+		}
+		return "Progress reported"
+	case "work_order.usage_reported":
+		if payload["rate_limit"] != nil {
+			return "Usage and rate-limit telemetry reported"
+		}
+		return "Usage telemetry reported"
+	case "transcript.self_reported":
+		return "Transcript uploaded"
+	case "pull_request.opened":
+		return "Implementation submitted for review"
+	case "review.completed", "review.accepted":
+		return "Review verdict submitted"
+	default:
+		return ""
+	}
 }
 
 // taskAttachments lists the operator-supplied attachments linked to a task,

@@ -336,6 +336,12 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
         failureDetail: typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined,
         alarm: true,
       }
+    case 'work_order.stalled':
+      return {
+        title: payload.retry_suppressed === true ? 'Worker child stalled — automatic retry suppressed' : 'Worker child stalled — retry scheduled',
+        detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
+        alarm: true,
+      }
     case 'work_order.expired':
       return { title: 'Worker claim expired — operator recovery required', alarm: true }
     case 'work_order.released':
@@ -511,6 +517,14 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 		entries.push({ type: 'job', at: job.started_at, job, summary, model, tone, order })
   }
   for (const order of item.work_orders ?? []) {
+    if (order.last_agent_activity_at && order.last_agent_activity_label) {
+      entries.push({
+        type: 'note',
+        at: order.last_agent_activity_at,
+        key: `agent-activity-${order.id}`,
+        title: `Agent activity — ${order.last_agent_activity_label}`,
+      })
+    }
     if (panels.orderIds.has(order.id)) continue
     const entry = orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)

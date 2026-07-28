@@ -144,6 +144,61 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	}
 }
 
+func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-rate-limit", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	reset := "2026-07-28T13:00:00Z"
+	result, err := server.callMCPTool(request, "report_usage", map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"tokens_in": 100.0, "tokens_out": 25.0, "cost_usd": 0.5,
+		"rate_limit": map[string]any{"status": "limited", "limit": 1000.0, "remaining": 125.0, "reset_at": reset},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := result.(core.WorkOrder)
+	if reported.RateLimit == nil || reported.RateLimit.Status != "limited" || reported.RateLimit.Remaining == nil || *reported.RateLimit.Remaining != 125 || reported.RateLimit.ResetAt == nil || reported.RateLimit.ResetAt.Format(time.RFC3339) != reset || reported.RateLimitObservedAt.IsZero() {
+		t.Fatalf("reported rate limit=%+v observed=%s", reported.RateLimit, reported.RateLimitObservedAt)
+	}
+	result, err = server.callMCPTool(request, "report_usage", map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"tokens_in": 150.0, "tokens_out": 30.0, "cost_usd": 0.75,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutRateLimit := result.(core.WorkOrder)
+	if withoutRateLimit.RateLimit == nil || withoutRateLimit.RateLimit.Status != "limited" || withoutRateLimit.RateLimitObservedAt != reported.RateLimitObservedAt {
+		t.Fatalf("rate limit was cleared by absent field: before=%+v after=%+v", reported, withoutRateLimit)
+	}
+	if _, err = server.callMCPTool(request, "report_usage", map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"tokens_in": 150.0, "tokens_out": 30.0, "cost_usd": 0.75,
+		"rate_limit": map[string]any{"status": "limited", "reset_at": "not-rfc3339"},
+	}); err == nil || !strings.Contains(err.Error(), "rate_limit") {
+		t.Fatalf("invalid reset_at error=%v", err)
+	}
+}
+
 func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
