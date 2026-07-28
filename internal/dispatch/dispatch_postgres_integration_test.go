@@ -20,6 +20,7 @@ import (
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -34,7 +35,7 @@ type failingStageOrderStore struct {
 	err error
 }
 
-func (s *failingStageOrderStore) CreateStageWorkOrder(context.Context, core.Job, core.WorkOrder) (bool, error) {
+func (s *failingStageOrderStore) CreateStageWorkOrderCommand(context.Context, taskops.TaskLease, core.Job, core.WorkOrder) (bool, error) {
 	return false, s.err
 }
 
@@ -126,8 +127,8 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
-func (s *observedTaskLockStore) CreateStageWorkOrder(ctx context.Context, job core.Job, order core.WorkOrder) (bool, error) {
-	created, err := s.Store.CreateStageWorkOrder(ctx, job, order)
+func (s *observedTaskLockStore) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	created, err := s.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
 	if err != nil {
 		return false, err
 	}

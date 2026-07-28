@@ -122,8 +122,8 @@ func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, t
 	return orders, err
 }
 
-func (st *concurrentSpecDispatchStore) CreateStageWorkOrder(ctx context.Context, job core.Job, order core.WorkOrder) (bool, error) {
-	created, err := st.Store.CreateStageWorkOrder(ctx, job, order)
+func (st *concurrentSpecDispatchStore) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	created, err := st.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
 	if created {
 		st.mu.Lock()
 		st.createCalls++

@@ -19,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -837,7 +838,13 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 	if strings.TrimSpace(sessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}
-	return s.Store.RenewWorkerClaim(ctx, id, worker.ID, sessionID, DefaultClaimLease)
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
+		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, worker.ID, sessionID, DefaultClaimLease)
+	})
 }
 
 func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, sessionID string) (ClaimReconciliation, error) {
@@ -887,7 +894,13 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	if release.AutomaticRetryLimit <= 0 {
 		release.AutomaticRetryLimit = DefaultRetryLimit
 	}
-	order, err := s.Store.ReleaseWorkerClaim(ctx, id, worker.ID, release)
+	current, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	order, err := taskops.ExecuteWorkOrder(ctx, s.Store, current.TaskID, core.WorkOrderCmdRelease, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
+		return s.Store.ReleaseWorkerClaimCommand(ctx, taskLease, id, worker.ID, release)
+	})
 	if err != nil {
 		return core.WorkOrder{}, err
 	}

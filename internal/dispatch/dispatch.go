@@ -228,7 +228,9 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	if err != nil {
 		return err
 	}
-	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
+		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, jobs, orders)
+	}); err != nil {
 		return err
 	}
 	if task.ApprovalStale {
@@ -408,7 +410,9 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 	}
-	created, err := d.Store.CreateStageWorkOrder(ctx, job, order)
+	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
+		return d.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
+	})
 	if err != nil {
 		return err
 	}

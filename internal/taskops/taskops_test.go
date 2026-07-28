@@ -33,6 +33,33 @@ func TestPlaneOwnsTaskLeaseAndCommitsCanonicalEvent(t *testing.T) {
 	}
 }
 
+func TestWorkOrderCommandLeaseCannotBeForgedOrReusedForAnotherCommand(t *testing.T) {
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "order-capability", Workspace: "demo", State: core.TaskQueued, NextStage: core.StageImplement}
+	job := core.Job{ID: "order-capability-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrderCommand(ctx, taskops.TaskLease{}, order); err == nil {
+		t.Fatal("zero lease created a work order")
+	}
+	if _, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRedispatch, func(lease taskops.TaskLease) (struct{}, error) {
+		return struct{}{}, st.CreateWorkOrderCommand(ctx, lease, order)
+	}); err == nil {
+		t.Fatal("redispatch lease was reused for order.create")
+	}
+	if _, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
+		return struct{}{}, st.CreateWorkOrderCommand(ctx, lease, order)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadsArePureAndOrderClockPersistsCanonicalCommands(t *testing.T) {
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()

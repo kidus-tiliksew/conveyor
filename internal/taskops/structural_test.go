@@ -1,0 +1,88 @@
+package taskops_test
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// TestProductionWorkOrderWritersEnterTaskOps prevents the command-plane
+// bypasses that §21.38 removed from the service layer. Store implementations
+// may retain compatibility facades for fixtures, but production consumers must
+// call a capability-protected *Command method inside taskops admission.
+func TestProductionWorkOrderWritersEnterTaskOps(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	legacy := map[string]bool{
+		"CreateWorkOrder": true, "CreateStageWorkOrder": true, "CreateReviewRound": true,
+		"RetryReviewRound": true, "RecoverInterruptedReviewRound": true,
+		"RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
+		"RenewWorkerClaim": true, "ReleaseWorkerClaim": true,
+	}
+	guarded := map[string]bool{
+		"CreateWorkOrderCommand": true, "CreateStageWorkOrderCommand": true, "CreateReviewRoundCommand": true,
+		"RetryReviewRoundCommand": true, "RecoverInterruptedReviewRoundCommand": true,
+		"RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,
+		"RenewWorkerClaimCommand": true, "ReleaseWorkerClaimCommand": true,
+	}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == "dashboard" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		if strings.HasPrefix(rel, filepath.Join("internal", "store")+string(filepath.Separator)) ||
+			rel == filepath.Join("internal", "store", "store.go") {
+			return nil
+		}
+		source, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		parsed, parseErr := parser.ParseFile(fset, path, source, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		hasAdmission := strings.Contains(string(source), "taskops.ExecuteWorkOrder")
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector {
+				return true
+			}
+			if legacy[selector.Sel.Name] {
+				if owner, ok := selector.X.(*ast.SelectorExpr); ok && owner.Sel.Name == "Store" {
+					t.Errorf("%s calls bypassable Store.%s", rel, selector.Sel.Name)
+				}
+			}
+			if guarded[selector.Sel.Name] && !hasAdmission {
+				t.Errorf("%s calls %s without taskops admission", rel, selector.Sel.Name)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -51,6 +51,16 @@ type Context struct {
 	Diff                 string              `json:"diff,omitempty"`
 }
 
+func guardedUpdateWorkOrder(ctx context.Context, st store.Store, order core.WorkOrder, command core.WorkOrderCommand) error {
+	_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, command, func(lease taskops.TaskLease) (struct{}, error) {
+		if command == taskops.WorkOrderMetadataCommand {
+			return struct{}{}, st.UpdateWorkOrderCommand(ctx, lease, order)
+		}
+		return struct{}{}, st.UpdateWorkOrderCommand(ctx, lease, order, command)
+	})
+	return err
+}
+
 type ArtifactReference struct {
 	core.Artifact
 	WorkOrderID string `json:"work_order_id"`
@@ -122,7 +132,7 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if err = s.enforce(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
-	order, err = s.Store.ClaimWorkOrder(ctx, id, claim)
+	order, err = taskops.New(s.Store).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -139,7 +149,13 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
 	s.refreshQueuedHarnessSnapshot(ctx, cfg, id)
-	return s.Store.RedispatchWorkOrder(ctx, id, timeout)
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRedispatch, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		return s.Store.RedispatchWorkOrderCommand(ctx, lease, id, timeout)
+	})
 }
 
 func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkOrder, error) {
@@ -163,9 +179,13 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 		return core.WorkOrder{}, err
 	}
 	if change := recoveryRefreeze(cfg, task, order); change != nil {
-		return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout, change)
+		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout, change)
+		})
 	}
-	return s.Store.RecoverWorkOrder(ctx, id, requestID, timeout)
+	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout)
+	})
 }
 
 func recoveryRefreeze(cfg *config.Config, task core.Task, order core.WorkOrder) *store.RecoveryRefreeze {
@@ -309,7 +329,9 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 			request.Refreezes[order.ID] = change
 		}
 	}
-	return s.Store.RecoverInterruptedReviewRound(ctx, request, timeout)
+	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (store.InterruptedReviewRecoveryResult, error) {
+		return s.Store.RecoverInterruptedReviewRoundCommand(ctx, lease, request, timeout)
+	})
 }
 
 func latestReviewRound(orders []core.WorkOrder) int {
@@ -427,7 +449,10 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	return s.Store.RetryReviewRound(ctx, store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}, jobs, newOrders)
+	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}
+	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
+		return s.Store.RetryReviewRoundCommand(ctx, lease, request, jobs, newOrders)
+	})
 }
 
 func (s *Service) Get(ctx context.Context, id, session string) (Context, error) {
@@ -540,7 +565,7 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 		order.Progress = order.Progress[:4000]
 	}
 	order.SelfReported = true
-	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+	if err = guardedUpdateWorkOrder(ctx, s.Store, order, taskops.WorkOrderMetadataCommand); err != nil {
 		return core.WorkOrder{}, err
 	}
 	err = s.Store.AppendEvent(ctx, core.Event{
@@ -581,7 +606,7 @@ func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, to
 		order.RateLimit = &status
 		order.RateLimitObservedAt = time.Now().UTC()
 	}
-	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+	if err = guardedUpdateWorkOrder(ctx, s.Store, order, taskops.WorkOrderMetadataCommand); err != nil {
 		return core.WorkOrder{}, err
 	}
 	job, ok, _ := s.Store.GetLatestJob(ctx, order.TaskID)
@@ -698,7 +723,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		reviewedHead = target.HeadSHA
 	}
 	order.State = core.WorkOrderSubmitted
-	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitForReview); err != nil {
 		return nil, err
 	}
 	job, ok, _ := s.Store.GetLatestJob(ctx, task.ID)
@@ -808,7 +833,7 @@ func (s *Service) SubmitSpec(ctx context.Context, id, session string, value pipe
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted
-	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitSpec); err != nil {
+	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitSpec); err != nil {
 		return nil, err
 	}
 	job.State = core.JobDone
@@ -1025,7 +1050,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted
-	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 		return nil, err
 	}
 	job.State = core.JobDone

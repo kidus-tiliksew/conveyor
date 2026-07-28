@@ -15,8 +15,9 @@ import (
 // Its fields and constructor are intentionally private so code outside this
 // package cannot forge permission to mutate a task projection (spec §21.38).
 type TaskLease struct {
-	taskID string
-	seal   *leaseSeal
+	taskID  string
+	command string
+	seal    *leaseSeal
 }
 
 type leaseSeal struct{}
@@ -25,6 +26,30 @@ type leaseSeal struct{}
 // or otherwise invalid capability without exposing a constructor.
 func (l TaskLease) ValidFor(taskID string) bool {
 	return l.seal != nil && l.taskID == taskID
+}
+
+// ValidForCommand additionally binds a capability to one canonical lifecycle
+// command, preventing a callback admitted for one operation from invoking a
+// different guarded writer.
+func (l TaskLease) ValidForCommand(taskID, command string) bool {
+	return l.ValidFor(taskID) && l.command == command
+}
+
+// ExecuteWorkOrder is the typed admission boundary for store-specific
+// work-order payloads. The command-bound lease exists only for the duration of
+// apply and cannot be forged by callers outside this package.
+func ExecuteWorkOrder[T any](ctx context.Context, backend Backend, taskID string, command core.WorkOrderCommand, apply func(TaskLease) (T, error)) (T, error) {
+	var zero T
+	if backend == nil {
+		return zero, fmt.Errorf("taskops plane requires a backend")
+	}
+	if taskID == "" || command == "" {
+		return zero, fmt.Errorf("taskops work-order task id and command are required")
+	}
+	if apply == nil {
+		return zero, fmt.Errorf("taskops work-order command handler is required")
+	}
+	return apply(TaskLease{taskID: taskID, command: string(command), seal: &leaseSeal{}})
 }
 
 // Command is the typed task-lifecycle command envelope. Kind is restricted by
@@ -36,6 +61,10 @@ type Command struct {
 	RecoveryStage core.Stage
 	ProjectStages bool
 }
+
+// WorkOrderMetadataCommand admits updates to progress/cost fields that do not
+// move the canonical lifecycle state.
+const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 
 // Outcome is the durable projection after a command commits.
 type Outcome struct {
@@ -62,7 +91,7 @@ func (p *Plane) ClaimWorkOrder(ctx context.Context, taskID, orderID string, clai
 	if taskID == "" || orderID == "" {
 		return core.WorkOrder{}, fmt.Errorf("task and work-order ids are required")
 	}
-	return p.backend.ClaimWorkOrderCommand(ctx, TaskLease{taskID: taskID, seal: &leaseSeal{}}, orderID, claim)
+	return p.backend.ClaimWorkOrderCommand(ctx, TaskLease{taskID: taskID, command: string(core.WorkOrderCmdClaim), seal: &leaseSeal{}}, orderID, claim)
 }
 
 type durableBackend interface{ IsDurable() bool }
