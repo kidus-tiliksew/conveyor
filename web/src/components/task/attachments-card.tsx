@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Download, FileText, Image as ImageIcon, Paperclip, X } from 'lucide-react'
+import { Download, FileText, Image as ImageIcon, Paperclip, Video, X } from 'lucide-react'
 import type { Artifact } from '../../lib/types'
 import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
 import { absoluteTime, cn, formatBytes } from '../../lib/utils'
@@ -13,10 +13,14 @@ function isImage(contentType: string) {
   return contentType.startsWith('image/')
 }
 
-// Fetch object URLs for the image attachments so they can preview inline. The
+function isVideo(contentType: string) {
+  return contentType.startsWith('video/')
+}
+
+// Fetch object URLs for media attachments so they can preview inline. The
 // download route needs the operator token and forces attachment disposition,
 // so a plain <img src> cannot load it; the URLs are revoked on unmount.
-function useImagePreviews(attachments: Artifact[], token: string) {
+function useMediaPreviews(attachments: Artifact[], token: string) {
   const signature = attachments.map((attachment) => attachment.id).join(',')
   const [urls, setUrls] = useState<Record<string, string>>({})
   const [failed, setFailed] = useState<Record<string, boolean>>({})
@@ -26,7 +30,7 @@ function useImagePreviews(attachments: Artifact[], token: string) {
     const created: string[] = []
     setUrls({})
     setFailed({})
-    for (const attachment of attachments.filter((entry) => isImage(entry.content_type))) {
+    for (const attachment of attachments.filter((entry) => isImage(entry.content_type) || isVideo(entry.content_type))) {
       void fetchArtifactObjectURL(token, attachment)
         .then((url) => {
           if (!active) {
@@ -55,9 +59,9 @@ function useImagePreviews(attachments: Artifact[], token: string) {
 // The attachments section (task feature): operator-supplied files previewed
 // as small tiles directly below the spec, each expandable in-place. Omitted
 // entirely when the task carries no attachments.
-export function AttachmentsCard({ attachments }: { attachments: Artifact[] }) {
+export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {
   const token = useOperatorToken()
-  const { urls, failed } = useImagePreviews(attachments, token)
+  const { urls, failed } = useMediaPreviews(attachments, token)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const expanded = useMemo(
     () => attachments.find((attachment) => attachment.id === expandedId) ?? null,
@@ -70,7 +74,7 @@ export function AttachmentsCard({ attachments }: { attachments: Artifact[] }) {
     <Card>
       <CardHeader className="items-center">
         <div className="flex items-center gap-2">
-          <CardTitle>Attachments</CardTitle>
+          <CardTitle>{title}</CardTitle>
           <Badge variant="mono">{attachments.length}</Badge>
         </div>
       </CardHeader>
@@ -113,6 +117,7 @@ function AttachmentTile({
   onExpand: () => void
 }) {
   const image = isImage(attachment.content_type)
+  const video = isVideo(attachment.content_type)
   return (
     <button
       type="button"
@@ -124,8 +129,10 @@ function AttachmentTile({
       <div className="grid h-20 w-full place-items-center overflow-hidden border-b border-border bg-raised/40">
         {image && previewURL ? (
           <img src={previewURL} alt={attachment.name} className="h-full w-full object-cover" />
+        ) : video && previewURL ? (
+          <video src={previewURL} aria-label={attachment.name} muted className="h-full w-full object-cover" />
         ) : (
-          <TileIcon image={image} loading={image && !previewFailed} />
+          <TileIcon image={image} video={video} loading={(image || video) && !previewFailed} />
         )}
       </div>
       <div className="flex min-w-0 flex-col gap-0.5 px-2 py-1.5">
@@ -136,8 +143,8 @@ function AttachmentTile({
   )
 }
 
-function TileIcon({ image, loading }: { image: boolean; loading: boolean }) {
-  const Icon = image ? ImageIcon : FileText
+function TileIcon({ image, video, loading }: { image: boolean; video: boolean; loading: boolean }) {
+  const Icon = image ? ImageIcon : video ? Video : FileText
   return (
     <Icon
       className={cn('size-6 text-faint', loading && 'animate-pulse')}
@@ -160,9 +167,11 @@ function AttachmentDialog({
   onClose: () => void
 }) {
   const image = isImage(attachment.content_type)
+  const video = isVideo(attachment.content_type)
   const showImage = image && !!previewURL
+  const showVideo = video && !!previewURL
   return (
-    <Dialog onClose={onClose} label={attachment.name} className={cn(showImage && 'max-w-3xl')}>
+    <Dialog onClose={onClose} label={attachment.name} className={cn((showImage || showVideo) && 'max-w-3xl')}>
       <header className="flex items-center gap-3 border-b border-border px-4 py-3">
         <Paperclip className="size-4 shrink-0 text-faint" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -188,12 +197,14 @@ function AttachmentDialog({
       <div className="grid place-items-center p-4">
         {showImage ? (
           <img src={previewURL} alt={attachment.name} className="max-h-[70vh] w-auto rounded-md object-contain" />
+        ) : showVideo ? (
+          <video src={previewURL} aria-label={attachment.name} controls preload="metadata" className="max-h-[70vh] w-full rounded-md" />
         ) : (
           <div className="flex flex-col items-center gap-3 py-8 text-center">
             <FileText className="size-10 text-faint" aria-hidden="true" />
             <p className="max-w-sm text-sm text-muted">
-              {image && previewFailed
-                ? 'This image could not be loaded for preview.'
+              {(image || video) && previewFailed
+                ? 'This evidence could not be loaded for preview. Use the authorized download instead.'
                 : token
                   ? 'No inline preview for this file type.'
                   : 'Add the operator token in Settings to preview and download attachments.'}

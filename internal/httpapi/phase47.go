@@ -225,7 +225,7 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256(content)
 	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
+	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = http.DetectContentType(content)
 	}
 	workspace := s.Workspace
@@ -234,7 +234,15 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 			workspace = cfg.Workspace
 		}
 	}
-	artifact := core.Artifact{ID: fmt.Sprintf("%x", sum), Workspace: workspace, Name: safeFilename(header), ContentType: contentType, SizeBytes: int64(len(content)), TaskID: r.FormValue("task_id"), FeatureID: r.FormValue("feature_id"), CreatedAt: time.Now().UTC()}
+	role := core.ArtifactRole(strings.TrimSpace(r.FormValue("role")))
+	if role == "" {
+		role = core.ArtifactRoleTaskContext
+	}
+	if role != core.ArtifactRoleTaskContext && role != core.ArtifactRoleVerificationEvidence {
+		http.Error(w, "artifact role must be task_context or verification_evidence", http.StatusBadRequest)
+		return
+	}
+	artifact := core.Artifact{ID: fmt.Sprintf("%x", sum), Workspace: workspace, Name: safeFilename(header), ContentType: contentType, SizeBytes: int64(len(content)), Role: role, TaskID: strings.TrimSpace(r.FormValue("task_id")), FeatureID: strings.TrimSpace(r.FormValue("feature_id")), CreatedAt: time.Now().UTC()}
 	artifact, err = s.Store.CreateArtifact(r.Context(), artifact, content)
 	if err != nil {
 		http.Error(w, err.Error(), 400)

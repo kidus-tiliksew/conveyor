@@ -73,3 +73,32 @@ func TestJSONPayloadUsesStableFallback(t *testing.T) {
 		t.Fatalf("payload = %s", payload)
 	}
 }
+
+func TestVerificationEvidencePolicyNormalizesAndRejectsIneligibleMedia(t *testing.T) {
+	normalized, err := NormalizeVerificationEvidenceContentType(" IMAGE/PNG; charset=binary ", MaxVerificationScreenshotBytes)
+	if err != nil || normalized != "image/png" {
+		t.Fatalf("normalized=%q err=%v", normalized, err)
+	}
+	for _, test := range []struct {
+		name        string
+		contentType string
+		size        int64
+	}{
+		{name: "unsupported", contentType: "image/gif", size: 10},
+		{name: "empty", contentType: "image/png", size: 0},
+		{name: "oversized screenshot", contentType: "image/jpeg", size: MaxVerificationScreenshotBytes + 1},
+		{name: "oversized recording", contentType: "video/mp4", size: MaxVerificationRecordingBytes + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NormalizeVerificationEvidenceContentType(test.contentType, test.size); err == nil {
+				t.Fatalf("accepted %s at %d bytes", test.contentType, test.size)
+			}
+		})
+	}
+	if (Artifact{Role: ArtifactRoleTaskContext, TaskID: "task", ContentType: "image/png", SizeBytes: 1}).EligibleVerificationEvidence() {
+		t.Fatal("wrong role satisfied evidence eligibility")
+	}
+	if !(Artifact{Role: ArtifactRoleVerificationEvidence, TaskID: "task", ContentType: "video/webm", SizeBytes: 1}).EligibleVerificationEvidence() {
+		t.Fatal("eligible recording was rejected")
+	}
+}

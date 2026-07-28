@@ -28,6 +28,35 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestWorkspaceVerificationEvidenceToggleRoundTripsAndDefaultsOff(t *testing.T) {
+	deployment := validConfig()
+	document := deployment.WorkspaceDocument()
+	if document.Execution.RequireVerificationEvidence {
+		t.Fatal("verification evidence unexpectedly required by default")
+	}
+	document.Execution.RequireVerificationEvidence = true
+	data, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(data, deployment, "verification evidence test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Execution.RequireVerificationEvidence || !parsed.WorkspaceDocument().Execution.RequireVerificationEvidence {
+		t.Fatalf("toggle did not round trip: %+v", parsed.Execution)
+	}
+
+	deployment.Execution = ExecutionPolicy{RequireVerificationEvidence: true}
+	normalized, err := normalize(deployment, "verification evidence defaults test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !normalized.Execution.SpecApproval || !normalized.Execution.MergeApproval {
+		t.Fatalf("new toggle suppressed shipped gate defaults: %+v", normalized.Execution)
+	}
+}
+
 func TestWorkspaceDocumentEmitsSetupReviewSeatsAsArrays(t *testing.T) {
 	cfg := validConfig()
 	normalized, err := normalize(cfg, "test")

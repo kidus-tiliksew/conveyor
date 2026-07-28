@@ -709,6 +709,7 @@ type reviewItem struct {
 	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
+	VerificationEvidence      []core.Artifact                       `json:"verification_evidence"`
 }
 
 type activityItem struct {
@@ -817,6 +818,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	verificationEvidence, err := s.taskVerificationEvidence(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
 	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
@@ -858,7 +864,24 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
+		VerificationEvidence:      verificationEvidence,
 	})
+}
+
+func (s *Server) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
+	all, err := s.Store.ListArtifacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	evidence := make([]core.Artifact, 0)
+	for _, artifact := range all {
+		if artifact.TaskID != taskID || !artifact.EligibleVerificationEvidence() {
+			continue
+		}
+		artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
+		evidence = append(evidence, artifact)
+	}
+	return evidence, nil
 }
 
 // taskAttachments lists the operator-supplied attachments linked to a task,

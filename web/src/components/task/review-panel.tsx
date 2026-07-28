@@ -8,6 +8,7 @@ import { cn } from '../../lib/utils'
 import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
+import { AttachmentsCard } from './attachments-card'
 
 // The human gate rendered as a verdict, not an alarm (spec §13.3): the card
 // leads with what the pipeline is waiting for and one context-matched primary
@@ -187,7 +188,8 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         </Button>
       </div>
       <div className="px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Other decisions">
+        <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+        <div className={cn('flex flex-wrap items-center gap-1', (item.verification_evidence?.length ?? 0) > 0 && 'mt-3')} role="group" aria-label="Other decisions">
           <span className="mr-1 text-xs text-faint">Instead:</span>
           {secondaryActions.map((entry) => (
             <button

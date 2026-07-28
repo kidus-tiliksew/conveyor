@@ -2063,6 +2063,20 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	}
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
+	if artifact.Role == core.ArtifactRoleVerificationEvidence {
+		if artifact.TaskID == "" || artifact.FeatureID != "" {
+			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
+		}
+		task, ok := m.tasks[artifact.TaskID]
+		if !ok || task.Workspace != artifact.Workspace {
+			return core.Artifact{}, fmt.Errorf("verification evidence task does not belong to workspace %s", artifact.Workspace)
+		}
+		normalized, err := core.NormalizeVerificationEvidenceContentType(artifact.ContentType, artifact.SizeBytes)
+		if err != nil {
+			return core.Artifact{}, err
+		}
+		artifact.ContentType = normalized
+	}
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = time.Now().UTC()
 	}

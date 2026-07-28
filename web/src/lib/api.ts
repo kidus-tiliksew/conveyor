@@ -63,7 +63,7 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
 export function fetchRequirements() { return getJSON<RequirementNode[]>(workspaceURL('/v1/requirements')) }
 export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
 export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
-export async function uploadArtifact(token: string, file: File, taskId?: string, featureId?: string) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (featureId) body.set('feature_id', featureId); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
+export async function uploadArtifact(token: string, file: File, taskId?: string, featureId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (featureId) body.set('feature_id', featureId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
 export async function createFeature(token: string, input: { name: string; description: string; parent_id?: string }) { const response = await fetch(workspaceURL('/v1/features'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input) }); if (!response.ok) throw new Error(await response.text()); return response.json() }
 export async function assignTaskFeature(token: string, taskId: string, featureId: string) { const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/feature`), { method: 'PUT', headers: mutationHeaders(token), body: JSON.stringify({ feature_id: featureId }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Task> }
 // Fetch an attachment's bytes as an object URL for inline preview. The
@@ -93,6 +93,10 @@ export function fetchWorkspaceConfig(token: string) {
       ...result,
       document: {
         ...result.document,
+        execution: {
+          ...result.document.execution,
+          require_verification_evidence: result.document.execution?.require_verification_evidence ?? false,
+        },
         harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
         review,

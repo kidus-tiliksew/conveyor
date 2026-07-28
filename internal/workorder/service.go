@@ -43,7 +43,11 @@ type Context struct {
 	BounceHistory []json.RawMessage     `json:"bounce_history,omitempty"`
 	PriorFeedback []string              `json:"prior_feedback,omitempty"`
 	Artifacts     []ArtifactReference   `json:"artifacts,omitempty"`
-	Diff          string                `json:"diff,omitempty"`
+	// VerificationEvidence is repeated explicitly for review agents so every
+	// seat receives the same task-owned metadata and scoped read_artifact
+	// capability without treating an artifact id as a bearer token.
+	VerificationEvidence []ArtifactReference `json:"verification_evidence,omitempty"`
+	Diff                 string              `json:"diff,omitempty"`
 }
 
 type ArtifactReference struct {
@@ -483,7 +487,11 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	for _, artifact := range artifacts {
 		if artifact.TaskID == task.ID || (task.FeatureID != "" && artifact.FeatureID == task.FeatureID) {
 			artifact.DownloadURL = ""
-			result.Artifacts = append(result.Artifacts, ArtifactReference{Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact"})
+			reference := ArtifactReference{Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact"}
+			result.Artifacts = append(result.Artifacts, reference)
+			if order.Stage == core.StageReview && artifact.TaskID == task.ID && artifact.EligibleVerificationEvidence() {
+				result.VerificationEvidence = append(result.VerificationEvidence, reference)
+			}
 		}
 	}
 	if order.Stage == core.StageReview {
@@ -605,6 +613,13 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	if task.SetupContract.Name != "" {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
+	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Execution.RequireVerificationEvidence && len(evidence) == 0 {
+		return nil, fmt.Errorf("verification evidence is required before review; attach a task-owned screenshot (PNG, JPEG, or WebP, up to 10 MiB) or short recording (MP4 or WebM, up to 25 MiB) through POST /v1/artifacts with task_id=%s and role=verification_evidence, then retry submit_for_review", task.ID)
+	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {
 		return nil, fmt.Errorf("repo %s not found", task.Repo)
@@ -629,7 +644,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if openPR == nil {
 			openPR = github.OpenPRForBranch
 		}
-		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task))
+		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task, evidence...))
 		if err != nil {
 			return nil, fmt.Errorf("open PR: %w", err)
 		}
@@ -697,6 +712,27 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
 	return map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true}, nil
+}
+
+func (s *Service) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
+	artifacts, err := s.Store.ListArtifacts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list verification evidence: %w", err)
+	}
+	evidence := make([]core.Artifact, 0)
+	for _, artifact := range artifacts {
+		if artifact.TaskID == taskID && artifact.EligibleVerificationEvidence() {
+			artifact.DownloadURL = ""
+			evidence = append(evidence, artifact)
+		}
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].CreatedAt.Equal(evidence[j].CreatedAt) {
+			return evidence[i].ID < evidence[j].ID
+		}
+		return evidence[i].CreatedAt.Before(evidence[j].CreatedAt)
+	})
+	return evidence, nil
 }
 
 // SubmitSpec completes a claimed spec order. Validation errors are returned

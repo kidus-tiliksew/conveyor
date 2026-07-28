@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
@@ -22,7 +23,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	defer st.Close()
 	workspace := "phase47-" + core.NewTaskID()
 	ctx = store.WithWorkspace(ctx, workspace)
-	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Execution: config.ExecutionPolicy{FirstActivityTimeout: 30 * time.Second, FirstActivityTimeoutText: "30s"}, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
 		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
 		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
@@ -30,6 +31,31 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
+	}
+	record, err := st.WorkspaceConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := record.Document
+	document.Execution.RequireVerificationEvidence = true
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := config.ParseWorkspaceDocument(raw, cfg, "verification evidence integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := st.UpdateWorkspaceConfig(store.WithActor(ctx, store.Actor{ID: "phase54-test", Role: core.ActorHuman}), record.Version, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Document.Execution.RequireVerificationEvidence || !containsString(receipt.Sections, "execution") || receipt.ActorID != "phase54-test" {
+		t.Fatalf("verification evidence config receipt=%+v", receipt)
+	}
+	reloaded, err := st.WorkspaceConfig(ctx)
+	if err != nil || !reloaded.Document.Execution.RequireVerificationEvidence || reloaded.Version != record.Version+1 {
+		t.Fatalf("reloaded config=%+v err=%v", reloaded, err)
 	}
 	feature := core.Feature{ID: "feature-" + core.NewTaskID(), Name: "Exports"}
 	if err = st.CreateFeature(ctx, feature); err != nil {
@@ -295,6 +321,15 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	}
 }
 
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	ctx := context.Background()
@@ -332,6 +367,32 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	if contextArtifact.ID != auditArtifact.ID {
 		t.Fatalf("content address changed across roles")
 	}
+	evidenceArtifact, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "proof.png", ContentType: "IMAGE/PNG; charset=binary",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+	}, []byte("verification proof"))
+	if err != nil || evidenceArtifact.ContentType != "image/png" || !evidenceArtifact.EligibleVerificationEvidence() {
+		t.Fatalf("evidence=%+v err=%v", evidenceArtifact, err)
+	}
+	if _, err = st.CreateArtifact(ctx, core.Artifact{
+		Name: "wrong.gif", ContentType: "image/gif",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+	}, []byte("gif")); err == nil {
+		t.Fatal("unsupported verification evidence was accepted")
+	}
+	if _, err = st.CreateArtifact(ctx, core.Artifact{
+		Name: "too-large.png", ContentType: "image/png",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+	}, make([]byte, core.MaxVerificationScreenshotBytes+1)); err == nil {
+		t.Fatal("oversized verification evidence was accepted")
+	}
+	otherWorkspace := store.WithWorkspace(context.Background(), workspace+"-other")
+	if _, err = st.CreateArtifact(otherWorkspace, core.Artifact{
+		Name: "cross.png", ContentType: "image/png",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+	}, []byte("cross workspace")); err == nil {
+		t.Fatal("cross-workspace verification evidence was accepted")
+	}
 	if err = st.UpsertTranscript(ctx, core.Transcript{JobID: job.ID, URI: "artifact://" + auditArtifact.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +404,7 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	for _, artifact := range artifacts {
 		roles[artifact.Role]++
 	}
-	if roles[core.ArtifactRoleTaskContext] != 1 || roles[core.ArtifactRoleGeneratedAudit] != 1 {
+	if roles[core.ArtifactRoleTaskContext] != 1 || roles[core.ArtifactRoleGeneratedAudit] != 1 || roles[core.ArtifactRoleVerificationEvidence] != 1 {
 		t.Fatalf("roles=%+v artifacts=%+v", roles, artifacts)
 	}
 

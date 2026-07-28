@@ -83,5 +83,6 @@ of internal state when GitHub fails. Categorizing those failures under the
 
 Phase 5.3 does not create a PR before `submit_for_review`, does not create draft
 PRs on first push, and adds no push-event matching, draft-to-ready transition,
-or orphan-draft cleanup. It also does not implement Phase 5.4 verification
-evidence gating.
+or orphan-draft cleanup. Phase 5.4 now extends the existing PR body
+reconciliation with one credential-free verification-evidence metadata section;
+it does not publish private artifact URLs or make GitHub the artifact store.

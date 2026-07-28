@@ -349,6 +349,39 @@ func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
 	}
 }
 
+func TestMemoryVerificationEvidenceEnforcesRoleMediaLimitsAndOwnership(t *testing.T) {
+	t.Parallel()
+	st := NewMemory()
+	ctx := WithWorkspace(context.Background(), "demo")
+	for _, id := range []string{"task-a", "task-b"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evidence, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "proof.png", ContentType: "IMAGE/PNG; charset=binary",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: "task-a",
+	}, []byte("png"))
+	if err != nil || evidence.ContentType != "image/png" || !evidence.EligibleVerificationEvidence() {
+		t.Fatalf("evidence=%+v err=%v", evidence, err)
+	}
+	for _, invalid := range []core.Artifact{
+		{Name: "wrong.gif", ContentType: "image/gif", Role: core.ArtifactRoleVerificationEvidence, TaskID: "task-a"},
+		{Name: "feature.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, FeatureID: "feature-a"},
+		{Name: "missing.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: "missing"},
+	} {
+		if _, err = st.CreateArtifact(ctx, invalid, []byte("bytes")); err == nil {
+			t.Fatalf("accepted invalid evidence %+v", invalid)
+		}
+	}
+	if _, err = st.CreateArtifact(ctx, core.Artifact{
+		Workspace: "other", Name: "cross.png", ContentType: "image/png",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: "task-a",
+	}, []byte("bytes")); err == nil {
+		t.Fatal("accepted cross-workspace evidence")
+	}
+}
+
 func TestMemoryTranscriptProvenancePreservesAuditAndContextLinks(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(context.Background(), "demo")

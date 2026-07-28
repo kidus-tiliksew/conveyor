@@ -857,6 +857,151 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 }
 
+func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSeat(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "evidence-task", Workspace: "demo", Repo: "app", Source: "roadmap:phase-5.4",
+		Title: "Evidence change", Branch: "conveyor/evidence-task", BaseBranch: "main",
+		State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now(),
+	}
+	otherTask := core.Task{ID: "other-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	for _, candidate := range []core.Task{task, otherTask} {
+		if err := st.CreateTask(ctx, candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Workspace: "demo", MaxBounces: 2,
+		Execution: config.ExecutionPolicy{RequireVerificationEvidence: true},
+		Repos:     []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
+			{Model: "reviewer-a"}, {Model: "reviewer-b"},
+		}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+		}},
+	}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.UseDurableQueue()
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openCalls := 0
+	var prBody string
+	service := &Service{
+		Store: st, Dispatcher: dispatcher, Pack: bundle,
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		OpenPR: func(_ context.Context, _, _, _, _ string, body string) (string, error) {
+			openCalls++
+			prBody = body
+			return "https://github.com/acme/app/pull/54", nil
+		},
+		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+			return githubtrigger.ReviewTarget{Number: 54, HeadSHA: "abc123"}, nil
+		},
+	}
+
+	assertRejectedWithoutSideEffects := func() {
+		t.Helper()
+		if _, submitErr := service.SubmitForReview(ctx, job.ID, "implementer"); submitErr == nil ||
+			!strings.Contains(submitErr.Error(), "role=verification_evidence") ||
+			!strings.Contains(submitErr.Error(), "screenshot") {
+			t.Fatalf("evidence rejection=%v", submitErr)
+		}
+		order, getErr := st.GetWorkOrder(ctx, job.ID)
+		if getErr != nil || order.State != core.WorkOrderClaimed {
+			t.Fatalf("implementation order=%+v err=%v", order, getErr)
+		}
+		current, getErr := st.GetTask(ctx, task.ID)
+		if getErr != nil || current.NextStage != core.StageImplement || current.State != core.TaskRunning {
+			t.Fatalf("task advanced on rejection: %+v err=%v", current, getErr)
+		}
+		orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
+		if listErr != nil || len(orders) != 1 || openCalls != 0 {
+			t.Fatalf("side effects orders=%+v open_calls=%d err=%v", orders, openCalls, listErr)
+		}
+		if count, countErr := st.CountEvents(ctx, task.ID, "pull_request.opened"); countErr != nil || count != 0 {
+			t.Fatalf("pull_request.opened=%d err=%v", count, countErr)
+		}
+	}
+	assertRejectedWithoutSideEffects()
+
+	if _, err = st.CreateArtifact(ctx, core.Artifact{
+		Name: "wrong-role.png", ContentType: "image/png", Role: core.ArtifactRoleTaskContext, TaskID: task.ID,
+	}, []byte("wrong role")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.CreateArtifact(ctx, core.Artifact{
+		Name: "other.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: otherTask.ID,
+	}, []byte("cross task")); err != nil {
+		t.Fatal(err)
+	}
+	assertRejectedWithoutSideEffects()
+
+	evidence, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "exercised UI `proof`.png", ContentType: "image/png; charset=binary",
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
+		DownloadURL: "https://control-plane.invalid/private?token=secret",
+	}, []byte("valid evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SubmitForReview(ctx, job.ID, "implementer")
+	if err != nil || result["await_review"] != true || openCalls != 1 {
+		t.Fatalf("submit=%+v open_calls=%d err=%v", result, openCalls, err)
+	}
+	if strings.Count(prBody, "<!-- conveyor:verification-evidence -->") != 1 ||
+		!strings.Contains(prBody, evidence.ID) || !strings.Contains(prBody, "image/png") ||
+		strings.Contains(prBody, "control-plane.invalid") || strings.Contains(prBody, "token=secret") {
+		t.Fatalf("unsafe or incomplete PR evidence body: %s", prBody)
+	}
+
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewSeats := 0
+	for _, order := range orders {
+		if order.Stage != core.StageReview {
+			continue
+		}
+		reviewSeats++
+		session := "review-session-" + order.ID
+		if _, err = st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+		context, getErr := service.Get(ctx, order.ID, session)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if len(context.VerificationEvidence) != 1 {
+			t.Fatalf("seat %s evidence=%+v", order.ID, context.VerificationEvidence)
+		}
+		reference := context.VerificationEvidence[0]
+		if reference.ID != evidence.ID || reference.WorkOrderID != order.ID || reference.ReadTool != "read_artifact" || reference.DownloadURL != "" {
+			t.Fatalf("seat %s reference=%+v", order.ID, reference)
+		}
+	}
+	if reviewSeats != 2 {
+		t.Fatalf("review seats=%d orders=%+v", reviewSeats, orders)
+	}
+}
+
 func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()

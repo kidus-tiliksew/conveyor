@@ -1,6 +1,6 @@
 # Phase 5 plan: worker execution & autonomy (phases 5.1–5.5)
 
-The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v1.28),
+The roadmap authority is [conveyor-spec.md](../conveyor-spec.md) §19 (v2.4),
 amended by §21.12; the Phase 5.1 execution contract is fixed by §21.13 and
 its harness-template expansion and transport rules are clarified by §21.14
 and §21.20; worker-attempt recovery is fixed by §21.21, portable review
@@ -299,12 +299,22 @@ resolutions → merge that closes the issue.
 *Proves: reviewers confirm evidence rather than reproduce behavior (§21.12
 change 6). Follows 5.3 for the PR-mirroring path.*
 
-1. **Evidence gate:** workspace toggle; with it on, `submit_for_review` is
+**Status: complete (§21.44).**
+
+1. **Evidence gate (shipped):** workspace toggle; with it on, `submit_for_review` is
    refused until at least one verification-evidence artifact (screenshots or
    short recording of the exercised change) is attached via the §21.4
-   artifacts machinery.
-2. **Evidence surfaces:** evidence artifacts listed in review work orders,
+   artifacts machinery. The accepted policy is PNG/JPEG/WebP up to 10 MiB and
+   MP4/WebM up to 25 MiB, with an explicit `verification_evidence` role and
+   direct task/workspace ownership.
+2. **Evidence surfaces (shipped):** evidence artifacts listed in review work orders,
    rendered on the review card, mirrored to the PR.
+
+The submit gate runs before PR creation or any work-order/task/review mutation.
+The PR mirror is one idempotent lifecycle section containing portable filename,
+MIME, byte-size, and SHA-256 metadata. Media retrieval remains authorized
+through Conveyor's task-scoped artifact path; private control-plane URLs and
+credentials are never published to GitHub.
 
 The independent verification agent (scripted flows + computer-use verdicts
 per acceptance criterion, §12) remains Phase 8; this phase is deliberately
