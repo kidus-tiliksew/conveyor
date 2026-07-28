@@ -651,12 +651,28 @@ func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T)
 		t.Fatal(err)
 	}
 	publication.State = core.ReviewPublicationPublished
+	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
+		t.Fatal("review publication without required comment ID succeeded")
+	}
+	publication.CommentID = 51
 	if err = st.UpdateReviewPublication(ctx, publication); err != nil {
 		t.Fatal(err)
 	}
 	publication.State = core.ReviewPublicationFailed
 	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
 		t.Fatal("terminal review publication transition succeeded")
+	}
+	legacy := core.ReviewPublication{
+		ReviewWorkOrderID: "legacy-publication", State: core.ReviewPublicationPublished,
+	}
+	retry := legacy
+	retry.State = core.ReviewPublicationRetrying
+	if err = ValidateReviewPublicationUpdate(legacy, retry); err != nil {
+		t.Fatalf("legacy missing-comment repair rejected: %v", err)
+	}
+	legacy.CommentID = 51
+	if err = ValidateReviewPublicationUpdate(legacy, retry); err == nil {
+		t.Fatal("valid terminal publication was reopened")
 	}
 }
 
@@ -728,11 +744,33 @@ func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 	if stalled == nil || stalled.WorkOrder.ID != "retry" || stalled.LastFailure == "" {
 		t.Fatalf("stalled=%+v", stalled)
 	}
-	if got := StalledTask([]core.WorkOrder{{ID: "cancelled", State: core.WorkOrderCancelled, RetrySuppressed: true}}); got != nil {
-		t.Fatalf("cancelled order stalled=%+v", got)
+	if got := StalledTask([]core.WorkOrder{{ID: "expired", State: core.WorkOrderStale, LastFailureDetail: "queue wait exceeded"}}); got == nil || got.Reason != "queue deadline expired" || got.LastFailure != "queue wait exceeded" {
+		t.Fatalf("expired order stalled=%+v", got)
 	}
 	if got := StalledTask([]core.WorkOrder{{ID: "loop", State: core.WorkOrderQueued, AutomaticRetryCount: 2, LastFailureMessage: "dispatch failed"}}); got == nil || got.Reason != "dispatch is failing repeatedly" {
 		t.Fatalf("loop stalled=%+v", got)
+	}
+	for _, state := range []core.WorkOrderState{
+		core.WorkOrderClaimed,
+		core.WorkOrderSubmitted,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			got := StalledTask([]core.WorkOrder{{
+				ID:                  string(state),
+				State:               state,
+				AutomaticRetryCount: 3,
+				LastFailureMessage:  "historical dispatch failure",
+				LastFailureDetail:   "historical child error",
+			}})
+			if got != nil {
+				t.Fatalf("%s order stalled=%+v", state, got)
+			}
+		})
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderCancelled} {
+		if got := StalledTask([]core.WorkOrder{{ID: string(state), State: state, RetrySuppressed: true}}); got != nil {
+			t.Fatalf("%s order stalled=%+v", state, got)
+		}
 	}
 }
 

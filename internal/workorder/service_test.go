@@ -80,6 +80,107 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "submitted-owner", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-submitted-owner", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner-session", ClientToken: "owner-token", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
+	if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "handoff.md", ContentType: "text/markdown", TaskID: task.ID}, []byte("handoff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle}
+
+	if _, err = service.Get(ctx, job.ID, "owner-session"); err != nil {
+		t.Fatalf("get submitted order: %v", err)
+	}
+	if _, err = service.ReadArtifact(ctx, job.ID, "owner-session", artifact.ID); err != nil {
+		t.Fatalf("read submitted artifact: %v", err)
+	}
+	if _, err = service.Progress(ctx, job.ID, "owner-session", "review pending"); err != nil {
+		t.Fatalf("report submitted progress: %v", err)
+	}
+	if _, err = service.Usage(ctx, job.ID, "owner-session", 100, 25, 0.5); err != nil {
+		t.Fatalf("report submitted usage: %v", err)
+	}
+	if _, err = service.UploadTranscript(ctx, job.ID, "owner-session", "submitted transcript"); err != nil {
+		t.Fatalf("upload submitted transcript: %v", err)
+	}
+	persisted, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || persisted.State != core.WorkOrderSubmitted || persisted.Progress != "review pending" || persisted.TokensIn != 100 || persisted.TokensOut != 25 || persisted.CostUSD != 0.5 {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+
+	for name, call := range map[string]func() error{
+		"get": func() error {
+			_, callErr := service.Get(ctx, job.ID, "other-session")
+			return callErr
+		},
+		"read artifact": func() error {
+			_, callErr := service.ReadArtifact(ctx, job.ID, "other-session", artifact.ID)
+			return callErr
+		},
+		"progress": func() error {
+			_, callErr := service.Progress(ctx, job.ID, "other-session", "wrong")
+			return callErr
+		},
+		"usage": func() error {
+			_, callErr := service.Usage(ctx, job.ID, "other-session", 1, 1, 0)
+			return callErr
+		},
+		"transcript": func() error {
+			_, callErr := service.UploadTranscript(ctx, job.ID, "other-session", "wrong")
+			return callErr
+		},
+	} {
+		if callErr := call(); callErr == nil || !strings.Contains(callErr.Error(), "another session") {
+			t.Errorf("%s from another session error=%v", name, callErr)
+		}
+	}
+
+	for name, call := range map[string]func() error{
+		"submit for review": func() error {
+			_, callErr := service.SubmitForReview(ctx, job.ID, "owner-session")
+			return callErr
+		},
+		"submit spec": func() error {
+			_, callErr := service.SubmitSpec(ctx, job.ID, "owner-session", pipeline.StructuredSpec{})
+			return callErr
+		},
+		"submit review verdict": func() error {
+			_, callErr := service.SubmitVerdict(ctx, job.ID, "owner-session", pipeline.Review{})
+			return callErr
+		},
+	} {
+		if callErr := call(); callErr == nil || !strings.Contains(callErr.Error(), "not claimed") {
+			t.Errorf("%s from submitted state error=%v", name, callErr)
+		}
+	}
+}
+
 func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -504,9 +605,48 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
-	recoveryEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.recovered")
-	if staleEvents != 1 || recoveryEvents != 1 {
-		t.Fatalf("audit events stale=%d recovered=%d", staleEvents, recoveryEvents)
+	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
+	if staleEvents != 1 || redispatchEvents != 1 {
+		t.Fatalf("audit events stale=%d redispatched=%d", staleEvents, redispatchEvents)
+	}
+}
+
+func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		state core.WorkOrderState
+	}{
+		{name: "claimed", state: core.WorkOrderClaimed},
+		{name: "submitted", state: core.WorkOrderSubmitted},
+		{name: "timed-out", state: core.WorkOrderTimedOut},
+		{name: "previously-claimed-stale", state: core.WorkOrderStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, st, service, order := newLifecycleService(t, "redispatch-reject-"+tc.name)
+			claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+				SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.state != core.WorkOrderClaimed {
+				claimed.State = tc.state
+				command := core.WorkOrderCmdSubmitForReview
+				if tc.state == core.WorkOrderTimedOut {
+					command = core.WorkOrderCmdTimeout
+				} else if tc.state == core.WorkOrderStale {
+					command = core.WorkOrderCmdMarkStale
+				}
+				if err = st.UpdateWorkOrder(ctx, claimed, command); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = service.Redispatch(ctx, order.ID); err == nil {
+				t.Fatalf("redispatch unexpectedly accepted %s order", tc.name)
+			}
+		})
 	}
 }
 
@@ -636,6 +776,28 @@ func TestExpiredLeaseReturnsWorkOrderToQueue(t *testing.T) {
 	queued, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || queued.State != core.WorkOrderQueued {
 		t.Fatalf("expired order = %+v err=%v", queued, err)
+	}
+}
+
+func TestOmittedClaimLeaseDefaultsToFiveMinutesAndExpiresToQueued(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "default-claim-lease")
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
+		SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt); got != core.DefaultWorkOrderClaimLease {
+		t.Fatalf("default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
+	}
+	claimed.LeaseExpiresAt = time.Now().Add(-time.Second)
+	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || expired.State != core.WorkOrderQueued {
+		t.Fatalf("expired order = %+v err=%v", expired, err)
 	}
 }
 

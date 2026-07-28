@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -194,6 +195,10 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 		}
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
+	queueTimeout := current.QueueDeadline.Sub(current.QueueEnteredAt)
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
 	retryCount := current.AutomaticRetryCount
 	nextRetry := time.Time{}
 	suppressed := true
@@ -225,8 +230,8 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	} else {
 		lastFailureDetail = ""
 	}
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_detail=$3,last_failure_exit_status=$4,last_failure_at=$5,automatic_retry_count=$6,next_retry_at=$7,retry_suppressed=$8,retry_suppression_reason=$9,updated_at=$10 WHERE workspace_id=$11 AND id=$12 AND worker_id=$13 AND session_id=$14 AND state='claimed' RETURNING `+workOrderColumns,
-		release.Outcome, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, workspace(ctx), workOrderID, workerID, release.SessionID))
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,last_failure_message=$2,last_failure_detail=$3,last_failure_exit_status=$4,last_failure_at=$5,automatic_retry_count=$6,next_retry_at=$7,retry_suppressed=$8,retry_suppression_reason=$9,queue_entered_at=$10,queue_deadline=$11,updated_at=$10 WHERE workspace_id=$12 AND id=$13 AND worker_id=$14 AND session_id=$15 AND state='claimed' RETURNING `+workOrderColumns,
+		release.Outcome, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, now.Add(queueTimeout), workspace(ctx), workOrderID, workerID, release.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}

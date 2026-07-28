@@ -69,7 +69,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
 	released, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
-	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
+	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
 	jobs, err := st.ListJobs(ctx, task.ID)

@@ -34,6 +34,7 @@ type Dispatcher struct {
 	Agent           inprocess.Agent
 	ConfigProvider  func(context.Context) (*config.Config, error)
 	PublishIssue    func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
+	PublishReview   func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
 	ViewPullRequest func(context.Context, string, string) (github.PullRequest, error)
 	RequestMerge    func(context.Context, string, int) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
@@ -48,6 +49,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 	return &Dispatcher{
 		Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64),
 		PublishIssue:    github.PublishIssue,
+		PublishReview:   github.PublishReview,
 		ViewPullRequest: github.PullRequestForBranch,
 		RequestMerge:    github.MergePullRequest,
 		ReviewDiff:      reviewBranchDiff,

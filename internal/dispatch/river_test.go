@@ -123,6 +123,121 @@ func githubIssuePublicationJob(taskID string, attempt int) *river.Job[queueargs.
 	}
 }
 
+func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *testing.T) {
+	t.Parallel()
+	ctx, st, worker, publication := reviewPublicationFixture(t, "approve")
+	if err := st.AppendEvent(ctx, core.Event{
+		TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.completed",
+		At: publication.CreatedAt.Add(time.Second),
+		Payload: core.JSONPayload(map[string]any{
+			"review_work_order_id": publication.ReviewWorkOrderID,
+			"verdict":              "approve",
+			"reason_code":          "approved",
+			"summary":              "All criteria pass.",
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	worker.dispatcher.PublishReview = func(_ context.Context, request githubtrigger.ReviewPublication) (githubtrigger.ReviewPublicationResult, error) {
+		calls++
+		if request.ReviewWorkOrderID != publication.ReviewWorkOrderID || len(request.History) != 1 ||
+			request.History[0].WorkOrderID != publication.ReviewWorkOrderID {
+			t.Fatalf("publication request=%+v", request)
+		}
+		return githubtrigger.ReviewPublicationResult{CommentID: 51, ReviewedCommitSHA: "head-1"}, nil
+	}
+
+	if err := worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 1)); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || stored.State != core.ReviewPublicationPublished || stored.CommentID != 51 || stored.ReviewedCommitSHA != "head-1" {
+		t.Fatalf("stored publication=%+v err=%v", stored, err)
+	}
+	if err = worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("published retry called GitHub %d times, want 1", calls)
+	}
+}
+
+func TestReviewPublicationFailureKeepsInternalReviewAuthoritative(t *testing.T) {
+	t.Parallel()
+	ctx, st, worker, publication := reviewPublicationFixture(t, "approve")
+	wantErr := errors.New("GitHub comment publication failed")
+	worker.dispatcher.PublishReview = func(context.Context, githubtrigger.ReviewPublication) (githubtrigger.ReviewPublicationResult, error) {
+		return githubtrigger.ReviewPublicationResult{}, wantErr
+	}
+	if err := worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 1)); !errors.Is(err, wantErr) {
+		t.Fatalf("publication error=%v, want %v", err, wantErr)
+	}
+	stored, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || stored.State != core.ReviewPublicationRetrying || stored.CommentID != 0 || stored.LastError != wantErr.Error() {
+		t.Fatalf("retrying publication=%+v err=%v", stored, err)
+	}
+	task, err := st.GetTask(ctx, publication.TaskID)
+	if err != nil || task.State != core.TaskRunning || task.NextStage != core.StageReview {
+		t.Fatalf("internal task changed after external failure: task=%+v err=%v", task, err)
+	}
+
+	worker.dispatcher.PublishReview = func(context.Context, githubtrigger.ReviewPublication) (githubtrigger.ReviewPublicationResult, error) {
+		return githubtrigger.ReviewPublicationResult{ReviewedCommitSHA: "head-1"}, nil
+	}
+	err = worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 5))
+	if err == nil || !strings.Contains(err.Error(), "required aggregate comment returned no comment ID") {
+		t.Fatalf("missing-comment error=%v", err)
+	}
+	stored, getErr := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if getErr != nil || stored.State != core.ReviewPublicationFailed || stored.CommentID != 0 {
+		t.Fatalf("failed publication=%+v err=%v", stored, getErr)
+	}
+}
+
+func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, store.Store, *reviewPublicationWorker, core.ReviewPublication) {
+	t.Helper()
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	taskID := "review-publication-" + core.NewTaskID()
+	task := core.Task{
+		ID: taskID, Workspace: "test", Repo: "app", Branch: "conveyor/" + taskID,
+		State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	jobID := taskID + "-review-1"
+	if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+		t.Fatal(err)
+	}
+	publication := core.ReviewPublication{
+		ReviewWorkOrderID: jobID, TaskID: taskID, JobID: jobID,
+		Verdict: verdict, ReasonCode: "approved", Summary: "All criteria pass.",
+	}
+	if err := st.QueueReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	publication, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, &config.Config{
+		Workspace: "test",
+		Repos:     []config.Repo{{Name: "app", GitHub: "acme/app"}},
+	}, nil)
+	return ctx, st, &reviewPublicationWorker{dispatcher: dispatcher}, publication
+}
+
+func reviewPublicationJob(workOrderID string, attempt int) *river.Job[queueargs.ReviewPublicationArgs] {
+	return &river.Job[queueargs.ReviewPublicationArgs]{
+		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
+		Args: queueargs.ReviewPublicationArgs{
+			WorkspaceID: "test", ReviewWorkOrderID: workOrderID,
+		},
+	}
+}
+
 func TestDispatchDuplicateWithActiveConflictFixIsAcknowledged(t *testing.T) {
 	t.Parallel()
 	ctx, st, worker, taskID := dispatchFailureFixture(t, true)
@@ -163,16 +278,16 @@ func TestDispatchGenuineFailureStillRequeues(t *testing.T) {
 	}
 }
 
-func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
+func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	t.Parallel()
 	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
 	wantErr := errors.New("database unavailable")
 
-	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, 5, 5), wantErr); !errors.Is(err, wantErr) {
+	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queueargs.DispatchTaskMaxAttempts, queueargs.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
 		t.Fatalf("failure error = %v, want %v", err, wantErr)
 	}
 	current, err := st.GetTask(ctx, taskID)
-	if err != nil || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+	if err != nil || current.State != core.TaskParked || current.RecoveryStage != core.StageImplement {
 		t.Fatalf("task=%+v err=%v", current, err)
 	}
 	events, err := st.ListEvents(ctx, taskID)
@@ -180,11 +295,28 @@ func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"job.fail"`) {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"dispatch.fail_final"`) {
 			return
 		}
 	}
-	t.Fatal("final dispatch failure did not record job.fail")
+	t.Fatal("final dispatch failure did not record dispatch.fail_final")
+}
+
+func TestDispatchRetryDelayTableMatchesSpec(t *testing.T) {
+	t.Parallel()
+	if queueargs.DispatchTaskRetryLimit != 5 || queueargs.DispatchTaskMaxAttempts != 6 {
+		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queueargs.DispatchTaskRetryLimit, queueargs.DispatchTaskMaxAttempts)
+	}
+	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
+	for attempt, want := range wants {
+		attempt := attempt + 1
+		if got := queueargs.DispatchTaskRetryDelay(attempt); got != want {
+			t.Fatalf("attempt %d retry delay = %s, want %s", attempt, got, want)
+		}
+	}
+	if got := queueargs.DispatchTaskRetryDelay(6); got != queueargs.DispatchRetryMaximumDelay {
+		t.Fatalf("retry cap = %s, want %s", got, queueargs.DispatchRetryMaximumDelay)
+	}
 }
 
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {

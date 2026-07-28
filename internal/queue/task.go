@@ -6,9 +6,35 @@ package queue
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"time"
 )
 
 const ControlQueue = "control"
+
+const (
+	// River counts the initial execution in MaxAttempts, so five scheduled
+	// retries require six total executions (spec §3.3, §21.41).
+	DispatchTaskRetryLimit    = 5
+	DispatchTaskMaxAttempts   = DispatchTaskRetryLimit + 1
+	DispatchRetryInitialDelay = 10 * time.Second
+	DispatchRetryMaximumDelay = 5 * time.Minute
+)
+
+// DispatchTaskRetryDelay returns the bounded T12/T13 backoff for the attempt
+// that just failed (spec §3.3, §21.41).
+func DispatchTaskRetryDelay(attempt int) time.Duration {
+	delay := DispatchRetryInitialDelay
+	for step := 1; step < attempt && delay < DispatchRetryMaximumDelay; step++ {
+		if delay > DispatchRetryMaximumDelay/2 {
+			return DispatchRetryMaximumDelay
+		}
+		delay *= 2
+	}
+	if delay > DispatchRetryMaximumDelay {
+		return DispatchRetryMaximumDelay
+	}
+	return delay
+}
 
 type DispatchTaskArgs struct {
 	WorkspaceID string `json:"workspace_id" river:"unique"`

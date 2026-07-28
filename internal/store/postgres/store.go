@@ -1868,7 +1868,7 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	}
 	lease := claim.Lease
 	if lease <= 0 {
-		lease = 15 * time.Minute
+		lease = core.DefaultWorkOrderClaimLease
 	}
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdClaim); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
@@ -1945,7 +1945,10 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 	if order.State != core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 	}
-	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRecover); transitionErr != nil {
+	if !order.ExecutionStartedAt.IsZero() {
+		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+	}
+	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
@@ -1963,7 +1966,7 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRecover, "reason": "stale queue redispatch"}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2048,11 +2051,16 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	lifecycleCommand := core.WorkOrderCmdRecover
 	eventKind := "work_order.recovered"
 	if priorState == core.WorkOrderQueued {
-		lifecycleCommand = core.WorkOrderCmdRedispatch
+		// Resetting retry metadata on an already-queued order is not a lifecycle
+		// transition. Keep the historical event kind without mislabeling this
+		// operator action as W14 (spec §3.3, §21.41).
+		lifecycleCommand = ""
 		eventKind = "work_order.redispatched"
 	}
-	if _, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand); transitionErr != nil {
-		return core.WorkOrder{}, transitionErr
+	if lifecycleCommand != "" {
+		if _, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand); transitionErr != nil {
+			return core.WorkOrder{}, transitionErr
+		}
 	}
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		change := refreeze[0]
@@ -2325,7 +2333,11 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 	if err := insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(publication)}); err != nil {
 		return err
 	}
-	_, err = s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{WorkspaceID: workspace(ctx), ReviewWorkOrderID: publication.ReviewWorkOrderID}, &river.InsertOpts{
+	return s.enqueueReviewPublicationJobTx(ctx, tx, publication.ReviewWorkOrderID)
+}
+
+func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, reviewWorkOrderID string) error {
+	_, err := s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{WorkspaceID: workspace(ctx), ReviewWorkOrderID: reviewWorkOrderID}, &river.InsertOpts{
 		MaxAttempts: 5,
 		Queue:       queueargs.ReviewPublicationQueue(workspace(ctx)),
 		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
@@ -2617,11 +2629,13 @@ func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.Revie
 
 func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		var current core.ReviewPublicationState
-		if err := tx.QueryRow(ctx, `SELECT state FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2 FOR UPDATE`, workspace(ctx), publication.ReviewWorkOrderID).Scan(&current); err != nil {
+		var current core.ReviewPublication
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state, comment_id FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2 FOR UPDATE`, workspace(ctx), publication.ReviewWorkOrderID).Scan(&state, &current.CommentID); err != nil {
 			return notFound(err, "review publication %s", publication.ReviewWorkOrderID)
 		}
-		if err := store.ValidateReviewPublicationTransition(current, publication.State); err != nil {
+		current.State = core.ReviewPublicationState(state)
+		if err := store.ValidateReviewPublicationUpdate(current, publication); err != nil {
 			return err
 		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
@@ -2680,6 +2694,27 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	rows.Close()
+	invalidRows, err := s.pool.Query(ctx, "SELECT "+reviewPublicationColumns+` FROM review_publications
+		WHERE workspace_id=$1 AND state='published' AND comment_id=0
+		ORDER BY created_at, review_work_order_id`, workspace(ctx))
+	if err != nil {
+		return 0, err
+	}
+	var invalid []core.ReviewPublication
+	for invalidRows.Next() {
+		publication, scanErr := scanReviewPublication(invalidRows)
+		if scanErr != nil {
+			invalidRows.Close()
+			return 0, scanErr
+		}
+		invalid = append(invalid, publication)
+	}
+	if err = invalidRows.Err(); err != nil {
+		invalidRows.Close()
+		return 0, err
+	}
+	invalidRows.Close()
+
 	created := 0
 	for _, publication := range missing {
 		if err = s.QueueReviewPublication(ctx, publication); err != nil {
@@ -2687,7 +2722,45 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		}
 		created++
 	}
+	for _, publication := range invalid {
+		repaired, repairErr := s.repairPublishedReviewPublication(ctx, publication)
+		if repairErr != nil {
+			return created, repairErr
+		}
+		if repaired {
+			created++
+		}
+	}
 	return created, nil
+}
+
+func (s *Store) repairPublishedReviewPublication(ctx context.Context, publication core.ReviewPublication) (bool, error) {
+	repaired := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		result, err := tx.Exec(ctx, `UPDATE review_publications
+			SET state='retrying', last_error=$1, updated_at=now()
+			WHERE workspace_id=$2 AND review_work_order_id=$3
+				AND state='published' AND comment_id=0`,
+			"reconciling published review projection without required comment",
+			workspace(ctx), publication.ReviewWorkOrderID)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return nil
+		}
+		repaired = true
+		publication.State = core.ReviewPublicationRetrying
+		publication.LastError = "reconciling published review projection without required comment"
+		if err = insertEvent(ctx, q, core.Event{
+			TaskID: publication.TaskID, JobID: publication.JobID,
+			Kind: "review.publication_retry", Payload: core.JSONPayload(publication),
+		}); err != nil {
+			return err
+		}
+		return s.enqueueReviewPublicationJobTx(ctx, tx, publication.ReviewWorkOrderID)
+	})
+	return repaired, err
 }
 
 func reviewDecisionPayload(decision core.ReviewDecision) []byte {
@@ -2962,7 +3035,7 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 
 func (s *Store) enqueueTaskTx(ctx context.Context, tx pgx.Tx, taskID, workspace string) (bool, error) {
 	result, err := s.river.InsertTx(ctx, tx, queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID}, &river.InsertOpts{
-		MaxAttempts: 3,
+		MaxAttempts: queueargs.DispatchTaskMaxAttempts,
 		Queue:       queueargs.DispatchQueue(workspace),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs: true,
