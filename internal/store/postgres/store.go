@@ -681,7 +681,11 @@ func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
 func (s *Store) UpdateJob(ctx context.Context, job core.Job) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current core.JobState
-		if err := tx.QueryRow(ctx, `SELECT state FROM jobs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), job.ID).Scan(&current); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT j.state
+			FROM jobs j
+			JOIN tasks t ON t.id=j.task_id
+			WHERE t.workspace_id=$1 AND j.id=$2
+			FOR UPDATE OF j`, workspace(ctx), job.ID).Scan(&current); err != nil {
 			return notFound(err, "job %s", job.ID)
 		}
 		if err := store.ValidateJobTransition(current, job.State); err != nil {
