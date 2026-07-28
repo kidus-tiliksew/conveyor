@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"sync"
 	"testing"
 	"time"
@@ -56,19 +57,19 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	deadline := claimed.ExecutionDeadline
-	renewed, err := st.RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute)
+	renewed, err := storetest.For(st).RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute)
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
+	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
@@ -76,26 +77,26 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {
 		t.Fatalf("released jobs=%+v err=%v", jobs, err)
 	}
-	recovered, err := st.RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
+	recovered, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
 	if err != nil || !recovered.Claimable || recovered.RetrySuppressed {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	duplicate, err := st.RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
+	duplicate, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
 	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate recovery=%+v err=%v", duplicate, err)
 	}
-	secondClaim, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-2", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	secondClaim, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-2", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) {
 		t.Fatalf("second claim=%+v err=%v", secondClaim, err)
 	}
-	if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute); staleErr == nil {
+	if _, staleErr := storetest.For(st).RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute); staleErr == nil {
 		t.Fatal("stale session renewed newer claim")
 	}
-	if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Outcome: core.WorkOrderOutcomeCancelled}); staleErr == nil {
+	if _, staleErr := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Outcome: core.WorkOrderOutcomeCancelled}); staleErr == nil {
 		t.Fatal("stale session released newer claim")
 	}
 	exit := 1
-	failed, err := st.ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Reason: "harness exited: status 1", Outcome: core.WorkOrderOutcomeChildFailure, ExitStatus: &exit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3})
+	failed, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Reason: "harness exited: status 1", Outcome: core.WorkOrderOutcomeChildFailure, ExitStatus: &exit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3})
 	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
@@ -105,7 +106,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 		recoveries.Add(1)
 		go func() {
 			defer recoveries.Done()
-			_, recoverErr := st.RecoverWorkOrder(ctx, job.ID, "concurrent-recovery", time.Hour)
+			_, recoverErr := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "concurrent-recovery", time.Hour)
 			recoveryErrors <- recoverErr
 		}()
 	}
@@ -130,17 +131,17 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, expiredJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: expiredJob.ID, TaskID: expiredTask.ID, JobID: expiredJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: expiredJob.ID, TaskID: expiredTask.ID, JobID: expiredJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, expiredJob.ID, core.WorkOrderClaim{SessionID: "expiring-session", ClientToken: "expiring-token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, expiredJob.ID, core.WorkOrderClaim{SessionID: "expiring-session", ClientToken: "expiring-token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)
-	if _, err = st.RenewWorkerClaim(ctx, expiredJob.ID, worker.ID, "expiring-session", time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, expiredJob.ID, worker.ID, "expiring-session", time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 		t.Fatalf("expired session renewed directly: %v", err)
 	}
-	if _, err = st.ReleaseWorkerClaim(ctx, expiredJob.ID, worker.ID, core.WorkOrderRelease{SessionID: "expiring-session", Outcome: core.WorkOrderOutcomeReleased}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, expiredJob.ID, worker.ID, core.WorkOrderRelease{SessionID: "expiring-session", Outcome: core.WorkOrderOutcomeReleased}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 		t.Fatalf("expired session released directly: %v", err)
 	}
 	expired, err := st.GetWorkOrder(ctx, expiredJob.ID)
@@ -162,18 +163,18 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, submittedJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: submittedJob.ID, TaskID: submittedTask.ID, JobID: submittedJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: submittedJob.ID, TaskID: submittedTask.ID, JobID: submittedJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	submittedClaim, err := st.ClaimWorkOrder(ctx, submittedJob.ID, core.WorkOrderClaim{SessionID: "submitted-session", ClientToken: "submitted-token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	submittedClaim, err := storetest.For(st).ClaimWorkOrder(ctx, submittedJob.ID, core.WorkOrderClaim{SessionID: "submitted-session", ClientToken: "submitted-token", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	submittedClaim.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, submittedClaim); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, submittedClaim); err != nil {
 		t.Fatal(err)
 	}
-	if submitted, renewErr := st.RenewWorkerClaim(ctx, submittedJob.ID, worker.ID, "submitted-session", time.Minute); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
+	if submitted, renewErr := storetest.For(st).RenewWorkerClaim(ctx, submittedJob.ID, worker.ID, "submitted-session", time.Minute); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
 	}
 }

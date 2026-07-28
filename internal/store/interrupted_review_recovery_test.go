@@ -44,11 +44,11 @@ func TestMemoryInterruptedReviewRecoveryResultEmitsEmptyRetainedOrdersAsArray(t 
 		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: seat, RetrySuppressed: true, CreatedAt: now}); err != nil {
+		if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: seat, RetrySuppressed: true, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	result, err := st.RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: task.ID, RequestID: "recover-empty-retained", Round: 1}, time.Hour)
+	result, err := storetestFor(st).RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: task.ID, RequestID: "recover-empty-retained", Round: 1}, time.Hour)
 	if err != nil || result.RecoveredOrders == nil || result.RetainedOrders == nil || len(result.RecoveredOrders) != 2 || len(result.RetainedOrders) != 0 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -85,15 +85,15 @@ func TestMemoryInterruptedReviewRecoveryRetainsCompletedSeatAndIsIdempotent(t *t
 	st := NewMemory()
 	ctx := interruptedReviewFixture(t, st)
 	request := InterruptedReviewRecoveryRequest{TaskID: "interrupted-review", RequestID: "recover-1", Round: 1}
-	result, err := st.RecoverInterruptedReviewRound(ctx, request, time.Hour)
+	result, err := storetestFor(st).RecoverInterruptedReviewRound(ctx, request, time.Hour)
 	if err != nil || len(result.RecoveredOrders) != 1 || result.RecoveredOrders[0].ReviewSeat != 2 || len(result.RetainedOrders) != 1 || result.RetainedOrders[0].ReviewSeat != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	duplicate, err := st.RecoverInterruptedReviewRound(ctx, request, time.Hour)
+	duplicate, err := storetestFor(st).RecoverInterruptedReviewRound(ctx, request, time.Hour)
 	if err != nil || duplicate.RequestID != result.RequestID || len(duplicate.RecoveredOrders) != 1 {
 		t.Fatalf("idempotent result=%+v err=%v", duplicate, err)
 	}
-	if _, err = st.RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: "interrupted-review", RequestID: "recover-1", Round: 2}, time.Hour); !errors.Is(err, ErrReviewRetryConflict) {
+	if _, err = storetestFor(st).RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: "interrupted-review", RequestID: "recover-1", Round: 2}, time.Hour); !errors.Is(err, ErrReviewRetryConflict) {
 		t.Fatalf("divergent request err=%v", err)
 	}
 	events, _ := st.ListEvents(ctx, "interrupted-review")
@@ -123,7 +123,7 @@ func TestMemoryInterruptedReviewRecoverySerializesConcurrentRequests(t *testing.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := st.RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: "interrupted-review", RequestID: id, Round: 1}, time.Hour)
+			_, err := storetestFor(st).RecoverInterruptedReviewRound(ctx, InterruptedReviewRecoveryRequest{TaskID: "interrupted-review", RequestID: id, Round: 1}, time.Hour)
 			results <- err
 		}()
 	}

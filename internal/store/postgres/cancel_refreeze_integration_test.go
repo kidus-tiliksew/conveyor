@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
@@ -174,10 +175,10 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, cancelJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: cancelJob.ID, TaskID: cancelTask.ID, JobID: cancelJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: cancelJob.ID, TaskID: cancelTask.ID, JobID: cancelJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	orderIDs := []string{cancelJob.ID}
@@ -187,27 +188,27 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		order := core.WorkOrder{ID: job.ID, TaskID: cancelTask.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
-		if err = st.CreateWorkOrder(ctx, order); err != nil {
+		if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
 		switch state {
 		case core.WorkOrderSubmitted:
-			claimed, claimErr := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "submitted-session", ClientToken: "submitted-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			claimed, claimErr := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "submitted-session", ClientToken: "submitted-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
 			if claimErr != nil {
 				t.Fatal(claimErr)
 			}
 			claimed.State = core.WorkOrderSubmitted
-			if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 				t.Fatal(err)
 			}
 		case core.WorkOrderTimedOut:
 			order.State = core.WorkOrderTimedOut
-			if err = st.UpdateWorkOrder(ctx, order, core.WorkOrderCmdTimeout); err != nil {
+			if err = storetest.For(st).UpdateWorkOrder(ctx, order, core.WorkOrderCmdTimeout); err != nil {
 				t.Fatal(err)
 			}
 		case core.WorkOrderStale:
 			order.State = core.WorkOrderStale
-			if err = st.UpdateWorkOrder(ctx, order, core.WorkOrderCmdMarkStale); err != nil {
+			if err = storetest.For(st).UpdateWorkOrder(ctx, order, core.WorkOrderCmdMarkStale); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -245,7 +246,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 			t.Fatalf("cancelled job not cleaned up: %+v", job)
 		}
 	}
-	if _, err = st.RenewWorkerClaim(ctx, cancelJob.ID, "worker", "session", time.Minute); !errors.Is(err, store.ErrWorkOrderCancelled) {
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "session", time.Minute); !errors.Is(err, store.ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)
 	}
 	if _, err = st.CancelTask(ctx, core.Intervention{TaskID: cancelTask.ID, JobID: cancelJob.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, store.ErrTaskTerminal) {
@@ -280,11 +281,11 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, recoverJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), LastAttemptOutcome: "child_failure", RetrySuppressed: true, CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: recoverJob.ID, TaskID: recoverTask.ID, JobID: recoverJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute), LastAttemptOutcome: "child_failure", RetrySuppressed: true, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	change := &store.RecoveryRefreeze{Setup: next, RequiredModel: "new", RequiredHarness: "codex", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "exec"}, Effort: "high", EffortArgv: []string{"--effort", "high"}}, ExecutionTimeoutText: "2h"}
-	recovered, err := st.RecoverWorkOrder(ctx, recoverJob.ID, "recover-refreeze", time.Hour, change)
+	recovered, err := storetest.For(st).RecoverWorkOrder(ctx, recoverJob.ID, "recover-refreeze", time.Hour, change)
 	if err != nil || recovered.State != core.WorkOrderQueued || recovered.RequiredModel != "new" || recovered.RequiredEffort != "high" {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}

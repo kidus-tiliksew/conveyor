@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
@@ -348,7 +349,7 @@ func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context
 		if err := st.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ReasonCode: "merge-conflict"}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ReasonCode: "merge-conflict"}); err != nil {
 			t.Fatal(err)
 		}
 	}

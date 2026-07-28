@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"sync"
@@ -1694,7 +1695,7 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "warm-implement-session", ClientToken: "warm-token", Lease: time.Minute}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "warm-implement-session", ClientToken: "warm-token", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	interventions, err := st.ListInterventions(ctx, task.ID)
@@ -2004,7 +2005,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 			}
-			if err := st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+			if err := storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 				t.Fatal(err)
 			}
 			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}

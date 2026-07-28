@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -39,10 +40,10 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 		if err := st.CreateJob(ctx, core.Job{ID: item.order, TaskID: item.task, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: item.order, TaskID: item.task, JobID: item.order, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: item.order, TaskID: item.task, JobID: item.order, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.ClaimWorkOrder(ctx, item.order, core.WorkOrderClaim{SessionID: item.session, ClientToken: "secret", ClaimantID: item.worker, WorkerID: item.worker, Lease: time.Minute}); err != nil {
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, item.order, core.WorkOrderClaim{SessionID: item.session, ClientToken: "secret", ClaimantID: item.worker, WorkerID: item.worker, Lease: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,7 +86,7 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
 	provider := func(context.Context) (*config.Config, error) {
@@ -119,10 +120,10 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
@@ -156,10 +157,10 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(st)
@@ -234,7 +235,7 @@ func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) 
 			t.Fatal(err)
 		}
 		order := core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
 		created, err := st.GetWorkOrder(ctx, order.ID)
@@ -245,7 +246,7 @@ func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) 
 	}
 	claim := func(order core.WorkOrder, workerID string, executionTimeout time.Duration) core.WorkOrder {
 		t.Helper()
-		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
 			SessionID: order.ID + "-session", ClientToken: order.ID + "-token",
 			ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: executionTimeout,
 		})
@@ -257,7 +258,7 @@ func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) 
 	transition := func(order core.WorkOrder, state core.WorkOrderState, command core.WorkOrderCommand) {
 		t.Helper()
 		order.State = state
-		if err := st.UpdateWorkOrder(ctx, order, command); err != nil {
+		if err := storetest.For(st).UpdateWorkOrder(ctx, order, command); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -276,7 +277,7 @@ func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) 
 	claim(createOrder("own-timed-out", core.StageImplement), worker.ID, time.Nanosecond)
 	stale := createOrder("stale", core.StageImplement)
 	stale.QueueDeadline = now.Add(-time.Minute)
-	if err := st.UpdateWorkOrder(ctx, stale); err != nil {
+	if err := storetest.For(st).UpdateWorkOrder(ctx, stale); err != nil {
 		t.Fatal(err)
 	}
 

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"sync"
@@ -53,10 +54,10 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 		{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, ReviewKind: "refresh", ReviewScope: "delta", BaselineSHA: "approved-head", HeadSHA: "new-head", RequiredModel: "claude-review", RequiredHarness: "claude", RequiredEffort: "high", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, Effort: "high", ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 	}
-	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatalf("idempotent review round retry: %v", err)
 	}
 	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
@@ -102,14 +103,14 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	first, err := st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "review-1", ClientToken: "token-1", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	first, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "review-1", ClientToken: "token-1", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil || first.ModelEnforcement != "worker-pinned" {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "review-1", ClientToken: "token-2", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour}); err == nil || !strings.Contains(err.Error(), "session independence") {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "review-1", ClientToken: "token-2", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour}); err == nil || !strings.Contains(err.Error(), "session independence") {
 		t.Fatalf("same-session claim error=%v", err)
 	}
-	second, err := st.ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "review-2", ClientToken: "token-2", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	second, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "review-2", ClientToken: "token-2", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil || second.ModelEnforcement != "worker-pinned" {
 		t.Fatalf("second=%+v err=%v", second, err)
 	}
@@ -211,7 +212,7 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 			}
-			if err := st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+			if err := storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 				t.Fatal(err)
 			}
 
@@ -224,7 +225,7 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 				go func() {
 					ready.Done()
 					<-start
-					_, claimErr := st.ClaimWorkOrder(ctx, orders[i].ID, tt.claims[i])
+					_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, orders[i].ID, tt.claims[i])
 					results <- claimErr
 				}()
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"net/url"
 	"os"
 	"strings"
@@ -246,7 +247,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	claims := make(chan error, 2)
 	for i := range 2 {
 		go func() {
-			_, claimErr := st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
+			_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
 				SessionID: "session-" + string(rune('a'+i)), ClientToken: "token-" + string(rune('a'+i)),
 				Agent: "codex", Model: "operator", Lease: time.Minute, ExecutionTimeout: time.Hour,
 			})

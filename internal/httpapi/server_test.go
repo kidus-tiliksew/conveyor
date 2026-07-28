@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Cont
 	if target == core.WorkOrderTimedOut && order.ExecutionDeadline.IsZero() {
 		order.ExecutionDeadline = time.Now().Add(-time.Minute)
 	}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	switch target {
@@ -41,7 +42,7 @@ func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Cont
 		if target == core.WorkOrderClaimed && order.LeaseExpiresAt.After(time.Now()) {
 			lease = time.Until(order.LeaseExpiresAt)
 		}
-		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: lease})
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: lease})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +50,7 @@ func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Cont
 			return claimed
 		}
 		claimed.State = core.WorkOrderCompleted
-		if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 			t.Fatal(err)
 		}
 		return claimed
@@ -230,13 +231,13 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "child", Outcome: core.WorkOrderOutcomeCancelled, Reason: "worker shutting down"}); err != nil {
+	if _, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "child", Outcome: core.WorkOrderOutcomeCancelled, Reason: "worker shutting down"}); err != nil {
 		t.Fatal(err)
 	}
 	provider := func(context.Context) (*config.Config, error) {
@@ -290,7 +291,7 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(st)
@@ -999,13 +1000,13 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 		t.Fatal(err)
 	}
 	const failure = "harness exited before completing work order"
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
 		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement,
 		AutomaticRetryCount: 3, LastFailureMessage: failure,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
 		SessionID: "recovered-session", ClientToken: "test-token", WorkerID: "worker",
 		Lease: time.Minute,
 	})
@@ -1013,7 +1014,7 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 		t.Fatal(err)
 	}
 	claimed.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.AppendEvent(ctx, core.Event{
@@ -1058,10 +1059,10 @@ func TestTaskActivityExposesLatestAgentProgressWithLabelAndTimestamp(t *testing.
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	service := &workorder.Service{Store: st}

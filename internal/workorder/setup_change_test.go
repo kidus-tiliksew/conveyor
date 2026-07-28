@@ -3,6 +3,7 @@ package workorder
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"testing"
 	"time"
 
@@ -39,20 +40,20 @@ func setupChangeFixture(t *testing.T, nextSeats []config.ReviewSeat) (*Service, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	completed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	completed.State = core.WorkOrderCompleted
-	if err = st.UpdateWorkOrder(ctx, completed); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, completed); err != nil {
 		t.Fatal(err)
 	}
 	interrupted := orders[1]
 	interrupted.RetrySuppressed, interrupted.LastAttemptOutcome = true, core.WorkOrderOutcomeExpired
-	if err = st.UpdateWorkOrder(ctx, interrupted); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, interrupted); err != nil {
 		t.Fatal(err)
 	}
 	return &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}, st, ctx, task, old, next
@@ -87,12 +88,12 @@ func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) 
 	if updated.RequiredModel != "new-seat" || updated.RequiredHarness != "claude" || updated.RequiredEffort != "high" || updated.RetrySuppressed {
 		t.Fatalf("updated=%+v", updated)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, updated.ID, core.WorkOrderClaim{SessionID: "fresh-review", ClientToken: "fresh-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, updated.ID, core.WorkOrderClaim{SessionID: "fresh-review", ClientToken: "fresh-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed.State = core.WorkOrderCompleted
-	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: claimed.JobID, ReviewWorkOrderID: claimed.ID,
@@ -153,15 +154,15 @@ func TestChangeTaskSetupAllowsSubmittedImplementAttempt(t *testing.T) {
 	}
 	submitted := core.WorkOrder{ID: "setup-change-implement-1", TaskID: task.ID, JobID: "setup-change-implement-1", Stage: core.StageImplement,
 		State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}
-	if err := st.CreateWorkOrder(ctx, submitted); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, submitted); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, submitted.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, submitted.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
 	result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "reroute review while held", "setup-submitted")
@@ -183,15 +184,15 @@ func TestChangeTaskSetupRejectsInFlightReviewVerdict(t *testing.T) {
 	for _, order := range orders {
 		if order.Stage == core.StageReview && order.State == core.WorkOrderQueued {
 			order.RetrySuppressed, order.LastAttemptOutcome = false, ""
-			if err := st.UpdateWorkOrder(ctx, order); err != nil {
+			if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 				t.Fatal(err)
 			}
-			claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
 			claimed.State = core.WorkOrderSubmitted
-			if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -212,10 +213,10 @@ func TestChangeTaskSetupRejectsClaimedAttemptWithoutMutation(t *testing.T) {
 	for _, order := range orders {
 		if order.State == core.WorkOrderQueued {
 			order.RetrySuppressed, order.LastAttemptOutcome = false, ""
-			if err := st.UpdateWorkOrder(ctx, order); err != nil {
+			if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "active", ClientToken: "secret", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "active", ClientToken: "secret", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 				t.Fatal(err)
 			}
 			break

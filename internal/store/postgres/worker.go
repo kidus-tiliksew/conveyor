@@ -133,16 +133,6 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
-	order, err := s.GetWorkOrder(ctx, workOrderID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	return taskops.ExecuteWorkOrder(ctx, s, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.RenewWorkerClaimCommand(ctx, taskLease, workOrderID, workerID, sessionID, lease)
-	})
-}
-
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
 	current, err := s.GetWorkOrder(ctx, workOrderID)
 	if err != nil {
@@ -170,16 +160,6 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	}
 	_ = s.AppendEvent(store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner}), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"lease_expires_at": order.LeaseExpiresAt})})
 	return order, nil
-}
-
-func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
-	order, err := s.GetWorkOrder(ctx, workOrderID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	return taskops.ExecuteWorkOrder(ctx, s, order.TaskID, core.WorkOrderCmdRelease, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.ReleaseWorkerClaimCommand(ctx, taskLease, workOrderID, workerID, release)
-	})
 }
 
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {

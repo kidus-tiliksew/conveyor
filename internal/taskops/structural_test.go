@@ -34,6 +34,41 @@ func TestProductionWorkOrderWritersEnterTaskOps(t *testing.T) {
 		"RenewWorkerClaimCommand": true, "ReleaseWorkerClaimCommand": true,
 	}
 	fset := token.NewFileSet()
+	for _, rel := range []string{
+		filepath.Join("internal", "store", "store.go"),
+		filepath.Join("internal", "store", "postgres", "store.go"),
+		filepath.Join("internal", "store", "postgres", "worker.go"),
+	} {
+		path := filepath.Join(root, rel)
+		parsed, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch item := node.(type) {
+			case *ast.FuncDecl:
+				if legacy[item.Name.Name] {
+					t.Errorf("%s exports bypassable lifecycle method %s", rel, item.Name.Name)
+				}
+			case *ast.TypeSpec:
+				if item.Name.Name != "Store" {
+					return true
+				}
+				iface, ok := item.Type.(*ast.InterfaceType)
+				if !ok {
+					return true
+				}
+				for _, field := range iface.Methods.List {
+					for _, name := range field.Names {
+						if legacy[name.Name] {
+							t.Errorf("%s Store interface exposes bypassable lifecycle method %s", rel, name.Name)
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

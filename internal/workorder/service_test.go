@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,10 +43,10 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -93,16 +94,16 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner-session", ClientToken: "owner-token", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner-session", ClientToken: "owner-token", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed.State = core.WorkOrderSubmitted
 	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
-	if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
 	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "handoff.md", ContentType: "text/markdown", TaskID: task.ID}, []byte("handoff"))
@@ -193,10 +194,10 @@ func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "spec-session", ClientToken: "secret", Agent: "codex", Model: "gpt-spec", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "spec-session", ClientToken: "secret", Agent: "codex", Model: "gpt-spec", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	d := &dispatch.Dispatcher{Store: st}
@@ -243,16 +244,16 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 		if state == core.WorkOrderTimedOut {
 			deadline = time.Now().Add(-time.Minute)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ExecutionDeadline: deadline, ReviewRound: 1, ReviewSeat: seat + 1}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ExecutionDeadline: deadline, ReviewRound: 1, ReviewSeat: seat + 1}); err != nil {
 			t.Fatal(err)
 		}
 		if state == core.WorkOrderCompleted {
-			claimed, err := st.ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: id + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: id + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
 			claimed.State = core.WorkOrderCompleted
-			if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 				t.Fatal(err)
 			}
 		} else if persisted, err := st.GetWorkOrder(ctx, id); err != nil || persisted.State != core.WorkOrderTimedOut {
@@ -342,10 +343,10 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	bundle, err := pack.Load("../../pack")
@@ -380,10 +381,10 @@ func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: "job", TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "job", TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, "job", core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, "job", core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +420,7 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	queuedAt := time.Now().Add(-2 * time.Hour)
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ExecutionTimeoutText: "2h", QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ExecutionTimeoutText: "2h", QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -447,7 +448,7 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	}
 	firstDeadline := claimed.ExecutionDeadline
 	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
-	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute}); err == nil || !strings.Contains(err.Error(), "operator recovery") {
@@ -488,7 +489,7 @@ func TestOperatorRecoveryRefreezesNamedSetupAndRepinsOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old-model", RequiredHarness: "codex", RequiredEffort: "medium", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "old"}, Effort: "medium"}, ExecutionTimeoutText: "1h", LastAttemptOutcome: core.WorkOrderOutcomeChildFailure, RetrySuppressed: true, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -521,7 +522,7 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 		t.Fatal(err)
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "frozen-model", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: time.Now().Add(-time.Hour), QueueDeadline: time.Now().Add(-time.Minute)}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	if persisted, err := st.GetWorkOrder(ctx, order.ID); err != nil || persisted.State != core.WorkOrderStale {
@@ -554,7 +555,7 @@ func TestInterruptedReviewRecoveryRefreezesSetupAndRepinsSeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "old-review", RequiredHarness: "codex", RequiredEffort: "medium", LastAttemptOutcome: core.WorkOrderOutcomeChildFailure, RetrySuppressed: true}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -579,7 +580,7 @@ func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "stale")
 	order.QueueDeadline = time.Now().Add(-time.Second)
-	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	orders, err := service.List(ctx)
@@ -595,7 +596,7 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "redispatch")
 	order.QueueDeadline = time.Now().Add(-time.Second)
-	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.List(ctx); err != nil {
@@ -634,7 +635,7 @@ func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, st, service, order := newLifecycleService(t, "redispatch-reject-"+tc.name)
-			claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
 				SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
 			})
 			if err != nil {
@@ -648,7 +649,7 @@ func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
 				} else if tc.state == core.WorkOrderStale {
 					command = core.WorkOrderCmdMarkStale
 				}
-				if err = st.UpdateWorkOrder(ctx, claimed, command); err != nil {
+				if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, command); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -665,7 +666,7 @@ func TestRedispatchRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 	order.RequiredHarness = "claude"
 	order.RequiredHarnessConfig = &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
 	order.QueueDeadline = time.Now().Add(-time.Second)
-	if err := st.UpdateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	service.ConfigProvider = func(context.Context) (*config.Config, error) {
@@ -710,7 +711,7 @@ func TestRedispatchRetainsSnapshotWhenHarnessRemovedOrEffortUnsupported(t *testi
 			order.RequiredHarness = "claude"
 			order.RequiredHarnessConfig = pinned
 			order.QueueDeadline = time.Now().Add(-time.Second)
-			if err := st.UpdateWorkOrder(ctx, order); err != nil {
+			if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 				t.Fatal(err)
 			}
 			service.ConfigProvider = func(context.Context) (*config.Config, error) {
@@ -749,7 +750,7 @@ func newLifecycleService(t *testing.T, id string) (context.Context, store.Store,
 	}
 	now := time.Now().UTC()
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -774,10 +775,10 @@ func TestExpiredLeaseReturnsWorkOrderToQueue(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Nanosecond})
+	_, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Nanosecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -801,7 +802,7 @@ func TestOmittedClaimLeaseDefaultsToFiveMinutesAndExpiresToQueued(t *testing.T) 
 		t.Fatalf("default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
 	}
 	claimed.LeaseExpiresAt = time.Now().Add(-time.Second)
-	if err = st.UpdateWorkOrder(ctx, claimed); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
 	expired, err := st.GetWorkOrder(ctx, order.ID)
@@ -822,10 +823,10 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", Agent: "codex", Model: "implementer", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", Agent: "codex", Model: "implementer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -884,10 +885,10 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
@@ -991,7 +992,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		}
 		reviewSeats++
 		session := "review-session-" + order.ID
-		if _, err = st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute}); err != nil {
+		if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
 		context, getErr := service.Get(ctx, order.ID, session)
@@ -1025,17 +1026,17 @@ func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 			t.Fatal(err)
 		}
 		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: stage, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "expired-" + string(stage), ClientToken: "token-" + string(stage), WorkerID: "worker", ClaimantID: "worker", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "expired-" + string(stage), ClientToken: "token-" + string(stage), WorkerID: "worker", ClaimantID: "worker", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		session := "expired-" + string(stage)
-		if _, err := st.RenewWorkerClaim(ctx, id, "worker", session, time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		if _, err := storetest.For(st).RenewWorkerClaim(ctx, id, "worker", session, time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 			t.Fatalf("%s stale renewal err=%v", stage, err)
 		}
-		if _, err := st.ReleaseWorkerClaim(ctx, id, "worker", core.WorkOrderRelease{SessionID: session}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		if _, err := storetest.For(st).ReleaseWorkerClaim(ctx, id, "worker", core.WorkOrderRelease{SessionID: session}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 			t.Fatalf("%s stale release err=%v", stage, err)
 		}
 		if stage == core.StageImplement {
@@ -1070,10 +1071,10 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
@@ -1121,10 +1122,10 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
@@ -1172,19 +1173,19 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	order, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner", ClientToken: "secret", Lease: time.Minute})
+	order, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner", ClientToken: "secret", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	order.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, order); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	order.LeaseExpiresAt = time.Now().Add(-time.Second)
-	if err = st.UpdateWorkOrder(ctx, order); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st}
@@ -1224,15 +1225,15 @@ func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *tes
 	if err := st.CreateJob(ctx, core.Job{ID: implement.JobID, TaskID: task.ID, Stage: core.StageImplement, State: core.JobDone}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, implement); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, implement); err != nil {
 		t.Fatal(err)
 	}
-	claimedImplement, err := st.ClaimWorkOrder(ctx, implement.ID, core.WorkOrderClaim{SessionID: "await-progress-owner", ClientToken: "secret", Lease: time.Minute})
+	claimedImplement, err := storetest.For(st).ClaimWorkOrder(ctx, implement.ID, core.WorkOrderClaim{SessionID: "await-progress-owner", ClientToken: "secret", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimedImplement.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, claimedImplement, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplement, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1241,7 +1242,7 @@ func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *tes
 		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: seat}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: seat}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1250,17 +1251,17 @@ func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *tes
 	createReviewOrder("await-progress-seat-1", 2, 1)
 	createReviewOrder("await-progress-seat-3", 2, 3)
 
-	seat1, err := st.ClaimWorkOrder(ctx, "await-progress-seat-1", core.WorkOrderClaim{
+	seat1, err := storetest.For(st).ClaimWorkOrder(ctx, "await-progress-seat-1", core.WorkOrderClaim{
 		SessionID: "review-seat-1", ClientToken: "seat-1-token", Lease: time.Minute, ExecutionTimeout: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	seat1.ExecutionDeadline = time.Now().UTC().Add(time.Hour)
-	if err = st.UpdateWorkOrder(ctx, seat1); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, seat1); err != nil {
 		t.Fatal(err)
 	}
-	seat3, err := st.ClaimWorkOrder(ctx, "await-progress-seat-3", core.WorkOrderClaim{
+	seat3, err := storetest.For(st).ClaimWorkOrder(ctx, "await-progress-seat-3", core.WorkOrderClaim{
 		SessionID: "review-seat-3", ClientToken: "seat-3-token", Lease: time.Minute, ExecutionTimeout: 2 * time.Hour,
 	})
 	if err != nil {
@@ -1268,7 +1269,7 @@ func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *tes
 	}
 	seat3.ExecutionDeadline = time.Now().UTC().Add(2 * time.Hour)
 	seat3.State = core.WorkOrderCompleted
-	if err = st.UpdateWorkOrder(ctx, seat3, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, seat3, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1328,10 +1329,10 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	if err := base.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := base.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	flaky := &flakyReviewAcceptanceStore{Store: base, failures: 1}
@@ -1377,12 +1378,12 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if err := st.CreateJob(ctx, implementJob); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
 	const implementSession = "warm-implementation-session"
 	const implementToken = "warm-implementation-token"
-	if _, err := st.ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -1410,7 +1411,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	}
 	firstOrder, _ := st.GetWorkOrder(ctx, implementJob.ID)
 	firstOrder.LeaseExpiresAt = time.Now().Add(-time.Hour)
-	if err = st.UpdateWorkOrder(ctx, firstOrder); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, firstOrder); err != nil {
 		t.Fatal(err)
 	}
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {

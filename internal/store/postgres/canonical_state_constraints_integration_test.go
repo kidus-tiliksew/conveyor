@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func TestCanonicalStateConstraintsRejectUnsupportedValuesIntegration(t *testing.
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
 		t.Fatal(err)
 	}
 

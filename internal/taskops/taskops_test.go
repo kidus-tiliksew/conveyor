@@ -2,6 +2,7 @@ package taskops_test
 
 import (
 	"context"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestReadsArePureAndOrderClockPersistsCanonicalCommands(t *testing.T) {
 	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := st.CountEvents(ctx, task.ID, "work_order.stale")

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"testing"
 	"time"
 
@@ -107,17 +108,17 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	if err := st.CreateJob(ctxB, jobB); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctxB, core.WorkOrder{ID: "wrong-workspace-" + suffix, TaskID: taskA.ID, JobID: job.ID, Stage: core.StageImplement}); err == nil {
+	if err := storetest.For(st).CreateWorkOrder(ctxB, core.WorkOrder{ID: "wrong-workspace-" + suffix, TaskID: taskA.ID, JobID: job.ID, Stage: core.StageImplement}); err == nil {
 		t.Fatal("cross-workspace work order succeeded")
 	}
-	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-task-" + suffix, TaskID: taskA.ID, JobID: jobB.ID, Stage: core.StageImplement}); err == nil {
+	if err := storetest.For(st).CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-task-" + suffix, TaskID: taskA.ID, JobID: jobB.ID, Stage: core.StageImplement}); err == nil {
 		t.Fatal("work order linked a task to another task's job")
 	}
-	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-stage-" + suffix, TaskID: taskA.ID, JobID: job.ID, Stage: core.StageReview}); err == nil {
+	if err := storetest.For(st).CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-stage-" + suffix, TaskID: taskA.ID, JobID: job.ID, Stage: core.StageReview}); err == nil {
 		t.Fatal("work order linked a job at the wrong stage")
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: taskA.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}
-	if err := st.CreateWorkOrder(ctxA, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctxA, order); err != nil {
 		t.Fatal(err)
 	}
 	if orders, err := st.ListWorkOrders(ctxB); err != nil || len(orders) != 0 {
