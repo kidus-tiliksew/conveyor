@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -775,10 +776,70 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline.C:
-			return map[string]any{"status": "pending"}, nil
+			return s.pendingReviewProgress(ctx, order.TaskID)
 		case <-ticker.C:
 		}
 	}
+}
+
+const awaitReviewRecommendation = "keep awaiting until the latest seat execution deadline"
+
+type awaitReviewSeatProgress struct {
+	Seat              int                 `json:"seat"`
+	State             core.WorkOrderState `json:"state"`
+	VerdictSubmitted  bool                `json:"verdict_submitted"`
+	LastActivityAt    *time.Time          `json:"last_activity_at"`
+	ExecutionDeadline *time.Time          `json:"execution_deadline"`
+}
+
+func (s *Service) pendingReviewProgress(ctx context.Context, taskID string) (map[string]any, error) {
+	orders, err := s.Store.ListTaskWorkOrdersSnapshot(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	round := 0
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewRound > round {
+			round = order.ReviewRound
+		}
+	}
+	if round == 0 {
+		return map[string]any{"status": "pending"}, nil
+	}
+	seats := make([]awaitReviewSeatProgress, 0)
+	var latestDeadline *time.Time
+	for _, order := range orders {
+		if order.Stage != core.StageReview || order.ReviewRound != round {
+			continue
+		}
+		deadline := optionalTime(order.ExecutionDeadline)
+		if deadline != nil && (latestDeadline == nil || deadline.After(*latestDeadline)) {
+			latestDeadline = deadline
+		}
+		seats = append(seats, awaitReviewSeatProgress{
+			Seat:              order.ReviewSeat,
+			State:             order.State,
+			VerdictSubmitted:  order.State == core.WorkOrderCompleted,
+			LastActivityAt:    optionalTime(order.UpdatedAt),
+			ExecutionDeadline: deadline,
+		})
+	}
+	sort.Slice(seats, func(i, j int) bool { return seats[i].Seat < seats[j].Seat })
+	return map[string]any{
+		"status":                         "pending",
+		"review_round":                   round,
+		"decision_rule":                  fmt.Sprintf("panel of %d, unanimous to pass", len(seats)),
+		"seats":                          seats,
+		"recommended_next_action":        awaitReviewRecommendation,
+		"latest_seat_execution_deadline": latestDeadline,
+	}, nil
+}
+
+func optionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (core.WorkOrder, error) {

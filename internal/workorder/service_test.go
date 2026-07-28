@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -887,6 +888,115 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 	result, err = service.AwaitReview(ctx, order.ID, "owner", time.Millisecond)
 	if err != nil || result["verdict"] != "changes_requested" {
 		t.Fatalf("retry result=%v err=%v", result, err)
+	}
+	for _, pendingField := range []string{"status", "decision_rule", "seats", "recommended_next_action", "latest_seat_execution_deadline"} {
+		if _, ok := result[pendingField]; ok {
+			t.Fatalf("terminal result gained pending field %q: %v", pendingField, result)
+		}
+	}
+}
+
+func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := store.NewMemory()
+	task := core.Task{ID: "await-progress-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	implement := core.WorkOrder{ID: "await-progress-implement", TaskID: task.ID, JobID: "await-progress-implement", Stage: core.StageImplement}
+	if err := st.CreateJob(ctx, core.Job{ID: implement.JobID, TaskID: task.ID, Stage: core.StageImplement, State: core.JobDone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, implement); err != nil {
+		t.Fatal(err)
+	}
+	claimedImplement, err := st.ClaimWorkOrder(ctx, implement.ID, core.WorkOrderClaim{SessionID: "await-progress-owner", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedImplement.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, claimedImplement, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+
+	createReviewOrder := func(id string, round, seat int) {
+		t.Helper()
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: seat}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createReviewOrder("await-progress-old-round", 1, 1)
+	createReviewOrder("await-progress-seat-2", 2, 2)
+	createReviewOrder("await-progress-seat-1", 2, 1)
+	createReviewOrder("await-progress-seat-3", 2, 3)
+
+	seat1, err := st.ClaimWorkOrder(ctx, "await-progress-seat-1", core.WorkOrderClaim{
+		SessionID: "review-seat-1", ClientToken: "seat-1-token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat1.ExecutionDeadline = time.Now().UTC().Add(time.Hour)
+	if err = st.UpdateWorkOrder(ctx, seat1); err != nil {
+		t.Fatal(err)
+	}
+	seat3, err := st.ClaimWorkOrder(ctx, "await-progress-seat-3", core.WorkOrderClaim{
+		SessionID: "review-seat-3", ClientToken: "seat-3-token", Lease: time.Minute, ExecutionTimeout: 2 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat3.ExecutionDeadline = time.Now().UTC().Add(2 * time.Hour)
+	seat3.State = core.WorkOrderCompleted
+	if err = st.UpdateWorkOrder(ctx, seat3, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := st.ListTaskWorkOrdersSnapshot(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Service{Store: st}).AwaitReview(ctx, implement.ID, "await-progress-owner", time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.ListTaskWorkOrdersSnapshot(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("await_review mutated work orders:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	if result["status"] != "pending" || result["review_round"] != 2 ||
+		result["decision_rule"] != "panel of 3, unanimous to pass" ||
+		result["recommended_next_action"] != awaitReviewRecommendation {
+		t.Fatalf("pending summary = %#v", result)
+	}
+	seats, ok := result["seats"].([]awaitReviewSeatProgress)
+	if !ok || len(seats) != 3 {
+		t.Fatalf("pending seats = %#v", result["seats"])
+	}
+	for index, seat := range seats {
+		if seat.Seat != index+1 || seat.LastActivityAt == nil {
+			t.Fatalf("seat ordering/activity = %+v", seats)
+		}
+	}
+	if seats[0].State != core.WorkOrderClaimed || seats[0].VerdictSubmitted || seats[0].ExecutionDeadline == nil {
+		t.Fatalf("claimed seat = %+v", seats[0])
+	}
+	if seats[1].State != core.WorkOrderQueued || seats[1].VerdictSubmitted || seats[1].ExecutionDeadline != nil {
+		t.Fatalf("queued seat = %+v", seats[1])
+	}
+	if seats[2].State != core.WorkOrderCompleted || !seats[2].VerdictSubmitted || seats[2].ExecutionDeadline == nil {
+		t.Fatalf("completed seat = %+v", seats[2])
+	}
+	latest, ok := result["latest_seat_execution_deadline"].(*time.Time)
+	if !ok || latest == nil || !latest.Equal(*seats[2].ExecutionDeadline) {
+		t.Fatalf("latest deadline = %#v, seats=%+v", result["latest_seat_execution_deadline"], seats)
 	}
 }
 
