@@ -814,7 +814,7 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 	if !ok {
 		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
 	}
-	if err := ValidateReviewPublicationTransition(current.State, publication.State); err != nil {
+	if err := ValidateReviewPublicationUpdate(current, publication); err != nil {
 		return err
 	}
 	publication.UpdatedAt = time.Now().UTC()
@@ -830,9 +830,10 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 }
 
 func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
-	m.mu.RLock()
+	m.mu.Lock()
 	var missing []core.ReviewPublication
 	seen := map[string]bool{}
+	repaired := 0
 	for taskID, events := range m.events {
 		for _, event := range events {
 			if event.Kind != "review.completed" {
@@ -840,15 +841,25 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			}
 			publication, ok := reviewPublicationFromEvent(taskID, event.JobID, event.Payload)
 			if ok && !seen[publication.ReviewWorkOrderID] {
-				if _, exists := m.publications[publication.ReviewWorkOrderID]; !exists {
+				seen[publication.ReviewWorkOrderID] = true
+				if existing, exists := m.publications[publication.ReviewWorkOrderID]; !exists {
 					missing = append(missing, publication)
-					seen[publication.ReviewWorkOrderID] = true
+				} else if existing.State == core.ReviewPublicationPublished && existing.CommentID <= 0 {
+					existing.State = core.ReviewPublicationRetrying
+					existing.LastError = "reconciling published review projection without required comment"
+					existing.UpdatedAt = time.Now().UTC()
+					m.publications[existing.ReviewWorkOrderID] = existing
+					m.appendEventLocked(ctx, core.Event{
+						TaskID: existing.TaskID, JobID: existing.JobID,
+						Kind: "review.publication_retry", Payload: core.JSONPayload(existing),
+					})
+					repaired++
 				}
 			}
 		}
 	}
-	m.mu.RUnlock()
-	created := 0
+	m.mu.Unlock()
+	created := repaired
 	for _, publication := range missing {
 		if err := m.QueueReviewPublication(ctx, publication); err != nil {
 			return created, err
@@ -1877,6 +1888,31 @@ func ValidateReviewPublicationTransition(from, to core.ReviewPublicationState) e
 	}
 	if expected != to {
 		return fmt.Errorf("review publication command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+// ValidateReviewPublicationUpdate permits one correcting transition for the
+// impossible pre-v2.3 state that reported a required comment as published
+// without a comment ID. All valid publications retain the canonical terminal
+// transition rules (spec §21.43).
+func ValidateReviewPublicationUpdate(current, next core.ReviewPublication) error {
+	repairingMissingComment := current.State == core.ReviewPublicationPublished &&
+		current.CommentID <= 0 && next.State == core.ReviewPublicationRetrying
+	if !repairingMissingComment {
+		if err := ValidateReviewPublicationTransition(current.State, next.State); err != nil {
+			return err
+		}
+	}
+	return ValidateReviewPublicationProjection(next)
+}
+
+// ValidateReviewPublicationProjection prevents a required Phase 5.3 projection
+// from being recorded as complete without its deterministic aggregate comment
+// (spec §19, §21.43).
+func ValidateReviewPublicationProjection(publication core.ReviewPublication) error {
+	if publication.State == core.ReviewPublicationPublished && publication.CommentID <= 0 {
+		return fmt.Errorf("published review publication %s requires a nonzero comment ID", publication.ReviewWorkOrderID)
 	}
 	return nil
 }

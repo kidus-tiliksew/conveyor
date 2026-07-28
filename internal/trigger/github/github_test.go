@@ -401,6 +401,67 @@ func TestPublishReviewRetryUpdatesAggregateStatusAndStickyComment(t *testing.T) 
 	}
 }
 
+func TestPublishReviewLaterApprovalResolvesHistoryInSameComment(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch len(calls) {
+		case 1, 6:
+			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"abc123"}`), nil
+		case 2:
+			return []byte(`{"statuses":[]}`), nil
+		case 3, 8:
+			return []byte(`{"id":41}`), nil
+		case 4:
+			return []byte(`[[]]`), nil
+		case 5:
+			return []byte(`{"id":52}`), nil
+		case 7:
+			return []byte(`{"statuses":[{"state":"failure","context":"Conveyor / Code review","description":"Independent review requested changes","target_url":"https://github.com/acme/api/pull/7"}]}`), nil
+		case 9:
+			return []byte(`[[{"id":52,"body":"<!-- conveyor:review-publication task=task-1 --> unresolved"}]]`), nil
+		case 10:
+			return []byte(`{"id":52}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call: %v", args)
+		}
+	}
+	firstHistory := []ReviewHistoryItem{{
+		WorkOrderID: "review-1", Round: 1, Seat: 1, Verdict: "changes_requested",
+		ReasonCode: "tests", Feedback: "Add coverage.", ResolutionState: "unresolved",
+	}}
+	first, err := publishReview(context.Background(), ReviewPublication{
+		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+		ReviewWorkOrderID: "review-1", Verdict: "changes_requested", ReasonCode: "tests",
+		Feedback: "Add coverage.", ReviewRound: 1, ReviewSeat: 1, History: firstHistory,
+		StatusState: "failure",
+	}, run)
+	if err != nil || first.CommentID != 52 {
+		t.Fatalf("requested-changes result=%+v err=%v", first, err)
+	}
+	if got := strings.Join(calls[4], " "); !strings.Contains(got, "unresolved") {
+		t.Fatalf("first comment did not render unresolved history: %v", calls[4])
+	}
+
+	second, err := publishReview(context.Background(), ReviewPublication{
+		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
+		ReviewWorkOrderID: "review-2", Verdict: "approve", ReasonCode: "approved",
+		Summary: "All criteria pass.", ReviewRound: 2, ReviewSeat: 1,
+		History: []ReviewHistoryItem{
+			{WorkOrderID: "review-1", Round: 1, Seat: 1, Verdict: "changes_requested", ReasonCode: "tests", Feedback: "Add coverage.", ResolutionState: "resolved"},
+			{WorkOrderID: "review-2", Round: 2, Seat: 1, Verdict: "approve", ReasonCode: "approved", ResolutionState: "accepted"},
+		},
+		StatusState: "success",
+	}, run)
+	if err != nil || second.CommentID != 52 {
+		t.Fatalf("approval result=%+v err=%v", second, err)
+	}
+	if got := strings.Join(calls[9], " "); !strings.Contains(got, "PATCH repos/acme/api/issues/comments/52") ||
+		!strings.Contains(got, "resolved") || !strings.Contains(got, "review-2") {
+		t.Fatalf("later approval did not update the existing resolved history: %v", calls[9])
+	}
+}
+
 func TestPublishReviewDoesNotDuplicateMatchingCommitStatus(t *testing.T) {
 	var calls [][]string
 	run := func(_ context.Context, args ...string) ([]byte, error) {
@@ -410,19 +471,23 @@ func TestPublishReviewDoesNotDuplicateMatchingCommitStatus(t *testing.T) {
 			return []byte(`{"number":7,"url":"https://github.com/acme/api/pull/7","headRefOid":"abc123"}`), nil
 		case 2:
 			return []byte(`{"statuses":[{"state":"pending","context":"Conveyor / Code review","description":"Waiting for the remaining independent review verdicts","target_url":"https://github.com/acme/api/pull/7"}]}`), nil
+		case 3:
+			return []byte(`[[{"id":51,"body":"<!-- conveyor:review-publication task=task-1 --> old"}]]`), nil
+		case 4:
+			return []byte(`{"id":51}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected call: %v", args)
 		}
 	}
 	_, err := publishReview(context.Background(), ReviewPublication{
 		Repo: "acme/api", Branch: "conveyor/task-1", TaskID: "task-1",
-		ReviewWorkOrderID: "review-1", Verdict: "approve", StatusState: "pending", SkipComment: true,
+		ReviewWorkOrderID: "review-1", Verdict: "approve", StatusState: "pending",
 	}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("matching status caused extra calls: %v", calls)
+	if len(calls) != 4 || !strings.Contains(strings.Join(calls[3], " "), "PATCH repos/acme/api/issues/comments/51") {
+		t.Fatalf("matching status did not preserve aggregate comment upsert: %v", calls)
 	}
 }
 

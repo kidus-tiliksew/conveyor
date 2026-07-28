@@ -51,17 +51,33 @@ issue is the same `#N`, so a successful merge closes the original issue.
 
 Each reviewed commit receives one idempotent aggregate `Conveyor / Code review`
 commit status. It remains pending until the round completes, then reports
-unanimous approval or requested changes. The existing factory PR comment is a
-deterministic aggregate of all single-review or panel-seat verdicts. Each entry identifies its review round,
-seat/work order, verdict, reason, and feedback. Requested changes remain in the
-history and are labelled `unresolved`, `resolved`, or `superseded` as later
-rounds arrive; a retry updates the same check/comment instead of duplicating
-it. Publication outcomes remain visible in the Conveyor event stream.
+unanimous approval or requested changes. The factory PR comment is a
+deterministic aggregate of all single-review or panel-seat verdicts. Each entry
+identifies its review round, seat/work order, verdict, reason, and feedback.
+Requested changes remain in the history and are labelled `unresolved`,
+`resolved`, or `superseded` as later rounds arrive; a retry updates the same
+status/comment instead of duplicating it.
+
+The durable `review_work_order_id` identifies a publication. Review round and
+seat describe its lifecycle context; row and event timestamps never suppress
+its required comment. An eligible publication reaches `published` only after
+both projections succeed and the comment upsert returns a nonzero
+`comment_id`. Startup reconciliation and River retries rebuild both projections
+from durable events and converge on the same task-marked comment. Reconciliation
+also reopens legacy `published` rows whose required comment ID is zero and
+re-enqueues that same publication identity.
 
 The durable Conveyor review state is authoritative. GitHub is the auditable
 projection and can be rebuilt after partial forge failures. Repository slugs,
 issue associations, and publication jobs are always checked in explicit
 workspace scope.
+
+PostgreSQL-backed worker coverage reproduces the production transaction/event
+ordering and verifies single-seat and panel publication, retry/reconciliation
+idempotency, requested-changes-to-approval resolution history, and preservation
+of internal state when GitHub fails. Categorizing those failures under the
+§21.41 forge taxonomy remains the non-overlapping responsibility of parked task
+`260728-c0f858`.
 
 ## Explicit boundary
 

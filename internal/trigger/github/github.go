@@ -381,7 +381,6 @@ type ReviewPublication struct {
 	ModelEnforcement       string
 	History                []ReviewHistoryItem
 	BounceHistory          []string
-	SkipComment            bool
 	// StatusState is the aggregate state of the current review round: pending,
 	// success, or failure. It is computed from the durable round-completed event
 	// rather than from one panel seat's verdict.
@@ -424,11 +423,7 @@ func publishReview(ctx context.Context, publication ReviewPublication, run ghRun
 	if err = upsertReviewStatus(ctx, publication, target.URL, run); err != nil {
 		return ReviewPublicationResult{}, err
 	}
-	commentID := int64(0)
-	if publication.SkipComment {
-		return ReviewPublicationResult{ReviewedCommitSHA: publication.ReviewedCommitSHA}, nil
-	}
-	commentID, err = upsertReviewComment(ctx, publication.Repo, target.Number, publication.TaskID, body, run)
+	commentID, err := upsertReviewComment(ctx, publication.Repo, target.Number, publication.TaskID, body, run)
 	if err != nil {
 		return ReviewPublicationResult{}, err
 	}
