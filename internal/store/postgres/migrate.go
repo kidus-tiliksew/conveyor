@@ -58,6 +58,13 @@ WHERE r.kind = 'review_publication'
 }
 
 func migrateControlPlane(ctx context.Context, pool *pgxpool.Pool) error {
+	return migrateControlPlaneToVersion(ctx, pool, 0)
+}
+
+// migrateControlPlaneToVersion runs the production migration path through an
+// optional upper bound. Production passes zero for every embedded migration;
+// integration coverage uses a historical bound to exercise real upgrades.
+func migrateControlPlaneToVersion(ctx context.Context, pool *pgxpool.Pool, maxVersion int) error {
 	files, err := fs.Glob(migrationFiles, "migrations/*.sql")
 	if err != nil {
 		return err
@@ -87,6 +94,9 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		version, err := migrationVersion(name)
 		if err != nil {
 			return err
+		}
+		if maxVersion > 0 && version > maxVersion {
+			break
 		}
 		rawSQL, err := migrationFiles.ReadFile(name)
 		if err != nil {

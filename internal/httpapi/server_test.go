@@ -295,8 +295,8 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "token", "demo"
 	handler := server.Handler()
-	call := func(body string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/close?workspace_id=demo", strings.NewReader(body))
+	call := func(taskID, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/close?workspace_id=demo", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer token")
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Conveyor-Actor", "alice")
@@ -304,10 +304,10 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		return response
 	}
-	if response := call(`{}`); response.Code != http.StatusBadRequest {
+	if response := call(task.ID, `{}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("missing reason status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(`{"reason":"obsolete"}`); response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+	if response := call(task.ID, `{"reason":"obsolete"}`); response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
 		t.Fatalf("close status=%d body=%s", response.Code, response.Body.String())
 	}
 	order, _ := st.GetWorkOrder(ctx, job.ID)
@@ -315,12 +315,40 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	if order.State != core.WorkOrderCancelled || len(interventions) != 1 || interventions[0].ActorID != "alice" || interventions[0].Action != core.InterventionCancel {
 		t.Fatalf("order=%+v interventions=%+v", order, interventions)
 	}
-	if response := call(`{"reason":"again"}`); response.Code != http.StatusConflict {
+	if response := call(task.ID, `{"reason":"again"}`); response.Code != http.StatusConflict {
 		t.Fatalf("terminal close status=%d body=%s", response.Code, response.Body.String())
 	}
-	events, _ := st.CountEvents(ctx, task.ID, "task.cancelled")
-	if events != 1 {
-		t.Fatalf("cancel events=%d", events)
+	for _, kind := range []string{"intervention.cancel", "task.cancelled"} {
+		events, _ := st.CountEvents(ctx, task.ID, kind)
+		if events != 1 {
+			t.Fatalf("%s events=%d", kind, events)
+		}
+	}
+
+	for _, state := range []core.TaskState{core.TaskQueued, core.TaskAwaiting, core.TaskParked} {
+		stateTask := core.Task{ID: "close-" + string(state), Workspace: "demo", State: state, CreatedAt: time.Now().UTC()}
+		if err := st.CreateTask(ctx, stateTask); err != nil {
+			t.Fatal(err)
+		}
+		response := call(stateTask.ID, `{"reason":"state coverage"}`)
+		if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+			t.Fatalf("close %s status=%d body=%s", state, response.Code, response.Body.String())
+		}
+	}
+
+	for _, state := range []core.TaskState{core.TaskMerged, core.TaskClosed} {
+		terminalTask := core.Task{ID: "close-terminal-" + string(state), Workspace: "demo", State: state, CreatedAt: time.Now().UTC()}
+		if err := st.CreateTask(ctx, terminalTask); err != nil {
+			t.Fatal(err)
+		}
+		response := call(terminalTask.ID, `{"reason":"must conflict"}`)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("close %s status=%d body=%s", state, response.Code, response.Body.String())
+		}
+		terminalInterventions, _ := st.ListInterventions(ctx, terminalTask.ID)
+		if len(terminalInterventions) != 0 {
+			t.Fatalf("terminal %s cancellation mutated interventions=%+v", state, terminalInterventions)
+		}
 	}
 }
 

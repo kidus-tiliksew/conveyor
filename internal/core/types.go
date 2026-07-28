@@ -247,12 +247,12 @@ const (
 )
 
 func (action InterventionAction) Valid() bool {
-	switch action {
-	case InterventionApprove, InterventionReject, InterventionRedirect, InterventionPull, InterventionCancel:
-		return true
-	default:
-		return false
+	for _, valid := range InterventionActions() {
+		if action == valid {
+			return true
+		}
 	}
+	return false
 }
 
 // Event is the append-only source of truth for task state. Tasks and jobs are
@@ -277,6 +277,19 @@ const (
 	InterventionPull     InterventionAction = "pull_to_local"
 	InterventionCancel   InterventionAction = "cancel"
 )
+
+// InterventionActions is the canonical persisted action set shared by API
+// validation and migration-alignment tests. Applied migrations stay immutable;
+// adding an action requires a new forward migration.
+func InterventionActions() []InterventionAction {
+	return []InterventionAction{
+		InterventionApprove,
+		InterventionReject,
+		InterventionRedirect,
+		InterventionPull,
+		InterventionCancel,
+	}
+}
 
 // Intervention is a structured human decision from the review queue (spec
 // §13.2). ReasonCode is intentionally data rather than an enum so workspaces

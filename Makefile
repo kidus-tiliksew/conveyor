@@ -24,11 +24,11 @@ ui:
 test: compose-check
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
 
-test-ui:
-	cd web && npm ci && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+test-ui: ui
+	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
-test-ui-evidence:
-	cd web && npm ci && npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
+test-ui-evidence: ui
+	cd web && npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
 
 compose-check:
 	python3 scripts/validate_compose_isolation.py
