@@ -79,6 +79,107 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "submitted-owner", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-submitted-owner", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "owner-session", ClientToken: "owner-token", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	claimed.LeaseExpiresAt = time.Now().Add(-time.Minute)
+	if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "handoff.md", ContentType: "text/markdown", TaskID: task.ID}, []byte("handoff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle}
+
+	if _, err = service.Get(ctx, job.ID, "owner-session"); err != nil {
+		t.Fatalf("get submitted order: %v", err)
+	}
+	if _, err = service.ReadArtifact(ctx, job.ID, "owner-session", artifact.ID); err != nil {
+		t.Fatalf("read submitted artifact: %v", err)
+	}
+	if _, err = service.Progress(ctx, job.ID, "owner-session", "review pending"); err != nil {
+		t.Fatalf("report submitted progress: %v", err)
+	}
+	if _, err = service.Usage(ctx, job.ID, "owner-session", 100, 25, 0.5); err != nil {
+		t.Fatalf("report submitted usage: %v", err)
+	}
+	if _, err = service.UploadTranscript(ctx, job.ID, "owner-session", "submitted transcript"); err != nil {
+		t.Fatalf("upload submitted transcript: %v", err)
+	}
+	persisted, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || persisted.State != core.WorkOrderSubmitted || persisted.Progress != "review pending" || persisted.TokensIn != 100 || persisted.TokensOut != 25 || persisted.CostUSD != 0.5 {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+
+	for name, call := range map[string]func() error{
+		"get": func() error {
+			_, callErr := service.Get(ctx, job.ID, "other-session")
+			return callErr
+		},
+		"read artifact": func() error {
+			_, callErr := service.ReadArtifact(ctx, job.ID, "other-session", artifact.ID)
+			return callErr
+		},
+		"progress": func() error {
+			_, callErr := service.Progress(ctx, job.ID, "other-session", "wrong")
+			return callErr
+		},
+		"usage": func() error {
+			_, callErr := service.Usage(ctx, job.ID, "other-session", 1, 1, 0)
+			return callErr
+		},
+		"transcript": func() error {
+			_, callErr := service.UploadTranscript(ctx, job.ID, "other-session", "wrong")
+			return callErr
+		},
+	} {
+		if callErr := call(); callErr == nil || !strings.Contains(callErr.Error(), "another session") {
+			t.Errorf("%s from another session error=%v", name, callErr)
+		}
+	}
+
+	for name, call := range map[string]func() error{
+		"submit for review": func() error {
+			_, callErr := service.SubmitForReview(ctx, job.ID, "owner-session")
+			return callErr
+		},
+		"submit spec": func() error {
+			_, callErr := service.SubmitSpec(ctx, job.ID, "owner-session", pipeline.StructuredSpec{})
+			return callErr
+		},
+		"submit review verdict": func() error {
+			_, callErr := service.SubmitVerdict(ctx, job.ID, "owner-session", pipeline.Review{})
+			return callErr
+		},
+	} {
+		if callErr := call(); callErr == nil || !strings.Contains(callErr.Error(), "not claimed") {
+			t.Errorf("%s from submitted state error=%v", name, callErr)
+		}
+	}
+}
+
 func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

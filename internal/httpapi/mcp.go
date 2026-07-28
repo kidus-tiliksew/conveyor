@@ -128,15 +128,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	switch name {
 	case "list_work_orders":
 		if workerAuth {
-			items, listErr := s.Workers.ListClaimable(ctx, worker)
-			if listErr != nil {
-				return nil, listErr
-			}
-			orders := make([]core.WorkOrder, len(items))
-			for i := range items {
-				orders[i] = items[i].Order
-			}
-			return orders, nil
+			return s.Workers.ListVisibleOrders(ctx, worker)
 		}
 		return s.WorkOrders.List(ctx)
 	case "claim_work_order":

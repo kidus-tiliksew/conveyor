@@ -551,6 +551,34 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 	return result, nil
 }
 
+// ListVisibleOrders combines compatible claimable work with the authenticated
+// worker's own active claims and durable review waits. It intentionally does
+// not expose another worker's orders or any terminal state (spec §21.38).
+func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error) {
+	claimable, err := s.ListClaimable(ctx, worker)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]core.WorkOrder, 0, len(claimable))
+	for _, item := range claimable {
+		result = append(result, item.Order)
+	}
+	orders, err := s.Store.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, order := range orders {
+		if order.WorkerID != worker.ID {
+			continue
+		}
+		if order.State != core.WorkOrderClaimed && order.State != core.WorkOrderSubmitted {
+			continue
+		}
+		result = append(result, order)
+	}
+	return result, nil
+}
+
 // ClaimForWorker is the server-side worker claim: held tasks are rejected at
 // claim time — the same enforcement layer as the self-review guard — and the
 // claiming worker must probe healthy for every harness the order requires.

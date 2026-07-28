@@ -421,7 +421,7 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 }
 
 func (s *Service) Get(ctx context.Context, id, session string) (Context, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return Context{}, err
 	}
@@ -496,7 +496,7 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 }
 
 func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID string) (ArtifactContent, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -514,7 +514,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -531,7 +531,7 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 }
 
 func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64) (core.WorkOrder, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -556,7 +556,7 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 }
 
 func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript string) (core.Artifact, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -782,23 +782,46 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 }
 
 func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedForObservation(ctx, id, session)
+}
+
+func (s *Service) authorizedForObservation(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedSession(ctx, id, session, true)
+}
+
+func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedSession(ctx, id, session, false)
+}
+
+// authorizedSession keeps same-session admission separate from lifecycle
+// legality. Submitted orders remain observable by their owning session without
+// a live lease, while lifecycle mutations retain claimed-only admission
+// (spec §21.37).
+func (s *Service) authorizedSession(ctx context.Context, id, session string, allowSubmitted bool) (core.WorkOrder, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if session == "" || order.SessionID != session {
-		return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
+	if order.State == core.WorkOrderTimedOut {
+		return core.WorkOrder{}, store.ErrWorkOrderTimedOut
+	}
+	if order.State == core.WorkOrderStale {
+		return core.WorkOrder{}, store.ErrWorkOrderStale
 	}
 	if order.State == core.WorkOrderCancelled {
 		return core.WorkOrder{}, store.ErrWorkOrderCancelled
 	}
-	if order.State == core.WorkOrderSubmitted {
-		// Submission makes the review wait durable; the implementation claim
-		// lease no longer governs this read-only same-session operation.
+	if allowSubmitted && order.State == core.WorkOrderSubmitted {
+		if session == "" || order.SessionID != session {
+			return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
+		}
 		return order, nil
 	}
 	if order.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not awaiting review", id)
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimed", id)
+	}
+	if session == "" || order.SessionID != session {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is claimed by another session", id)
 	}
 	if !order.LeaseExpiresAt.After(time.Now()) {
 		return core.WorkOrder{}, fmt.Errorf("work order lease expired")
@@ -908,32 +931,6 @@ func (s *Service) reviewRoundResult(ctx context.Context, taskID string, round in
 		}
 	}
 	return nil, fmt.Errorf("review pending")
-}
-
-func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {
-	order, err := s.Store.GetWorkOrder(ctx, id)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if order.State == core.WorkOrderTimedOut {
-		return core.WorkOrder{}, store.ErrWorkOrderTimedOut
-	}
-	if order.State == core.WorkOrderStale {
-		return core.WorkOrder{}, store.ErrWorkOrderStale
-	}
-	if order.State == core.WorkOrderCancelled {
-		return core.WorkOrder{}, store.ErrWorkOrderCancelled
-	}
-	if order.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimed", id)
-	}
-	if session == "" || order.SessionID != session {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is claimed by another session", id)
-	}
-	if !order.LeaseExpiresAt.After(time.Now()) {
-		return core.WorkOrder{}, fmt.Errorf("work order lease expired")
-	}
-	return order, nil
 }
 
 func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
