@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.0**
+**Specification — v2.1**
 **Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). This v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -144,6 +144,21 @@ setup-reassignment and recovery re-freeze operations (§6.2). Hold is the
 deliberate exception to freezing — a live, mutable, audited toggle
 (§6.3).
 
+**Named defaults.** Every operational default the specification names,
+gathered in one place; each value's owning section governs (§21.41):
+
+| Default | Value | Owner |
+|---|---|---|
+| `max_bounces` | 10 | §4 |
+| `work_order_queue_timeout` | 24h | §3.2 |
+| Work-order claim lease | 5m, renewable | §3.2 |
+| Worker liveness lease | 15s | §6.4 |
+| Child retry delays | 1s / 2s / 4s, then retry-suppressed | §6.4 |
+| Harness `stall_timeout` | 10m (`0` disables) | §5.1, §6.4 |
+| Dispatch retry (River, T12/T13) | 5 attempts, 10s doubling, 5m cap | §3.3 |
+| Control-plane checkout staleness TTL | 14 days | §8.1 |
+| Stage timeouts | per-setup, frozen at intake | §6.1, §6.2 |
+
 ### 2.2 Role prompts and the pack
 
 Every pipeline stage's behavior is defined by a versioned role-prompt
@@ -273,7 +288,10 @@ self-reported.
 new order records queue entry and queue deadline; the per-stage execution
 timeout starts at first successful claim and is fixed to that attempt —
 release, cancellation, or lease expiry ends the attempt and clears its
-clocks, and a later claim starts a fresh window (§21.21). A never-claimed
+clocks, and a later claim starts a fresh window (§21.21). The claim
+lease defaults to **5 minutes**, renewed via `renew_work_order` inside
+its safety margin; expiry is safe by design — the order simply returns
+to `queued` (W5) for a fresh claim (§21.41). A never-claimed
 order past `work_order_queue_timeout` goes `stale`; an elapsed execution
 deadline goes `timed_out`; both are non-claimable and recoverable by
 audited operator action (§3.3, §13.2).
@@ -320,6 +338,11 @@ their smaller tables recorded in code under the same module. (Origin:
 | T21 | `parked` | `task.recover` | `queued` | operator recovery re-queues |
 | T22 | any non-terminal | `task.cancel` | `closed` | task cancellation (§13.2) |
 
+Dispatch retries (T12/T13) are bounded: a failed queue attempt retries
+up to five times with exponential backoff from 10s (doubling, capped at
+5m); exhaustion is `dispatch.fail_final` and parks the task, visible in
+the needs-operator tray (§13.2, §21.41).
+
 **Work-order lifecycle.** States: `queued`, `claimed`, `submitted`,
 `completed`, `cancelled`, `stale`, `timed_out`. Terminal: `completed`,
 `cancelled`; `stale` and `timed_out` are recoverable.
@@ -339,7 +362,7 @@ their smaller tables recorded in code under the same module. (Origin:
 | W11 | `queued`, `claimed` | `order.timeout` | `timed_out` | execution clock elapses |
 | W12 | `queued`, `claimed`, `submitted` | `order.stale` | `stale` | superseded — head moved or task advanced |
 | W13 | `timed_out`, `stale` | `order.recover` | `queued` | audited recovery (§13.2) |
-| W14 | `queued`, `claimed`, `submitted` | `order.redispatch` | `queued` | operator redispatch |
+| W14 | `stale` | `order.redispatch` | `queued` | redispatch of a never-claimed, queue-timed-out order; rejects active claims and execution-timed-out orders (§21.9, §21.41) |
 | W15 | any non-terminal | `order.cancel` | `cancelled` | task cancellation cascades |
 
 **Enforcement.** A `core`-level machine module holds each table as data
@@ -569,7 +592,8 @@ interactive agents need none of it.
 ### 5.1 Registry schema and expansion contract
 
 An entry is `{name, command, model_args, effort_args?, probe_command,
-probe_timeout, mcp_transport, mcp_attachment?}`. All command fields are
+probe_timeout, stall_timeout?, mcp_transport, mcp_attachment?}`. All
+command fields are
 argv arrays, **never shell-evaluated**; placeholders substitute as whole
 argv elements. Expansion is field-local and deterministic (§21.14):
 
@@ -586,6 +610,11 @@ argv elements. Expansion is field-local and deterministic (§21.14):
 - `probe_command` — standalone argv, no placeholders; used with
   `probe_timeout` for health probes (binary present, authenticated,
   trivial invocation succeeds).
+- `stall_timeout` — optional per-harness child-inactivity bound for
+  worker supervision (§6.4); default 10 minutes. The literal `0`
+  disables stall detection for harnesses with legitimately silent runs
+  — the one sanctioned exception to the non-positive-timeout rule
+  (§21.41).
 
 Unknown placeholders, placeholders in the wrong field, missing required
 placeholders, unknown effort values, and non-positive timeouts are
@@ -624,7 +653,8 @@ prompt (§21.22).
 
 Dispatch snapshots the normalized harness definition, effective model
 (including an intentionally omitted harness-default model), effort argv,
-timeout, and transport into the work order; workers execute the snapshot
+timeouts (execution and stall), and transport into the work order;
+workers execute the snapshot
 without reinterpretation, and hot reload cannot alter an in-flight
 launch. Immutability is scoped to the **active attempt** (§21.32):
 whenever an order re-enters the queue — release, retry, recovery, or
@@ -713,6 +743,16 @@ conflict-fix enqueue) proceeds regardless, and system-dispatched orders
 inherit the hold. There is no execution mode: modes were removed by
 §21.31, and existing records keep theirs as history.
 
+**Claim order is deterministic** (§21.41). Among the orders a given
+claimant is eligible for, `claim_work_order` serves the oldest queue
+entry first — workspace-scoped FIFO by the §3.2 queue clock, so service
+order is specified and starvation under backlog is testable rather than
+accidental. Stage preference sits above age: the worker's reserved
+review slot prefers review orders (§6.4). Queue re-entry (release,
+recovery, redispatch) records a fresh queue entry, so recovered orders
+rejoin behind the existing backlog. There is no task priority field;
+introducing one requires an amendment.
+
 Serviceability is **advisory**: the liveness lease, per-harness probes,
 and per-setup serviceability are computed and surfaced; intake warns when
 no enrolled worker can serve the selected setup, but nothing is rejected
@@ -746,6 +786,15 @@ review, push, submit).
   automatic retries recorded on the order; failure after that leaves the
   queued order **retry-suppressed** — visible in the needs-operator tray
   (§13.2) and recoverable by audited operator action.
+- **Stall detection** (§21.41): the worker bounds child inactivity — no
+  child output for the snapshot's `stall_timeout` (§5.1; default 10m,
+  `0` disables) stops the child, records the distinct outcome
+  `stalled`, and releases the claim. A stall consumes the same bounded
+  child-retry allowance and lands in the same retry-suppressed path as
+  a crash. This is supervision, not budget enforcement (§14): it
+  watches silence, never spend. Server-side, the timeline renders the
+  order's last agent activity (`report_progress`, lifecycle calls) so a
+  quiet-but-alive session stays distinguishable from a dead one.
 - **Reconnection is safe, authority is not assumed** (§21.26): idle
   transport failures retry with bounded jittered backoff on the saved
   enrollment; active renewal retries only inside the lease's safety
@@ -850,6 +899,15 @@ History is preserved absolutely: no `-B`/`-C`, reset, rebase, automatic
 stash, or forced ref updates, ever; divergence between local and remote
 task history blocks and is reported, never resolved by rewriting. Dirty
 unrelated work, in-progress Git operations, and ambiguous state block.
+
+**Path safety** (§21.41). The deterministic sibling name
+`<repo>-task-<task-id>` is exactly one path component: repo `name` is
+validated at configuration write time to `[A-Za-z0-9._-]` (and not `.`
+or `..`), and task IDs are server-generated from the same alphabet by
+construction. `conveyor checkout` verifies the resolved worktree path
+is a true sibling of the primary checkout — any component containing a
+separator or traversal blocks, like every other ambiguous state.
+`--path` remains the explicit operator override.
 
 The worktree stays authoritative across the review loop: a successor
 session (redirect, `changes_requested`) claims first, returns to the
@@ -956,6 +1014,13 @@ retries rebuild both projections from the event stream. Issue creation
 on spec approval and full verdict/resolution mirroring onto the PR are
 Phase 5.3 scope (partially delivered via the publication machinery
 above).
+
+Forge-call failures record a stable error category on the failure
+event — `forge_request` (transport), `forge_status` (non-success
+response), `forge_response` (malformed payload), `forge_rate_limited`,
+`forge_permission` — so needs-operator evidence and retry decisions are
+uniform rather than stringly-typed; Phase 5.3's issue creation and
+verdict mirroring adopt the same taxonomy (§21.41).
 
 ### 11.2 Merge readiness, conflict-fix dispatch, refresh review
 
@@ -1099,7 +1164,11 @@ Conveyor records what execution cost and never lets cost gate execution
    (`cost_usd` is NULL — never rendered as `$0.00`); there is no
    in-process price catalog, and pricing can never fail a control-plane
    action. Worker/MCP jobs report cumulative token and USD telemetry
-   through `report_usage`, persisted as self-reported.
+   through `report_usage`, persisted as self-reported. `report_usage`
+   MAY additionally carry the provider's latest rate-limit status,
+   persisted self-reported and rendered on worker/harness health
+   surfaces — observational like every other usage value, never a gate
+   (§21.41).
 3. **Attribution stays visible** in the per-task timeline. The
    aggregate cost dashboard is Phase 8, observational only; nothing
    revives spending enforcement without a new accepted amendment.
@@ -1235,7 +1304,8 @@ durable audit path as the corresponding HTTP action.
   clock groups), `claim_work_order` (leased; guards: hold, self-review,
   serviceability), `get_work_order`, `renew_work_order`,
   `release_work_order`.
-- **Progress and telemetry:** `report_progress`, `report_usage`,
+- **Progress and telemetry:** `report_progress`, `report_usage`
+  (optionally carrying provider rate-limit status, §14),
   `upload_transcript` (self-reported, labeled).
 - **Stage completion:** `submit_spec` (spec orders), `submit_for_review`
   (implementation; opens/reuses the PR and dispatches the review
@@ -1372,6 +1442,13 @@ Standing resolutions, with retired ones marked:
    expand/contract decomposition first, linked-PR gating as the
    non-overridable safety floor, merge train deferred until incident
    data justifies it (§7.2).
+10. **Supervision hygiene (§21.41).** External orchestrator patterns
+    are adopted only where they fit the durability posture: worker-side
+    stall detection (watches silence, never spend), deterministic FIFO
+    claim ordering, worktree path sanitization, pinned defaults, and
+    forge error categories were taken; in-memory scheduler state,
+    repo-owned workflow policy files, unbounded exponential retry, and
+    server-side concurrency caps were reviewed and rejected.
 
 ---
 
@@ -3886,9 +3963,131 @@ as their work-order context. This amendment consolidates. Four changes:
    again outgrows the body, repeats this pattern as a new major
    version.
 
+### 21.41 v2.1 — Supervision hygiene from external review; W14 restatement correction (July 28, 2026)
+
+**Origin.** A comparative review of OpenAI's Symphony specification
+(`openai/symphony` `SPEC.md`, Draft v1) — a single-stage, in-memory,
+tracker-polling orchestrator for Codex agents. Architecturally the two
+systems answer different questions and Symphony's core stances are ones
+this specification has already explicitly rejected; but its subprocess
+supervision and configuration hygiene are more thorough than ours in
+six specific places, and grounding the comparison surfaced two defects
+in our own text. This amendment adopts the six and fixes the two.
+Everything here is supervision, determinism, or hygiene — nothing
+revives budget enforcement (§21.6), managed execution (§21.4), or a
+second protocol (§6.4).
+
+**Changes:**
+
+1. **Worker stall detection (§5.1, §5.3, §6.4).** The gap: between "the
+   child process is alive" and the per-stage execution timeout —
+   potentially hours — nothing bounded a hung harness. Symphony kills
+   any run silent beyond a stall threshold, separately from its turn
+   timeout; the same idea fits our worker supervision exactly. The
+   registry entry gains optional `stall_timeout` (default 10m; literal
+   `0` disables, the one sanctioned exception to the non-positive-
+   timeout rule), snapshotted into the work order like every other
+   launch value. The worker stops a child with no output for the bound,
+   records the distinct outcome `stalled`, releases the claim, and
+   consumes the bounded child-retry allowance — landing in the existing
+   retry-suppressed/needs-operator path. Deliberately worker-side and
+   activity-based: it watches silence, never token or USD spend, so it
+   is not a budget breaker under §14. The timeline renders last agent
+   activity so quiet-but-alive stays distinguishable from dead.
+
+2. **Deterministic claim ordering (§6.3).** The spec previously stated
+   no service order for `claim_work_order` — no FIFO guarantee, no
+   priority, nothing; starvation under backlog was formally possible
+   and untestable. Now specified: among eligible orders, oldest queue
+   entry first (workspace-scoped, by the §3.2 queue clock); stage
+   preference (the reserved review slot) sits above age; queue re-entry
+   records a fresh queue entry so recovered orders rejoin behind the
+   backlog. A task priority field was considered and **not** added —
+   it would be the first scheduling knob agents could compete over;
+   if demand materializes it arrives by amendment with its own abuse
+   analysis.
+
+3. **Worktree path safety (§2.1 validator, §8.2).** Symphony sanitizes
+   workspace keys to `[A-Za-z0-9._-]` and requires resolved paths to
+   stay inside the root; our deterministic sibling
+   `../<repo>-task-<task-id>` specified blocking preconditions but no
+   string-level rules, and repo `name` is operator-editable
+   configuration. Now: repo `name` validates at write time to
+   `[A-Za-z0-9._-]` (and not `.`/`..`) under the standard §2.1
+   validator; task IDs already conform by construction; `conveyor
+   checkout` verifies the resolved path is a true sibling and blocks on
+   any separator or traversal in a component. Mostly an operator
+   foot-gun fix, not an attack-surface fix — but two lines of invariant
+   close it permanently. Existing repo entries validate on next
+   configuration write; checkout enforces regardless.
+
+4. **Pinned defaults (§2.1, §3.2, §3.3).** Symphony ends its config
+   section with a full defaults table; comparing against it exposed two
+   unpinned values here. The work-order claim lease had **no specified
+   default** (the 15s figure in §6.4 is the worker *liveness* lease, a
+   different object) — now 5 minutes, renewable, with the note that
+   expiry is safe by design (W5 returns the order to `queued`). River
+   dispatch retry (T12/T13) had no specified policy — now five attempts,
+   exponential backoff from 10s doubling capped at 5m, then
+   `dispatch.fail_final`. §2.1 gains a consolidated named-defaults
+   table; each value's owning section governs, the table is an index.
+
+5. **Forge error categories (§11.1).** Stable categories
+   (`forge_request`, `forge_status`, `forge_response`,
+   `forge_rate_limited`, `forge_permission`) recorded on forge-call
+   failure events, replacing stringly-typed evidence in the
+   needs-operator tray. Adopted from Symphony's adapter error-category
+   contract, scoped to our one forge — this is a taxonomy, not an
+   adapter interface. Phase 5.3's outstanding issue-creation and
+   verdict-mirroring work adopts it from the start.
+
+6. **Observational rate-limit telemetry (§14, §17.4).** `report_usage`
+   MAY carry the provider's latest rate-limit status, persisted
+   self-reported and rendered on worker/harness health surfaces, so an
+   operator can see *why* a worker slowed down. Observational like
+   every other usage value: nothing reads it for gating, and §21.6's
+   no-enforcement posture is unchanged.
+
+7. **W14 correcting fix (§3.3).** The v2.0 restatement admitted
+   `order.redispatch` from `queued`, `claimed`, and `submitted` —
+   broader than both §17.4 ("stale, never-claimed orders") and §21.9
+   change 6, which explicitly rejects active claims and
+   execution-timed-out orders. Under §21.40 change 1 that divergence is
+   a restatement defect; W14 is corrected to `stale` → `queued` with
+   the never-claimed guard, restoring the §21.9 contract. `order.recover`
+   (W13) remains the audited operator path for `timed_out` and `stale`
+   generally; redispatch remains the narrower agent-facing recovery for
+   queue-timed-out orders.
+
+8. **Decision log row 10 (§20)** records the adoption stance and, for
+   the permanent record, what was reviewed and rejected.
+
+**Considered and rejected**, with reasons on the record:
+
+- **In-memory orchestrator state / restart-by-repolling.** Contradicts
+  §3.4 ("Postgres is the supervisor") and §16; Symphony's own failure
+  model concedes retry timers and live sessions die on restart.
+- **Repo-owned workflow policy (`WORKFLOW.md`).** Conflicts with the
+  settled §2.1 model — Postgres as running truth, one validator, audit
+  events, `config export`/`import` for git-versioned backup. The
+  legitimate remainder is already scoped as Phase 5.6 `.conveyor/`
+  hints, advisory only; this amendment does not expand that scope.
+- **Unbounded exponential retry.** Symphony retries failures forever
+  (capped delay, uncapped attempts). Our 1s/2s/4s-then-retry-suppressed
+  contract (§21.21) is the better fit for unconfined execution on
+  operator machines: silent infinite retry burns real money invisibly;
+  suppression makes the operator decide.
+- **Server-side / per-state concurrency caps.** The pull model puts
+  capacity where it lives — worker-side stage-aware slots (§6.4). A
+  server cap would be a second, contradictory capacity authority.
+- **Reconciliation that kills workers on external state change.** Our
+  gentler equivalents are deliberate: cancel cascades at the next
+  lifecycle call, terminal renewal responses stop the child (§21.26),
+  hold never pauses in-flight work.
+
 ---
 
-*End of specification. v2.0 accepted July 28, 2026 — the consolidated
-restatement of v1.0–v1.40 (§21.40). The body (§§1–20) is the normative
-authority; §21 is the change record. Subsequent changes proceed by
-amendment with version bumps.*
+*End of specification. v2.1 accepted July 28, 2026 (§21.41), amending
+the v2.0 consolidated restatement of v1.0–v1.40 (§21.40). The body
+(§§1–20) is the normative authority; §21 is the change record.
+Subsequent changes proceed by amendment with version bumps.*
