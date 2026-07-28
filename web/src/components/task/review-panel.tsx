@@ -23,7 +23,7 @@ export type GateTone = 'positive' | 'neutral' | 'alarm'
 // Whether the task is holding at a human gate — the gate card renders (and
 // the timeline opens scrolled to it) only in these states.
 export function isReviewable(task: Task): boolean {
-  return task.state === 'awaiting_human' || task.state === 'parked' || task.state === 'approved'
+  return task.state === 'awaiting_human' || task.state === 'approved'
 }
 
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
@@ -60,16 +60,6 @@ function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merg
       detail: 'Approved at the gate — Conveyor will merge the pull request and confirm it with GitHub.',
       primaryLabel: 'Merge pull request',
       primaryAction: 'merge',
-    }
-  }
-  if (task.state === 'parked') {
-    return {
-      tone: 'alarm',
-      icon: TriangleAlert,
-      headline: 'Parked — needs a human route',
-      detail: 'Triage could not route this task on its own. Decide where it goes.',
-      primaryLabel: 'Approve',
-      primaryAction: 'approve',
     }
   }
   // Walk back to the most recent incident, but stop at any human decision or

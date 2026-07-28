@@ -159,7 +159,11 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if t.NextStage == "" {
+		nextStage := t.NextStage
+		if t.State == core.TaskParked && nextStage == "" {
+			nextStage = t.RecoveryStage
+		}
+		if nextStage == "" {
 			http.Error(w, "task has no decided next stage; record an explicit review redirect instead", http.StatusConflict)
 			return
 		}
@@ -172,16 +176,29 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		case core.TaskClaiming:
 			command = core.TaskIntakeFinalize
 		}
-		if err := s.Store.TransitionTaskState(r.Context(), id, command); err != nil {
+		var transitionErr error
+		if t.State == core.TaskParked {
+			// A triage park records the stage in RecoveryStage and clears
+			// NextStage. Recovery restores that stage as the next dispatch
+			// target (spec §3.3 T21).
+			transitionErr = s.Store.SetTaskTransition(r.Context(), id, command, nextStage, "")
+		} else {
+			transitionErr = s.Store.TransitionTaskState(r.Context(), id, command)
+		}
+		if transitionErr != nil {
 			status := http.StatusInternalServerError
-			var transitionErr *core.ErrInvalidTransition
-			if errors.As(err, &transitionErr) {
+			var invalidTransition *core.ErrInvalidTransition
+			if errors.As(transitionErr, &invalidTransition) {
 				status = http.StatusConflict
 			}
-			http.Error(w, err.Error(), status)
+			http.Error(w, transitionErr.Error(), status)
 			return
 		}
 		t.State = core.TaskQueued
+		t.NextStage = nextStage
+		if command == core.TaskRecover {
+			t.RecoveryStage = ""
+		}
 	}
 	if s.OnCreate != nil {
 		s.OnCreate(r.Context(), id)
@@ -465,7 +482,7 @@ func (s *Server) fixMergeConflict(w http.ResponseWriter, r *http.Request) {
 }
 
 func reviewable(state core.TaskState) bool {
-	return state == core.TaskAwaiting || state == core.TaskParked || state == core.TaskApproved
+	return state == core.TaskAwaiting || state == core.TaskApproved
 }
 
 type createTaskReq struct {

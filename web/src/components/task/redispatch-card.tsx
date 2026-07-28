@@ -6,11 +6,12 @@ import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 
 export function canRedispatch(item: ActivityItem) {
-  return item.task.state === 'queued' || item.task.state === 'closed'
+  return item.task.state === 'queued' || item.task.state === 'closed' || item.task.state === 'parked'
 }
 
-// Task management beyond the gate: nudge a stuck queued task (or reopen a
-// closed one with a decided stage) back into dispatch.
+// Task management beyond the gate: nudge a stuck queued task, recover a
+// parked task at its recorded recovery stage, or reopen a closed task with a
+// decided stage.
 export function RedispatchCard({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
@@ -21,14 +22,19 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
+  const parked = item.task.state === 'parked'
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
       <p className="text-xs text-muted">
-        {item.task.state === 'queued' ? 'Queued — re-enqueue if dispatch stalled.' : 'Closed — redispatch resumes at the decided stage.'}
+        {item.task.state === 'queued'
+          ? 'Queued — re-enqueue if dispatch stalled.'
+          : parked
+            ? 'Parked by triage — resume from the recorded recovery stage when this work is ready.'
+            : 'Closed — redispatch resumes at the decided stage.'}
       </p>
       <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
         <RotateCcw />
-        {mutation.isPending ? 'Dispatching…' : 'Redispatch'}
+        {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : (parked ? 'Resume task' : 'Redispatch')}
       </Button>
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
     </div>

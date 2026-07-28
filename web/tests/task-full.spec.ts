@@ -190,8 +190,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' ? 'awaiting_human' : taskId.startsWith('merge-') ? 'approved' : 'running',
-      next_stage: 'implement',
+		state: taskId === 'gate' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId.startsWith('merge-') ? 'approved' : 'running',
+      next_stage: taskId === 'parked' ? '' : 'implement',
+      recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
       setup_contract: taskId.startsWith('setup-') ? {
         name: 'old',
@@ -775,6 +776,21 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 	await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 	await expect(gate).toBeInViewport()
 	await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('parked task offers recovery instead of an invalid approval verdict', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.goto('/tasks/parked/full')
+
+	await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+	await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(0)
+	await expect(page.getByText('Parked by triage — resume from the recorded recovery stage when this work is ready.')).toBeVisible()
+
+	const recoveryRequest = page.waitForRequest((request) =>
+		request.method() === 'POST' && new URL(request.url()).pathname === '/v1/tasks/parked/redispatch',
+	)
+	await page.getByRole('button', { name: 'Resume task' }).click()
+	await recoveryRequest
 })
 
 test('merge gate renders pending readiness without offering merge', async ({ page }) => {

@@ -793,24 +793,34 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	}
 }
 
-func TestRedispatchRefusesHaltedTaskWithoutDecidedStage(t *testing.T) {
+func TestRedispatchRecoversParkedTaskAtRecordedStage(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
 	if err := st.CreateTask(context.Background(), core.Task{ID: "halted", State: core.TaskParked, RecoveryStage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
+	dispatched := make(chan string, 1)
 	s := NewServer(st)
 	s.BearerToken = "token"
+	s.OnCreate = func(_ context.Context, id string) { dispatched <- id }
 	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/halted/redispatch", bytes.NewReader([]byte(`{}`)))
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusConflict {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	persisted, _ := st.GetTask(context.Background(), "halted")
-	if persisted.State != core.TaskParked || persisted.NextStage != "" {
-		t.Fatalf("halted task changed: %+v", persisted)
+	if persisted.State != core.TaskQueued || persisted.NextStage != core.StageImplement || persisted.RecoveryStage != "" {
+		t.Fatalf("halted task was not recovered: %+v", persisted)
+	}
+	select {
+	case id := <-dispatched:
+		if id != "halted" {
+			t.Fatalf("dispatched %q", id)
+		}
+	default:
+		t.Fatal("recovered task was not enqueued")
 	}
 }
 
@@ -1205,6 +1215,9 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	if err := st.CreateTask(context.Background(), core.Task{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.CreateTask(context.Background(), core.Task{ID: "parked", State: core.TaskParked, RecoveryStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	s := NewServer(st)
 	s.BearerToken = "token"
 	h := s.Handler()
@@ -1215,6 +1228,18 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("running task status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/parked/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("parked task status = %d", response.Code)
+	}
+	parkedInterventions, err := st.ListInterventions(context.Background(), "parked")
+	if err != nil || len(parkedInterventions) != 0 {
+		t.Fatalf("parked interventions=%+v err=%v", parkedInterventions, err)
 	}
 
 	if err := st.TransitionTaskState(context.Background(), "running", core.TaskJobFail); err != nil {
