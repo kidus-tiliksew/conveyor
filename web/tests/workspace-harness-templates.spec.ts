@@ -17,7 +17,7 @@ const document = {
   },
   routing: { stages: {} }, harnesses: [codexHarness], review: { seats: [{ model: 'gpt', harness: 'codex' }] },
   setups: [], default_setup: '',
-  execution: { spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
+  execution: { spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
   repos: [],
 }
 

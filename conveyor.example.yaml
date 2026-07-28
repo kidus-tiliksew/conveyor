@@ -66,6 +66,7 @@ execution:
   merge_approval: true
   implement_concurrency: 1
   review_concurrency: 1
+  first_activity_timeout: 2m
 
 # Argv arrays are executed directly, never through a shell. Replace
 # agent-cli with the authenticated headless harness installed on the worker.

@@ -23,7 +23,7 @@ const baseDocument = {
     { name: 'claude', mcp_transport: 'json_file', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s' },
   ],
   review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude', effort: 'high' }] },
-  execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
+  execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
   repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }],
 }
 

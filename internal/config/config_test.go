@@ -113,6 +113,53 @@ func TestWorkOrderQueueTimeoutDefaultsAndRejectsInvalidDuration(t *testing.T) {
 	}
 }
 
+func TestFirstActivityTimeoutDefaultsAndValidatesStageTimeouts(t *testing.T) {
+	deployment := validConfig()
+	document := deployment.WorkspaceDocument()
+	document.Execution.FirstActivityTimeoutText = ""
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, deployment, "first-activity-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Execution.FirstActivityTimeout != DefaultFirstActivityTimeout ||
+		parsed.Execution.FirstActivityTimeoutText != DefaultFirstActivityTimeoutText {
+		t.Fatalf("first activity timeout=%s text=%q", parsed.Execution.FirstActivityTimeout, parsed.Execution.FirstActivityTimeoutText)
+	}
+	effective, err := json.Marshal(parsed.WorkspaceDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(effective), `"first_activity_timeout":"2m"`) {
+		t.Fatalf("effective worker configuration omits the default: %s", effective)
+	}
+
+	for _, test := range []struct {
+		name    string
+		timeout string
+		want    string
+	}{
+		{name: "not a duration", timeout: "eventually", want: "positive duration"},
+		{name: "non-positive", timeout: "0s", want: "positive duration"},
+		{name: "equal to spec execution timeout", timeout: "30m", want: "shorter than spec execution timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := deployment.WorkspaceDocument()
+			invalid.Execution.FirstActivityTimeoutText = test.timeout
+			data, marshalErr := yaml.Marshal(invalid)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if _, parseErr := ParseWorkspaceDocument(data, deployment, test.name); parseErr == nil || !strings.Contains(parseErr.Error(), test.want) {
+				t.Fatalf("error=%v want=%q", parseErr, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsRemovedBudgetConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	data := `workspace: demo
