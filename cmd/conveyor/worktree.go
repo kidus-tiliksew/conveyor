@@ -49,16 +49,21 @@ func checkoutTask(ctx context.Context, branch, base, repo, taskID, destination s
 	}
 
 	if destination == "" {
-		destination = filepath.Join(filepath.Dir(primary), repo+"-task-"+taskID)
-	} else if !filepath.IsAbs(destination) {
-		destination, err = filepath.Abs(destination)
+		destination, err = implicitCheckoutDestination(primary, repo, taskID)
 		if err != nil {
 			return "", err
 		}
-	}
-	destination, err = canonicalWorktreePath(destination)
-	if err != nil {
-		return "", err
+	} else {
+		if !filepath.IsAbs(destination) {
+			destination, err = filepath.Abs(destination)
+			if err != nil {
+				return "", err
+			}
+		}
+		destination, err = canonicalWorktreePath(destination)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	var assigned *registeredWorktree
@@ -250,6 +255,47 @@ func canonicalWorktreePath(path string) (string, error) {
 		return "", fmt.Errorf("resolve worktree parent %s: %w", filepath.Dir(cleaned), err)
 	}
 	return filepath.Join(parent, filepath.Base(cleaned)), nil
+}
+
+// implicitCheckoutDestination keeps the deterministic worktree name to one
+// direct sibling component, independently of configuration validation (spec §8.2).
+func implicitCheckoutDestination(primary, repo, taskID string) (string, error) {
+	if !safeImplicitCheckoutComponent(repo) {
+		return "", fmt.Errorf("refusing implicit checkout destination: repository name %q is not one safe path component", repo)
+	}
+	if !safeImplicitCheckoutComponent(taskID) {
+		return "", fmt.Errorf("refusing implicit checkout destination: task ID %q is not one safe path component", taskID)
+	}
+	canonicalPrimary, err := canonicalWorktreePath(primary)
+	if err != nil {
+		return "", fmt.Errorf("resolve primary checkout path: %w", err)
+	}
+	siblingParent := filepath.Dir(canonicalPrimary)
+	destination, err := canonicalWorktreePath(filepath.Join(siblingParent, repo+"-task-"+taskID))
+	if err != nil {
+		return "", err
+	}
+	if filepath.Clean(filepath.Dir(destination)) != filepath.Clean(siblingParent) {
+		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not a sibling of primary checkout %s", destination, canonicalPrimary)
+	}
+	return destination, nil
+}
+
+func safeImplicitCheckoutComponent(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		character := value[i]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func listRegisteredWorktrees(ctx context.Context, root string) ([]registeredWorktree, error) {
