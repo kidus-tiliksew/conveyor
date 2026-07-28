@@ -162,9 +162,14 @@ instead persists Manual and records an audit event.
 
 The worker reconnects across bounded transient control-plane failures while
 reusing that saved credential; revoked credentials and invalid configuration
-remain terminal. Run it under a service manager for durable operation. Optional
-macOS sleep prevention, launchd/systemd examples, reconnect expectations, and
-interrupted-review recovery are documented in
+remain terminal. After enrollment, `worker install` installs the existing
+foreground worker as a workspace-specific launchd agent or systemd user
+service; `worker status` separates local service-manager state from remote
+heartbeat and harness health; and idempotent `worker uninstall` removes the
+service while preserving enrollment. Service definitions contain no worker or
+API credentials. Exact commands, log paths, manual troubleshooting, optional
+macOS sleep prevention, reconnect expectations, and the required reboot/login
+exit demonstration are documented in
 [docs/worker-operations.md](docs/worker-operations.md).
 
 ### Branch ownership

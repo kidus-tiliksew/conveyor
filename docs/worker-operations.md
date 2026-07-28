@@ -5,38 +5,83 @@ first successful pairing. Restarting an enrolled worker normally needs no new
 pairing token. Pair again only when the credential was revoked, removed, or is
 reported invalid.
 
-Run the worker under the host's normal service manager so process crashes,
-logout/login, and control-plane restarts do not require operator intervention.
-The service should execute the same foreground command and preserve the user's
-normal environment, including `CONVEYOR_ADDR` and `CONVEYOR_WORKSPACE`.
+Install the enrolled worker under the host's user service manager so process
+crashes, login, and control-plane restarts do not require operator
+intervention:
 
-On Linux, a user-level systemd unit can use:
+```sh
+# Pair and enroll once if this workspace has no saved credential yet.
+bin/conveyor --workspace demo worker pair
+bin/conveyor --workspace demo worker run --pairing-token <token> --once
 
-```ini
-[Unit]
-Description=Conveyor Auto worker
-After=network-online.target
-
-[Service]
-ExecStart=/absolute/path/to/conveyor worker run
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
+# Install, inspect, and remove the workspace-specific user service.
+bin/conveyor --workspace demo worker install
+bin/conveyor --workspace demo worker status
+bin/conveyor --workspace demo worker uninstall
 ```
 
-Install it as `~/.config/systemd/user/conveyor-worker.service`, then run
-`systemctl --user daemon-reload`, `systemctl --user enable --now
-conveyor-worker`, and inspect it with `journalctl --user -u conveyor-worker`.
-Enable user lingering only when the worker must run while the user is logged
-out and that matches the machine's security policy.
+`install` requires an existing saved enrollment, resolves the absolute
+Conveyor executable, and writes one stable workspace-specific definition. It
+uses a per-user launchd agent on macOS or a systemd user unit on Linux. The
+definition contains only the explicit workspace, control-plane address, and
+local paths needed by the existing `worker run` command. It never contains the
+saved worker credential, an API token, or a pairing token. Unit, metadata, and
+log files are created owner-only.
 
-On macOS, use a per-user launchd agent with `ProgramArguments` containing the
-absolute Conveyor binary path followed by `worker` and `run`, plus
-`RunAtLoad` and `KeepAlive` set to true. Load it with `launchctl bootstrap
-gui/$(id -u) ~/Library/LaunchAgents/<label>.plist` and inspect its configured
-standard-output/error log paths. Keep the credential file owner-readable only.
+Repeated installation converges on the same unit. Conveyor refuses to
+overwrite or remove an unrecognized or different-workspace definition at the
+resolved path. `uninstall` is safe to repeat and preserves the enrollment;
+use the separate `worker revoke <worker-id>` flow when revocation is intended.
+
+`status` deliberately reports two different facts:
+
+- `local_service` is the installed/running/stopped/failed state reported by
+  launchd or systemd;
+- `remote_worker` is the control plane's distinct live/stale/revoked state,
+  last heartbeat, and harness probes for the saved enrollment.
+
+The JSON output also gives the exact unit and stdout/stderr log paths. Remote
+status requires the normal operator API credential; when it is unavailable,
+the local result is still returned with a remote error instead of treating
+local process state as proof of liveness.
+
+On Linux, installation enables the unit in the systemd user manager's
+`default.target`. Conveyor does not create a root service or change the host's
+lingering policy. Enable user lingering separately only when the worker must
+run without a logged-in user and that matches the machine's security policy.
+On macOS, the LaunchAgent starts when the user logs in and restarts the worker
+after an unsuccessful exit.
+
+## Manual service-manager troubleshooting
+
+The supported commands above own installation and removal. For diagnosis, use
+the exact unit and log paths printed by `worker status`.
+
+On Linux:
+
+```sh
+systemctl --user status <unit-name>
+systemctl --user show <unit-name> --property=ActiveState,SubState,Result
+```
+
+On macOS:
+
+```sh
+launchctl print gui/$(id -u)/<launchd-label>
+plutil -lint <unit-path>
+```
+
+Do not hand-edit a managed definition. If inspection shows an ownership
+conflict, move the unrelated file deliberately or select the correct workspace
+before running `worker install` again.
+
+## Reboot/login exit demonstration
+
+Phase 5.5 is not complete merely because deterministic unit tests pass. On a
+supported host, install the service, log out/in or reboot, and verify that
+`worker status` reports a server-visible heartbeat within one liveness lease
+without manually starting the process. Then verify an install/uninstall
+round-trip and retain the output as the completion evidence.
 
 ## Sleep and wake
 
