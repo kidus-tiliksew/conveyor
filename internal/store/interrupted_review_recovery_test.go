@@ -76,9 +76,7 @@ func interruptedReviewFixture(t *testing.T, st Store) context.Context {
 		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
-			t.Fatal(err)
-		}
+		createMemoryReviewOrderInState(t, st, ctx, order)
 	}
 	return ctx
 }

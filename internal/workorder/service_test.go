@@ -136,8 +136,24 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: state, ReviewRound: 1, ReviewSeat: seat + 1}); err != nil {
+		deadline := time.Time{}
+		if state == core.WorkOrderTimedOut {
+			deadline = time.Now().Add(-time.Minute)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: core.WorkOrderQueued, ExecutionDeadline: deadline, ReviewRound: 1, ReviewSeat: seat + 1}); err != nil {
 			t.Fatal(err)
+		}
+		if state == core.WorkOrderCompleted {
+			claimed, err := st.ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: id + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed.State = core.WorkOrderCompleted
+			if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+				t.Fatal(err)
+			}
+		} else if persisted, err := st.GetWorkOrder(ctx, id); err != nil || persisted.State != core.WorkOrderTimedOut {
+			t.Fatalf("timed-out order=%+v err=%v", persisted, err)
 		}
 	}
 	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 7, "head_sha": "approved-head"})}); err != nil {
@@ -393,9 +409,12 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderStale, RequiredModel: "frozen-model", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: time.Now().Add(-time.Hour), QueueDeadline: time.Now().Add(-time.Minute)}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "frozen-model", RequiredHarness: "codex", ExecutionTimeoutText: "1h", QueueEnteredAt: time.Now().Add(-time.Hour), QueueDeadline: time.Now().Add(-time.Minute)}
 	if err := st.CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
+	}
+	if persisted, err := st.GetWorkOrder(ctx, order.ID); err != nil || persisted.State != core.WorkOrderStale {
+		t.Fatalf("stale order=%+v err=%v", persisted, err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
@@ -484,9 +503,9 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
-	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
-	if staleEvents != 1 || redispatchEvents != 1 {
-		t.Fatalf("audit events stale=%d redispatch=%d", staleEvents, redispatchEvents)
+	recoveryEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.recovered")
+	if staleEvents != 1 || recoveryEvents != 1 {
+		t.Fatalf("audit events stale=%d recovered=%d", staleEvents, recoveryEvents)
 	}
 }
 

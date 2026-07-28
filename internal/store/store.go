@@ -49,7 +49,7 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
-	UpdateTaskState(ctx context.Context, id string, s core.TaskState) error
+	TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
@@ -63,7 +63,7 @@ type Store interface {
 	// head is an idempotent no-op.
 	AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
-	SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error
+	SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
 	EnsureTaskEnqueued(ctx context.Context, id string) error
 
@@ -112,7 +112,7 @@ type Store interface {
 	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
-	UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error
+	UpdateWorkOrder(ctx context.Context, order core.WorkOrder, command ...core.WorkOrderCommand) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
@@ -646,6 +646,9 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 	if order.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
+	if _, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRenew); err != nil {
+		return core.WorkOrder{}, err
+	}
 	expires := now.Add(lease)
 	if !order.ExecutionDeadline.IsZero() && expires.After(order.ExecutionDeadline) {
 		expires = order.ExecutionDeadline
@@ -671,8 +674,12 @@ func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID s
 		}
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
+	next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRelease)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
 	clearActiveAttempt(&order)
-	order.State = core.WorkOrderQueued
+	order.State = next
 	previousOutcome := order.LastAttemptOutcome
 	order.LastAttemptOutcome = release.Outcome
 	order.NextRetryAt = time.Time{}
@@ -792,8 +799,12 @@ func (m *memory) GetReviewPublication(_ context.Context, id string) (core.Review
 func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.publications[publication.ReviewWorkOrderID]; !ok {
+	current, ok := m.publications[publication.ReviewWorkOrderID]
+	if !ok {
 		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
+	}
+	if err := ValidateReviewPublicationTransition(current.State, publication.State); err != nil {
+		return err
 	}
 	publication.UpdatedAt = time.Now().UTC()
 	m.publications[publication.ReviewWorkOrderID] = publication
@@ -891,7 +902,8 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 	aggregate := aggregateReviewRound(decision.ReviewRound, reviews)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)})
 
-	state, next, recovery := core.TaskAwaiting, core.Stage(""), core.StageImplement
+	command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
+	autoApprove := false
 	if aggregate.Verdict == "changes_requested" {
 		count := 0
 		for _, event := range m.events[decision.TaskID] {
@@ -912,12 +924,31 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 		window++
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})})
 		if window < decision.MaxBounces {
-			state, next, recovery = core.TaskQueued, core.StageImplement, ""
+			command, next, recovery = core.TaskStageAdvance, core.StageImplement, ""
 		} else {
+			command = core.TaskStageBounceLimit
 			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})})
 		}
 	} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-		state, recovery = core.TaskApproved, ""
+		autoApprove, recovery = true, ""
+	}
+	fromState, fromStage := task.State, task.NextStage
+	state, err := core.TransitionTask(fromState, command)
+	if err != nil {
+		return err
+	}
+	if autoApprove {
+		approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
+		if approveErr != nil {
+			return approveErr
+		}
+		// Auto-approval currently projects running -> awaiting_human with
+		// gate.merge even though the merge gate is off. The table has no direct
+		// running -> approved edge; keep this explicit gap workaround visible
+		// until a table amendment supplies the intended command (spec §21.37).
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
+		fromState, state = state, approved
+		command = core.TaskInterventionApproveReview
 	}
 	if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 		task.ReviewedHeadSHA = aggregate.ApprovedHeadSHA
@@ -926,10 +957,12 @@ func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewD
 			task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
 		}
 	}
-	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
 	m.tasks[task.ID] = task
-	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state})})
+	// When autoApprove is true, this second projection records an intervention
+	// command without a human intervention. It is the paired gap workaround for
+	// the absent running -> approved table edge (spec §21.37).
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
 }
@@ -1095,8 +1128,14 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 		order.QueueDeadline = order.QueueEnteredAt.Add(24 * time.Hour)
 	}
 	order.UpdatedAt = now
+	expected, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+	if err != nil {
+		return err
+	}
 	if order.State == "" {
-		order.State = core.WorkOrderQueued
+		order.State = expected
+	} else if order.State != expected {
+		return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: "", Command: string(core.WorkOrderCmdCreate), Allowed: []core.TransitionAlternative{{Command: string(core.WorkOrderCmdCreate), To: string(expected)}}}
 	}
 	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[order.ID] = order
@@ -1138,10 +1177,6 @@ func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []co
 		}
 	}
 	now := time.Now().UTC()
-	from := task.State
-	task.State = core.TaskRunning
-	m.tasks[taskID] = task
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": core.TaskRunning})})
 	for i, job := range jobs {
 		m.jobs[taskID] = append(m.jobs[taskID], job)
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)})
@@ -1155,7 +1190,11 @@ func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []co
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if transitionErr != nil {
+			return transitionErr
+		}
+		order.State, order.Claimable, order.UpdatedAt = state, true, now
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	}
@@ -1214,12 +1253,6 @@ func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryR
 			return ReviewRoundRetryResult{}, fmt.Errorf("%w: work order %s already exists", ErrReviewRetryConflict, order.ID)
 		}
 	}
-	if task.State != core.TaskRunning {
-		from := task.State
-		task.State = core.TaskRunning
-		m.tasks[request.TaskID] = task
-		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": core.TaskRunning}), At: now})
-	}
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
 		m.jobs[request.TaskID] = append(m.jobs[request.TaskID], job)
@@ -1234,7 +1267,11 @@ func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryR
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if transitionErr != nil {
+			return ReviewRoundRetryResult{}, transitionErr
+		}
+		order.State, order.Claimable, order.UpdatedAt = state, true, now
 		m.workOrders[order.ID] = order
 		created = append(created, order)
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
@@ -1438,7 +1475,11 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	if lease <= 0 {
 		lease = 15 * time.Minute
 	}
-	order.State, order.ClaimantID, order.SessionID = core.WorkOrderClaimed, claim.ClaimantID, claim.SessionID
+	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdClaim)
+	if transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
+	order.State, order.ClaimantID, order.SessionID = next, claim.ClaimantID, claim.SessionID
 	order.Agent, order.Model, order.WorkerID, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, claim.WorkerID, now.Add(lease), now
 	if claim.ClientToken != "" {
 		order.ClientTokenHash = tokenHash(claim.ClientToken)
@@ -1457,6 +1498,16 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	}
 	order.Claimable = false
 	m.workOrders[id] = order
+	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued {
+		from := task.State
+		state, taskErr := core.TransitionTask(from, core.TaskOrderClaim)
+		if taskErr != nil {
+			return core.WorkOrder{}, taskErr
+		}
+		task.State = state
+		m.tasks[task.ID] = task
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": state, "command": core.TaskOrderClaim})})
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)})
 	return order, nil
 }
@@ -1476,7 +1527,11 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	order.State, order.Claimable = core.WorkOrderQueued, true
+	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRecover)
+	if transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
+	order.State, order.Claimable = next, true
 	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
 	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
 	order.ModelEnforcement = ""
@@ -1490,7 +1545,7 @@ func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeou
 		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
 		m.jobs[job.TaskID][index] = job
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(order), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRecover, "reason": "stale queue redispatch"}), At: now})
 	return order, nil
 }
 
@@ -1559,7 +1614,17 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	prior := order.LastAttemptOutcome
 	priorState := order.State
 	clearActiveAttempt(&order)
-	order.State = core.WorkOrderQueued
+	lifecycleCommand := core.WorkOrderCmdRecover
+	eventKind := "work_order.recovered"
+	if priorState == core.WorkOrderQueued {
+		lifecycleCommand = core.WorkOrderCmdRedispatch
+		eventKind = "work_order.redispatched"
+	}
+	next, transitionErr := core.TransitionWorkOrder(priorState, lifecycleCommand)
+	if transitionErr != nil {
+		return core.WorkOrder{}, transitionErr
+	}
+	order.State = next
 	order.LastAttemptOutcome = ""
 	order.RetrySuppressed = false
 	order.RetrySuppressionReason = ""
@@ -1589,14 +1654,18 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 		m.jobs[job.TaskID][index] = job
 	}
 	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovered", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "reason": "operator recovery"}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now})
 	return order, nil
 }
 
 func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrder, now time.Time) core.WorkOrder {
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
-		order.State, order.Claimable = core.WorkOrderTimedOut, false
+		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdTimeout)
+		if err != nil {
+			return order
+		}
+		order.State, order.Claimable = next, false
 		order.LeaseExpiresAt = time.Time{}
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
@@ -1608,8 +1677,12 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		return order
 	}
 	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
+		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdExpire)
+		if err != nil {
+			return order
+		}
 		clearActiveAttempt(&order)
-		order.State, order.Claimable = core.WorkOrderQueued, false
+		order.State, order.Claimable = next, false
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		order.NextRetryAt = time.Time{}
 		order.RetrySuppressed = true
@@ -1623,7 +1696,11 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderStale, false, now
+		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdMarkStale)
+		if err != nil {
+			return order
+		}
+		order.State, order.Claimable, order.UpdatedAt = next, false, now
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: core.JSONPayload(order), At: now})
 		return order
@@ -1634,7 +1711,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 
 func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
 
-func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, ok := m.workOrders[order.ID]
@@ -1655,6 +1732,23 @@ func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 		(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
 		return fmt.Errorf("work order %s is not claimed by this session", order.ID)
 	}
+	if current.State != order.State {
+		if len(commands) == 0 {
+			if inferred, ok := InferWorkOrderUpdateCommand(current, order); ok {
+				commands = []core.WorkOrderCommand{inferred}
+			}
+		}
+		if len(commands) != 1 {
+			return fmt.Errorf("work order %s state change requires exactly one lifecycle command", order.ID)
+		}
+		to, err := core.TransitionWorkOrder(current.State, commands[0])
+		if err != nil {
+			return err
+		}
+		if to != order.State {
+			return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: string(current.State), Command: string(commands[0]), Allowed: core.WorkOrderTransitionAlternatives(current.State)}
+		}
+	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
@@ -1666,6 +1760,99 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 		return true
 	}
 	return current != next && (next == core.WorkOrderSubmitted || next == core.WorkOrderCompleted)
+}
+
+// InferWorkOrderUpdateCommand preserves the legacy whole-record update API
+// while routing every actual state change through a named §21.37 command.
+func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCommand, bool) {
+	switch {
+	case current.State == core.WorkOrderQueued && next.State == core.WorkOrderClaimed:
+		return core.WorkOrderCmdClaim, true
+	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderSubmitted:
+		return core.WorkOrderCmdSubmitForReview, true
+	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderCompleted && next.Stage == core.StageSpec:
+		return core.WorkOrderCmdSubmitSpec, true
+	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderCompleted && next.Stage == core.StageReview:
+		return core.WorkOrderCmdSubmitReviewVerdict, true
+	case current.State == core.WorkOrderSubmitted && next.State == core.WorkOrderCompleted:
+		return core.WorkOrderCmdReviewTerminal, true
+	case current.State == core.WorkOrderSubmitted && next.State == core.WorkOrderClaimed:
+		return core.WorkOrderCmdReviewRevise, true
+	default:
+		return "", false
+	}
+}
+
+// ValidateJobTransition keeps whole-record metadata updates compatible while
+// rejecting every state change absent from the canonical job machine.
+func ValidateJobTransition(from, to core.JobState) error {
+	if from == to {
+		return nil
+	}
+	command := ""
+	switch to {
+	case core.JobRunning:
+		command = "job.start"
+	case core.JobDone:
+		command = "job.complete"
+	case core.JobFailed:
+		command = "job.fail"
+	case core.JobPending:
+		command = "job.retry"
+	default:
+		command = "job.invalid"
+	}
+	expected, err := core.TransitionJob(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("job command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func ValidateGitHubPublicationTransition(from, to core.GitHubPublicationState) error {
+	if from == to {
+		return nil
+	}
+	command := publicationCommand(string(to), string(core.GitHubPublicationRetrying), string(core.GitHubPublicationPublished), string(core.GitHubPublicationFailed))
+	expected, err := core.TransitionGitHubPublication(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("GitHub publication command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func ValidateReviewPublicationTransition(from, to core.ReviewPublicationState) error {
+	if from == to {
+		return nil
+	}
+	command := publicationCommand(string(to), string(core.ReviewPublicationRetrying), string(core.ReviewPublicationPublished), string(core.ReviewPublicationFailed))
+	expected, err := core.TransitionReviewPublication(from, command)
+	if err != nil {
+		return err
+	}
+	if expected != to {
+		return fmt.Errorf("review publication command %q resolves to %q, not %q", command, expected, to)
+	}
+	return nil
+}
+
+func publicationCommand(to, retrying, published, failed string) string {
+	switch to {
+	case retrying:
+		return "publication.retry"
+	case published:
+		return "publication.publish"
+	case failed:
+		return "publication.fail"
+	default:
+		return "publication.invalid"
+	}
 }
 
 func (m *memory) CreateFeature(ctx context.Context, feature core.Feature) error {
@@ -1887,8 +2074,12 @@ func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitH
 func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.github[lifecycle.TaskID]; !ok {
+	current, ok := m.github[lifecycle.TaskID]
+	if !ok {
 		return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)
+	}
+	if err := ValidateGitHubPublicationTransition(current.State, lifecycle.State); err != nil {
+		return err
 	}
 	lifecycle.UpdatedAt = time.Now().UTC()
 	m.github[lifecycle.TaskID] = lifecycle
@@ -1980,7 +2171,7 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
-func (m *memory) UpdateTaskState(ctx context.Context, id string, s core.TaskState) error {
+func (m *memory) TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -1988,9 +2179,13 @@ func (m *memory) UpdateTaskState(ctx context.Context, id string, s core.TaskStat
 		return fmt.Errorf("task %s not found", id)
 	}
 	from := t.State
-	t.State = s
+	to, err := core.TransitionTask(from, command)
+	if err != nil {
+		return err
+	}
+	t.State = to
 	m.tasks[id] = t
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": s})})
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": to, "command": command})})
 	return nil
 }
 
@@ -2088,7 +2283,7 @@ func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason str
 	return nil
 }
 
-func (m *memory) SetTaskTransition(ctx context.Context, id string, state core.TaskState, nextStage, recoveryStage core.Stage) error {
+func (m *memory) SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -2096,11 +2291,15 @@ func (m *memory) SetTaskTransition(ctx context.Context, id string, state core.Ta
 		return fmt.Errorf("task %s not found", id)
 	}
 	fromState, fromStage := task.State, task.NextStage
+	state, err := core.TransitionTask(fromState, command)
+	if err != nil {
+		return err
+	}
 	task.State = state
 	task.NextStage = nextStage
 	task.RecoveryStage = recoveryStage
 	m.tasks[id] = task
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state})})
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": nextStage, "recovery_stage": recoveryStage, "state": state})})
 	return nil
 }
@@ -2151,6 +2350,9 @@ func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
 	jobs := m.jobs[j.TaskID]
 	for i := range jobs {
 		if jobs[i].ID == j.ID {
+			if err := ValidateJobTransition(jobs[i].State, j.State); err != nil {
+				return err
+			}
 			jobs[i] = j
 			m.jobs[j.TaskID] = jobs
 			m.appendEventLocked(ctx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.updated", Payload: core.JSONPayload(j)})
@@ -2338,6 +2540,10 @@ func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention)
 	if strings.TrimSpace(intervention.ReasonCode) == "" || intervention.Action != core.InterventionCancel {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
+	taskState, err := core.TransitionTask(task.State, core.TaskCancel)
+	if err != nil {
+		return core.Task{}, err
+	}
 	actor := ActorFromContext(ctx)
 	if intervention.ActorID == "" {
 		intervention.ActorID = actor.ID
@@ -2361,8 +2567,13 @@ func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention)
 		if order.State == core.WorkOrderClaimed {
 			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
 		}
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderCancelled, false, intervention.At
+		orderState, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
+		if transitionErr != nil {
+			return core.Task{}, transitionErr
+		}
+		order.State, order.Claimable, order.UpdatedAt = orderState, false, intervention.At
 		m.workOrders[id] = order
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(order), At: intervention.At})
 		cancelled = append(cancelled, id)
 		if jobs := m.jobs[task.ID]; len(jobs) != 0 {
 			for i := range jobs {
@@ -2374,8 +2585,9 @@ func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention)
 		}
 	}
 	from := task.State
-	task.State, task.NextStage, task.RecoveryStage = core.TaskClosed, "", ""
+	task.State, task.NextStage, task.RecoveryStage = taskState, "", ""
 	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
 	return task, nil
 }

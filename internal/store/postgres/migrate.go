@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	controlstore "github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 )
@@ -86,12 +88,15 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if err != nil {
 			return err
 		}
-		sql, err := migrationFiles.ReadFile(name)
+		rawSQL, err := migrationFiles.ReadFile(name)
 		if err != nil {
 			return err
 		}
-		digest := sha256.Sum256(sql)
-		checksum := hex.EncodeToString(digest[:])
+		checksum := migrationChecksum(rawSQL)
+		sql, err := renderMigration(rawSQL)
+		if err != nil {
+			return fmt.Errorf("render migration %s: %w", name, err)
+		}
 		var appliedName, appliedChecksum string
 		err = tx.QueryRow(ctx,
 			"SELECT name, checksum FROM conveyor_schema_migrations WHERE version = $1",
@@ -113,6 +118,19 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 			}
 			continue
 		}
+		if version == 35 {
+			violations, auditErr := auditPersistedLifecycles(ctx, tx)
+			if auditErr != nil {
+				return fmt.Errorf("audit lifecycle history before migration %s: %w", name, auditErr)
+			}
+			if len(violations) != 0 {
+				limit := len(violations)
+				if limit > 20 {
+					limit = 20
+				}
+				return fmt.Errorf("migration %s blocked by %d non-canonical lifecycle edge(s): %+v", name, len(violations), violations[:limit])
+			}
+		}
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
@@ -127,6 +145,61 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
 	return nil
+}
+
+func auditPersistedLifecycles(ctx context.Context, tx pgx.Tx) ([]controlstore.LifecycleAuditViolation, error) {
+	rows, err := tx.Query(ctx, `SELECT id,task_id,job_id,kind,payload_json,at FROM events ORDER BY at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		var jobID *string
+		if err = rows.Scan(&event.ID, &event.TaskID, &jobID, &event.Kind, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		if jobID != nil {
+			event.JobID = *jobID
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return controlstore.AuditLifecycleHistory(events), nil
+}
+
+func renderMigration(sql []byte) ([]byte, error) {
+	text := string(sql)
+	text = strings.ReplaceAll(text, "{{task_states}}", quotedTaskStates())
+	text = strings.ReplaceAll(text, "{{work_order_states}}", quotedWorkOrderStates())
+	if strings.Contains(text, "{{") || strings.Contains(text, "}}") {
+		return nil, fmt.Errorf("unknown migration template marker")
+	}
+	return []byte(text), nil
+}
+
+func quotedTaskStates() string {
+	values := make([]string, 0, len(core.TaskStates()))
+	for _, state := range core.TaskStates() {
+		values = append(values, "'"+string(state)+"'")
+	}
+	return strings.Join(values, ", ")
+}
+
+func quotedWorkOrderStates() string {
+	values := make([]string, 0, len(core.WorkOrderStates()))
+	for _, state := range core.WorkOrderStates() {
+		values = append(values, "'"+string(state)+"'")
+	}
+	return strings.Join(values, ", ")
+}
+
+func migrationChecksum(sql []byte) string {
+	digest := sha256.Sum256(sql)
+	return hex.EncodeToString(digest[:])
 }
 
 func migrationVersion(name string) (int, error) {

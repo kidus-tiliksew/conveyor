@@ -11,6 +11,38 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
+func createMemoryReviewOrderInState(t *testing.T, st Store, ctx context.Context, order core.WorkOrder) {
+	t.Helper()
+	target := order.State
+	order.State = core.WorkOrderQueued
+	if target == core.WorkOrderTimedOut && order.ExecutionDeadline.IsZero() {
+		order.ExecutionDeadline = time.Now().Add(-time.Minute)
+	}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	switch target {
+	case core.WorkOrderQueued:
+		return
+	case core.WorkOrderCompleted:
+		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimed.State = core.WorkOrderCompleted
+		if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+			t.Fatal(err)
+		}
+	case core.WorkOrderTimedOut:
+		persisted, err := st.GetWorkOrder(ctx, order.ID)
+		if err != nil || persisted.State != core.WorkOrderTimedOut {
+			t.Fatalf("timed-out order=%+v err=%v", persisted, err)
+		}
+	default:
+		t.Fatalf("unsupported review-order fixture state %q", target)
+	}
+}
+
 func TestMemoryRetryReviewRoundPreservesHistoryAndIsIdempotent(t *testing.T) {
 	ctx := WithActor(WithWorkspace(context.Background(), "demo"), Actor{ID: "operator-7", Role: core.ActorHuman})
 	st := NewMemory()
@@ -26,9 +58,7 @@ func TestMemoryRetryReviewRoundPreservesHistoryAndIsIdempotent(t *testing.T) {
 		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
-			t.Fatal(err)
-		}
+		createMemoryReviewOrderInState(t, st, ctx, order)
 	}
 	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: prior[0].JobID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": prior[0].ID, "review_round": 1, "review_seat": 1, "verdict": "approve", "reason_code": "approved", "summary": "historical approval"})}); err != nil {
 		t.Fatal(err)
@@ -126,9 +156,7 @@ func TestMemoryRetryReviewRoundSerializesConcurrentRequests(t *testing.T) {
 	if err := st.CreateJob(ctx, core.Job{ID: oldID, TaskID: task.ID, Stage: core.StageReview, State: core.JobFailed}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: oldID, TaskID: task.ID, JobID: oldID, Stage: core.StageReview, State: core.WorkOrderTimedOut, ReviewRound: 1, ReviewSeat: 1}); err != nil {
-		t.Fatal(err)
-	}
+	createMemoryReviewOrderInState(t, st, ctx, core.WorkOrder{ID: oldID, TaskID: task.ID, JobID: oldID, Stage: core.StageReview, State: core.WorkOrderTimedOut, ExecutionDeadline: time.Now().Add(-time.Minute), ReviewRound: 1, ReviewSeat: 1})
 	newID := task.ID + "-review-2-seat-1"
 	jobs := []core.Job{{ID: newID, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}}
 	orders := []core.WorkOrder{{ID: newID, TaskID: task.ID, JobID: newID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1}}

@@ -19,7 +19,7 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdateTaskState(ctx, task.ID, core.TaskRunning); err != nil {
+	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateIntervention(ctx, core.Intervention{
@@ -39,6 +39,65 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 			t.Fatalf("event actor = %s/%s", event.ActorID, event.ActorRole)
 		}
 	}
+}
+
+func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "create-order-state", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderCancelled, core.WorkOrderStale, "unsupported"} {
+		id := job.ID + "-" + string(state)
+		err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: state})
+		var transitionErr *core.ErrInvalidTransition
+		if !errors.As(err, &transitionErr) || transitionErr.Space != core.WorkOrderLifecycle || transitionErr.From != "" || transitionErr.Command != string(core.WorkOrderCmdCreate) {
+			t.Fatalf("state %q error = %v", state, err)
+		}
+		if _, getErr := st.GetWorkOrder(ctx, id); getErr == nil {
+			t.Fatalf("state %q was persisted", state)
+		}
+	}
+}
+
+func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "review-requeue-command", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetTask(ctx, task.ID)
+	if err != nil || persisted.State != core.TaskQueued || persisted.NextStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", persisted, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"stage.advance"`) {
+			return
+		}
+	}
+	t.Fatal("review requeue did not record stage.advance")
 }
 
 func TestMemoryGitHubLifecycleOnlyEmitsActivityForOutcomesAndRealRetries(t *testing.T) {
@@ -541,9 +600,63 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
-	events, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	events, _ := st.CountEvents(ctx, task.ID, "work_order.redispatched")
 	if events != 1 {
-		t.Fatalf("recovery events=%d", events)
+		t.Fatalf("redispatch events=%d", events)
+	}
+}
+
+func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "terminal-state-guards", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "terminal-job", TaskID: task.ID, State: core.JobRunning}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	job.State = core.JobDone
+	if err := st.UpdateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	job.State = core.JobRunning
+	if err := st.UpdateJob(ctx, job); err == nil {
+		t.Fatal("terminal job reentry succeeded")
+	}
+
+	if err := st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, _, err := st.GetGitHubLifecycle(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.State = core.GitHubPublicationPublished
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.State = core.GitHubPublicationRetrying
+	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err == nil {
+		t.Fatal("terminal GitHub publication reentry succeeded")
+	}
+
+	publication := core.ReviewPublication{ReviewWorkOrderID: "review-publication", TaskID: task.ID, JobID: job.ID}
+	if err = st.QueueReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	publication, err = st.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication.State = core.ReviewPublicationPublished
+	if err = st.UpdateReviewPublication(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	publication.State = core.ReviewPublicationFailed
+	if err = st.UpdateReviewPublication(ctx, publication); err == nil {
+		t.Fatal("terminal review publication transition succeeded")
 	}
 }
 
@@ -565,7 +678,15 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderCompleted}); err != nil {
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	completedOrder, err := st.ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedOrder.State = core.WorkOrderCompleted
+	if err = st.UpdateWorkOrder(ctx, completedOrder, core.WorkOrderCmdSubmitSpec); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})

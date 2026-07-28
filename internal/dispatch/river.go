@@ -354,11 +354,24 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 		}
 	}
 	if job.Attempt >= job.MaxAttempts {
-		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskParked, "", recoveryStage); stateErr != nil {
+		command := core.TaskDispatchFailFinal
+		if task.State == core.TaskRunning {
+			command = core.TaskJobFail
+		}
+		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, command, "", recoveryStage); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; park after final River attempt: %w", err, stateErr)
 		}
-	} else if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, core.TaskQueued, recoveryStage, ""); stateErr != nil {
-		return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
+	} else {
+		command := core.TaskDispatchFailRetry
+		if task.State == core.TaskRunning {
+			// There is no running-state dispatch-failure retry edge. Preserve the
+			// existing requeue behavior as an explicit table-gap workaround until
+			// the lifecycle table is amended (spec §21.37).
+			command = core.TaskStageBounce
+		}
+		if stateErr := w.dispatcher.Store.SetTaskTransition(ctx, job.Args.TaskID, command, recoveryStage, ""); stateErr != nil {
+			return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
+		}
 	}
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,30 @@ func TestDispatchGenuineFailureStillRequeues(t *testing.T) {
 	if count, countErr := st.CountEvents(ctx, taskID, "dispatch.failed"); countErr != nil || count != 1 {
 		t.Fatalf("dispatch.failed events = %d, err = %v", count, countErr)
 	}
+}
+
+func TestDispatchFinalRunningFailureRecordsJobFail(t *testing.T) {
+	t.Parallel()
+	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
+	wantErr := errors.New("database unavailable")
+
+	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, 5, 5), wantErr); !errors.Is(err, wantErr) {
+		t.Fatalf("failure error = %v, want %v", err, wantErr)
+	}
+	current, err := st.GetTask(ctx, taskID)
+	if err != nil || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"command":"job.fail"`) {
+			return
+		}
+	}
+	t.Fatal("final dispatch failure did not record job.fail")
 }
 
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {

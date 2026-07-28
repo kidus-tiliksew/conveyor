@@ -21,6 +21,48 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Context, order core.WorkOrder) core.WorkOrder {
+	t.Helper()
+	target := order.State
+	order.State = core.WorkOrderQueued
+	if target == core.WorkOrderTimedOut && order.ExecutionDeadline.IsZero() {
+		order.ExecutionDeadline = time.Now().Add(-time.Minute)
+	}
+	if err := st.CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	switch target {
+	case core.WorkOrderQueued:
+		return order
+	case core.WorkOrderClaimed, core.WorkOrderCompleted:
+		lease := time.Minute
+		if target == core.WorkOrderClaimed && order.LeaseExpiresAt.After(time.Now()) {
+			lease = time.Until(order.LeaseExpiresAt)
+		}
+		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: lease})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target == core.WorkOrderClaimed {
+			return claimed
+		}
+		claimed.State = core.WorkOrderCompleted
+		if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+			t.Fatal(err)
+		}
+		return claimed
+	case core.WorkOrderTimedOut:
+		persisted, err := st.GetWorkOrder(ctx, order.ID)
+		if err != nil || persisted.State != core.WorkOrderTimedOut {
+			t.Fatalf("timed-out order=%+v err=%v", persisted, err)
+		}
+		return persisted
+	default:
+		t.Fatalf("unsupported work-order fixture state %q", target)
+		return core.WorkOrder{}
+	}
+}
+
 type failOnceArtifactStore struct {
 	store.Store
 	calls  int
@@ -159,9 +201,9 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	if response := call("token", "recover-2"); response.Code != http.StatusConflict {
 		t.Fatalf("new request after recovery status=%d body=%s", response.Code, response.Body.String())
 	}
-	count, _ := st.CountEvents(ctx, task.ID, "work_order.recovered")
+	count, _ := st.CountEvents(ctx, task.ID, "work_order.redispatched")
 	if count != 1 {
-		t.Fatalf("recovery events=%d", count)
+		t.Fatalf("redispatch events=%d", count)
 	}
 }
 
@@ -250,9 +292,11 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: state, ReviewRound: 1, ReviewSeat: seat + 1, LastFailureMessage: "worker retries exhausted"}); err != nil {
-			t.Fatal(err)
+		deadline := time.Time{}
+		if state == core.WorkOrderTimedOut {
+			deadline = time.Now().Add(-time.Minute)
 		}
+		createMemoryWorkOrderInState(t, st, ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, State: state, ExecutionDeadline: deadline, ReviewRound: 1, ReviewSeat: seat + 1, LastFailureMessage: "worker retries exhausted"})
 	}
 	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 9, "head_sha": "head-9"})}); err != nil {
 		t.Fatal(err)
@@ -325,9 +369,7 @@ func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing
 		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
-			t.Fatal(err)
-		}
+		createMemoryWorkOrderInState(t, st, ctx, order)
 	}
 	provider := func(context.Context) (*config.Config, error) {
 		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
@@ -772,6 +814,30 @@ func TestRedispatchRefusesHaltedTaskWithoutDecidedStage(t *testing.T) {
 	}
 }
 
+func TestRedispatchReturnsConflictForTerminalTaskTransition(t *testing.T) {
+	t.Parallel()
+	for _, state := range []core.TaskState{core.TaskMerged, core.TaskClosed} {
+		state := state
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			st := store.NewMemory()
+			id := "terminal-" + string(state)
+			if err := st.CreateTask(context.Background(), core.Task{ID: id, State: state, NextStage: core.StageImplement}); err != nil {
+				t.Fatal(err)
+			}
+			s := NewServer(st)
+			s.BearerToken = "token"
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+id+"/redispatch", bytes.NewReader([]byte(`{}`)))
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			s.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "secret-token"
@@ -833,11 +899,8 @@ func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	}
 	expired := expiredClaim
 	expired.State, expired.LeaseExpiresAt = core.WorkOrderQueued, time.Time{}
-	for _, order := range []core.WorkOrder{current, expired} {
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
-			t.Fatal(err)
-		}
-	}
+	createMemoryWorkOrderInState(t, st, ctx, current)
+	createMemoryWorkOrderInState(t, st, ctx, expired)
 	if err := st.AppendEvent(ctx, core.Event{
 		TaskID: task.ID, JobID: expired.JobID, Kind: "work_order.claimed",
 		Payload: core.JSONPayload(expiredClaim), At: now.Add(-10 * time.Minute),
@@ -1086,7 +1149,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 		if intervention.Action != core.InterventionRedirect {
 			return nil
 		}
-		if err := st.SetTaskTransition(ctx, task.ID, core.TaskQueued, task.RecoveryStage, ""); err != nil {
+		if err := st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, task.RecoveryStage, ""); err != nil {
 			return err
 		}
 		requeued <- task.ID
@@ -1154,7 +1217,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("running task status = %d", response.Code)
 	}
 
-	if err := st.UpdateTaskState(context.Background(), "running", core.TaskAwaiting); err != nil {
+	if err := st.TransitionTaskState(context.Background(), "running", core.TaskJobFail); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve"}`)))
@@ -1165,7 +1228,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("missing reason status = %d", response.Code)
 	}
 
-	if err := st.UpdateTaskState(context.Background(), "running", core.TaskApproved); err != nil {
+	if err := st.TransitionTaskState(context.Background(), "running", core.TaskInterventionApproveReview); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
@@ -1194,7 +1257,7 @@ func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 	s.OnMerge = func(ctx context.Context, task core.Task) error {
 		mergeCalls++
 		if task.State == core.TaskApproved {
-			return st.SetTaskTransition(ctx, task.ID, core.TaskMerged, "", "")
+			return st.SetTaskTransition(ctx, task.ID, core.TaskMergeConfirm, "", "")
 		}
 		return nil
 	}

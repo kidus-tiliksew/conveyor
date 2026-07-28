@@ -124,7 +124,11 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 			return store.SetupChangeResult{}, err
 		}
 		if state == string(core.WorkOrderQueued) {
-			resultingState = string(core.WorkOrderCancelled)
+			resulting, transitionErr := core.TransitionWorkOrder(core.WorkOrderState(state), core.WorkOrderCmdCancel)
+			if transitionErr != nil {
+				return store.SetupChangeResult{}, transitionErr
+			}
+			resultingState = string(resulting)
 			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state='queued'`, now, workspaceID, id); err != nil {
 				return store.SetupChangeResult{}, err
 			}
@@ -140,6 +144,11 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 	}
 	for i, job := range request.NewJobs {
 		order := request.NewWorkOrders[i]
+		createdState, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if transitionErr != nil {
+			return store.SetupChangeResult{}, transitionErr
+		}
+		order.State = createdState
 		if job.TaskID != task.ID || order.TaskID != task.ID || order.JobID != job.ID || order.Stage != job.Stage {
 			return store.SetupChangeResult{}, fmt.Errorf("invalid setup-change review member %d", i)
 		}

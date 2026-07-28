@@ -183,7 +183,11 @@ func (m *memory) ChangeTaskSetup(ctx context.Context, raw SetupChangeRequest) (S
 		}
 		priorState := order.State
 		if order.State == core.WorkOrderQueued {
-			order.State, order.Claimable, order.UpdatedAt = core.WorkOrderCancelled, false, now
+			state, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
+			if transitionErr != nil {
+				return SetupChangeResult{}, transitionErr
+			}
+			order.State, order.Claimable, order.UpdatedAt = state, false, now
 			m.workOrders[id] = order
 			if job, index, found := m.findJobLocked(order.JobID); found {
 				job.State, job.EndedAt = core.JobFailed, now
@@ -210,7 +214,11 @@ func (m *memory) ChangeTaskSetup(ctx context.Context, raw SetupChangeRequest) (S
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = now.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if transitionErr != nil {
+			return SetupChangeResult{}, transitionErr
+		}
+		order.State, order.Claimable, order.UpdatedAt = state, true, now
 		m.workOrders[order.ID] = order
 		result.CreatedWorkOrders = append(result.CreatedWorkOrders, order.ID)
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})

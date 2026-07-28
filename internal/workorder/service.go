@@ -643,7 +643,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		reviewedHead = target.HeadSHA
 	}
 	order.State = core.WorkOrderSubmitted
-	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitForReview); err != nil {
 		return nil, err
 	}
 	job, ok, _ := s.Store.GetLatestJob(ctx, task.ID)
@@ -674,7 +674,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 			return nil, err
 		}
 	}
-	if err = s.Store.SetTaskTransition(ctx, task.ID, core.TaskQueued, core.StageReview, ""); err != nil {
+	if err = s.Store.SetTaskTransition(ctx, task.ID, core.TaskStageAdvance, core.StageReview, ""); err != nil {
 		return nil, err
 	}
 	reviewExecution := cfg.Routing.Stages["review"].Execution
@@ -732,7 +732,7 @@ func (s *Service) SubmitSpec(ctx context.Context, id, session string, value pipe
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted
-	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitSpec); err != nil {
 		return nil, err
 	}
 	job.State = core.JobDone
@@ -866,7 +866,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted
-	if err = s.Store.UpdateWorkOrder(ctx, order); err != nil {
+	if err = s.Store.UpdateWorkOrder(ctx, order, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 		return nil, err
 	}
 	job.State = core.JobDone
