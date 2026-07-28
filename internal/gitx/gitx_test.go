@@ -93,13 +93,6 @@ func TestWorktreeLifecycle(t *testing.T) {
 	}
 }
 
-func TestSandboxPathIsHostIndependent(t *testing.T) {
-	t.Parallel()
-	if got, want := SandboxPath("123", "api"), "/conveyor/jobs/task-123/api"; got != want {
-		t.Fatalf("SandboxPath = %q, want %q", got, want)
-	}
-}
-
 func TestExistingTaskCheckoutFastForwardsHumanPush(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")

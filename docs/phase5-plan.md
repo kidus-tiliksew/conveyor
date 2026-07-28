@@ -9,7 +9,7 @@ reconnect-safe worker plus interrupted-seat recovery by §21.26, and
 execution setups by §21.27. Merge readiness, conflict-fix dispatch, and
 refresh review are fixed by §21.30; execution modes are superseded by the
 per-task hold contract in §21.31, and first-activity liveness is fixed by
-§21.40. These are
+§21.41. These are
 authoritative over this file. This document is the working breakdown: what
 each phase contains, its dependencies, and its exit criterion. All of it is
 post-Beta scope; the gate has cleared — **Beta was achieved July 15, 2026** (§19 exit
@@ -126,7 +126,7 @@ Suggested order:
    existing redacted output path. A child that stays completely silent through
    the deadline is terminated, reaped, and conditionally released once as
    `child_failure`, entering the existing bounded retry and audited stalled
-   path (§21.21, §21.34, §21.40). One output byte permanently disarms this
+   path (§21.21, §21.34, §21.41). One output byte permanently disarms this
    watchdog; the fixed execution deadline remains the only total-duration
    backstop.
 

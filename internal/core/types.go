@@ -126,7 +126,7 @@ type Task struct {
 	State              TaskState             `json:"state"`
 	NextStage          Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage      Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID       string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.6)
+	ParentTaskID       string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.3)
 	FeatureID          string                `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
 	GitHub             *GitHubLifecycle      `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
 	CreatedAt          time.Time             `json:"created_at"`

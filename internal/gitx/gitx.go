@@ -27,14 +27,9 @@ func NewManager(cacheDir, jobsDir string) *Manager {
 	return &Manager{CacheDir: cacheDir, JobsDir: jobsDir}
 }
 
-// BranchName returns the task branch: conveyor/task-<id> (spec §8.2).
+// BranchName returns the task branch: conveyor/task-<id> (spec §8.1).
 func BranchName(taskID string) string {
 	return "conveyor/task-" + taskID
-}
-
-// SandboxPath is stable across runner hosts (spec §8.3 note 3).
-func SandboxPath(taskID, repoName string) string {
-	return filepath.Join("/conveyor/jobs", "task-"+taskID, repoName)
 }
 
 // mirrorPath maps a repo URL to its bare cache path. file:// URLs
@@ -105,7 +100,7 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 		return "", err
 	}
 	wt := filepath.Join(m.JobsDir, "task-"+taskID, repoName)
-	// Re-dispatch resumes the existing worktree untouched (spec §8.3).
+	// Re-dispatch resumes the existing worktree untouched (spec §8.2).
 	if _, err := os.Stat(wt); err == nil {
 		if err := syncTaskBranch(ctx, wt, BranchName(taskID)); err != nil {
 			return "", err
@@ -271,7 +266,7 @@ func revParse(ctx context.Context, repoDir, ref string) (string, error) {
 }
 
 // RemoveWorktree removes a task worktree; called on merge, close, or
-// staleness TTL (default 14 days, spec §8.3).
+// staleness TTL (default 14 days, spec §8.1).
 func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID string) error {
 	mirror, err := m.mirrorPath(repoURL)
 	if err != nil {

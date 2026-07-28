@@ -107,7 +107,7 @@ type ExecutionPolicy struct {
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
-	// the claim lease and fixed execution deadline (spec §21.40).
+	// the claim lease and fixed execution deadline (spec §21.41).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
 }

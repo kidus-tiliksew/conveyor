@@ -598,7 +598,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdout, failureTail), Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
-	// permanently disarms output-start liveness (spec §21.40).
+	// permanently disarms output-start liveness (spec §21.41).
 	firstActivity := newFirstActivitySignal()
 	defer flushOutput()
 	// Hand lease authority to the running-child loop: stop pre-start renewal
