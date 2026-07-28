@@ -112,6 +112,82 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, RetryDelay: time.Nanosecond, RetryMaximum: time.Nanosecond}
+	worker := core.Worker{ID: "claim-order-worker", Workspace: "demo", Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, LeaseExpiresAt: now.Add(time.Minute)}
+
+	createOrder := func(id string, stage core.Stage, queueEnteredAt, createdAt time.Time) {
+		task := core.Task{ID: id, Workspace: "demo", State: core.TaskRunning, NextStage: stage, CreatedAt: createdAt}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: id + "-" + string(stage) + "-1", TaskID: id, Stage: stage, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: queueEnteredAt, QueueDeadline: queueEnteredAt.Add(24 * time.Hour), CreatedAt: createdAt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	createOrder("newer-entry", core.StageImplement, now.Add(-time.Hour), now.Add(-3*time.Hour))
+	createOrder("older-entry-z", core.StageImplement, now.Add(-2*time.Hour), now)
+	createOrder("older-entry-a", core.StageImplement, now.Add(-2*time.Hour), now.Add(time.Hour))
+	listed, err := service.ListClaimable(ctx, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("claimable orders = %+v, want 3", listed)
+	}
+	got := []string{listed[0].Order.ID, listed[1].Order.ID, listed[2].Order.ID}
+	want := []string{"older-entry-a-implement-1", "older-entry-z-implement-1", "newer-entry-implement-1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FIFO claim order = %v, want %v", got, want)
+	}
+
+	claimed, err := service.ClaimForWorker(ctx, worker, "older-entry-a-implement-1", core.WorkOrderClaim{SessionID: "release-session", ClientToken: "release-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := service.Release(ctx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "release-session", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "test retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !released.QueueEnteredAt.After(now.Add(-time.Minute)) {
+		t.Fatalf("released queue entry was not refreshed: %s", released.QueueEnteredAt)
+	}
+	listed, err = service.ListClaimable(ctx, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("claimable orders after release = %+v, want 3", listed)
+	}
+	got = []string{listed[0].Order.ID, listed[1].Order.ID, listed[2].Order.ID}
+	want = []string{"older-entry-z-implement-1", "newer-entry-implement-1", "older-entry-a-implement-1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claim order after release = %v, want %v", got, want)
+	}
+
+	createOrder("old-review", core.StageReview, now.Add(-30*time.Minute), now.Add(2*time.Hour))
+	listed, err = service.ListClaimable(ctx, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 4 {
+		t.Fatalf("claimable orders with review = %+v, want 4", listed)
+	}
+	if listed[0].Order.Stage != core.StageReview || listed[0].Order.ID != "old-review-review-1" {
+		t.Fatalf("review preference did not override queue age: first=%+v", listed[0].Order)
+	}
+}
+
 func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
