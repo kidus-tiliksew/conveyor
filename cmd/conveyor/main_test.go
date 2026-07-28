@@ -162,6 +162,66 @@ func TestCheckoutSupportsConcurrentTaskWorktreesAndPathOverride(t *testing.T) {
 	assertPrimaryUntouched(t, fixture.primary, primaryHead)
 }
 
+func TestCheckoutRejectsUnsafeImplicitSiblingComponents(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		repo   string
+		taskID string
+		want   string
+	}{
+		{name: "repository separator", repo: "../outside", taskID: "safe", want: "repository name"},
+		{name: "repository backslash", repo: `..\outside`, taskID: "safe", want: "repository name"},
+		{name: "repository traversal", repo: "..", taskID: "safe", want: "repository name"},
+		{name: "task separator", repo: "conveyor", taskID: "../outside", want: "task ID"},
+		{name: "task backslash", repo: "conveyor", taskID: `..\outside`, want: "task ID"},
+		{name: "task traversal", repo: "conveyor", taskID: "..", want: "task ID"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			branch := "conveyor/task-unsafe-" + strings.ReplaceAll(test.name, " ", "-")
+			_, err := checkoutTask(context.Background(), branch, "main", test.repo, test.taskID, "")
+			if err == nil || !strings.Contains(err.Error(), "refusing implicit checkout destination") || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("checkout error = %v", err)
+			}
+			if gitRefExists(context.Background(), fixture.primary, "refs/heads/"+branch) {
+				t.Fatal("task branch created after unsafe implicit destination failure")
+			}
+		})
+	}
+}
+
+func TestCheckoutRejectsImplicitDestinationResolvedOutsideSiblingDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	target := filepath.Join(fixture.tmp, "nested", "outside")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(fixture.tmp, "conveyor-task-symlink")
+	if err := os.Symlink(target, destination); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := checkoutTask(context.Background(), "conveyor/task-symlink", "main", "conveyor", "symlink", "")
+	if err == nil || !strings.Contains(err.Error(), "resolved path is not a sibling") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-symlink") {
+		t.Fatal("task branch created after resolved sibling failure")
+	}
+}
+
+func TestCheckoutPathOverrideBypassesImplicitSiblingGuard(t *testing.T) {
+	fixture := newGitFixture(t)
+	destination := filepath.Join(fixture.tmp, "operator-selected")
+	got, err := checkoutTask(context.Background(), "conveyor/task-path-override", "main", "../malformed", "../malformed", destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != destination {
+		t.Fatalf("destination = %q, want %q", got, destination)
+	}
+}
+
 func TestCheckoutFailsSafelyForDirtyInProgressAndExistingPaths(t *testing.T) {
 	t.Run("dirty primary", func(t *testing.T) {
 		fixture := newGitFixture(t)

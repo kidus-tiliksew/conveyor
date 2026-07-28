@@ -179,6 +179,32 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	}
 }
 
+func TestWorkspaceConfigAPIReportsInvalidRepositoryNameAsFieldError(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	document.Repos[0].Name = "../outside"
+	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: contextualWorkspaceDocument(), Version: 1}}
+	s := NewServer(store.NewMemory())
+	s.BearerToken = "token"
+	s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+	s.ConfigStore = backend
+	body, err := json.Marshal(map[string]any{"document": document})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("If-Match", "1")
+	result := httptest.NewRecorder()
+	s.Handler().ServeHTTP(result, request)
+
+	if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 ||
+		!strings.Contains(result.Body.String(), `"error":"validation_failed"`) ||
+		!strings.Contains(result.Body.String(), `"field":"repos"`) ||
+		!strings.Contains(result.Body.String(), "repo 0: name") {
+		t.Fatalf("status=%d updates=%d body=%s", result.Code, backend.updates, result.Body)
+	}
+}
+
 func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
 	for _, stage := range []string{"triage", "spec"} {
 		efforts := []string{"", "low", "medium", "high"}

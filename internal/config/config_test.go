@@ -74,6 +74,67 @@ repos:
 	}
 }
 
+func TestRepositoryNamesUseCheckoutSafeAlphabet(t *testing.T) {
+	for _, name := range []string{"repo", "Repo-1.2_name", "a", "..."} {
+		t.Run("accept/"+name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Repos[0].Name = name
+			if _, err := normalize(cfg, "repository name test"); err != nil {
+				t.Fatalf("normalize repository name %q: %v", name, err)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "dot", value: "."},
+		{name: "dot-dot", value: ".."},
+		{name: "slash", value: "repo/name"},
+		{name: "backslash", value: `repo\name`},
+		{name: "traversal", value: "../repo"},
+		{name: "nul", value: "repo\x00name"},
+		{name: "whitespace", value: "repo name"},
+		{name: "punctuation", value: "repo@name"},
+		{name: "non-ascii", value: "répo"},
+	} {
+		t.Run("reject/"+test.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Repos[0].Name = test.value
+			if _, err := normalize(cfg, "repository name test"); err == nil || !strings.Contains(err.Error(), "repo 0: name") {
+				t.Fatalf("normalize repository name %q error = %v", test.value, err)
+			}
+		})
+	}
+}
+
+func TestRepositoryNameValidationIsSharedByLoadAndWorkspaceWrites(t *testing.T) {
+	cfg := validConfig()
+	cfg.Repos[0].Name = "../outside"
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "repo 0: name") {
+		t.Fatalf("deployment load error = %v", err)
+	}
+
+	document := validConfig().WorkspaceDocument()
+	document.Repos[0].Name = "repo/name"
+	data, err = yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseWorkspaceDocument(data, validConfig(), "workspace config write"); err == nil || !strings.Contains(err.Error(), "repo 0: name") {
+		t.Fatalf("workspace write error = %v", err)
+	}
+}
+
 func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing.T) {
 	cfg, err := Load("../../conveyor.example.yaml")
 	if err != nil {

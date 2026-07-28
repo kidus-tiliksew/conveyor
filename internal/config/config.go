@@ -879,8 +879,10 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("duplicate repo name %q", repo.Name)
 		}
 		repoNames[repo.Name] = struct{}{}
-		if !safePathSegment(repo.Name) {
-			return nil, fmt.Errorf("repo %d: name %q must be one path-safe segment", i, repo.Name)
+		// Repository names become part of the implicit sibling worktree name,
+		// so keep them to the server-generated task ID alphabet (spec §8.2).
+		if !validRepoName(repo.Name) {
+			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
 		}
 		if repo.Base == "" {
 			repo.Base = "main"
@@ -1147,4 +1149,21 @@ func expandDefault(value, home, fallback string) string {
 
 func safePathSegment(value string) bool {
 	return value != "" && value != "." && value != ".." && !strings.ContainsAny(value, "/\\\x00")
+}
+
+func validRepoName(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		character := value[i]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
