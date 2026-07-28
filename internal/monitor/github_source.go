@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -20,7 +21,7 @@ type GitHubSource struct {
 	Repository   string
 	GitHubSlug   string
 	Run          CommandRunner
-	KnownTask    func(string) bool
+	KnownLineage func(taskID string, pullRequestNumber int, headSHA string) bool
 	LoadHints    func(context.Context, string) (*HintContext, error)
 	OnSuppressed func(context.Context, map[string]any) error
 }
@@ -42,6 +43,7 @@ type githubPull struct {
 	MergedAt *time.Time `json:"merged_at"`
 	Head     struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 }
 
@@ -52,6 +54,31 @@ type githubCheckRuns struct {
 		Conclusion string `json:"conclusion"`
 		RunAttempt int    `json:"run_attempt"`
 	} `json:"check_runs"`
+}
+
+// RecordedLineage verifies that a branch-shaped pull request is actually the
+// pull request Conveyor recorded for this task in this repository. A task ID
+// embedded in an unrelated external PR is not lineage (spec §21.45).
+func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug, taskID string, pullRequestNumber int, headSHA string) bool {
+	if task.ID != taskID || task.Repo != repository || task.Branch != "conveyor/task-"+taskID ||
+		strings.TrimSpace(headSHA) == "" ||
+		(task.GitHub != nil && task.GitHub.Repository != githubSlug) {
+		return false
+	}
+	for _, event := range events {
+		if event.Kind != "pull_request.opened" {
+			continue
+		}
+		var opened struct {
+			Number  int    `json:"number"`
+			HeadSHA string `json:"head_sha"`
+		}
+		if json.Unmarshal(event.Payload, &opened) == nil &&
+			opened.Number == pullRequestNumber && opened.HeadSHA == headSHA {
+			return true
+		}
+	}
+	return false
 }
 
 func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Observation, error) {
@@ -80,6 +107,15 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		}
 	}
 	var observations []Observation
+	seen := make(map[string]struct{})
+	appendObservation := func(observation Observation) {
+		key := string(observation.Kind) + ":" + observation.OccurrenceID
+		if _, duplicate := seen[key]; duplicate {
+			return
+		}
+		seen[key] = struct{}{}
+		observations = append(observations, observation)
+	}
 	for _, commit := range commits {
 		pulls, pullErr := s.pulls(ctx, commit.SHA)
 		if pullErr != nil {
@@ -88,7 +124,8 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		lineaged := false
 		for _, pull := range pulls {
 			taskID, ok := strings.CutPrefix(pull.Head.Ref, "conveyor/task-")
-			if ok && pull.MergedAt != nil && s.KnownTask != nil && s.KnownTask(taskID) {
+			if ok && pull.MergedAt != nil && s.KnownLineage != nil &&
+				s.KnownLineage(taskID, pull.Number, pull.Head.SHA) {
 				lineaged = true
 				break
 			}
@@ -122,7 +159,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				if attempt <= 0 {
 					attempt = 1
 				}
-				observations = append(observations, Observation{
+				appendObservation(Observation{
 					WorkspaceID: s.WorkspaceID, Repository: s.Repository,
 					Kind:         PostMergeFailure,
 					OccurrenceID: "check:" + strconv.FormatInt(check.ID, 10) + ":attempt:" + strconv.Itoa(attempt),
@@ -133,20 +170,21 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			}
 			continue
 		}
-		kind, sourceURL, prNumber := DirectPush, commit.HTMLURL, 0
+		kind, sourceURL, occurrenceID, prNumber := DirectPush, commit.HTMLURL, commit.SHA, 0
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(commit.Commit.Message)), "revert") {
 			kind = Revert
 		} else {
 			for _, pull := range pulls {
 				if pull.MergedAt != nil {
 					kind, sourceURL, prNumber = ExternalPRMerge, pull.HTMLURL, pull.Number
+					occurrenceID = "pr:" + strconv.Itoa(pull.Number)
 					break
 				}
 			}
 		}
-		observations = append(observations, Observation{
+		appendObservation(Observation{
 			WorkspaceID: s.WorkspaceID, Repository: s.Repository, Kind: kind,
-			OccurrenceID: commit.SHA, SourceURL: sourceURL, CommitSHA: commit.SHA,
+			OccurrenceID: occurrenceID, SourceURL: sourceURL, CommitSHA: commit.SHA,
 			PullRequestNumber: prNumber, ObservedAt: commit.Commit.Committer.Date, Hints: hints,
 		})
 	}

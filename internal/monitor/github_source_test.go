@@ -7,13 +7,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	suppressed := 0
 	source := GitHubSource{
 		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
-		KnownTask: func(id string) bool { return id == "known" },
+		KnownLineage: func(id string, number int, headSHA string) bool {
+			return id == "known" && number == 1 && headSHA == "known-head"
+		},
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
 			switch {
@@ -22,14 +26,18 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 {"sha":"known-sha","html_url":"https://example/known","commit":{"message":"merge","committer":{"date":"2026-07-28T10:00:00Z"}}},
 {"sha":"push-sha","html_url":"https://example/push","commit":{"message":"manual","committer":{"date":"2026-07-28T10:01:00Z"}}},
 {"sha":"pr-sha","html_url":"https://example/pr-sha","commit":{"message":"feature","committer":{"date":"2026-07-28T10:02:00Z"}}},
+{"sha":"pr-sha-2","html_url":"https://example/pr-sha-2","commit":{"message":"feature part 2","committer":{"date":"2026-07-28T10:02:30Z"}}},
+{"sha":"masquerade-sha","html_url":"https://example/masquerade","commit":{"message":"external","committer":{"date":"2026-07-28T10:03:00Z"}}},
 {"sha":"revert-sha","html_url":"https://example/revert","commit":{"message":"Revert \"bad\"","committer":{"date":"2026-07-28T10:03:00Z"}}}
 ]`), nil
 			case strings.Contains(path, "known-sha/pulls"):
-				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known"}}]`), nil
+				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"known-head"}}]`), nil
 			case strings.Contains(path, "known-sha/check-runs"):
 				return []byte(`{"check_runs":[{"id":77,"html_url":"https://example/check/77","conclusion":"failure","run_attempt":2},{"id":78,"html_url":"https://example/check/78","conclusion":"success","run_attempt":1}]}`), nil
-			case strings.Contains(path, "pr-sha/pulls"):
-				return []byte(`[{"number":2,"html_url":"https://example/pr/2","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"external"}}]`), nil
+			case strings.Contains(path, "pr-sha/pulls"), strings.Contains(path, "pr-sha-2/pulls"):
+				return []byte(`[{"number":2,"html_url":"https://example/pr/2","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"external","sha":"external-head"}}]`), nil
+			case strings.Contains(path, "masquerade-sha/pulls"):
+				return []byte(`[{"number":3,"html_url":"https://example/pr/3","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"unrecorded-head"}}]`), nil
 			case strings.Contains(path, "/pulls"):
 				return []byte(`[]`), nil
 			default:
@@ -42,7 +50,7 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(observations) != 4 {
+	if len(observations) != 5 {
 		t.Fatalf("observations=%+v", observations)
 	}
 	if suppressed != 1 {
@@ -55,7 +63,8 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	want := map[string]SignalKind{
 		"check:77:attempt:2": PostMergeFailure,
 		"push-sha":           DirectPush,
-		"pr-sha":             ExternalPRMerge,
+		"pr:2":               ExternalPRMerge,
+		"pr:3":               ExternalPRMerge,
 		"revert-sha":         Revert,
 	}
 	for occurrence, kind := range want {
@@ -96,5 +105,28 @@ func TestFetchGitHubHintsPinsRevisionAndFailsClosed(t *testing.T) {
 			return []byte(fmt.Sprintf(`{"encoding":"base64","content":%q}`, unsafe)), nil
 		}); err == nil {
 		t.Fatal("unsafe capability grant was accepted")
+	}
+}
+
+func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T) {
+	task := core.Task{
+		ID: "known", Repo: "other", Branch: "conveyor/task-known",
+		GitHub: &core.GitHubLifecycle{Repository: "acme/other"},
+	}
+	events := []core.Event{{
+		Kind: "pull_request.opened",
+		Payload: core.JSONPayload(map[string]any{
+			"number": 3, "head_sha": "recorded-head",
+		}),
+	}}
+	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "recorded-head") {
+		t.Fatal("unrelated repository task was accepted as Conveyor lineage")
+	}
+	task.Repo, task.GitHub.Repository = "conveyor", "acme/conveyor"
+	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "unrecorded-head") {
+		t.Fatal("unrecorded pull-request head was accepted as Conveyor lineage")
+	}
+	if !RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "recorded-head") {
+		t.Fatal("recorded repository, pull request, and head were not accepted")
 	}
 }

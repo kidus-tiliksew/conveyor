@@ -307,9 +307,19 @@ func main() {
 						}
 						source := monitor.GitHubSource{
 							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub,
-							KnownTask: func(taskID string) bool {
-								_, taskErr := st.GetTask(workspaceCtx, taskID)
-								return taskErr == nil
+							KnownLineage: func(taskID string, pullRequestNumber int, headSHA string) bool {
+								task, taskErr := st.GetTask(workspaceCtx, taskID)
+								if taskErr != nil || task.Repo != repositoryName ||
+									task.Branch != "conveyor/task-"+taskID ||
+									(task.GitHub != nil && task.GitHub.Repository != repository.GitHub) {
+									return false
+								}
+								events, eventErr := st.ListEvents(workspaceCtx, taskID)
+								if eventErr != nil {
+									return false
+								}
+								return monitor.RecordedLineage(task, events, repositoryName, repository.GitHub,
+									taskID, pullRequestNumber, headSHA)
 							},
 						}
 						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
