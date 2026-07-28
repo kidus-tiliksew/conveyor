@@ -1346,6 +1346,68 @@ func TestRunHarnessChildContinuousOutputResetsStallTimeout(t *testing.T) {
 	}
 }
 
+func TestRunHarnessChildOutputRacingStallDeadlineStartsNewGeneration(t *testing.T) {
+	raceDirectory := t.TempDir()
+	t.Setenv("CONVEYOR_FAKE_HARNESS_RACE_DIR", raceDirectory)
+	released := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim", "renew":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "reconcile":
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderSubmitted}, Reason: "submitted"})
+		case "release":
+			released <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var boundary sync.Once
+	workerStallDeadlineTestHook = func() {
+		boundary.Do(func() {
+			if err := os.WriteFile(filepath.Join(raceDirectory, "emit"), []byte("emit"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			waitForWorkerHelperFile(t, filepath.Join(raceDirectory, "emitted"))
+			// Hold the stale timer handler past the replacement deadline. The
+			// raced output must still establish a fresh timer generation.
+			time.Sleep(125 * time.Millisecond)
+			if err := os.WriteFile(filepath.Join(raceDirectory, "finish"), []byte("finish"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Cleanup(func() { workerStallDeadlineTestHook = nil })
+
+	item := workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "stall-deadline-race", Stage: core.StageImplement},
+		Harness: config.Harness{
+			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "stall-deadline-race"},
+			StallTimeoutText: "100ms",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, time.Second, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "initial activity") || !strings.Contains(stdout.String(), "deadline activity") {
+		t.Fatalf("race output=%q", stdout.String())
+	}
+	select {
+	case <-released:
+		t.Fatal("deadline-racing output was misclassified as stalled")
+	default:
+	}
+}
+
 func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 	test := func(t *testing.T, mode string, wantOutcome string, wantExit *int) {
 		t.Helper()
@@ -1622,7 +1684,31 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 			fmt.Fprintf(os.Stdout, "activity %d\n", i)
 			time.Sleep(40 * time.Millisecond)
 		}
+	case "stall-deadline-race":
+		raceDirectory := os.Getenv("CONVEYOR_FAKE_HARNESS_RACE_DIR")
+		fmt.Fprintln(os.Stdout, "initial activity")
+		waitForWorkerHelperFile(t, filepath.Join(raceDirectory, "emit"))
+		fmt.Fprintln(os.Stdout, "deadline activity")
+		if err := os.WriteFile(filepath.Join(raceDirectory, "emitted"), []byte("emitted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitForWorkerHelperFile(t, filepath.Join(raceDirectory, "finish"))
+		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func waitForWorkerHelperFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func TestWorkerHarnessHelper(t *testing.T) {

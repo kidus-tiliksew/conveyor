@@ -642,9 +642,12 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	firstActivityObserved := firstActivity.observed
 	var stallTimer *time.Timer
 	var stallDeadline <-chan time.Time
+	var stallGeneration uint64
+	var stallDue time.Time
 	if stallTimeout > 0 {
 		stallTimer = time.NewTimer(stallTimeout)
 		stallDeadline = stallTimer.C
+		stallDue = time.Now().Add(stallTimeout)
 		defer stallTimer.Stop()
 	}
 	activityObserved := firstActivity.activity
@@ -719,7 +722,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			firstActivityDeadline = nil
 		case <-activityObserved:
 			if stallTimer != nil {
-				resetTimer(stallTimer, stallRemaining(firstActivity.lastObserved(), stallTimeout))
+				drainActivity(activityObserved)
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
 				stallDeadline = stallTimer.C
 			}
 		case <-firstActivityDeadline:
@@ -788,10 +792,20 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				return fmt.Errorf("%s: release claim: %w", workerFirstActivityTimeoutReason, releaseErr)
 			}
 			return errors.New(workerFirstActivityTimeoutReason)
-		case <-stallDeadline:
+		case firedAt := <-stallDeadline:
 			// Output and normal completion win races at the inactivity boundary.
-			if remaining := stallRemaining(firstActivity.lastObserved(), stallTimeout); remaining > 0 {
-				resetTimer(stallTimer, remaining)
+			if hook := workerStallDeadlineTestHook; hook != nil {
+				hook()
+			}
+			drainActivity(activityObserved)
+			generation, _ := firstActivity.snapshot()
+			if generation != stallGeneration {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
+			}
+			if firedAt.Before(stallDue) {
+				resetTimer(stallTimer, durationUntil(stallDue))
 				stallDeadline = stallTimer.C
 				continue
 			}
@@ -825,8 +839,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
-			if remaining := stallRemaining(firstActivity.lastObserved(), stallTimeout); remaining > 0 {
-				resetTimer(stallTimer, remaining)
+			drainActivity(activityObserved)
+			generation, _ = firstActivity.snapshot()
+			if generation != stallGeneration {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
+			}
+			if time.Now().Before(stallDue) {
+				resetTimer(stallTimer, durationUntil(stallDue))
 				stallDeadline = stallTimer.C
 				continue
 			}
@@ -834,6 +855,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			case waitErr := <-done:
 				return handleChildExit(waitErr)
 			default:
+			}
+			if !firstActivity.generationUnchanged(stallGeneration) {
+				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
+				stallDeadline = stallTimer.C
+				continue
 			}
 			_ = command.Process.Kill()
 			waitErr := <-done
@@ -887,11 +913,12 @@ const workerFirstActivityTimeoutReason = "harness produced no output before firs
 const workerStallTimeoutReason = "harness produced no output before stall_timeout"
 
 type firstActivitySignal struct {
-	once     sync.Once
-	observed chan struct{}
-	activity chan struct{}
-	mu       sync.Mutex
-	last     time.Time
+	once       sync.Once
+	observed   chan struct{}
+	activity   chan struct{}
+	mu         sync.Mutex
+	last       time.Time
+	generation uint64
 }
 
 func newFirstActivitySignal() *firstActivitySignal {
@@ -902,6 +929,7 @@ func (s *firstActivitySignal) observe() {
 	now := time.Now()
 	s.mu.Lock()
 	s.last = now
+	s.generation++
 	s.mu.Unlock()
 	s.once.Do(func() { close(s.observed) })
 	select {
@@ -910,10 +938,16 @@ func (s *firstActivitySignal) observe() {
 	}
 }
 
-func (s *firstActivitySignal) lastObserved() time.Time {
+func (s *firstActivitySignal) snapshot() (uint64, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.last
+	return s.generation, s.last
+}
+
+func (s *firstActivitySignal) generationUnchanged(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation == generation
 }
 
 type firstActivityWriter struct {
@@ -928,18 +962,36 @@ func (w *firstActivityWriter) Write(p []byte) (int, error) {
 	return w.Destination.Write(p)
 }
 
-func stallRemaining(last time.Time, timeout time.Duration) time.Duration {
-	if timeout <= 0 {
-		return 0
+func resetStallTimerForActivity(timer *time.Timer, signal *firstActivitySignal, timeout time.Duration) (uint64, time.Time) {
+	generation, observedAt := signal.snapshot()
+	due := observedAt.Add(timeout)
+	now := time.Now()
+	// A stale timer generation may be handled after the replacement deadline
+	// has technically elapsed. Give the newly observed generation one complete
+	// supervision window so the stale timer cannot classify it as stalled.
+	if observedAt.IsZero() || !due.After(now) {
+		due = now.Add(timeout)
 	}
-	if last.IsZero() {
-		return 0
-	}
-	remaining := timeout - time.Since(last)
-	if remaining < 0 {
-		return 0
+	resetTimer(timer, durationUntil(due))
+	return generation, due
+}
+
+func durationUntil(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
 	}
 	return remaining
+}
+
+func drainActivity(activity <-chan struct{}) {
+	for {
+		select {
+		case <-activity:
+		default:
+			return
+		}
+	}
 }
 
 func resetTimer(timer *time.Timer, delay time.Duration) {
@@ -982,6 +1034,10 @@ var workerClaimRenewInterval = 10 * time.Second
 // between a successful claim and child launch to simulate slow pre-start
 // setup.
 var workerPreStartTestHook func(context.Context)
+
+// workerStallDeadlineTestHook lets tests hold a selected stall-timer
+// generation while child output races that boundary.
+var workerStallDeadlineTestHook func()
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the
