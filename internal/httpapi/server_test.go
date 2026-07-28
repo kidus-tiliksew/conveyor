@@ -871,6 +871,72 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 	}
 }
 
+func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "submitted-after-retries", Workspace: "demo", State: core.TaskAwaiting,
+		NextStage: core.StageReview, CreatedAt: time.Now().UTC(),
+	}
+	job := core.Job{
+		ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.JobDone,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	const failure = "harness exited before completing work order"
+	if err := st.CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement,
+		AutomaticRetryCount: 3, LastFailureMessage: failure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "recovered-session", ClientToken: "test-token", WorkerID: "worker",
+		Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, JobID: job.ID, Kind: "work_order.child_failed",
+		Payload: core.JSONPayload(map[string]any{"reason": failure, "automatic_retry_count": 3}),
+		At:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewServer(st).Handler()
+	for _, path := range []string{
+		"/v1/activity",
+		"/v1/tasks/" + task.ID + "/activity",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		body := response.Body.String()
+		if !strings.Contains(body, `"state":"awaiting_human"`) || !strings.Contains(body, `"needs_attention":true`) {
+			t.Fatalf("%s omitted current human gate: %s", path, body)
+		}
+		if strings.Contains(body, `"stalled"`) {
+			t.Fatalf("%s retained stale stalled projection: %s", path, body)
+		}
+		if strings.Contains(path, "/tasks/") && (!strings.Contains(body, `"kind":"work_order.child_failed"`) || !strings.Contains(body, failure)) {
+			t.Fatalf("%s omitted historical failure event: %s", path, body)
+		}
+	}
+}
+
 func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := context.Background()

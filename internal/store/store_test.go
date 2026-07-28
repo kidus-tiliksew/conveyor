@@ -728,11 +728,33 @@ func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 	if stalled == nil || stalled.WorkOrder.ID != "retry" || stalled.LastFailure == "" {
 		t.Fatalf("stalled=%+v", stalled)
 	}
-	if got := StalledTask([]core.WorkOrder{{ID: "cancelled", State: core.WorkOrderCancelled, RetrySuppressed: true}}); got != nil {
-		t.Fatalf("cancelled order stalled=%+v", got)
+	if got := StalledTask([]core.WorkOrder{{ID: "expired", State: core.WorkOrderStale, LastFailureDetail: "queue wait exceeded"}}); got == nil || got.Reason != "queue deadline expired" || got.LastFailure != "queue wait exceeded" {
+		t.Fatalf("expired order stalled=%+v", got)
 	}
 	if got := StalledTask([]core.WorkOrder{{ID: "loop", State: core.WorkOrderQueued, AutomaticRetryCount: 2, LastFailureMessage: "dispatch failed"}}); got == nil || got.Reason != "dispatch is failing repeatedly" {
 		t.Fatalf("loop stalled=%+v", got)
+	}
+	for _, state := range []core.WorkOrderState{
+		core.WorkOrderClaimed,
+		core.WorkOrderSubmitted,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			got := StalledTask([]core.WorkOrder{{
+				ID:                  string(state),
+				State:               state,
+				AutomaticRetryCount: 3,
+				LastFailureMessage:  "historical dispatch failure",
+				LastFailureDetail:   "historical child error",
+			}})
+			if got != nil {
+				t.Fatalf("%s order stalled=%+v", state, got)
+			}
+		})
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderCancelled} {
+		if got := StalledTask([]core.WorkOrder{{ID: string(state), State: state, RetrySuppressed: true}}); got != nil {
+			t.Fatalf("%s order stalled=%+v", state, got)
+		}
 	}
 }
 
