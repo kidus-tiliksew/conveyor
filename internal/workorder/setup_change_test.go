@@ -145,6 +145,9 @@ func TestChangeTaskSetupCreatesWholeRoundWhenPanelSizeChanges(t *testing.T) {
 	if roundTwo != 3 {
 		t.Fatalf("round two seats=%d orders=%+v", roundTwo, orders)
 	}
+	if cancelled, countErr := st.CountEvents(ctx, task.ID, "work_order.cancelled"); countErr != nil || cancelled != 1 {
+		t.Fatalf("canonical setup-change cancellations=%d err=%v", cancelled, countErr)
+	}
 }
 
 func TestChangeTaskSetupAllowsSubmittedImplementAttempt(t *testing.T) {

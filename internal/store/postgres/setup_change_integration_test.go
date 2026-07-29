@@ -3,14 +3,22 @@ package postgres
 import (
 	"context"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
+
+func changeTaskSetup(t *testing.T, st *Store, ctx context.Context, request store.SetupChangeRequest) (store.SetupChangeResult, error) {
+	t.Helper()
+	return taskops.ExecuteSetupChange(ctx, st, request.TaskID, func(lease taskops.TaskLease) (store.SetupChangeResult, error) {
+		return st.ChangeTaskSetupCommand(ctx, lease, request)
+	})
+}
 
 func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	st, err := Open(t.Context(), integrationDatabaseURL(t))
@@ -43,7 +51,14 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	desired := order
 	desired.RequiredModel, desired.RequiredEffort, desired.QueueEnteredAt, desired.QueueDeadline = "new", "high", now.Add(time.Minute), now.Add(2*time.Hour)
 	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-1", Reason: "repair routing", Setup: next, WorkOrderUpdates: []core.WorkOrder{desired}, ReviewTransition: "none"}
-	result, err := st.ChangeTaskSetup(ctx, request)
+	if _, err = st.ChangeTaskSetupCommand(ctx, taskops.TaskLease{}, request); err == nil {
+		t.Fatal("zero taskops lease authorized setup change")
+	}
+	unchanged, getErr := st.GetTask(ctx, task.ID)
+	if getErr != nil || unchanged.SetupName != old.Name {
+		t.Fatalf("unleased setup change mutated task=%+v err=%v", unchanged, getErr)
+	}
+	result, err := changeTaskSetup(t, st, ctx, request)
 	if err != nil || result.Task.SetupName != next.Name || len(result.UpdatedWorkOrders) != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -51,13 +66,13 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	if updated.RequiredModel != "new" || updated.RequiredEffort != "high" {
 		t.Fatalf("updated=%+v", updated)
 	}
-	duplicate, err := st.ChangeTaskSetup(ctx, request)
+	duplicate, err := changeTaskSetup(t, st, ctx, request)
 	if err != nil || duplicate.Task.SetupName != next.Name {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
 	conflict := request
 	conflict.Reason = "different"
-	if _, err = st.ChangeTaskSetup(ctx, conflict); !errors.Is(err, store.ErrSetupChangeConflict) {
+	if _, err = changeTaskSetup(t, st, ctx, conflict); !errors.Is(err, store.ErrSetupChangeConflict) {
 		t.Fatalf("conflict=%v", err)
 	}
 	events, _ := st.ListEvents(ctx, task.ID)
@@ -105,7 +120,7 @@ func TestTaskSetupChangePostgresScopesExclusionToExecutingAttempts(t *testing.T)
 		t.Fatal(err)
 	}
 	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-excl-claimed", Reason: "reroute", Setup: next, ReviewTransition: "none"}
-	if _, err = st.ChangeTaskSetup(ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
+	if _, err = changeTaskSetup(t, st, ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
 		t.Fatalf("claimed attempt should block: err=%v", err)
 	}
 	claimed.State = core.WorkOrderSubmitted
@@ -113,7 +128,7 @@ func TestTaskSetupChangePostgresScopesExclusionToExecutingAttempts(t *testing.T)
 		t.Fatal(err)
 	}
 	request.RequestID = "setup-pg-excl-submitted"
-	result, err := st.ChangeTaskSetup(ctx, request)
+	result, err := changeTaskSetup(t, st, ctx, request)
 	if err != nil || result.Task.SetupName != next.Name {
 		t.Fatalf("submitted implement attempt should not block: result=%+v err=%v", result, err)
 	}
@@ -135,7 +150,7 @@ func TestTaskSetupChangePostgresScopesExclusionToExecutingAttempts(t *testing.T)
 		t.Fatal(err)
 	}
 	request.RequestID = "setup-pg-excl-verdict"
-	if _, err = st.ChangeTaskSetup(ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
+	if _, err = changeTaskSetup(t, st, ctx, request); !errors.Is(err, store.ErrSetupChangeConflict) {
 		t.Fatalf("in-flight review verdict should block: err=%v", err)
 	}
 }
@@ -186,7 +201,7 @@ func TestTaskSetupChangePostgresReaggregatesRetainedAndReplacementSeats(t *testi
 	desired.QueueEnteredAt, desired.QueueDeadline = now.Add(time.Minute), now.Add(2*time.Hour)
 	replacementJob := core.Job{ID: jobs[0].ID + "-replacement", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	replacement := core.WorkOrder{ID: replacementJob.ID, TaskID: task.ID, JobID: replacementJob.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "new-one", RequiredHarness: "claude", RequiredEffort: "high", QueueEnteredAt: now.Add(time.Minute), QueueDeadline: now.Add(2 * time.Hour)}
-	result, err := st.ChangeTaskSetup(ctx, store.SetupChangeRequest{TaskID: task.ID, RequestID: "review-reconcile", Reason: "replace review contract", Setup: newSetup,
+	result, err := changeTaskSetup(t, st, ctx, store.SetupChangeRequest{TaskID: task.ID, RequestID: "review-reconcile", Reason: "replace review contract", Setup: newSetup,
 		WorkOrderUpdates: []core.WorkOrder{desired}, NewJobs: []core.Job{replacementJob}, NewWorkOrders: []core.WorkOrder{replacement}, SupersedeWorkOrderIDs: []string{completed.ID}, ReviewTransition: "same_round_reconciled", PriorReviewRound: 1, ResultingReviewRound: 1})
 	if err != nil || len(result.CreatedWorkOrders) != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)

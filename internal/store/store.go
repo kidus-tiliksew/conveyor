@@ -55,7 +55,7 @@ type Store interface {
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
-	ChangeTaskSetup(ctx context.Context, request SetupChangeRequest) (SetupChangeResult, error)
+	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the

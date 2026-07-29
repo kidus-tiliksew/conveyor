@@ -66,6 +66,29 @@ type Command struct {
 // move the canonical lifecycle state.
 const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 
+// SetupChangeCommand identifies the atomic setup-change write span. The span
+// may contain canonical order.create and order.cancel transitions, but it is
+// admitted as one transaction so the frozen setup, replacement review seats,
+// projections, and events cannot commit independently (spec §21.35, §21.38).
+const SetupChangeCommand = "task.setup.change"
+
+// ExecuteSetupChange admits one store-specific setup-change plan to the
+// command plane. The command-bound lease is unforgeable outside this package;
+// durable and memory backends retain their existing atomic write spans.
+func ExecuteSetupChange[T any](ctx context.Context, backend Backend, taskID string, apply func(TaskLease) (T, error)) (T, error) {
+	var zero T
+	if backend == nil {
+		return zero, fmt.Errorf("taskops plane requires a backend")
+	}
+	if taskID == "" {
+		return zero, fmt.Errorf("taskops setup-change task id is required")
+	}
+	if apply == nil {
+		return zero, fmt.Errorf("taskops setup-change command handler is required")
+	}
+	return apply(TaskLease{taskID: taskID, command: SetupChangeCommand, seal: &leaseSeal{}})
+}
+
 // Outcome is the durable projection after a command commits.
 type Outcome struct {
 	Task     core.Task

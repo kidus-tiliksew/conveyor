@@ -14,10 +14,14 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
+func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	request := raw
+	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
+		return store.SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
+	}
 	if request.TaskID == "" || request.RequestID == "" || request.Reason == "" || request.Setup.Name == "" || len(request.NewJobs) != len(request.NewWorkOrders) {
 		return store.SetupChangeResult{}, fmt.Errorf("task, setup, non-empty reason, request_id, and matched new review members are required")
 	}
@@ -130,6 +134,10 @@ func (s *Store) ChangeTaskSetup(ctx context.Context, raw store.SetupChangeReques
 			}
 			resultingState = string(resulting)
 			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state='queued'`, now, workspaceID, id); err != nil {
+				return store.SetupChangeResult{}, err
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: jobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role,
+				Payload: core.JSONPayload(map[string]any{"id": id, "state": core.WorkOrderCancelled, "from": state, "command": core.WorkOrderCmdCancel}), At: now}); err != nil {
 				return store.SetupChangeResult{}, err
 			}
 			if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE id=$2`, now, jobID); err != nil {

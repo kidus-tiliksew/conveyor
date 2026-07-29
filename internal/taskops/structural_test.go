@@ -21,14 +21,14 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	legacy := map[string]bool{
-		"CancelTask": true, "AcceptReviewDecision": true,
+		"CancelTask": true, "AcceptReviewDecision": true, "ChangeTaskSetup": true,
 		"CreateWorkOrder": true, "CreateStageWorkOrder": true, "CreateReviewRound": true,
 		"RetryReviewRound": true, "RecoverInterruptedReviewRound": true,
 		"ClaimWorkOrder": true, "RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
 		"RenewWorkerClaim": true, "ReleaseWorkerClaim": true,
 	}
 	guarded := map[string]bool{
-		"CancelTaskCommand": true, "AcceptReviewDecisionCommand": true,
+		"CancelTaskCommand": true, "AcceptReviewDecisionCommand": true, "ChangeTaskSetupCommand": true,
 		"CreateWorkOrderCommand": true, "CreateStageWorkOrderCommand": true, "CreateReviewRoundCommand": true,
 		"RetryReviewRoundCommand": true, "RecoverInterruptedReviewRoundCommand": true,
 		"ClaimWorkOrderCommand": true, "RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,
@@ -37,7 +37,9 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, rel := range []string{
 		filepath.Join("internal", "store", "store.go"),
+		filepath.Join("internal", "store", "setup_change.go"),
 		filepath.Join("internal", "store", "postgres", "store.go"),
+		filepath.Join("internal", "store", "postgres", "setup_change.go"),
 		filepath.Join("internal", "store", "postgres", "worker.go"),
 	} {
 		path := filepath.Join(root, rel)
@@ -97,7 +99,8 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 			return parseErr
 		}
 		hasAdmission := strings.HasPrefix(rel, filepath.Join("internal", "taskops")+string(filepath.Separator)) ||
-			strings.Contains(string(source), "taskops.ExecuteWorkOrder")
+			strings.Contains(string(source), "taskops.ExecuteWorkOrder") ||
+			strings.Contains(string(source), "taskops.ExecuteSetupChange")
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			call, isCall := node.(*ast.CallExpr)
 			if !isCall {
