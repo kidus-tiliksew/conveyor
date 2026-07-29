@@ -6,6 +6,7 @@ package gitx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -298,15 +299,20 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID 
 // clones are removed directly; pruning also cleans metadata left by older
 // linked-worktree deployments.
 func (m *Manager) Prune(ctx context.Context) error {
-	return filepath.WalkDir(m.CacheDir, func(path string, d os.DirEntry, err error) error {
+	var pruneErrors []error
+	walkErr := filepath.WalkDir(m.CacheDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || !d.IsDir() || !strings.HasSuffix(path, ".git") {
 			return err
 		}
 		if err := run(ctx, path, "git", "worktree", "prune"); err != nil {
-			return err
+			pruneErrors = append(pruneErrors, fmt.Errorf("prune cache repository %s: %w", path, err))
 		}
 		return filepath.SkipDir
 	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		pruneErrors = append(pruneErrors, walkErr)
+	}
+	return errors.Join(pruneErrors...)
 }
 
 func run(ctx context.Context, dir string, name string, args ...string) error {

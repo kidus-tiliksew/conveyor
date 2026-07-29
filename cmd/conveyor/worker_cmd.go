@@ -572,6 +572,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		"CONVEYOR_TASK_BRANCH":      item.Task.Branch,
 		"CONVEYOR_TASK_BASE_BRANCH": item.Task.BaseBranch,
 		"CONVEYOR_TASK_REPO":        item.Task.Repo,
+		"CONVEYOR_TASK_REPO_URL":    item.Repository.URL,
 	})
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
