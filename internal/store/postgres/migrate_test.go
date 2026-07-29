@@ -135,6 +135,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 44 {
 		t.Fatalf("dependency semantics version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/045_link_event_provenance.sql")
+	if err != nil || version != 45 {
+		t.Fatalf("link event provenance version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)

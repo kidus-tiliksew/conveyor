@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestBlueprintMaterializationDependencyClaimsAndParentClose(t *testing.T) {
 	}
 	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
 		TaskID: parent.ID, Content: "approved blueprint", Acceptance: core.JSONPayload([]any{}),
-		Decomposition: core.JSONPayload([]blueprintDecompositionItem{
+		Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{
 			{ID: "SUB-1", Repo: "conveyor", Summary: "Persistence", DependsOn: []string{}},
 			{ID: "SUB-2", Repo: "conveyor", Summary: "Materialization", DependsOn: []string{"SUB-1"}},
 			{ID: "SUB-3", Repo: "conveyor", Summary: "UI", DependsOn: []string{"SUB-2"}},
@@ -127,7 +128,7 @@ func TestBlueprintCycleFailsApprovalWithoutPartialState(t *testing.T) {
 	if err := st.CreateTask(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: parent.ID, Decomposition: core.JSONPayload([]blueprintDecompositionItem{
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: parent.ID, Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{
 		{ID: "SUB-1", Repo: "conveyor", Summary: "one", DependsOn: []string{"SUB-2"}},
 		{ID: "SUB-2", Repo: "conveyor", Summary: "two", DependsOn: []string{"SUB-1"}},
 	})})
@@ -144,5 +145,45 @@ func TestBlueprintCycleFailsApprovalWithoutPartialState(t *testing.T) {
 	tasks, _ := st.ListTasks(ctx)
 	if len(tasks) != 1 {
 		t.Fatalf("partial tasks=%d", len(tasks))
+	}
+}
+
+func TestBlueprintDiamondDecompositionAccepted(t *testing.T) {
+	t.Parallel()
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemoryWithConfig(&config.Config{
+		Workspace: "demo",
+		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+	})
+	parent := core.Task{
+		ID: "diamond-parent", Workspace: "demo", Repo: "conveyor",
+		Branch: "conveyor/task-diamond-parent", State: core.TaskQueued,
+	}
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: parent.ID,
+		Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{
+			{ID: "SUB-1", Repo: "conveyor", Summary: "root"},
+			{ID: "SUB-2", Repo: "conveyor", Summary: "left", DependsOn: []string{"SUB-1"}},
+			{ID: "SUB-3", Repo: "conveyor", Summary: "right", DependsOn: []string{"SUB-1"}},
+			{ID: "SUB-4", Repo: "conveyor", Summary: "join", DependsOn: []string{"SUB-2", "SUB-3"}},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := st.ApproveSpecVersionAndMaterialize(ctx, parent.ID, spec.Version)
+	if err != nil || len(children) != 4 {
+		t.Fatalf("diamond children=%d err=%v", len(children), err)
+	}
+	bySub := make(map[string]core.Task, len(children))
+	for _, child := range children {
+		bySub[child.OriginSubID] = child
+	}
+	blocking, err := st.ListBlockingTaskIDs(ctx, bySub["SUB-4"].ID)
+	if err != nil || !reflect.DeepEqual(blocking, []string{bySub["SUB-2"].ID, bySub["SUB-3"].ID}) {
+		t.Fatalf("diamond join blockers=%v err=%v", blocking, err)
 	}
 }

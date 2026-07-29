@@ -17,6 +17,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -103,7 +104,7 @@ type Store interface {
 	ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error
 	ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error)
 	ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error)
-	ListDependencyBlockers(ctx context.Context) (map[string]DependencyBlockers, error)
+	ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]DependencyBlockers, error)
 	RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error)
 	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
@@ -2478,55 +2479,6 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	return err
 }
 
-type blueprintDecompositionItem struct {
-	ID        string   `json:"id"`
-	Repo      string   `json:"repo"`
-	Summary   string   `json:"summary"`
-	DependsOn []string `json:"depends_on"`
-}
-
-func validateBlueprintDecomposition(items []blueprintDecompositionItem) error {
-	byID := make(map[string]blueprintDecompositionItem, len(items))
-	for _, item := range items {
-		if _, exists := byID[item.ID]; exists {
-			return fmt.Errorf("duplicate blueprint origin %s", item.ID)
-		}
-		byID[item.ID] = item
-	}
-	for _, item := range items {
-		for _, dependency := range item.DependsOn {
-			if _, exists := byID[dependency]; !exists {
-				return fmt.Errorf("blueprint %s depends on unknown %s", item.ID, dependency)
-			}
-		}
-	}
-	visiting, visited := map[string]bool{}, map[string]bool{}
-	var visit func(string) error
-	visit = func(id string) error {
-		if visiting[id] {
-			return fmt.Errorf("blueprint dependency cycle includes %s", id)
-		}
-		if visited[id] {
-			return nil
-		}
-		visiting[id] = true
-		for _, dependency := range byID[id].DependsOn {
-			if err := visit(dependency); err != nil {
-				return err
-			}
-		}
-		delete(visiting, id)
-		visited[id] = true
-		return nil
-	}
-	for id := range byID {
-		if err := visit(id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2538,7 +2490,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	if !ok {
 		return nil, fmt.Errorf("task %s not found", taskID)
 	}
-	var decomposition []blueprintDecompositionItem
+	var decomposition []core.BlueprintDecompositionItem
 	if len(versions[len(versions)-1].Decomposition) > 0 {
 		if err := json.Unmarshal(versions[len(versions)-1].Decomposition, &decomposition); err != nil {
 			return nil, fmt.Errorf("decode blueprint decomposition: %w", err)
@@ -2551,7 +2503,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
 		return nil, nil
 	}
-	if err := validateBlueprintDecomposition(decomposition); err != nil {
+	if err := core.ValidateBlueprintDecomposition(decomposition); err != nil {
 		return nil, err
 	}
 	baseBranches := make(map[string]string, len(decomposition))
@@ -2597,7 +2549,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 			PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
 			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
-			BaseBranch: baseBranches[item.ID], Branch: "conveyor/task-" + id,
+			BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
 			State: core.TaskQueued, NextStage: core.StageImplement,
 			ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
 			FeatureID: parent.FeatureID, CreatedAt: createdAt,
@@ -2699,12 +2651,22 @@ func (m *memory) ListDependentTaskIDs(_ context.Context, taskID string) ([]strin
 	return result, nil
 }
 
-func (m *memory) ListDependencyBlockers(ctx context.Context) (map[string]DependencyBlockers, error) {
+func (m *memory) ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]DependencyBlockers, error) {
+	if len(taskIDs) == 0 {
+		return map[string]DependencyBlockers{}, nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, _ := WorkspaceFromContext(ctx)
+	requested := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		requested[taskID] = struct{}{}
+	}
 	result := map[string]DependencyBlockers{}
 	for dependentID, dependencies := range m.dependencies {
+		if _, ok := requested[dependentID]; !ok {
+			continue
+		}
 		task, ok := m.tasks[dependentID]
 		if !ok || (workspace != "" && task.Workspace != workspace) {
 			continue
@@ -3340,7 +3302,15 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	if err != nil {
 		return nil, err
 	}
-	blockersByTask, err := m.ListDependencyBlockers(ctx)
+	var implementTaskIDs []string
+	seenImplementTask := map[string]bool{}
+	for _, order := range orders {
+		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
+			implementTaskIDs = append(implementTaskIDs, order.TaskID)
+			seenImplementTask[order.TaskID] = true
+		}
+	}
+	blockersByTask, err := m.ListDependencyBlockers(ctx, implementTaskIDs)
 	if err != nil {
 		return nil, err
 	}

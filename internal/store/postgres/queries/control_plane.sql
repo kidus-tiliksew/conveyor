@@ -47,7 +47,18 @@ SELECT * FROM tasks WHERE id = $1 AND workspace_id = $2;
 SELECT * FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
 
 -- name: ListTasks :many
-SELECT * FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id;
+SELECT sqlc.embed(t),
+       EXISTS (
+           SELECT 1 FROM task_dependencies edge
+           WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
+       ) AS has_dependencies,
+       EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ) AS has_children
+FROM tasks t
+WHERE t.workspace_id = $1
+ORDER BY t.created_at, t.id;
 
 -- name: UpdateTaskState :one
 UPDATE tasks

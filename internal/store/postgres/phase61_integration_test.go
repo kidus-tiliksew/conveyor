@@ -3,17 +3,61 @@ package postgres
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
+
+type phase61QueryTracer struct {
+	mu                  sync.Mutex
+	dependencyBatches   int
+	childBatches        int
+	blockerBatchQueries int
+}
+
+func (tracer *phase61QueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	if strings.Contains(data.SQL, "edge.task_id=ANY") {
+		if strings.Contains(data.SQL, "dependency.title") {
+			tracer.dependencyBatches++
+		} else if strings.Contains(data.SQL, "dependency.state<>'merged'") {
+			tracer.blockerBatchQueries++
+		}
+	}
+	if strings.Contains(data.SQL, "parent_task_id=ANY") {
+		tracer.childBatches++
+	}
+	return ctx
+}
+
+func (*phase61QueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (tracer *phase61QueryTracer) reset() {
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	tracer.dependencyBatches = 0
+	tracer.childBatches = 0
+	tracer.blockerBatchQueries = 0
+}
+
+func (tracer *phase61QueryTracer) relationCounts() (int, int) {
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	return tracer.dependencyBatches, tracer.childBatches
+}
 
 func TestBlueprintAnchorReconciliationStaysQuietIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
@@ -223,7 +267,7 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 	}
 	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
 		TaskID: parent.ID, Content: "blueprint", Acceptance: core.JSONPayload([]any{}),
-		Decomposition: core.JSONPayload([]blueprintDecompositionItem{
+		Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{
 			{ID: "SUB-1", Repo: "conveyor", Summary: "persistence", DependsOn: []string{}},
 			{ID: "SUB-2", Repo: "conveyor", Summary: "runtime", DependsOn: []string{"SUB-1"}},
 			{ID: "SUB-3", Repo: "conveyor", Summary: "ui", DependsOn: []string{"SUB-2"}},
@@ -383,6 +427,306 @@ func TestBlueprintApprovalWithoutDecompositionWritesNoMaterializationRowsIntegra
 	if children != 0 || edges != 0 || links != 0 || materializedEvents != 0 {
 		t.Fatalf("children=%d edges=%d links=%d materialized_events=%d, want all zero",
 			children, edges, links, materializedEvents)
+	}
+}
+
+func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &phase61QueryTracer{}
+	poolConfig.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = migrateControlPlane(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	st := &Store{pool: pool, queries: db.New(pool)}
+	workspace := "relation-batch-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
+		Workspace: workspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dependency := phase61Task(workspace, "dependency-"+core.NewTaskID(), core.TaskRunning, "")
+	parent := phase61Task(workspace, "parent-"+core.NewTaskID(), core.TaskRunning, "")
+	child := phase61Task(workspace, "child-"+core.NewTaskID(), core.TaskRunning, parent.ID)
+	for _, task := range []core.Task{dependency, parent} {
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	tracer.reset()
+	tasks, err := st.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencyQueries, childQueries := tracer.relationCounts()
+	if dependencyQueries != 1 || childQueries != 1 {
+		t.Fatalf("relation hydration queries dependency=%d child=%d, want 1/1", dependencyQueries, childQueries)
+	}
+	byID := make(map[string]core.Task, len(tasks))
+	for _, task := range tasks {
+		byID[task.ID] = task
+	}
+	if !reflect.DeepEqual(byID[child.ID].Dependencies, []core.TaskRelation{{
+		ID: dependency.ID, Title: dependency.Title, State: dependency.State,
+	}}) || !reflect.DeepEqual(byID[child.ID].BlockingTaskIDs, []string{dependency.ID}) {
+		t.Fatalf("child relations=%+v blockers=%v", byID[child.ID].Dependencies, byID[child.ID].BlockingTaskIDs)
+	}
+	if len(byID[parent.ID].Children) != 1 || byID[parent.ID].Children[0].ID != child.ID {
+		t.Fatalf("parent children=%+v", byID[parent.ID].Children)
+	}
+
+	emptyWorkspace := "relation-empty-" + core.NewTaskID()
+	emptyCtx := store.WithWorkspace(t.Context(), emptyWorkspace)
+	if _, err = st.BootstrapWorkspaceConfig(emptyCtx, &config.Config{
+		Workspace: emptyWorkspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		task := phase61Task(emptyWorkspace, core.NewTaskID(), core.TaskRunning, "")
+		if err = st.CreateTask(emptyCtx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tracer.reset()
+	emptyTasks, err := st.ListTasks(emptyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencyQueries, childQueries = tracer.relationCounts()
+	if dependencyQueries != 0 || childQueries != 0 {
+		t.Fatalf("empty relation hydration queries dependency=%d child=%d, want 0/0", dependencyQueries, childQueries)
+	}
+	for _, task := range emptyTasks {
+		if task.Dependencies != nil || task.BlockingTaskIDs != nil || task.Children != nil {
+			t.Fatalf("empty relation representation changed for task %s: dependencies=%v blockers=%v children=%v",
+				task.ID, task.Dependencies, task.BlockingTaskIDs, task.Children)
+		}
+	}
+}
+
+func TestNewLinksReferenceCommittedEventIdentitiesIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	dependency := phase61Task(workspace, "direct-dependency-"+core.NewTaskID(), core.TaskRunning, "")
+	dependent := phase61Task(workspace, "direct-dependent-"+core.NewTaskID(), core.TaskRunning, "")
+	if err := st.CreateTask(ctx, dependency); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTaskWithDependencies(ctx, dependent, []string{dependency.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var directEventID int64
+	var directEventTaskID, directEventKind string
+	if err := st.pool.QueryRow(ctx, `SELECT link.created_by_event_id,event.task_id,event.kind
+		FROM links link
+		JOIN events event
+		  ON event.workspace_id=link.workspace_id AND event.id=link.created_by_event_id
+		WHERE link.workspace_id=$1 AND link.src_type='task' AND link.src_id=$2
+		  AND link.dst_type='task' AND link.dst_id=$3 AND link.kind='depends_on'
+		  AND link.legacy_created_by_event IS NULL`,
+		workspace, dependent.ID, dependency.ID).
+		Scan(&directEventID, &directEventTaskID, &directEventKind); err != nil {
+		t.Fatal(err)
+	}
+	if directEventID == 0 || directEventTaskID != dependent.ID || directEventKind != "task.created" {
+		t.Fatalf("direct provenance event=%d task=%s kind=%s", directEventID, directEventTaskID, directEventKind)
+	}
+
+	parent := phase61Task(workspace, "provenance-parent-"+core.NewTaskID(), core.TaskRunning, "")
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: parent.ID, Acceptance: core.JSONPayload([]any{}),
+		Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{
+			{ID: "SUB-1", Repo: "conveyor", Summary: "one"},
+			{ID: "SUB-2", Repo: "conveyor", Summary: "two", DependsOn: []string{"SUB-1"}},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := st.ApproveSpecVersionAndMaterialize(ctx, parent.ID, spec.Version)
+	if err != nil || len(children) != 2 {
+		t.Fatalf("materialize children=%d err=%v", len(children), err)
+	}
+	var linkCount, resolvedCount, materializationEvents int
+	if err = st.pool.QueryRow(ctx, `SELECT
+			count(*),
+			count(*) FILTER (WHERE event.id IS NOT NULL AND link.legacy_created_by_event IS NULL),
+			count(DISTINCT event.id) FILTER (WHERE event.kind='blueprint.materialized')
+		FROM links link
+		LEFT JOIN events event
+		  ON event.workspace_id=link.workspace_id AND event.id=link.created_by_event_id
+		WHERE link.workspace_id=$1
+		  AND (
+		    (link.src_type='blueprint_version' AND link.src_id=$2)
+		    OR
+		    (link.src_type='task' AND link.src_id IN (
+		        SELECT id FROM tasks WHERE workspace_id=$1 AND parent_task_id=$3
+		    ))
+		  )`,
+		workspace, parent.ID+":v1", parent.ID).
+		Scan(&linkCount, &resolvedCount, &materializationEvents); err != nil {
+		t.Fatal(err)
+	}
+	if linkCount != 3 || resolvedCount != 3 || materializationEvents != 1 {
+		t.Fatalf("materialization links=%d resolved=%d distinct_events=%d, want 3/3/1",
+			linkCount, resolvedCount, materializationEvents)
+	}
+}
+
+func TestLinkProvenanceMigrationPreservesAmbiguousLegacyRowsIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := "link_provenance_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = migrateControlPlaneToVersion(t.Context(), pool, 44); err != nil {
+		t.Fatalf("migrate isolated schema to version 44: %v", err)
+	}
+	workspace := "link-migration-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	st := &Store{pool: pool, queries: db.New(pool)}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
+		Workspace: workspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedSource := phase61Task(workspace, "resolved-source-"+core.NewTaskID(), core.TaskRunning, "")
+	ambiguousSource := phase61Task(workspace, "ambiguous-source-"+core.NewTaskID(), core.TaskRunning, "")
+	destination := phase61Task(workspace, "destination-"+core.NewTaskID(), core.TaskRunning, "")
+	for _, task := range []core.Task{resolvedSource, ambiguousSource, destination} {
+		if _, err = st.queries.InsertTask(ctx, taskInsertParams(task)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var resolvedEventID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO events
+		(workspace_id,task_id,kind,actor_id,actor_role,payload_json)
+		VALUES ($1,$2,'task.created','migration-test','system','{}')
+		RETURNING id`, workspace, resolvedSource.ID).Scan(&resolvedEventID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err = pool.Exec(ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json)
+			VALUES ($1,$2,'task.created','migration-test','system','{}')`,
+			workspace, ambiguousSource.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, sourceID := range []string{resolvedSource.ID, ambiguousSource.ID} {
+		if _, err = pool.Exec(ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event)
+			VALUES ($1,'task',$2,'task',$3,'depends_on','task.created')`,
+			workspace, sourceID, destination.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = migrateControlPlaneToVersion(t.Context(), pool, 45); err != nil {
+		t.Fatalf("migrate isolated schema to version 45: %v", err)
+	}
+	var migratedEventID *int64
+	var legacyKind *string
+	if err = pool.QueryRow(ctx, `SELECT created_by_event_id,legacy_created_by_event
+		FROM links WHERE workspace_id=$1 AND src_id=$2`, workspace, resolvedSource.ID).
+		Scan(&migratedEventID, &legacyKind); err != nil {
+		t.Fatal(err)
+	}
+	if migratedEventID == nil || *migratedEventID != resolvedEventID || legacyKind != nil {
+		t.Fatalf("resolved migration event=%v legacy=%v, want %d/nil", migratedEventID, legacyKind, resolvedEventID)
+	}
+	if err = pool.QueryRow(ctx, `SELECT created_by_event_id,legacy_created_by_event
+		FROM links WHERE workspace_id=$1 AND src_id=$2`, workspace, ambiguousSource.ID).
+		Scan(&migratedEventID, &legacyKind); err != nil {
+		t.Fatal(err)
+	}
+	if migratedEventID != nil || legacyKind == nil || *legacyKind != "task.created" {
+		t.Fatalf("ambiguous migration event=%v legacy=%v, want nil/task.created", migratedEventID, legacyKind)
+	}
+}
+
+func TestConcurrentReciprocalDependencyEdgesCannotBothCommitIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	first := phase61Task(workspace, "cycle-first-"+core.NewTaskID(), core.TaskRunning, "")
+	second := phase61Task(workspace, "cycle-second-"+core.NewTaskID(), core.TaskRunning, "")
+	for _, task := range []core.Task{first, second} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstTx, err := st.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstTx.Rollback(ctx) //nolint:errcheck -- commit owns the successful path
+	if _, err = firstTx.Exec(ctx, `INSERT INTO task_dependencies
+		(workspace_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)`,
+		workspace, first.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	secondTx, err := st.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondTx.Rollback(ctx) //nolint:errcheck -- expected rejection owns this path
+	secondResult := make(chan error, 1)
+	go func() {
+		_, insertErr := secondTx.Exec(ctx, `INSERT INTO task_dependencies
+			(workspace_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)`,
+			workspace, second.ID, first.ID)
+		secondResult <- insertErr
+	}()
+	if err = firstTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-secondResult; err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("reciprocal insert error=%v, want dependency cycle", err)
+	}
+	var edgeCount int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies
+		WHERE workspace_id=$1 AND (
+		  (task_id=$2 AND depends_on_task_id=$3)
+		  OR (task_id=$3 AND depends_on_task_id=$2)
+		)`, workspace, first.ID, second.ID).Scan(&edgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("reciprocal committed edges=%d, want exactly one", edgeCount)
 	}
 }
 

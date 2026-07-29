@@ -29,6 +29,73 @@ func (s blockingObservationStore) ListBlockingTaskIDs(context.Context, string) (
 	return []string{"new-dependency"}, nil
 }
 
+type dependencyBatchObservationStore struct {
+	store.Store
+	orders   []core.WorkOrder
+	blockers map[string]store.DependencyBlockers
+	calls    [][]string
+}
+
+func (s *dependencyBatchObservationStore) ListWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	return append([]core.WorkOrder(nil), s.orders...), nil
+}
+
+func (s *dependencyBatchObservationStore) ListDependencyBlockers(_ context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
+	s.calls = append(s.calls, append([]string(nil), taskIDs...))
+	return s.blockers, nil
+}
+
+func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
+	st := &dependencyBatchObservationStore{
+		orders: []core.WorkOrder{
+			{ID: "queued-implement", TaskID: "task-a", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
+			{ID: "claimed-implement", TaskID: "task-b", Stage: core.StageImplement, State: core.WorkOrderClaimed, Claimable: false},
+			{ID: "stale-implement", TaskID: "task-c", Stage: core.StageImplement, State: core.WorkOrderStale, Claimable: false},
+			{ID: "timed-out-implement", TaskID: "task-d", Stage: core.StageImplement, State: core.WorkOrderTimedOut, Claimable: false},
+			{ID: "queued-spec", TaskID: "task-e", Stage: core.StageSpec, State: core.WorkOrderQueued, Claimable: true},
+			{ID: "completed-implement", TaskID: "task-f", Stage: core.StageImplement, State: core.WorkOrderCompleted, Claimable: false},
+		},
+		blockers: map[string]store.DependencyBlockers{
+			"task-a": {BlockingTaskIDs: []string{"dependency-a"}, UnsatisfiableTaskIDs: []string{"dependency-a"}},
+		},
+	}
+	orders, err := (&Service{Store: st}).List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.calls) != 1 || !reflect.DeepEqual(st.calls[0], []string{"task-a"}) {
+		t.Fatalf("blocker lookup calls=%v, want one task-a batch", st.calls)
+	}
+	if len(orders) != 5 {
+		t.Fatalf("listed orders=%d, want five visible lifecycle states", len(orders))
+	}
+	for _, order := range orders {
+		switch order.ID {
+		case "queued-implement":
+			if order.Claimable || !reflect.DeepEqual(order.BlockingTaskIDs, []string{"dependency-a"}) ||
+				!reflect.DeepEqual(order.UnsatisfiableTaskIDs, []string{"dependency-a"}) {
+				t.Fatalf("queued implementation blocker projection=%+v", order)
+			}
+		case "claimed-implement", "stale-implement", "timed-out-implement", "queued-spec":
+			if len(order.BlockingTaskIDs) != 0 || len(order.UnsatisfiableTaskIDs) != 0 {
+				t.Fatalf("ineligible order received blocker projection: %+v", order)
+			}
+		}
+	}
+
+	st.orders = []core.WorkOrder{
+		{ID: "claimed-only", TaskID: "task-b", Stage: core.StageImplement, State: core.WorkOrderClaimed},
+		{ID: "review-only", TaskID: "task-g", Stage: core.StageReview, State: core.WorkOrderQueued},
+	}
+	st.calls = nil
+	if _, err = (&Service{Store: st}).List(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.calls) != 0 {
+		t.Fatalf("zero-eligible blocker lookup=%v, want no lookup", st.calls)
+	}
+}
+
 func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")

@@ -89,7 +89,7 @@ func TestMemoryDependencyOutcomesUnlinkAndQueueClock(t *testing.T) {
 	if count, err := st.CountEvents(ctx, dependent.ID, "task.dependency_unsatisfiable"); err != nil || count != 1 {
 		t.Fatalf("unsatisfiable events=%d err=%v", count, err)
 	}
-	blockers, err := st.ListDependencyBlockers(ctx)
+	blockers, err := st.ListDependencyBlockers(ctx, []string{dependent.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

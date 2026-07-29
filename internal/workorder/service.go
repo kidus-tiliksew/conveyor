@@ -85,14 +85,25 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	if err != nil {
 		return nil, err
 	}
-	blockersByTask, err := s.Store.ListDependencyBlockers(ctx)
-	if err != nil {
-		return nil, err
+	var queuedImplementTaskIDs []string
+	seenTask := map[string]bool{}
+	for _, order := range orders {
+		if order.Stage == core.StageImplement && order.State == core.WorkOrderQueued && !seenTask[order.TaskID] {
+			queuedImplementTaskIDs = append(queuedImplementTaskIDs, order.TaskID)
+			seenTask[order.TaskID] = true
+		}
+	}
+	blockersByTask := map[string]store.DependencyBlockers{}
+	if len(queuedImplementTaskIDs) > 0 {
+		blockersByTask, err = s.Store.ListDependencyBlockers(ctx, queuedImplementTaskIDs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := orders[:0]
 	for _, order := range orders {
 		blockers := blockersByTask[order.TaskID]
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement && order.State == core.WorkOrderQueued {
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
 		}

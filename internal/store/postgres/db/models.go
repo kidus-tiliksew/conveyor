@@ -119,14 +119,15 @@ type Job struct {
 }
 
 type Link struct {
-	WorkspaceID    string             `json:"workspace_id"`
-	SrcType        string             `json:"src_type"`
-	SrcID          string             `json:"src_id"`
-	DstType        string             `json:"dst_type"`
-	DstID          string             `json:"dst_id"`
-	Kind           string             `json:"kind"`
-	CreatedByEvent string             `json:"created_by_event"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID          string             `json:"workspace_id"`
+	SrcType              string             `json:"src_type"`
+	SrcID                string             `json:"src_id"`
+	DstType              string             `json:"dst_type"`
+	DstID                string             `json:"dst_id"`
+	Kind                 string             `json:"kind"`
+	LegacyCreatedByEvent pgtype.Text        `json:"legacy_created_by_event"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	CreatedByEventID     pgtype.Int8        `json:"created_by_event_id"`
 }
 
 type MonitorActivity struct {
@@ -277,6 +278,17 @@ type TaskDependency struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type TaskDependencyRemoval struct {
+	WorkspaceID     string             `json:"workspace_id"`
+	RequestID       string             `json:"request_id"`
+	TaskID          string             `json:"task_id"`
+	DependsOnTaskID string             `json:"depends_on_task_id"`
+	Reason          string             `json:"reason"`
+	ActorID         string             `json:"actor_id"`
+	ActorRole       string             `json:"actor_role"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type TaskSetupChange struct {
 	WorkspaceID string             `json:"workspace_id"`
 	RequestID   string             `json:"request_id"`
@@ -366,6 +378,7 @@ type WorkOrder struct {
 	RequiredEffort         string             `json:"required_effort"`
 	RateLimit              []byte             `json:"rate_limit"`
 	RateLimitObservedAt    pgtype.Timestamptz `json:"rate_limit_observed_at"`
+	QueueBlockedAt         pgtype.Timestamptz `json:"queue_blocked_at"`
 }
 
 type WorkOrderRecovery struct {
