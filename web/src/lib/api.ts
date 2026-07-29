@@ -13,6 +13,7 @@ import type {
   WorkerList,
   WorkOrder,
   HarnessTemplate,
+  MonitorStatus,
 } from './types'
 
 function workspaceURL(path: string) {
@@ -62,6 +63,7 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
 
 export function fetchRequirements() { return getJSON<RequirementNode[]>(workspaceURL('/v1/requirements')) }
 export function fetchLifecycleDiagram() { return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram')) }
+export function fetchMonitorStatus() { return getJSON<MonitorStatus>(workspaceURL('/v1/monitor')) }
 export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
 export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
 export async function uploadArtifact(token: string, file: File, taskId?: string, featureId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (featureId) body.set('feature_id', featureId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
@@ -100,6 +102,7 @@ export function fetchWorkspaceConfig(token: string) {
         },
         harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
+        monitor: result.document.monitor ?? { enabled: false, repositories: [], poll_interval: '1m', startup_window: '24h' },
         review,
         setups,
         default_setup: result.document.default_setup || setups[0].name,

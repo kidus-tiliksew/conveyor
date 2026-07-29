@@ -17,6 +17,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -536,6 +537,9 @@ func NewMemory() Store {
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
+		monitorObservations:         map[string]monitor.ObservationRecord{},
+		monitorDrift:                map[string]monitor.Drift{},
+		monitorActivity:             map[string][]monitor.Activity{},
 	}
 }
 
@@ -570,6 +574,14 @@ type memory struct {
 	reviewRetries               map[string]memoryReviewRoundRetry
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
+	monitorObservations         map[string]monitor.ObservationRecord
+	monitorDrift                map[string]monitor.Drift
+	monitorLastSuccess          map[string]time.Time
+	monitorError                map[string]string
+	monitorErrorCategory        map[string]string
+	monitorBackoff              map[string]time.Time
+	monitorActivity             map[string][]monitor.Activity
+	nextMonitorActivityID       int64
 	nextEventID                 int64
 	nextReviewID                int64
 	taskLocks                   sync.Map

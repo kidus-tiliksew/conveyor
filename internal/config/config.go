@@ -32,6 +32,18 @@ type Repo struct {
 	LegacyToolPolicy map[string]any `yaml:"tool_policy,omitempty" json:"-"`
 }
 
+// MonitorConfig is explicit workspace/repository observation scope. It carries
+// no credentials; the GitHub boundary uses the daemon's least-privilege
+// environment and records only stable error categories (spec §21.45).
+type MonitorConfig struct {
+	Enabled           bool          `yaml:"enabled" json:"enabled"`
+	Repositories      []string      `yaml:"repositories,omitempty" json:"repositories"`
+	PollInterval      time.Duration `yaml:"-" json:"-"`
+	PollIntervalText  string        `yaml:"poll_interval" json:"poll_interval"`
+	StartupWindow     time.Duration `yaml:"-" json:"-"`
+	StartupWindowText string        `yaml:"startup_window" json:"startup_window"`
+}
+
 type Database struct {
 	Backend string `yaml:"backend"`
 	URL     string `yaml:"url"`
@@ -210,6 +222,7 @@ type WorkspaceDocument struct {
 	DefaultSetup              string                       `yaml:"default_setup,omitempty" json:"default_setup"`
 	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
+	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -247,6 +260,7 @@ type Config struct {
 	DefaultSetup              string                       `yaml:"default_setup,omitempty"`
 	Execution                 ExecutionPolicy              `yaml:"execution"`
 	Repos                     []Repo                       `yaml:"repos"`
+	Monitor                   MonitorConfig                `yaml:"monitor"`
 }
 
 func Load(path string) (*Config, error) {
@@ -284,6 +298,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.DefaultSetup = document.DefaultSetup
 	next.Execution = document.Execution
 	next.Repos = document.Repos
+	next.Monitor = document.Monitor
 	return normalize(&next, source)
 }
 
@@ -615,6 +630,22 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		}
 		c.WorkOrderQueueTimeout = parsed
 	}
+	if c.Monitor.PollIntervalText == "" {
+		c.Monitor.PollIntervalText = "1m"
+	}
+	monitorPoll, err := time.ParseDuration(c.Monitor.PollIntervalText)
+	if err != nil || monitorPoll <= 0 {
+		return nil, fmt.Errorf("monitor.poll_interval must be a positive duration")
+	}
+	c.Monitor.PollInterval = monitorPoll
+	if c.Monitor.StartupWindowText == "" {
+		c.Monitor.StartupWindowText = "24h"
+	}
+	startupWindow, err := time.ParseDuration(c.Monitor.StartupWindowText)
+	if err != nil || startupWindow <= 0 {
+		return nil, fmt.Errorf("monitor.startup_window must be a positive duration")
+	}
+	c.Monitor.StartupWindow = startupWindow
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -904,6 +935,21 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		repo.LegacySecretRefs = nil
 		repo.LegacyToolPolicy = nil
 	}
+	seenMonitorRepo := make(map[string]struct{}, len(c.Monitor.Repositories))
+	for i, name := range c.Monitor.Repositories {
+		name = strings.TrimSpace(name)
+		if _, ok := repoNames[name]; !ok {
+			return nil, fmt.Errorf("monitor.repositories[%d] names unknown repo %q", i, name)
+		}
+		if _, duplicate := seenMonitorRepo[name]; duplicate {
+			return nil, fmt.Errorf("monitor.repositories contains duplicate repo %q", name)
+		}
+		seenMonitorRepo[name] = struct{}{}
+		c.Monitor.Repositories[i] = name
+	}
+	if c.Monitor.Enabled && len(c.Monitor.Repositories) == 0 {
+		return nil, fmt.Errorf("monitor.repositories is required when monitor is enabled")
+	}
 	return c, nil
 }
 
@@ -930,7 +976,11 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		DefaultSetup:              c.DefaultSetup,
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
+		Monitor:                   c.Monitor,
 	}
+	document.Monitor.PollInterval = 0
+	document.Monitor.StartupWindow = 0
+	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0
 		route.EffectiveModel = ""

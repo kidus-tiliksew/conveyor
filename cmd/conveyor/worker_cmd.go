@@ -66,7 +66,7 @@ func workerCmd() *cobra.Command {
 	run.Flags().StringVar(&pairing, "pairing-token", "", "single-use token for first enrollment")
 	run.Flags().StringVar(&name, "name", defaultWorkerName(), "worker display name")
 	run.Flags().BoolVar(&once, "once", false, "process currently available work and exit")
-	cmd.AddCommand(pair, list, revoke, run)
+	cmd.AddCommand(pair, list, revoke, run, workerInstallCmd(), workerUninstallCmd(), workerStatusCmd())
 	return cmd
 }
 

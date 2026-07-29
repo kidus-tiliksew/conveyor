@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.4**
+**Specification — v2.5**
 **Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -495,8 +495,12 @@ bounce is recorded with a reason code.
 6. **Merge.** Merge readiness, approved-head binding, conflict-fix
    dispatch, refresh review, and auto-merge per §11.2. Merging triggers
    the repository's existing CI/CD unchanged; Conveyor never deploys.
-7. **Monitor** *(Phase 5.6, not yet built)*: post-merge signals → new
-   tasks; out-of-pipeline change reconciliation (§4.2).
+7. **Monitor.** A workspace-scoped GitHub observer converts failed
+   post-merge checks and out-of-pipeline direct pushes, external PR
+   merges, and reverts into ordinary idempotent task intake. It records
+   occurrence identity, provenance, deduplication, health/backoff, and
+   drift lineage; it owns no claim, implementation, review, merge, or
+   deployment capability (§4.2, §21.45).
 
 **The bounce cap is a check-in, not a kill switch.** `max_bounces`
 (default 10) bounds how long an implementer↔reviewer loop runs
@@ -574,13 +578,14 @@ clarifies more than prose.
    accumulated requirement text plus every task, PR, and event that
    touched it. There is always one queryable answer to "what is this
    system supposed to do here."
-2. **Reverse sync is Phase 5.6.** The monitor agent will watch for
-   changes landing outside the pipeline (direct pushes, external PRs,
-   reverts) and file reconciliation tasks that amend the corpus or flag
-   genuine conflicts for human decision.
-3. **Drift as a metric** (with the monitor): count and age of
+2. **Reverse sync is live.** The monitor watches configured repositories
+   for changes landing outside recorded Conveyor task/PR lineage (direct
+   pushes, external PRs, reverts) and files reconciliation tasks that
+   propose a corpus amendment or flag genuine conflicts for human
+   decision. It never silently edits approved requirements or specs.
+3. **Drift as a metric:** count and age of
    unreconciled out-of-pipeline changes per workspace; the healthy value
-   is zero.
+   is zero. Only an audited reconciliation outcome reduces the count.
 
 ---
 
@@ -1395,7 +1400,7 @@ demand-triggered.
 | **5.3** | Factory-coordinated GitHub: issue create/update on spec approval, portable aggregate review status, deterministic PR verdict/resolution comment (§21.22, §21.43) | Complete |
 | **5.4** | Evidence-gated `submit_for_review` (§12, §21.44) | Complete |
 | **5.5** | Worker service packaging: `conveyor worker install`/`uninstall`/`status` (§6.5) | Planned |
-| **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints | Planned |
+| **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints (§21.45) | Complete |
 | **—** | Lifecycle state machines & command plane implementation (§3.3–§3.4, accepted §21.37–§21.38): machine module + event-corpus audit, then staged `taskops` migration — lands ahead of further 5.2+ lifecycle growth | In flight (factory-executed) |
 | **6** | Memory store: pgvector retrieval, lessons, MCP memory tools (§15) | Post-Beta, sequenced after the worker phases |
 | **7** | Flywheel: transcript mining, self-improvement proposals, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
@@ -4258,11 +4263,76 @@ Playwright/computer-use verifier, managed execution, runners, adapters,
 snapshots, secret references, and broader artifact redesign remain out of
 scope.
 
+### 21.45 v2.5 — Complete Phase 5.6 monitor and advisory hints (July 28, 2026)
+
+Phase 5.6 closes the original autonomous feedback loop while preserving every
+existing authority boundary:
+
+1. **The monitor is an observer and normal intake client.** Workspace
+   configuration explicitly enables monitoring, selects configured
+   repositories, and sets positive polling and startup-reconciliation
+   windows. The GitHub boundary observes failed checks on recorded Conveyor
+   lineage and direct pushes, merged external PRs, and reverts outside that
+   lineage. A stable identity combines signal kind, repository, and an
+   occurrence discriminator: redelivery, restart, polling, and later status
+   reads reuse one task, while a later check attempt or new commit remains a
+   distinct occurrence. Every created task goes through the one durable intake
+   path and starts at triage with the workspace's current frozen setup and gate
+   policy. Monitor code has no claim, implementation, verdict, merge, or
+   deployment operation.
+
+2. **Observation and drift are durable workspace projections.** Memory and
+   PostgreSQL stores persist source URL, commit/check/PR identity, safe
+   structured context, created/reused task link, deduplication count, and
+   actionable health/backoff state. Out-of-pipeline changes additionally own a
+   reconciliation row linked to the repository change, task, and feature when
+   known. Workspace status exposes enabled state, last success, current
+   categorized error/backoff, observations, and unresolved drift count and
+   oldest age. Drift clears only through one of the audited terminal outcomes:
+   `requirements_amended`, `conflict_resolved`, or `change_reverted`; merely
+   acknowledging a change cannot make the metric healthy.
+
+3. **Forge retry remains bounded and internally authoritative.** Startup and
+   periodic observation re-read a configured time window and rely on durable
+   occurrence identity for convergence. Forge calls use the §21.41 error
+   taxonomy and bounded exponential backoff. External read failure updates
+   operator-visible status but never removes or rewrites an internal task,
+   observation, drift record, approved spec, or requirements node.
+
+4. **Repository hints are strict advisory data.** The sole format is
+   `.conveyor/hints.yaml`, version 1, read from the exact relevant commit. It
+   permits named verification argv arrays, triage areas, ownership hints, and
+   short workflow context. Known-field decoding, supported-version checks,
+   non-shell argv validation, command-interpreter rejection, and
+   revision/SHA-256 provenance fail closed. Loading performs no execution.
+   Unknown capability fields and attempts to grant tools, credentials,
+   network/filesystem access, model or worker routing, gates, setup changes, or
+   execution authority are rejected as unknown fields.
+
+5. **Authority precedence is deterministic.** Workspace security and
+   configuration plus the task's frozen setup remain authoritative. Approved
+   specs override conflicting advisory entries. Repository hints may only add
+   otherwise-unclaimed advisory verification or triage context. A hint change
+   affects only context subsequently loaded from that revision and cannot
+   mutate an existing frozen task or approved spec.
+
+6. **Operator surfaces are workspace-scoped.** The REST API, `conveyor monitor`
+   CLI, Workspace configuration UI, and Monitor dashboard expose enablement,
+   repository scope, last success, error/backoff, created/reused task links,
+   and drift count/age. Explicit audited operator action records reconciliation
+   outcomes. Secrets remain in the existing daemon/GitHub credential boundary
+   and never enter task bodies, events, hint files, or logs.
+
+Phase 6 memory, Phase 7 self-improvement, Phase 8 automated verification and
+managed execution, provider adapters, the retired sandbox plane, automatic
+requirements edits, and deployment remain out of scope.
+
 ---
 
-*End of specification. v2.4 accepted July 28, 2026 — the v2.0 consolidated
+*End of specification. v2.5 accepted July 28, 2026 — the v2.0 consolidated
 restatement of v1.0–v1.40 (§21.40), supervision hygiene (§21.41), and
 worker-side first-activity liveness (§21.42), with the completed Phase 5.3
 review projection (§21.43) and Phase 5.4 verification evidence (§21.44). The
-body (§§1–20) is the normative authority; §21 is the change record. Subsequent
-changes proceed by amendment with version bumps.*
+completed Phase 5.6 monitor and advisory repository hints are recorded in
+§21.45. The body (§§1–20) is the normative authority; §21 is the change
+record. Subsequent changes proceed by amendment with version bumps.*

@@ -351,6 +351,46 @@ export interface WorkspaceConfigDocument {
   default_setup: string
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
+  monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
+}
+
+export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'revert'
+export interface MonitorObservation {
+  workspace_id: string
+  repository: string
+  kind: MonitorSignalKind
+  occurrence_id: string
+  source_url: string
+  commit_sha?: string
+  task_id?: string
+  task_outcome?: 'created' | 'reused'
+  state: string
+  deduplicated_count: number
+  created_at: string
+  updated_at: string
+}
+export interface RepositoryDrift {
+  id: string
+  workspace_id: string
+  repository: string
+  kind: MonitorSignalKind
+  source_url: string
+  commit_sha?: string
+  task_id: string
+  detected_at: string
+}
+export interface MonitorStatus {
+  workspace_id: string
+  enabled: boolean
+  last_successful_observation?: string
+  current_error?: string
+  forge_error_category?: string
+  backoff_until?: string
+  observations: MonitorObservation[]
+  drift: RepositoryDrift[]
+  drift_count: number
+  oldest_drift_age: number
+  activity: Array<{ id: number; workspace_id: string; kind: string; payload: Record<string, unknown>; at: string }>
 }
 
 export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }

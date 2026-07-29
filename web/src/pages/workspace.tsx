@@ -27,13 +27,13 @@ const TABS: Array<{ id: TabId; label: string }> = [
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
 const TAB_SLICES: Record<Exclude<TabId, 'workers'>, (document: WorkspaceConfigDocument) => unknown> = {
-  general: (document) => [document.max_bounces, document.work_order_queue_timeout, document.repos],
+  general: (document) => [document.max_bounces, document.work_order_queue_timeout, document.repos, document.monitor],
   execution: (document) => [document.execution, document.setups, document.default_setup],
   harnesses: (document) => [document.harnesses],
 }
 
 function tabForField(field: string): TabId {
-  if (/^(max_bounces|work_order_queue_timeout|repos)/.test(field)) return 'general'
+  if (/^(max_bounces|work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
   if (/^harnesses/.test(field)) return 'harnesses'
   return 'execution'
 }
@@ -136,6 +136,20 @@ function GeneralTab({ draft, setDraft }: { draft: WorkspaceConfigDocument; setDr
           <Button size="icon" variant="ghost" className="mb-0.5 hover:text-failure" aria-label={`Remove repository ${repo.name || index + 1}`} onClick={() => update({ repos: draft.repos.filter((_, i) => i !== index) })}><Trash2 /></Button>
         </div>)}
         {draft.repos.length === 0 && <p className="text-sm text-faint">No repositories yet.</p>}
+      </CardContent>
+    </Card>
+    <Card>
+      <CardHeader><CardTitle>Repository monitor</CardTitle><Switch aria-label="Enable repository monitor" checked={draft.monitor?.enabled ?? false} onChange={(enabled) => update({ monitor: { enabled, repositories: draft.monitor?.repositories ?? [], poll_interval: draft.monitor?.poll_interval ?? '1m', startup_window: draft.monitor?.startup_window ?? '24h' } })} /></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs leading-5 text-muted">Observe selected GitHub repositories for post-merge failures and changes outside Conveyor. Signals always create ordinary gated tasks; the monitor cannot implement, review, merge, or deploy them.</p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Poll interval"><Input value={draft.monitor?.poll_interval ?? '1m'} onChange={(event) => update({ monitor: { enabled: draft.monitor?.enabled ?? false, repositories: draft.monitor?.repositories ?? [], poll_interval: event.target.value, startup_window: draft.monitor?.startup_window ?? '24h' } })} /></Field>
+          <Field label="Startup reconciliation window"><Input value={draft.monitor?.startup_window ?? '24h'} onChange={(event) => update({ monitor: { enabled: draft.monitor?.enabled ?? false, repositories: draft.monitor?.repositories ?? [], poll_interval: draft.monitor?.poll_interval ?? '1m', startup_window: event.target.value } })} /></Field>
+        </div>
+        <div><p className="mb-2 text-xs font-medium text-muted">Monitored repositories</p><div className="flex flex-wrap gap-2">{draft.repos.map((repo) => {
+          const selected = draft.monitor?.repositories.includes(repo.name) ?? false
+          return <label key={repo.name} className="flex items-center gap-2 rounded border border-border px-3 py-2 text-xs"><input type="checkbox" checked={selected} onChange={(event) => { const current = draft.monitor ?? { enabled: false, repositories: [], poll_interval: '1m', startup_window: '24h' }; update({ monitor: { ...current, repositories: event.target.checked ? [...current.repositories, repo.name] : current.repositories.filter((name) => name !== repo.name) } }) }} />{repo.name || 'Unnamed repository'}</label>
+        })}</div></div>
       </CardContent>
     </Card>
   </div>

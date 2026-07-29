@@ -361,6 +361,18 @@ original autonomous loop completed.*
 - Repo-resident `.conveyor/` hints (verify commands, triage area hints —
   advisory only, never capability grants).
 
+**Complete July 28, 2026 (§21.45).** Workspace configuration now selects
+explicit monitored repositories, polling cadence, and startup reconciliation
+window. The GitHub monitor normalizes failed checks and out-of-pipeline
+commits into durable occurrence identities, files them only through ordinary
+task intake, persists deduplication and drift lineage in memory/PostgreSQL,
+and exposes health plus count/age through API, CLI, and dashboard surfaces.
+`.conveyor/hints.yaml` is a strict versioned advisory document loaded from the
+observed revision; it accepts argv-form verification suggestions and
+triage/ownership context, records the revision fingerprint, executes nothing
+at load time, and cannot override workspace, frozen setup, approved-spec, or
+security authority.
+
 ---
 
 ## Deferred, explicitly

@@ -8,6 +8,7 @@ import { RequirementsPage } from './pages/requirements'
 import { SettingsPage } from './pages/settings'
 import { TaskFullPage } from './pages/task-full'
 import { WorkspacePage } from './pages/workspace'
+import { MonitorPage } from './pages/monitor'
 
 // The board is a layout route: the task sheet mounts into its Outlet, so the
 // board (scroll position, search) stays alive while a task is open.
@@ -48,6 +49,7 @@ const activityRedirectRoute = createRoute({
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspacePage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
 const requirementsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requirements', component: RequirementsPage })
+const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitor', component: MonitorPage })
 
 const routeTree = rootRoute.addChildren([
   boardRoute.addChildren([boardIndexRoute, taskSheetRoute, newTaskRoute, createWorkspaceRoute]),
@@ -55,6 +57,7 @@ const routeTree = rootRoute.addChildren([
   activityRedirectRoute,
   workspaceRoute,
   requirementsRoute,
+  monitorRoute,
   settingsRoute,
 ])
 export const router = createRouter({ routeTree })

@@ -133,3 +133,12 @@ repos:
     url: https://github.com/your-org/your-repo
     github: your-org/your-repo
     base: main
+
+# The monitor is opt-in and limited to configured repositories. It uses the
+# daemon's GitHub credential for read-only observation and always files normal
+# gated tasks; it cannot claim, review, merge, or deploy them (spec §21.45).
+monitor:
+  enabled: false
+  repositories: [api]
+  poll_interval: 1m
+  startup_window: 24h
