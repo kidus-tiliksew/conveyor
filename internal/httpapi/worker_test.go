@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,17 +131,17 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "codex", RequiredModel: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
-	rateOrder, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "rate-session", ClientToken: "secret", WorkerID: enrollment.Worker.ID, Lease: time.Minute})
+	rateOrder, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "rate-session", ClientToken: "secret", WorkerID: enrollment.Worker.ID, Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	remaining := 7.0
 	rateOrder.RateLimit = &core.RateLimitStatus{Status: "limited", Remaining: &remaining}
 	rateOrder.RateLimitObservedAt = time.Now().UTC()
-	if err = st.UpdateWorkOrder(ctx, rateOrder); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, rateOrder); err != nil {
 		t.Fatal(err)
 	}
 	list := call(http.MethodGet, "/v1/workers", "", "operator")
@@ -186,10 +187,10 @@ func TestWorkerClaimReconciliationIsReadOnlyAndServerAuthoritative(t *testing.T)
 		if err = st.CreateJob(ctx, core.Job{ID: fixture.id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: fixture.id, TaskID: task.ID, JobID: fixture.id, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: fixture.id, TaskID: task.ID, JobID: fixture.id, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = st.ClaimWorkOrder(ctx, fixture.id, core.WorkOrderClaim{SessionID: fixture.session, ClientToken: fixture.id + "-token", WorkerID: enrollment.Worker.ID, ClaimantID: enrollment.Worker.ID, Lease: fixture.lease, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err = storetest.For(st).ClaimWorkOrder(ctx, fixture.id, core.WorkOrderClaim{SessionID: fixture.session, ClientToken: fixture.id + "-token", WorkerID: enrollment.Worker.ID, ClaimantID: enrollment.Worker.ID, Lease: fixture.lease, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 	}

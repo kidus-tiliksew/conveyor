@@ -29,6 +29,7 @@ import (
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type Store struct {
@@ -61,11 +62,12 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+func (s *Store) IsDurable() bool     { return true }
 
-// WithTaskLock holds a workspace-scoped Postgres advisory lock across one
+// WithTaskSideEffectLock holds a workspace-scoped Postgres advisory lock across one
 // external side effect. This keeps duplicate dashboard requests and multiple
 // daemon instances from issuing concurrent forge merge calls.
-func (s *Store) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
+func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -519,25 +521,48 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason stri
 	})
 }
 
-func (s *Store) TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error {
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if !lease.ValidFor(id) {
+		return core.Task{}, fmt.Errorf("task lifecycle mutation requires a valid taskops lease")
+	}
+	var result core.Task
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		key := "conveyor:task-operation:" + workspace(ctx) + ":" + id
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
 		}
-		state, err := core.TransitionTask(core.TaskState(before.State), command)
+		state, err := core.TransitionTask(core.TaskState(before.State), command.Kind)
 		if err != nil {
 			return err
 		}
-		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state)}); err != nil {
+		if command.ProjectStages {
+			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
+				ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
+			})
+			if updateErr != nil {
+				return updateErr
+			}
+			result = taskFromDB(updated)
+		} else {
+			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state)})
+			if updateErr != nil {
+				return updateErr
+			}
+			result = taskFromDB(updated)
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
 		}
-		if err := insertEvent(ctx, q, core.Event{
-			TaskID:  id,
-			Kind:    "task.state_changed",
-			Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command}),
-		}); err != nil {
-			return err
+		if command.ProjectStages {
+			if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
+				"from_stage": before.NextStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state,
+			})}); err != nil {
+				return err
+			}
 		}
 		if state == core.TaskQueued {
 			_, err := s.enqueueTaskTx(ctx, tx, id, before.WorkspaceID)
@@ -545,37 +570,7 @@ func (s *Store) TransitionTaskState(ctx context.Context, id string, command core
 		}
 		return nil
 	})
-}
-
-func (s *Store) SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error {
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
-		if err != nil {
-			return notFound(err, "task %s", id)
-		}
-		state, err := core.TransitionTask(core.TaskState(before.State), command)
-		if err != nil {
-			return err
-		}
-		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
-			ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(nextStage), RecoveryStage: string(recoveryStage),
-		}); err != nil {
-			return err
-		}
-		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command})}); err != nil {
-			return err
-		}
-		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
-			"from_stage": before.NextStage, "next_stage": nextStage, "recovery_stage": recoveryStage, "state": state,
-		})}); err != nil {
-			return err
-		}
-		if state == core.TaskQueued {
-			_, err := s.enqueueTaskTx(ctx, tx, id, before.WorkspaceID)
-			return err
-		}
-		return nil
-	})
+	return result, err
 }
 
 func (s *Store) UpdateTaskClassification(ctx context.Context, id, class string) error {
@@ -1085,7 +1080,10 @@ func (s *Store) CreateIntervention(ctx context.Context, intervention core.Interv
 	})
 }
 
-func (s *Store) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {
+	if !lease.ValidFor(intervention.TaskID) {
+		return core.Task{}, fmt.Errorf("task cancellation requires a valid taskops lease")
+	}
 	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
@@ -1254,7 +1252,10 @@ automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at`
 
-func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
+		return fmt.Errorf("work-order create requires a valid taskops lease")
+	}
 	if order.CreatedAt.IsZero() {
 		order.CreatedAt = time.Now().UTC()
 	}
@@ -1275,6 +1276,9 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	}
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:work-order-create:"+workspace(ctx)+":"+order.TaskID); err != nil {
+			return err
+		}
 		var linked bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM tasks t
@@ -1315,11 +1319,17 @@ func (s *Store) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
 	})
 }
 
-func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
+		return fmt.Errorf("review-round create requires a valid taskops lease")
+	}
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return fmt.Errorf("review round requires one job per work order")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:review-round-create:"+workspace(ctx)+":"+taskID); err != nil {
+			return err
+		}
 		_, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", taskID)
@@ -1389,7 +1399,83 @@ func (s *Store) CreateReviewRound(ctx context.Context, taskID string, jobs []cor
 	})
 }
 
-func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
+		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
+	}
+	if job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
+		return false, fmt.Errorf("invalid stage work order %s", order.ID)
+	}
+	created := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		workspaceID := workspace(ctx)
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:stage-order:"+workspaceID+":"+job.TaskID); err != nil {
+			return err
+		}
+		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspaceID}); err != nil {
+			return notFound(err, "task %s", job.TaskID)
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM work_orders
+			WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND state IN ('queued','claimed')
+		)`, workspaceID, job.TaskID, order.Stage).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		if _, err := q.InsertJob(ctx, jobInsertParams(job)); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)}); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if order.CreatedAt.IsZero() {
+			order.CreatedAt = now
+		}
+		if order.QueueEnteredAt.IsZero() {
+			order.QueueEnteredAt = order.CreatedAt
+		}
+		if order.QueueDeadline.IsZero() {
+			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+		}
+		state, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+		if err != nil {
+			return err
+		}
+		order.State, order.Claimable = state, true
+		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
+			id, workspace_id, task_id, job_id, stage, state, claimant_id,
+			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+			review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
+			reason_code, review_kind, review_scope, baseline_sha, head_sha,
+			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
+			automatic_retry_count, next_retry_at, retry_suppressed,
+			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
+			self_reported, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$15,$15)`,
+			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
+			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
+			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
+	}
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.PRHead = strings.TrimSpace(request.PRHead)
@@ -1525,7 +1611,10 @@ func (s *Store) RetryReviewRound(ctx context.Context, request store.ReviewRoundR
 	return store.ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}, nil
 }
 
-func (s *Store) RecoverInterruptedReviewRound(ctx context.Context, request store.InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {
+func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdRecover)) {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires a valid taskops lease")
+	}
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
@@ -1710,20 +1799,14 @@ func reviewRoundOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID str
 }
 
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
-	if err := s.refreshWorkOrders(ctx); err != nil {
-		return core.WorkOrder{}, err
-	}
 	order, err := scanWorkOrder(s.pool.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
 	}
-	return order, nil
+	return store.ProjectWorkOrderAt(order, time.Now().UTC()), nil
 }
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
-	if err := s.refreshWorkOrders(ctx); err != nil {
-		return nil, err
-	}
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -1735,15 +1818,12 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		orders = append(orders, order)
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
 	}
 	return orders, rows.Err()
 }
 
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
-	if err := s.refreshWorkOrders(ctx); err != nil {
-		return nil, err
-	}
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -1755,7 +1835,7 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		orders = append(orders, order)
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
 	}
 	return orders, rows.Err()
 }
@@ -1772,12 +1852,12 @@ func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) (
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		orders = append(orders, order)
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
 	}
 	return orders, rows.Err()
 }
 
-func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -1798,6 +1878,9 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
@@ -1947,7 +2030,7 @@ func (s *Store) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOr
 	return order, nil
 }
 
-func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
@@ -1959,6 +2042,9 @@ func (s *Store) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRedispatch)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order redispatch requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
 	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
@@ -2043,7 +2129,7 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 	return order, nil
 }
 
-func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
@@ -2060,6 +2146,9 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
 	}
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
+	}
 	var duplicate bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_order_recoveries WHERE workspace_id=$1 AND work_order_id=$2 AND request_id=$3)`, workspace(ctx), id, requestID).Scan(&duplicate); err != nil {
 		return core.WorkOrder{}, err
@@ -2070,11 +2159,18 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 		}
 		return order, nil
 	}
+	now := time.Now().UTC()
+	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now)
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
 	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
-	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
 	priorState := order.State
 	lifecycleCommand := core.WorkOrderCmdRecover
@@ -2135,9 +2231,39 @@ func (s *Store) RecoverWorkOrder(ctx context.Context, id, requestID string, queu
 	return order, nil
 }
 
-func (s *Store) refreshWorkOrders(ctx context.Context) error {
-	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
-		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state IN ('queued','claimed') FOR UPDATE", workspace(ctx))
+func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
+		WHERE workspace_id=$1 AND (
+			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
+			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
+			OR (state='queued' AND execution_started_at IS NULL AND queue_deadline <= $2)
+		) ORDER BY task_id`, workspace(ctx), now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var taskID string
+		if err = rows.Scan(&taskID); err != nil {
+			return nil, err
+		}
+		result = append(result, taskID)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
+	if !lease.ValidFor(taskID) {
+		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
+	}
+	count := 0
+	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state IN ('queued','claimed') FOR UPDATE", workspace(ctx), taskID)
 		if err != nil {
 			return err
 		}
@@ -2155,18 +2281,19 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 			return err
 		}
 		rows.Close()
-		now := time.Now().UTC()
 		for _, order := range orders {
 			if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
 				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
 					return err
 				}
+				count++
 				continue
 			}
 			if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
 				if _, err = s.expireWorkOrderClaimTx(ctx, tx, order, now); err != nil {
 					return err
 				}
+				count++
 				continue
 			}
 			if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
@@ -2174,10 +2301,12 @@ func (s *Store) refreshWorkOrders(ctx context.Context) error {
 				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now); err != nil {
 					return err
 				}
+				count++
 			}
 		}
 		return nil
 	})
+	return count, err
 }
 
 func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, now time.Time) (core.WorkOrder, error) {
@@ -2227,7 +2356,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 	return updated, nil
 }
 
-func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	var lifecycleErr error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		current, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), order.ID))
@@ -2266,6 +2395,17 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, comma
 			(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
 			return fmt.Errorf("work order %s is not claimed by this session", order.ID)
 		}
+		command := taskops.WorkOrderMetadataCommand
+		if len(commands) == 1 {
+			command = commands[0]
+		} else if current.State != order.State {
+			if inferred, inferredOK := store.InferWorkOrderUpdateCommand(current, order); inferredOK {
+				command = inferred
+			}
+		}
+		if !lease.ValidForCommand(order.TaskID, string(command)) {
+			return fmt.Errorf("work-order update requires a valid taskops lease")
+		}
 		if current.State != order.State {
 			if len(commands) == 0 {
 				if inferred, ok := store.InferWorkOrderUpdateCommand(current, order); ok {
@@ -2283,7 +2423,7 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, comma
 				return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: string(current.State), Command: string(commands[0]), Allowed: core.WorkOrderTransitionAlternatives(current.State)}
 			}
 		}
-		command, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
+		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
 			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
 			model_enforcement=$8, queue_entered_at=$9, queue_deadline=$10, execution_started_at=$11,
 			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14, last_failure_detail=$15,
@@ -2303,7 +2443,7 @@ func (s *Store) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, comma
 		if err != nil {
 			return err
 		}
-		if command.RowsAffected() != 1 {
+		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("work order %s not found", order.ID)
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
@@ -2382,7 +2522,10 @@ func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, re
 // AcceptReviewDecision commits the durable verdict, routing decision, and
 // eligible GitHub publication job as one transaction. A retry therefore sees
 // either the entire accepted decision or none of it.
-func (s *Store) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	if !lease.ValidFor(decision.TaskID) {
+		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		lockKey := fmt.Sprintf("conveyor:review:%s:%s:%d", workspace(ctx), decision.TaskID, decision.ReviewRound)
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {

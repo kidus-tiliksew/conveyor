@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 var ErrSetupChangeConflict = fmt.Errorf("setup change conflict")
@@ -101,8 +102,11 @@ func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSet
 	}
 }
 
-func (m *memory) ChangeTaskSetup(ctx context.Context, raw SetupChangeRequest) (SetupChangeResult, error) {
+func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
 	request := normalizeSetupChangeRequest(raw)
+	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
+		return SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
+	}
 	if err := validateSetupChangeRequest(request); err != nil {
 		return SetupChangeResult{}, err
 	}
@@ -189,6 +193,8 @@ func (m *memory) ChangeTaskSetup(ctx context.Context, raw SetupChangeRequest) (S
 			}
 			order.State, order.Claimable, order.UpdatedAt = state, false, now
 			m.workOrders[id] = order
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role,
+				Payload: core.JSONPayload(order), At: now})
 			if job, index, found := m.findJobLocked(order.JobID); found {
 				job.State, job.EndedAt = core.JobFailed, now
 				m.jobs[job.TaskID][index] = job

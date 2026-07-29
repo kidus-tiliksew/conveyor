@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
@@ -132,7 +133,14 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
+func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
+	current, err := s.GetWorkOrder(ctx, workOrderID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if !taskLease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdRenew)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order renewal requires a valid taskops lease")
+	}
 	now := time.Now().UTC()
 	expires := now.Add(lease)
 	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND session_id=$6 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID, sessionID)
@@ -154,7 +162,7 @@ func (s *Store) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, ses
 	return order, nil
 }
 
-func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -167,6 +175,9 @@ func (s *Store) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID st
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	if !taskLease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdRelease)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order release requires a valid taskops lease")
 	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
 		if current.WorkerID == workerID && current.SessionID == release.SessionID && current.State == core.WorkOrderCancelled {

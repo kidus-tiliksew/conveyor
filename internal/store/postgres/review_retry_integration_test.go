@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
@@ -37,22 +39,25 @@ func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
 		{ID: jobs1[0].ID, TaskID: task.ID, JobID: jobs1[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)},
 		{ID: jobs1[1].ID, TaskID: task.ID, JobID: jobs1[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)},
 	}
-	if err = st.CreateReviewRound(ctx, task.ID, jobs1, orders1); err != nil {
+	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, jobs1, orders1); err != nil {
 		t.Fatal(err)
 	}
-	first, err := st.ClaimWorkOrder(ctx, orders1[0].ID, core.WorkOrderClaim{SessionID: "seat-1", ClientToken: "token-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	first, err := storetest.For(st).ClaimWorkOrder(ctx, orders1[0].ID, core.WorkOrderClaim{SessionID: "seat-1", ClientToken: "token-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.State = core.WorkOrderCompleted
-	if err = st.UpdateWorkOrder(ctx, first); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, orders1[1].ID, core.WorkOrderClaim{SessionID: "seat-2", ClientToken: "token-2", Lease: time.Minute, ExecutionTimeout: time.Nanosecond}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, orders1[1].ID, core.WorkOrderClaim{SessionID: "seat-2", ClientToken: "token-2", Lease: time.Minute, ExecutionTimeout: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, orders1[1].ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
+		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
 	jobs2 := []core.Job{
 		{ID: task.ID + "-review-2-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending},
@@ -80,7 +85,7 @@ func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
 		go func() {
 			ready.Done()
 			<-start
-			result, retryErr := st.RetryReviewRound(ctx, request, jobs2, orders2)
+			result, retryErr := storetest.For(st).RetryReviewRound(ctx, request, jobs2, orders2)
 			results <- retryOutcome{request: request, result: result, err: retryErr}
 		}()
 	}
@@ -103,13 +108,13 @@ func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
 		t.Fatalf("succeeded=%d conflicted=%d winner=%+v", succeeded, conflicted, winner)
 	}
 	request := winner.request
-	duplicate, err := st.RetryReviewRound(ctx, request, jobs2, orders2)
+	duplicate, err := storetest.For(st).RetryReviewRound(ctx, request, jobs2, orders2)
 	if err != nil || duplicate.NewRound != 2 || len(duplicate.WorkOrders) != 2 {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
 	changed := request
 	changed.Reason = "different"
-	if _, err = st.RetryReviewRound(ctx, changed, jobs2, orders2); !errors.Is(err, store.ErrReviewRetryConflict) {
+	if _, err = storetest.For(st).RetryReviewRound(ctx, changed, jobs2, orders2); !errors.Is(err, store.ErrReviewRetryConflict) {
 		t.Fatalf("changed request error=%v", err)
 	}
 	restarted, err := Open(t.Context(), integrationDatabaseURL(t))

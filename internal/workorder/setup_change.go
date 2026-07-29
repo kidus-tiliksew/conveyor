@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // ChangeTaskSetup resolves a current named workspace setup and builds the
@@ -57,7 +58,9 @@ func (s *Service) ChangeTaskSetup(ctx context.Context, taskID, setupName, reason
 	if err = planReviewSetupChange(cfg, updatedTask, orders, events, &request); err != nil {
 		return store.SetupChangeResult{}, err
 	}
-	return s.Store.ChangeTaskSetup(ctx, request)
+	return taskops.ExecuteSetupChange(ctx, s.Store, taskID, func(lease taskops.TaskLease) (store.SetupChangeResult, error) {
+		return s.Store.ChangeTaskSetupCommand(ctx, lease, request)
+	})
 }
 
 func planReviewSetupChange(cfg *config.Config, task core.Task, orders []core.WorkOrder, events []core.Event, request *store.SetupChangeRequest) error {

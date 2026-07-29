@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"net/url"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,24 +21,23 @@ import (
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type observedTaskLockStore struct {
 	store.Store
-	attempts      atomic.Int32
-	secondAttempt chan struct{}
-	orderCreated  chan struct{}
-	releaseOrder  chan struct{}
+	orderCreated chan struct{}
+	releaseOrder chan struct{}
 }
 
-type failingTaskLockStore struct {
+type failingStageOrderStore struct {
 	store.Store
 	err error
 }
 
-func (s *failingTaskLockStore) WithTaskLock(context.Context, string, func() error) error {
-	return s.err
+func (s *failingStageOrderStore) CreateStageWorkOrderCommand(context.Context, taskops.TaskLease, core.Job, core.WorkOrder) (bool, error) {
+	return false, s.err
 }
 
 func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
@@ -75,7 +74,7 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	wantFailure := errors.New("forced dispatch failure")
-	dispatcher := New(&failingTaskLockStore{Store: st, err: wantFailure}, cfg, nil)
+	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
 	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, &dispatchTaskWorker{dispatcher: dispatcher})
 	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
 	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
@@ -129,22 +128,16 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
-func (s *observedTaskLockStore) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
-	if s.attempts.Add(1) == 2 {
-		close(s.secondAttempt)
-	}
-	return s.Store.WithTaskLock(ctx, taskID, fn)
-}
-
-func (s *observedTaskLockStore) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
-	if err := s.Store.CreateWorkOrder(ctx, order); err != nil {
-		return err
+func (s *observedTaskLockStore) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	created, err := s.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
+	if err != nil {
+		return false, err
 	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		close(s.orderCreated)
 		<-s.releaseOrder
 	}
-	return nil
+	return created, nil
 }
 
 func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
@@ -177,8 +170,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	}
 
 	observed := &observedTaskLockStore{
-		Store: st, secondAttempt: make(chan struct{}),
-		orderCreated: make(chan struct{}), releaseOrder: make(chan struct{}),
+		Store: st, orderCreated: make(chan struct{}), releaseOrder: make(chan struct{}),
 	}
 	releasedOrder := false
 	defer func() {
@@ -210,11 +202,6 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 			Args:   queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID},
 		})
 	}()
-	select {
-	case <-observed.secondAttempt:
-	case <-time.After(5 * time.Second):
-		t.Fatal("River dispatch did not reach the shared task lock")
-	}
 	close(observed.releaseOrder)
 	releasedOrder = true
 	select {
@@ -260,7 +247,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	claims := make(chan error, 2)
 	for i := range 2 {
 		go func() {
-			_, claimErr := st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
+			_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
 				SessionID: "session-" + string(rune('a'+i)), ClientToken: "token-" + string(rune('a'+i)),
 				Agent: "codex", Model: "operator", Lease: time.Minute, ExecutionTimeout: time.Hour,
 			})
@@ -317,7 +304,7 @@ func TestReviewPublicationWorkerPostgresProjectionLifecycleIntegration(t *testin
 		SameModelAsImplementer: "false", PublicationEligible: true,
 		ReviewRound: 1, ReviewSeat: 1, PolicyVersion: 1, MergeApproval: true, MaxBounces: 3,
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatal(err)
 	}
 	publication, err := st.GetReviewPublication(ctx, job.ID)

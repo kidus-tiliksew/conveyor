@@ -559,7 +559,7 @@ func TestWorkerAPILoopProbesActiveSnapshotsAfterHotReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestWorkerAPILoopProbesImplementationSnapshotAfterHotReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}

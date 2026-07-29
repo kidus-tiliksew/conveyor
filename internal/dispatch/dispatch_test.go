@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -121,11 +123,14 @@ func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, t
 	return orders, err
 }
 
-func (st *concurrentSpecDispatchStore) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
-	st.mu.Lock()
-	st.createCalls++
-	st.mu.Unlock()
-	return st.Store.CreateWorkOrder(ctx, order)
+func (st *concurrentSpecDispatchStore) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	created, err := st.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
+	if created {
+		st.mu.Lock()
+		st.createCalls++
+		st.mu.Unlock()
+	}
+	return created, err
 }
 
 func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
@@ -293,7 +298,7 @@ func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		if attempt == 0 {
-			if err = st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, core.StageTriage, ""); err != nil {
+			if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionRedirect, NextStage: core.StageTriage, ProjectStages: true}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1230,12 +1235,12 @@ func TestReviewRoundStatusUsesAggregateVerdict(t *testing.T) {
 	}
 }
 
-func (st *reviewAcceptanceFlakyStore) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+func (st *reviewAcceptanceFlakyStore) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--
 		return errors.New("review acceptance unavailable")
 	}
-	return st.Store.AcceptReviewDecision(ctx, decision)
+	return st.Store.AcceptReviewDecisionCommand(ctx, lease, decision)
 }
 
 type sequenceAgent struct {
@@ -1671,7 +1676,7 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP}}}}
 	d := New(st, cfg, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 	if err := d.ApplyExternalReview(ctx, task, core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, ModelTier: "review"}, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "missing coverage", Feedback: "add the test"}, "review-1", "review-session", "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -1682,7 +1687,7 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "warm-implement-session", ClientToken: "warm-token", Lease: time.Minute}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "warm-implement-session", ClientToken: "warm-token", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	interventions, err := st.ListInterventions(ctx, task.ID)
@@ -1715,13 +1720,13 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
 	d := New(st, cfg, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 
 	// Two agent bounces exhaust the unsupervised window and park the task.
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round two"); err != nil {
@@ -1740,10 +1745,10 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, ActorID: "operator", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "changes-requested", Comment: "keep going"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetTaskTransition(ctx, task.ID, core.TaskInterventionRedirect, core.StageImplement, ""); err != nil {
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionRedirect, NextStage: core.StageImplement, ProjectStages: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.bounce(ctx, cfg, task.ID, job.ID, "tests", "round three"); err != nil {
@@ -1771,7 +1776,7 @@ func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 1}, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "stop", Feedback: "human help"}, job.ID, "review-session", "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -1799,7 +1804,7 @@ func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 	}
 	flaky := &reviewAcceptanceFlakyStore{Store: base, failures: 1}
 	d := New(flaky, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 	err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review")
 	if err == nil || !strings.Contains(err.Error(), "review acceptance unavailable") {
 		t.Fatalf("error = %v", err)
@@ -1846,7 +1851,7 @@ func TestReviewForRepoWithoutGitHubDoesNotCreateOrReconcilePublication(t *testin
 		t.Fatal(err)
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "local", URL: "file:///tmp/local"}}}, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -1879,7 +1884,7 @@ func TestExistingUnacceptedReviewEventRepairsRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
-	d.UseDurableQueue()
+	d.DisableMemoryQueueForTest()
 	if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "retry", Feedback: "fix it"}, job.ID, "review-session", "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -1923,7 +1928,7 @@ func TestExternalReviewApprovePreservesLevelRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
-			d.UseDurableQueue()
+			d.DisableMemoryQueueForTest()
 			if err := d.ApplyExternalReview(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review"); err != nil {
 				t.Fatal(err)
 			}
@@ -1953,7 +1958,7 @@ func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
 				t.Fatal(err)
 			}
 			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
-			d.UseDurableQueue()
+			d.DisableMemoryQueueForTest()
 			merged := false
 			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil
@@ -1992,12 +1997,12 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 			}
-			if err := st.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+			if err := storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 				t.Fatal(err)
 			}
 			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
 			firstDispatcher := New(st, cfg, nil)
-			firstDispatcher.UseDurableQueue()
+			firstDispatcher.DisableMemoryQueueForTest()
 			if err := firstDispatcher.ApplyExternalReview(ctx, task, jobs[0], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat one passes", Feedback: "seat one evidence"}, orders[0].ID, "review-session-1", "gpt-review"); err != nil {
 				t.Fatal(err)
 			}
@@ -2008,7 +2013,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 			// A new dispatcher instance represents restart recovery before the
 			// second durable verdict arrives.
 			restarted := New(st, cfg, nil)
-			restarted.UseDurableQueue()
+			restarted.DisableMemoryQueueForTest()
 			merged := false
 			restarted.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil

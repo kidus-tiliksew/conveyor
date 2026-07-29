@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"gopkg.in/yaml.v3"
 )
 
@@ -156,15 +158,15 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		if err = st.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
 		}
-		if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: core.WorkOrderQueued}); err != nil {
+		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: core.WorkOrderQueued}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	claim := core.WorkOrderClaim{SessionID: "session-a", ClientToken: "token-a", Agent: "codex", Model: "gpt", Lease: time.Minute}
-	if _, err = st.ClaimWorkOrder(ctx, task.ID+"-implement", claim); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, task.ID+"-implement", claim); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, task.ID+"-review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, task.ID+"-review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self review error = %v", err)
 	}
 
@@ -178,17 +180,20 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	queuedAt := time.Now().Add(-2 * time.Hour)
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: clockJob.ID, TaskID: clockTaskID, JobID: clockJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: clockJob.ID, TaskID: clockTaskID, JobID: clockJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(4 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	clockClaim, err := st.ClaimWorkOrder(ctx, clockJob.ID, core.WorkOrderClaim{SessionID: "clock-session", ClientToken: "clock-token", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	clockClaim, err := storetest.For(st).ClaimWorkOrder(ctx, clockJob.ID, core.WorkOrderClaim{SessionID: "clock-session", ClientToken: "clock-token", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil || clockClaim.ExecutionStartedAt.IsZero() || clockClaim.ExecutionDeadline.Sub(clockClaim.ExecutionStartedAt) != time.Hour {
 		t.Fatalf("clock claim=%+v err=%v", clockClaim, err)
 	}
 	deadline := time.Now().Add(-time.Second)
 	clockClaim.ExecutionDeadline = deadline
-	if err = st.UpdateWorkOrder(ctx, clockClaim); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, clockClaim); err != nil {
 		t.Fatal(err)
+	}
+	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
+		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
@@ -198,7 +203,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatalf("timed-out job=%+v err=%v want ended_at=%s", clockJobs, listErr, deadline)
 	}
 	clockClaim.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, clockClaim); !errors.Is(err, store.ErrWorkOrderTimedOut) {
+	if err = storetest.For(st).UpdateWorkOrder(ctx, clockClaim); !errors.Is(err, store.ErrWorkOrderTimedOut) {
 		t.Fatalf("stale timed-out update error=%v", err)
 	}
 	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut {
@@ -214,13 +219,13 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err = st.CreateJob(ctx, staleJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: staleJob.ID, TaskID: staleTaskID, JobID: staleJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().Add(-2 * time.Hour), QueueDeadline: time.Now().Add(-time.Hour)}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: staleJob.ID, TaskID: staleTaskID, JobID: staleJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().Add(-2 * time.Hour), QueueDeadline: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if stale, getErr := st.GetWorkOrder(ctx, staleJob.ID); getErr != nil || stale.State != core.WorkOrderStale || stale.Claimable {
 		t.Fatalf("stale=%+v err=%v", stale, getErr)
 	}
-	redispatched, err := st.RedispatchWorkOrder(ctx, staleJob.ID, 24*time.Hour)
+	redispatched, err := storetest.For(st).RedispatchWorkOrder(ctx, staleJob.ID, 24*time.Hour)
 	if err != nil || redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 || !redispatched.ExecutionStartedAt.IsZero() {
 		t.Fatalf("redispatched=%+v err=%v", redispatched, err)
 	}
@@ -291,7 +296,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		Reviewer: "integration", ReviewerModel: "reviewer", ReviewerSession: "distinct",
 		SameModelAsImplementer: "false", PublicationEligible: true, Level: core.L0, MaxBounces: 2,
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err == nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err == nil {
 		t.Fatal("invalid publication verdict unexpectedly committed")
 	}
 	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 0 {
@@ -304,10 +309,10 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatal("publication persisted despite transaction rollback")
 	}
 	decision.Verdict = "approve"
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.AcceptReviewDecision(ctx, decision); err != nil {
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
 	if count, countErr := st.CountEvents(ctx, atomicTaskID, "review.completed"); countErr != nil || count != 1 {

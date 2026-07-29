@@ -57,6 +57,12 @@ type GitHubIssuePublicationArgs struct {
 
 func (GitHubIssuePublicationArgs) Kind() string { return "github_issue_publication" }
 
+type OrderClockArgs struct {
+	WorkspaceID string `json:"workspace_id" river:"unique"`
+}
+
+func (OrderClockArgs) Kind() string { return "order_clock" }
+
 // DispatchQueue isolates workers by workspace even when multiple workspace
 // daemons share one Postgres/River cluster. Hashing avoids leaking workspace
 // names into queue identifiers and satisfies River's queue-name grammar.
@@ -73,4 +79,9 @@ func ReviewPublicationQueue(workspace string) string {
 func GitHubIssuePublicationQueue(workspace string) string {
 	digest := sha256.Sum256([]byte(workspace))
 	return "github_issue_publication_" + hex.EncodeToString(digest[:8])
+}
+
+func OrderClockPeriodicID(workspace string) string {
+	digest := sha256.Sum256([]byte(workspace))
+	return "order_clock_" + hex.EncodeToString(digest[:8])
 }

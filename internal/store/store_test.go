@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
@@ -19,7 +20,7 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateIntervention(ctx, core.Intervention{
@@ -55,7 +56,7 @@ func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 	}
 	for _, state := range []core.WorkOrderState{core.WorkOrderCompleted, core.WorkOrderCancelled, core.WorkOrderStale, "unsupported"} {
 		id := job.ID + "-" + string(state)
-		err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: state})
+		err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: state})
 		var transitionErr *core.ErrInvalidTransition
 		if !errors.As(err, &transitionErr) || transitionErr.Space != core.WorkOrderLifecycle || transitionErr.From != "" || transitionErr.Command != string(core.WorkOrderCmdCreate) {
 			t.Fatalf("state %q error = %v", state, err)
@@ -78,10 +79,10 @@ func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, ReviewRound: 1, ReviewSeat: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+	if err := storetestFor(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
 		t.Fatal(err)
 	}
 	persisted, err := st.GetTask(ctx, task.ID)
@@ -224,20 +225,20 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 		}
 	}
 	for _, order := range []core.WorkOrder{{ID: "implement", TaskID: "task", JobID: "implement", Stage: core.StageImplement, State: core.WorkOrderQueued}, {ID: "review", TaskID: "task", JobID: "review", Stage: core.StageReview, State: core.WorkOrderQueued}} {
-		if err := st.CreateWorkOrder(ctx, order); err != nil {
+		if err := storetestFor(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
 	}
 	claim := core.WorkOrderClaim{SessionID: "session-a", ClientToken: "token-a", Agent: "codex", Model: "gpt"}
-	if _, err := st.ClaimWorkOrder(ctx, "implement", claim); err != nil {
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, "implement", claim); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, "review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, "review", claim); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self review error=%v", err)
 	}
 	claim.SessionID = "session-b"
 	claim.ClientToken = "token-b"
-	review, err := st.ClaimWorkOrder(ctx, "review", claim)
+	review, err := storetestFor(st).ClaimWorkOrder(ctx, "review", claim)
 	if err != nil {
 		t.Fatalf("fresh review claim: %v", err)
 	}
@@ -263,16 +264,16 @@ func TestMemoryWorkOrderRequiresLinkedTaskJobAndWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := st.CreateWorkOrder(ctxB, core.WorkOrder{ID: "wrong-workspace", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err == nil {
+	if err := storetestFor(st).CreateWorkOrder(ctxB, core.WorkOrder{ID: "wrong-workspace", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err == nil {
 		t.Fatal("cross-workspace work order succeeded")
 	}
-	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-task", TaskID: "task-a", JobID: "job-beta", Stage: core.StageImplement}); err == nil {
+	if err := storetestFor(st).CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-task", TaskID: "task-a", JobID: "job-beta", Stage: core.StageImplement}); err == nil {
 		t.Fatal("work order linked a task to another task's job")
 	}
-	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-stage", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageReview}); err == nil {
+	if err := storetestFor(st).CreateWorkOrder(ctxA, core.WorkOrder{ID: "wrong-stage", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageReview}); err == nil {
 		t.Fatal("work order linked a job at the wrong stage")
 	}
-	if err := st.CreateWorkOrder(ctxA, core.WorkOrder{ID: "valid", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctxA, core.WorkOrder{ID: "valid", TaskID: "task-a", JobID: "job-alpha", Stage: core.StageImplement}); err != nil {
 		t.Fatalf("valid work order: %v", err)
 	}
 }
@@ -289,10 +290,10 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
 		t.Fatal(err)
 	}
-	stale, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+	stale, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
 		SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
 	})
 	if err != nil {
@@ -301,14 +302,14 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	expired := stale
 	deadline := time.Now().Add(-time.Second)
 	expired.ExecutionDeadline = deadline
-	if err = st.UpdateWorkOrder(ctx, expired); err != nil {
+	if err = storetestFor(st).UpdateWorkOrder(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.GetWorkOrder(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
 	stale.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(ctx, stale); !errors.Is(err, ErrWorkOrderTimedOut) {
+	if err = storetestFor(st).UpdateWorkOrder(ctx, stale); !errors.Is(err, ErrWorkOrderTimedOut) {
 		t.Fatalf("stale update error = %v", err)
 	}
 	current, err := st.GetWorkOrder(ctx, job.ID)
@@ -595,7 +596,7 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
 	workerID := "worker-1"
@@ -604,7 +605,7 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	var priorStart time.Time
 	for attempt := 0; attempt < 4; attempt++ {
 		sessionID := fmt.Sprintf("session-%d", attempt)
-		claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: fmt.Sprintf("token-%d", attempt), ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
+		claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: fmt.Sprintf("token-%d", attempt), ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if err != nil {
 			t.Fatalf("claim %d: %v", attempt, err)
 		}
@@ -613,17 +614,17 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		}
 		priorStart = claimed.ExecutionStartedAt
 		if attempt == 1 {
-			if _, staleErr := st.RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
+			if _, staleErr := storetestFor(st).RenewWorkerClaim(ctx, job.ID, workerID, "session-0", time.Minute); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale renew error=%v", staleErr)
 			}
-			if _, staleErr := st.ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
+			if _, staleErr := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{SessionID: "session-0", Outcome: core.WorkOrderOutcomeCancelled}); !errors.Is(staleErr, ErrWorkOrderClaimLost) {
 				t.Fatalf("stale release error=%v", staleErr)
 			}
 		}
 		exit := 1
 		policy.SessionID = sessionID
 		policy.ExitStatus = &exit
-		released, err := st.ReleaseWorkerClaim(ctx, job.ID, workerID, policy)
+		released, err := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, workerID, policy)
 		if err != nil {
 			t.Fatalf("release %d: %v", attempt, err)
 		}
@@ -634,25 +635,25 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 			if released.RetrySuppressed || released.AutomaticRetryCount != attempt+1 || released.NextRetryAt.Sub(released.LastFailureAt) != wantDelays[attempt] {
 				t.Fatalf("release %d retry state: %+v", attempt, released)
 			}
-			if _, claimErr := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "too-soon", ClientToken: "too-soon"}); claimErr == nil || !strings.Contains(claimErr.Error(), "backoff") {
+			if _, claimErr := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "too-soon", ClientToken: "too-soon"}); claimErr == nil || !strings.Contains(claimErr.Error(), "backoff") {
 				t.Fatalf("release %d immediate claim error=%v", attempt, claimErr)
 			}
 			released.NextRetryAt = time.Now().Add(-time.Millisecond)
-			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+			if err = storetestFor(st).UpdateWorkOrder(ctx, released); err != nil {
 				t.Fatal(err)
 			}
 		} else if !released.RetrySuppressed || !released.NextRetryAt.IsZero() || released.AutomaticRetryCount != 3 {
 			t.Fatalf("final suppression: %+v", released)
 		}
 	}
-	if _, err := st.RecoverWorkOrder(WithWorkspace(ctx, "other"), job.ID, "recover-1", time.Hour); err == nil {
+	if _, err := storetestFor(st).RecoverWorkOrder(WithWorkspace(ctx, "other"), job.ID, "recover-1", time.Hour); err == nil {
 		t.Fatal("cross-workspace recovery succeeded")
 	}
-	recovered, err := st.RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
+	recovered, err := storetestFor(st).RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
 	if err != nil || !recovered.Claimable || recovered.RetrySuppressed || recovered.AutomaticRetryCount != 0 {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	duplicate, err := st.RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
+	duplicate, err := storetestFor(st).RecoverWorkOrder(ctx, job.ID, "recover-1", time.Hour)
 	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
@@ -673,17 +674,17 @@ func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) 
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
 	var released core.WorkOrder
 	for attempt := 0; attempt < 4; attempt++ {
 		session := fmt.Sprintf("stall-session-%d", attempt)
-		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute}); err != nil {
+		if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute}); err != nil {
 			t.Fatalf("claim %d: %v", attempt, err)
 		}
 		var err error
-		released, err = st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
+		released, err = storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
 			SessionID: session, Outcome: core.WorkOrderOutcomeStalled, Reason: "no child output",
 			AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond, MaximumRetryDelay: 4 * time.Millisecond,
 		})
@@ -695,7 +696,7 @@ func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) 
 				t.Fatalf("retry %d state=%+v", attempt, released)
 			}
 			released.NextRetryAt = time.Now().Add(-time.Millisecond)
-			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+			if err = storetestFor(st).UpdateWorkOrder(ctx, released); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -796,25 +797,25 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err := st.CreateJob(ctx, completedJob); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	completedOrder, err := st.ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	completedOrder, err := storetestFor(st).ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	completedOrder.State = core.WorkOrderCompleted
-	if err = st.UpdateWorkOrder(ctx, completedOrder, core.WorkOrderCmdSubmitSpec); err != nil {
+	if err = storetestFor(st).UpdateWorkOrder(ctx, completedOrder, core.WorkOrderCmdSubmitSpec); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := st.CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+	cancelled, err := storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
 	if err != nil || cancelled.State != core.TaskClosed || cancelled.NextStage != "" {
 		t.Fatalf("cancelled=%+v err=%v", cancelled, err)
 	}
@@ -823,11 +824,11 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if order.State != core.WorkOrderCancelled || order.SessionID != claimed.SessionID || order.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || completed.State != core.WorkOrderCompleted {
 		t.Fatalf("orders cancelled=%+v completed=%+v", order, completed)
 	}
-	if _, err = st.RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {
+	if _, err = storetestFor(st).RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)
 	}
 	claimed.Progress = "must not land"
-	if err = st.UpdateWorkOrder(ctx, claimed); !errors.Is(err, ErrWorkOrderCancelled) {
+	if err = storetestFor(st).UpdateWorkOrder(ctx, claimed); !errors.Is(err, ErrWorkOrderCancelled) {
 		t.Fatalf("update error=%v", err)
 	}
 	interventions, _ := st.ListInterventions(ctx, task.ID)
@@ -835,7 +836,7 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if len(interventions) != 1 || interventions[0].ActorID != "operator" || cancelEvents != 1 {
 		t.Fatalf("interventions=%+v events=%d", interventions, cancelEvents)
 	}
-	if _, err = st.CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, ErrTaskTerminal) {
+	if _, err = storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "again"}); !errors.Is(err, ErrTaskTerminal) {
 		t.Fatalf("second cancel error=%v", err)
 	}
 	cancelEvents, _ = st.CountEvents(ctx, task.ID, "task.cancelled")
@@ -891,18 +892,18 @@ func TestMemoryFirstActivityTimeoutUsesExistingRetryAuditAndStallEvidence(t *tes
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
 	const reason = "harness produced no output before first_activity_timeout"
 	var released core.WorkOrder
 	for attempt := 1; attempt <= 2; attempt++ {
 		session := fmt.Sprintf("first-activity-timeout-%d", attempt)
-		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		var err error
-		released, err = st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
+		released, err = storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{
 			SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, Reason: reason,
 			AutomaticRetryLimit: 1, InitialRetryDelay: time.Millisecond, MaximumRetryDelay: time.Millisecond,
 		})
@@ -914,7 +915,7 @@ func TestMemoryFirstActivityTimeoutUsesExistingRetryAuditAndStallEvidence(t *tes
 				t.Fatalf("first timeout did not enter bounded retry: %+v", released)
 			}
 			released.NextRetryAt = now.Add(-time.Second)
-			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+			if err = storetestFor(st).UpdateWorkOrder(ctx, released); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -957,15 +958,15 @@ func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
 		session := fmt.Sprintf("identical-%d", attempt)
-		if _, err := st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
-		released, err := st.ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "exit status 1", FailureDetail: "  provider rejected model  ", AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
+		released, err := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "exit status 1", FailureDetail: "  provider rejected model  ", AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -974,7 +975,7 @@ func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 				t.Fatalf("first failure=%+v", released)
 			}
 			released.NextRetryAt = now.Add(-time.Second)
-			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+			if err = storetestFor(st).UpdateWorkOrder(ctx, released); err != nil {
 				t.Fatal(err)
 			}
 			continue
@@ -995,16 +996,16 @@ func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 	if err = st.CreateJob(ctx, differentJob); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: differentJob.ID, TaskID: task.ID, JobID: differentJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+	if err = storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: differentJob.ID, TaskID: task.ID, JobID: differentJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
 	for attempt, detail := range []string{"first output", "different output"} {
 		session := fmt.Sprintf("different-%d", attempt)
-		if _, err = st.ClaimWorkOrder(ctx, differentJob.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err = storetestFor(st).ClaimWorkOrder(ctx, differentJob.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		var released core.WorkOrder
-		released, err = st.ReleaseWorkerClaim(ctx, differentJob.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: detail, AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
+		released, err = storetestFor(st).ReleaseWorkerClaim(ctx, differentJob.ID, "worker", core.WorkOrderRelease{SessionID: session, Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: detail, AutomaticRetryLimit: 3, InitialRetryDelay: time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1013,7 +1014,7 @@ func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
 		}
 		if attempt == 0 {
 			released.NextRetryAt = time.Now().Add(-time.Second)
-			if err = st.UpdateWorkOrder(ctx, released); err != nil {
+			if err = storetestFor(st).UpdateWorkOrder(ctx, released); err != nil {
 				t.Fatal(err)
 			}
 		}

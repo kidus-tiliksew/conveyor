@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestHarnessSnapshotRefreshIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinned := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}, StallTimeoutText: "10m"}
-	if err = st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	refresh := &core.HarnessSnapshot{Name: "claude", MCPTransport: config.MCPTransportJSONFile, Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}, StallTimeoutText: "2m"}
@@ -61,7 +62,7 @@ func TestHarnessSnapshotRefreshIntegration(t *testing.T) {
 	if _, err = st.RefreshWorkOrderHarnessSnapshot(ctx, job.ID, &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "exec"}}); err == nil || !strings.Contains(err.Error(), "does not pin harness") {
 		t.Fatalf("name mismatch err=%v", err)
 	}
-	if _, err = st.ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.RefreshWorkOrderHarnessSnapshot(ctx, job.ID, refresh); err == nil || !strings.Contains(err.Error(), "unclaimed queue entry") {

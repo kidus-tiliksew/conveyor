@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 var (
@@ -46,15 +47,16 @@ type WorkspaceControlStore interface {
 	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
 }
 type Store interface {
+	IsDurable() bool
 	CreateTask(ctx context.Context, t core.Task) error
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
-	TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error
+	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
-	ChangeTaskSetup(ctx context.Context, request SetupChangeRequest) (SetupChangeResult, error)
+	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
@@ -64,7 +66,6 @@ type Store interface {
 	// head is an idempotent no-op.
 	AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
-	SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
 	EnsureTaskEnqueued(ctx context.Context, id string) error
 
@@ -72,10 +73,10 @@ type Store interface {
 	UpdateJob(ctx context.Context, j core.Job) error
 	ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
 	GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error)
-	// WithTaskLock serializes one workspace-scoped external side effect across
+	// WithTaskSideEffectLock serializes one workspace-scoped external side effect across
 	// concurrent control-plane instances while its callback rechecks durable
 	// state. Implementations must release the lock when the callback returns.
-	WithTaskLock(ctx context.Context, taskID string, fn func() error) error
+	WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error
 
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
@@ -90,7 +91,7 @@ type Store interface {
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order (spec §21.34).
-	CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error)
+	CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
@@ -102,10 +103,14 @@ type Store interface {
 	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 
-	CreateWorkOrder(ctx context.Context, order core.WorkOrder) error
-	CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error
-	RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
-	RecoverInterruptedReviewRound(ctx context.Context, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
+	CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error
+	// CreateStageWorkOrder atomically creates one non-review stage job and work
+	// order. It returns false when the same order already exists, making River
+	// redelivery and concurrent dispatch idempotent without a session lock.
+	CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error)
+	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error
+	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
+	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
@@ -113,16 +118,18 @@ type Store interface {
 	// clock-driven lifecycle transitions. It is for observational responses
 	// whose reads must not mutate the work-order lifecycle.
 	ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error)
-	ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
-	RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error)
-	RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
+	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
+	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
+	ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+	RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error)
+	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
-	UpdateWorkOrder(ctx context.Context, order core.WorkOrder, command ...core.WorkOrderCommand) error
+	UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, command ...core.WorkOrderCommand) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
-	AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error
+	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
 	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
 	CreateWorker(ctx context.Context, worker core.Worker) error
@@ -131,8 +138,8 @@ type Store interface {
 	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
 	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
 	RevokeWorker(ctx context.Context, id string) error
-	RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
-	ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
+	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
+	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
 
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
@@ -580,6 +587,8 @@ type memory struct {
 	taskLocks                   sync.Map
 }
 
+func (m *memory) IsDurable() bool { return false }
+
 func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -713,11 +722,14 @@ func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
+func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
 	now := time.Now().UTC()
+	if ok && !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRenew)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order renewal requires a valid taskops lease")
+	}
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
@@ -747,11 +759,14 @@ func (m *memory) RenewWorkerClaim(ctx context.Context, workOrderID, workerID, se
 	return order, nil
 }
 
-func (m *memory) ReleaseWorkerClaim(ctx context.Context, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
 	now := time.Now().UTC()
+	if ok && !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRelease)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order release requires a valid taskops lease")
+	}
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
@@ -859,7 +874,7 @@ func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration
 	return delay
 }
 
-func (m *memory) WithTaskLock(ctx context.Context, taskID string, fn func() error) error {
+func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error {
 	workspace, _ := WorkspaceFromContext(ctx)
 	value, _ := m.taskLocks.LoadOrStore(workspace+"/"+taskID, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
@@ -954,7 +969,10 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 	return created, nil
 }
 
-func (m *memory) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {
+func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	if !lease.ValidFor(decision.TaskID) {
+		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[decision.TaskID]
@@ -1204,7 +1222,10 @@ func reviewPublicationFromEvent(taskID, jobID string, payload []byte) (core.Revi
 	return publication, true
 }
 
-func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) error {
+func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
+		return fmt.Errorf("work-order create requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[order.TaskID]
@@ -1250,7 +1271,10 @@ func (m *memory) CreateWorkOrder(ctx context.Context, order core.WorkOrder) erro
 	return nil
 }
 
-func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
+		return fmt.Errorf("review-round create requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[taskID]
@@ -1309,7 +1333,60 @@ func (m *memory) CreateReviewRound(ctx context.Context, taskID string, jobs []co
 	return nil
 }
 
-func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
+		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[job.TaskID]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", job.TaskID)
+	}
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
+		return false, fmt.Errorf("task %s belongs to workspace %s, not %s", job.TaskID, task.Workspace, selected)
+	}
+	if job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
+		return false, fmt.Errorf("invalid stage work order %s", order.ID)
+	}
+	for _, existing := range m.workOrders {
+		if existing.TaskID == job.TaskID && existing.Stage == job.Stage &&
+			(existing.State == core.WorkOrderQueued || existing.State == core.WorkOrderClaimed) {
+			return false, nil
+		}
+	}
+	if _, exists := m.workOrders[order.ID]; exists {
+		return false, nil
+	}
+	if _, _, exists := m.findJobLocked(job.ID); exists {
+		return false, fmt.Errorf("job %s already exists without work order", job.ID)
+	}
+	now := time.Now().UTC()
+	m.jobs[job.TaskID] = append(m.jobs[job.TaskID], job)
+	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)})
+	if order.CreatedAt.IsZero() {
+		order.CreatedAt = now
+	}
+	if order.QueueEnteredAt.IsZero() {
+		order.QueueEnteredAt = order.CreatedAt
+	}
+	if order.QueueDeadline.IsZero() {
+		order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+	}
+	state, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+	if err != nil {
+		return false, err
+	}
+	order.State, order.Claimable, order.UpdatedAt = state, true, now
+	m.workOrders[order.ID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	return true, nil
+}
+
+func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
+		return ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	request.RequestID = strings.TrimSpace(request.RequestID)
@@ -1396,7 +1473,10 @@ func (m *memory) RetryReviewRound(ctx context.Context, request ReviewRoundRetryR
 	return result, nil
 }
 
-func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error) {
+func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error) {
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdRecover)) {
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	request.RequestID = strings.TrimSpace(request.RequestID)
@@ -1478,8 +1558,8 @@ func (m *memory) RecoverInterruptedReviewRound(ctx context.Context, request Inte
 }
 
 func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	order, ok := m.workOrders[id]
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
@@ -1487,21 +1567,49 @@ func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, e
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[order.TaskID].Workspace != selected {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
-	order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
-	return order, nil
+	return ProjectWorkOrderAt(order, time.Now().UTC()), nil
 }
 
 func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	now := time.Now()
 	orders := make([]core.WorkOrder, 0, len(m.workOrders))
 	for _, order := range m.workOrders {
-		order = m.refreshWorkOrderLocked(ctx, order, now)
-		orders = append(orders, order)
+		orders = append(orders, ProjectWorkOrderAt(order, now))
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
 	return orders, nil
+}
+
+// ProjectWorkOrderAt applies elapsed clock semantics to a copy for
+// observational responses. It performs no store writes; the River order clock
+// persists the same canonical commands asynchronously (spec §21.38).
+func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
+	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
+		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+		order.State = core.WorkOrderTimedOut
+		order.Claimable = false
+		order.LeaseExpiresAt = time.Time{}
+		return order
+	}
+	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now) {
+		clearActiveAttempt(&order)
+		order.State = core.WorkOrderQueued
+		order.Claimable = false
+		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+		order.NextRetryAt = time.Time{}
+		order.RetrySuppressed = true
+		return order
+	}
+	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order.State = core.WorkOrderStale
+		order.Claimable = false
+		return order
+	}
+	order.Claimable = order.ClaimableAt(now)
+	return order
 }
 
 func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
@@ -1518,10 +1626,11 @@ func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.
 func (m *memory) ListTaskWorkOrdersSnapshot(_ context.Context, taskID string) ([]core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now().UTC()
 	orders := make([]core.WorkOrder, 0)
 	for _, order := range m.workOrders {
 		if order.TaskID == taskID {
-			orders = append(orders, order)
+			orders = append(orders, ProjectWorkOrderAt(order, now))
 		}
 	}
 	sort.Slice(orders, func(i, j int) bool {
@@ -1533,12 +1642,62 @@ func (m *memory) ListTaskWorkOrdersSnapshot(_ context.Context, taskID string) ([
 	return orders, nil
 }
 
-func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	selected, _ := WorkspaceFromContext(ctx)
+	seen := map[string]struct{}{}
+	for _, order := range m.workOrders {
+		if selected != "" && m.tasks[order.TaskID].Workspace != selected {
+			continue
+		}
+		elapsedExecution := (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
+			!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)
+		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
+		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
+			!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
+		if elapsedExecution || elapsedClaim || elapsedQueue {
+			seen[order.TaskID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for taskID := range seen {
+		result = append(result, taskID)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
+	if !lease.ValidFor(taskID) {
+		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for id, order := range m.workOrders {
+		if order.TaskID != taskID {
+			continue
+		}
+		before := order.State
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+		m.workOrders[id] = order
+		if order.State != before {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
 	order = m.refreshWorkOrderLocked(ctx, order, now)
@@ -1637,12 +1796,15 @@ func (m *memory) ClaimWorkOrder(ctx context.Context, id string, claim core.WorkO
 	return order, nil
 }
 
-func (m *memory) RedispatchWorkOrder(ctx context.Context, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRedispatch)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order redispatch requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
 	order = m.refreshWorkOrderLocked(ctx, order, now)
@@ -1706,7 +1868,7 @@ func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string,
 	return order, nil
 }
 
-func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if strings.TrimSpace(requestID) == "" {
@@ -1731,9 +1893,13 @@ func (m *memory) RecoverWorkOrder(ctx context.Context, id, requestID string, que
 	if !ok {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
+	}
 	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
+	order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
 	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
 	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
@@ -1846,7 +2012,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 
 func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
 
-func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, ok := m.workOrders[order.ID]
@@ -1866,6 +2032,17 @@ func (m *memory) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, comm
 	if updateRequiresClaim(order.State, current.State) &&
 		(current.State != core.WorkOrderClaimed || current.SessionID == "" || current.SessionID != order.SessionID) {
 		return fmt.Errorf("work order %s is not claimed by this session", order.ID)
+	}
+	command := taskops.WorkOrderMetadataCommand
+	if len(commands) == 1 {
+		command = commands[0]
+	} else if current.State != order.State {
+		if inferred, inferredOK := InferWorkOrderUpdateCommand(current, order); inferredOK {
+			command = inferred
+		}
+	}
+	if !lease.ValidForCommand(order.TaskID, string(command)) {
+		return fmt.Errorf("work-order update requires a valid taskops lease")
 	}
 	if current.State != order.State {
 		if len(commands) == 0 {
@@ -2345,24 +2522,6 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
-func (m *memory) TransitionTaskState(ctx context.Context, id string, command core.TaskCommand) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.tasks[id]
-	if !ok {
-		return fmt.Errorf("task %s not found", id)
-	}
-	from := t.State
-	to, err := core.TransitionTask(from, command)
-	if err != nil {
-		return err
-	}
-	t.State = to
-	m.tasks[id] = t
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": to, "command": command})})
-	return nil
-}
-
 func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2457,25 +2616,32 @@ func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason str
 	return nil
 }
 
-func (m *memory) SetTaskTransition(ctx context.Context, id string, command core.TaskCommand, nextStage, recoveryStage core.Stage) error {
+func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if !lease.ValidFor(id) {
+		return core.Task{}, fmt.Errorf("task lifecycle mutation requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s not found", id)
+		return core.Task{}, fmt.Errorf("task %s not found", id)
 	}
 	fromState, fromStage := task.State, task.NextStage
-	state, err := core.TransitionTask(fromState, command)
+	state, err := core.TransitionTask(fromState, command.Kind)
 	if err != nil {
-		return err
+		return core.Task{}, err
 	}
 	task.State = state
-	task.NextStage = nextStage
-	task.RecoveryStage = recoveryStage
+	if command.ProjectStages {
+		task.NextStage = command.NextStage
+		task.RecoveryStage = command.RecoveryStage
+	}
 	m.tasks[id] = task
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": nextStage, "recovery_stage": recoveryStage, "state": state})})
-	return nil
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
+	if command.ProjectStages {
+		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state})})
+	}
+	return task, nil
 }
 
 func (m *memory) UpdateTaskClassification(ctx context.Context, id, class string) error {
@@ -2702,7 +2868,10 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 	return nil
 }
 
-func (m *memory) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
+func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {
+	if !lease.ValidFor(intervention.TaskID) {
+		return core.Task{}, fmt.Errorf("task cancellation requires a valid taskops lease")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[intervention.TaskID]

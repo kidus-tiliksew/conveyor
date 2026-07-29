@@ -18,19 +18,19 @@ func createMemoryReviewOrderInState(t *testing.T, st Store, ctx context.Context,
 	if target == core.WorkOrderTimedOut && order.ExecutionDeadline.IsZero() {
 		order.ExecutionDeadline = time.Now().Add(-time.Minute)
 	}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetestFor(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	switch target {
 	case core.WorkOrderQueued:
 		return
 	case core.WorkOrderCompleted:
-		claimed, err := st.ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+		claimed, err := storetestFor(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
 		if err != nil {
 			t.Fatal(err)
 		}
 		claimed.State = core.WorkOrderCompleted
-		if err = st.UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		if err = storetestFor(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 			t.Fatal(err)
 		}
 	case core.WorkOrderTimedOut:
@@ -76,26 +76,26 @@ func TestMemoryRetryReviewRoundPreservesHistoryAndIsIdempotent(t *testing.T) {
 		{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 2, RequiredModel: "current-claude", RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"current-claude"}}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)},
 	}
 	request := ReviewRoundRetryRequest{TaskID: task.ID, RequestID: "retry-1", Reason: "seat 2 terminally timed out", PriorRound: 1, PRHead: "abc123"}
-	result, err := st.RetryReviewRound(ctx, request, jobs, orders)
+	result, err := storetestFor(st).RetryReviewRound(ctx, request, jobs, orders)
 	if err != nil || result.NewRound != 2 || len(result.WorkOrders) != 2 || result.WorkOrders[1].RequiredHarnessConfig.Command[0] != "current-claude" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if err = st.AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 2, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "new seat one approved", PolicyVersion: 1}); err != nil {
+	if err = storetestFor(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 2, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "new seat one approved", PolicyVersion: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if completed, _ := st.CountEvents(ctx, task.ID, "review.round_completed"); completed != 0 {
 		t.Fatalf("historical verdict completed the new round: %d", completed)
 	}
-	duplicate, err := st.RetryReviewRound(ctx, request, jobs, orders)
+	duplicate, err := storetestFor(st).RetryReviewRound(ctx, request, jobs, orders)
 	if err != nil || duplicate.NewRound != result.NewRound || len(duplicate.WorkOrders) != 2 {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
 	changed := request
 	changed.Reason = "different request"
-	if _, err = st.RetryReviewRound(ctx, changed, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
+	if _, err = storetestFor(st).RetryReviewRound(ctx, changed, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
 		t.Fatalf("changed idempotency error=%v", err)
 	}
-	if _, err = st.RetryReviewRound(WithWorkspace(context.Background(), "other"), request, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
+	if _, err = storetestFor(st).RetryReviewRound(WithWorkspace(context.Background(), "other"), request, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
 		t.Fatalf("cross-workspace request-id reuse error=%v", err)
 	}
 	for _, original := range prior {
@@ -169,7 +169,7 @@ func TestMemoryRetryReviewRoundSerializesConcurrentRequests(t *testing.T) {
 		go func() {
 			ready.Done()
 			<-start
-			_, retryErr := st.RetryReviewRound(ctx, ReviewRoundRetryRequest{TaskID: task.ID, RequestID: requestID, Reason: "terminal timeout", PriorRound: 1, PRHead: "head"}, jobs, orders)
+			_, retryErr := storetestFor(st).RetryReviewRound(ctx, ReviewRoundRetryRequest{TaskID: task.ID, RequestID: requestID, Reason: "terminal timeout", PriorRound: 1, PRHead: "head"}, jobs, orders)
 			results <- retryErr
 		}()
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 		if err := st.CreateJob(workerCtx, job); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(workerCtx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(workerCtx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,7 +111,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	submittedClaim.State = core.WorkOrderSubmitted
-	if err = st.UpdateWorkOrder(workerCtx, submittedClaim); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(workerCtx, submittedClaim); err != nil {
 		t.Fatal(err)
 	}
 	if submitted, renewErr := service.Renew(workerCtx, worker, submittedClaim.ID, "session-b"); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
@@ -136,7 +137,7 @@ func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 		if err := st.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: queueEnteredAt, QueueDeadline: queueEnteredAt.Add(24 * time.Hour), CreatedAt: createdAt}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: queueEnteredAt, QueueDeadline: queueEnteredAt.Add(24 * time.Hour), CreatedAt: createdAt}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -205,14 +206,14 @@ func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinned := &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredModel: "provider/model", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredModel: "provider/model", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	worker := core.Worker{ID: "worker-refresh", Workspace: "demo", Name: "refresh", CredentialHash: "hash", CreatedAt: now}
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
@@ -379,7 +380,7 @@ func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testin
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if listed, err := service.ListClaimable(ctx, worker); err != nil || len(listed) != 0 {
@@ -454,7 +455,7 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 		EffortArgv: []string{"--config", `model_reasoning_effort="high"`}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "gpt", RequiredHarness: "codex", RequiredEffort: "high", RequiredHarnessConfig: snapshot, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
-	if err := st.CreateWorkOrder(ctx, order); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	snapshotHarness := harnessFromSnapshot(snapshot)
@@ -483,7 +484,7 @@ func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.
 		t.Fatal(err)
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.UseDurableQueue()
+	dispatcher.DisableMemoryQueueForTest()
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}

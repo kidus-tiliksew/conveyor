@@ -24,6 +24,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -41,13 +42,13 @@ type Dispatcher struct {
 	// the in-process review fallback, which has no checkout of its own
 	// (spec §21.4). Injectable for tests.
 	ReviewDiff   func(context.Context, *config.Config, core.Task) (string, error)
-	queue        chan queuedTask
+	memoryQueue  chan queuedTask
 	durableQueue bool
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
 	return &Dispatcher{
-		Store: st, Cfg: cfg, Agent: agent, queue: make(chan queuedTask, 64),
+		Store: st, Cfg: cfg, Agent: agent, memoryQueue: make(chan queuedTask, 64), durableQueue: st.IsDurable(),
 		PublishIssue:    github.PublishIssue,
 		PublishReview:   github.PublishReview,
 		ViewPullRequest: github.PullRequestForBranch,
@@ -89,9 +90,14 @@ const (
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
 	if !d.durableQueue {
 		workspace, _ := store.WorkspaceFromContext(ctx)
-		d.queue <- queuedTask{Workspace: workspace, TaskID: taskID}
+		d.memoryQueue <- queuedTask{Workspace: workspace, TaskID: taskID}
 	}
 }
+
+// DisableMemoryQueueForTest prevents the memory-store dispatcher goroutine
+// from consuming queued work in tests that exercise only the control surface.
+// Production queue selection is derived exclusively from Store.IsDurable.
+func (d *Dispatcher) DisableMemoryQueueForTest() { d.durableQueue = true }
 
 // DispatchNow advances one task synchronously. The MCP submit_for_review tool
 // uses this when review is configured in-process so its result includes the
@@ -100,7 +106,6 @@ func (d *Dispatcher) DispatchNow(ctx context.Context, taskID string) error {
 	return d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), taskID)
 }
 
-func (d *Dispatcher) UseDurableQueue() { d.durableQueue = true }
 func (d *Dispatcher) Run(ctx context.Context) {
 	if d.durableQueue {
 		return
@@ -109,7 +114,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case item := <-d.queue:
+		case item := <-d.memoryQueue:
 			workCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), item.Workspace)
 			if err := d.runTask(workCtx, item.TaskID); err != nil {
 				log.Printf("[task %s] dispatch failed: %v", item.TaskID, err)
@@ -136,20 +141,10 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if task.NextStage != core.StageImplement && task.NextStage != core.StageSpec {
 		return d.runTaskForSnapshot(ctx, task)
 	}
-	// Implement/spec dispatch and conflict-fix creation share one
-	// workspace-scoped gate. The callback re-reads durable state after
-	// acquiring it so overlapping River deliveries observe the surviving
-	// order before checking and creating another one (spec §§21.30, 21.33).
-	return d.Store.WithTaskLock(ctx, taskID, func() error {
-		current, currentErr := d.Store.GetTask(ctx, taskID)
-		if currentErr != nil {
-			return currentErr
-		}
-		if current.NextStage != core.StageImplement && current.NextStage != core.StageSpec {
-			return nil
-		}
-		return d.runTaskForSnapshot(ctx, current)
-	})
+	// River is the sole durable production mailbox, so a task row has one
+	// delivery owner. Lifecycle state writes inside the stage path serialize
+	// through taskops; no session lock is held across ordinary database work.
+	return d.runTaskForSnapshot(ctx, task)
 }
 
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
@@ -233,7 +228,9 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	if err != nil {
 		return err
 	}
-	if err = d.Store.CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
+	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
+		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, jobs, orders)
+	}); err != nil {
 		return err
 	}
 	if task.ApprovalStale {
@@ -387,9 +384,6 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
 	effectiveModel := cfg.EffectiveModel(string(task.NextStage))
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
-	if err := d.Store.CreateJob(ctx, job); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
 	queueTimeout := cfg.WorkOrderQueueTimeout
 	if queueTimeout <= 0 {
@@ -416,8 +410,14 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 	}
-	if err := d.Store.CreateWorkOrder(ctx, order); err != nil {
+	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
+		return d.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
+	})
+	if err != nil {
 		return err
+	}
+	if !created {
+		return nil
 	}
 	payload := map[string]any{
 		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
@@ -463,7 +463,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		return err
 	}
 	input.Effort = route.Effort
-	if err := d.Store.TransitionTaskState(ctx, task.ID, core.TaskDispatchStart); err != nil {
+	if _, err := taskops.New(d.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		return err
 	}
 	if err := d.Store.CreateJob(ctx, job); err != nil {
@@ -825,7 +825,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		decisionReviewKind, decisionReviewScope = order.ReviewKind, order.ReviewScope
 		decisionBaseline, decisionHead = order.BaselineSHA, order.HeadSHA
 	}
-	if err := d.Store.AcceptReviewDecision(ctx, core.ReviewDecision{
+	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
@@ -891,10 +891,13 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 	if err != nil {
 		return err
 	}
-	if err := d.Store.SetTaskTransition(ctx, taskID, command, next, recovery); err != nil {
+	outcome, err := taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{
+		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true,
+	})
+	if err != nil {
 		return err
 	}
-	if destination == core.TaskQueued {
+	if destination == core.TaskQueued && !outcome.Enqueued {
 		d.Enqueue(ctx, taskID)
 	}
 	return nil
@@ -903,7 +906,7 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
 	switch intervention.Action {
 	case core.InterventionCancel:
-		_, err := d.Store.CancelTask(ctx, intervention)
+		_, err := taskops.New(d.Store).Cancel(ctx, intervention)
 		return err
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
@@ -1000,7 +1003,7 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	if scope == config.RefreshReviewNone && !conflict {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")
 	}
-	if err := d.Store.SetTaskTransition(ctx, task.ID, core.TaskRefreshReview, core.StageReview, ""); err != nil {
+	if err := d.transition(ctx, task.ID, core.TaskRefreshReview, core.StageReview, ""); err != nil {
 		return err
 	}
 	current, err := d.Store.GetTask(ctx, task.ID)
@@ -1021,68 +1024,65 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 // UNKNOWN is an ordinary pending result and never creates merge.failed noise.
 func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (MergeReadiness, error) {
 	var result MergeReadiness
-	err := d.Store.WithTaskLock(ctx, task.ID, func() error {
-		current, err := d.Store.GetTask(ctx, task.ID)
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return result, err
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return result, err
+	}
+	repo, ok := cfg.Repo(current.Repo)
+	if !ok || repo.GitHub == "" {
+		return result, fmt.Errorf("repository %q does not configure GitHub", current.Repo)
+	}
+	var pr github.PullRequest
+	for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
+		pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 		if err != nil {
-			return err
-		}
-		cfg, err := d.currentConfig(ctx)
-		if err != nil {
-			return err
-		}
-		repo, ok := cfg.Repo(current.Repo)
-		if !ok || repo.GitHub == "" {
-			return fmt.Errorf("repository %q does not configure GitHub", current.Repo)
-		}
-		var pr github.PullRequest
-		for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
-			pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
-			if err != nil {
-				if category := github.ErrorCategory(err); category != "" {
-					return fmt.Errorf("%s: %w", category, err)
-				}
-				return err
+			if category := github.ErrorCategory(err); category != "" {
+				return result, fmt.Errorf("%s: %w", category, err)
 			}
-			if pr.Mergeable != "UNKNOWN" {
-				break
-			}
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(delay):
-				}
+			return result, err
+		}
+		if pr.Mergeable != "UNKNOWN" {
+			break
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-time.After(delay):
 			}
 		}
-		result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
-		approved := current.ApprovedHeadSHA
-		if approved == "" {
-			approved = current.ReviewedHeadSHA
+	}
+	result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
+	approved := current.ApprovedHeadSHA
+	if approved == "" {
+		approved = current.ReviewedHeadSHA
+	}
+	if result.State == "UNKNOWN" {
+		return result, nil
+	}
+	if result.State == "CONFLICTING" {
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+			return result, err
 		}
-		if result.State == "UNKNOWN" {
-			return nil
+		if !current.MergeApproval {
+			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
 		}
-		if result.State == "CONFLICTING" {
-			if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
-				return err
-			}
-			if !current.MergeApproval {
-				_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-			}
-			return err
+		return result, err
+	}
+	if err = d.clearMergeConflictEpisode(ctx, current, result.State, pr.HeadSHA); err != nil {
+		return result, err
+	}
+	if approved != "" && pr.HeadSHA != "" && approved != pr.HeadSHA {
+		if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
+			return result, err
 		}
-		if err = d.clearMergeConflictEpisode(ctx, current, result.State, pr.HeadSHA); err != nil {
-			return err
-		}
-		if approved != "" && pr.HeadSHA != "" && approved != pr.HeadSHA {
-			if err = d.beginRefreshLocked(ctx, current, pr.HeadSHA, "head-changed", false); err != nil {
-				return err
-			}
-			result.State = "STALE"
-		}
-		return nil
-	})
-	return result, err
+		result.State = "STALE"
+	}
+	return result, nil
 }
 
 type mergeConflictEpisode struct {
@@ -1154,28 +1154,26 @@ func (d *Dispatcher) clearMergeConflictEpisode(ctx context.Context, task core.Ta
 }
 
 func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (core.WorkOrder, error) {
-	var result core.WorkOrder
-	err := d.Store.WithTaskLock(ctx, task.ID, func() error {
-		current, err := d.Store.GetTask(ctx, task.ID)
-		if err != nil {
-			return err
-		}
-		cfg, err := d.currentConfig(ctx)
-		if err != nil {
-			return err
-		}
-		repo, ok := cfg.Repo(current.Repo)
-		if !ok || repo.GitHub == "" {
-			return fmt.Errorf("repository %q does not configure GitHub", current.Repo)
-		}
-		pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
-		if err != nil {
-			return err
-		}
-		result, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-		return err
-	})
-	return result, err
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	repo, ok := cfg.Repo(current.Repo)
+	if !ok || repo.GitHub == "" {
+		return core.WorkOrder{}, fmt.Errorf("repository %q does not configure GitHub", current.Repo)
+	}
+	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	// The forge operation above is observational. Durable conflict dispatch
+	// enters the transaction-locked command plane without holding a session
+	// advisory lock, preventing lock-order inversion with River.
+	return d.dispatchConflictFixLocked(ctx, current, pr, cfg)
 }
 
 func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
@@ -1204,7 +1202,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if err = d.Store.CreateIntervention(systemCtx, intervention); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err = d.Store.SetTaskTransition(systemCtx, current.ID, core.TaskConflictDispatch, core.StageImplement, ""); err != nil {
+	if err = d.transition(systemCtx, current.ID, core.TaskConflictDispatch, core.StageImplement, ""); err != nil {
 		return core.WorkOrder{}, err
 	}
 	current, err = d.Store.GetTask(systemCtx, current.ID)
@@ -1239,7 +1237,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 // authoritative pre-merge read makes retries after a process restart safe by
 // reconciling a PR that GitHub already merged (spec §4, §13.2).
 func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
-	return d.Store.WithTaskLock(ctx, task.ID, func() error {
+	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func() error {
 		return d.mergeApprovedTaskLocked(ctx, task)
 	})
 }
@@ -1394,7 +1392,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			if err = github.MarkIssueDispatched(ctx, repo.GitHub, issue.Number, id); err != nil {
 				continue
 			}
-			_ = d.Store.TransitionTaskState(ctx, id, core.TaskIntakeFinalize)
+			_, _ = taskops.New(d.Store).Perform(ctx, id, taskops.Command{Kind: core.TaskIntakeFinalize})
 			d.Enqueue(ctx, id)
 		}
 	}
