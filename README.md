@@ -177,13 +177,15 @@ exit demonstration are documented in
 Task intake records the canonical `conveyor/task-<id>` branch name and selected
 base, but it does not create a local or remote Git ref. After claiming and
 reading an implementation work order, the operator-owned agent runs
-`conveyor checkout <task-id>` to create or reuse a clean, task-dedicated sibling
-worktree. The helper safely creates or adopts the exact assigned branch,
-preserves existing task commits across redispatches and review bounces, and
-returns the resolved path for all edits, tests, commits, and pushes. The
-primary checkout is never switched, stashed, reset, or edited. The agent pushes
-before `submit_for_review`; Conveyor then opens or reuses the PR and never
-resets or pushes the agent's branch.
+`conveyor checkout <task-id>` to create or reuse a clean, task-dedicated
+worktree beneath the sibling `conveyor-worktrees` container. Before any fetch
+or ref inspection, the helper verifies that the current `origin` identifies
+the assigned configured repository. It safely creates or adopts the exact
+assigned branch, preserves existing task commits across redispatches and review
+bounces, and returns the resolved path for all edits, tests, commits, and
+pushes. The primary checkout is never switched, stashed, reset, or edited. The
+agent pushes before `submit_for_review`; Conveyor then opens or reuses the PR
+and never resets or pushes the agent's branch.
 
 After spec approval, Conveyor durably creates or reuses the task's GitHub issue
 and exposes that association in task/activity/requirements reads. At
@@ -197,7 +199,9 @@ If the task branch does not exist locally or remotely, the helper creates it
 from a freshly fetched `origin/<base>`; existing local, remote, or registered
 worktree history is preserved, and dirty, in-progress, or divergent states fail
 closed. After the task merges or closes, `conveyor done <task-id>` removes only
-a clean task worktree and retains the task branch.
+a clean task worktree and retains the task branch; background reconciliation
+performs the same cleanup automatically and prunes stale primary-checkout
+registrations.
 
 ### Codex plugin
 

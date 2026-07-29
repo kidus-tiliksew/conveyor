@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.7**
+**Specification — v2.8**
 **Date:** July 29, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1003,37 +1003,54 @@ and the human checkout flow).
 The control plane keeps a fetch-only bare-clone cache per repo for
 branch management, diffing, and checkout support; fetches into it are
 serialized per repo. Control-plane-managed task checkouts are removed on
-merge, on task close, or after a staleness TTL (default 14 days), with a
-background `git worktree prune` chore.
+merge, on task close, or after a staleness TTL (default 14 days).
+Background maintenance prunes stale Git worktree registrations both in
+that cache and in every available configured repository primary
+checkout. Repository failures are isolated and best-effort; pruning
+never removes a live worktree, branch, or primary checkout (§21.48).
 
 ### 8.2 Dedicated task worktrees
 
 A dedicated checkout is mandatory: immediately after claiming and
 reading an implementation work order, the agent resolves a clean
 checkout dedicated to the assigned branch — by default a registered Git
-worktree at the deterministic sibling `../<repo>-task-<task-id>` — and
-performs **every** edit, build, test, commit, and push there. A shared
-primary checkout is never an implementation directory (§21.8).
+worktree at the deterministic contained sibling
+`../conveyor-worktrees/<repo>-task-<task-id>` — and performs **every**
+edit, build, test, commit, and push there. The container name is fixed;
+there is no workspace-level worktree-root setting. A shared primary
+checkout is never an implementation directory (§21.8, §21.48).
 
 `conveyor checkout <task-id>` is the shared safe resolver for agents and
-humans alike, before or after the first push. It inspects repository
-safety, reuses a clean worktree already owning the branch, and otherwise
-creates the deterministic path — fetching and verifying `origin/<base>`
-first, adopting an existing local branch without reset, tracking an
-existing remote branch, or creating the branch from the fresh base.
+humans alike, before or after the first push. Before any fetch, ref
+inspection, worktree reuse, or creation, it compares the current
+checkout's unambiguous normalized `origin` identity with the assigned
+workspace repository's configured identity. Standard equivalent GitHub
+HTTPS/SSH forms compare equal; missing, unreadable, ambiguous, or
+non-matching identity blocks with both assigned and current identity
+context. This precondition is identical whether assignment came from
+the worker environment or an authenticated task lookup, and `--path`
+does not bypass it. The resolver then inspects repository safety, reuses
+a clean worktree already owning the branch (including one at the former
+sibling location), and otherwise creates the deterministic path —
+fetching and verifying `origin/<base>` first, adopting an existing local
+branch without reset, tracking an existing remote branch, or creating
+the branch from the fresh base.
 History is preserved absolutely: no `-B`/`-C`, reset, rebase, automatic
 stash, or forced ref updates, ever; divergence between local and remote
 task history blocks and is reported, never resolved by rewriting. Dirty
 unrelated work, in-progress Git operations, and ambiguous state block.
 
-**Path safety** (§21.41). The deterministic sibling name
-`<repo>-task-<task-id>` is exactly one path component: repo `name` is
+**Path safety** (§21.41). The deterministic contained name
+`<repo>-task-<task-id>` is exactly one path component beneath the fixed
+`conveyor-worktrees` directory: repo `name` is
 validated at configuration write time to `[A-Za-z0-9._-]` (and not `.`
 or `..`), and task IDs are server-generated from the same alphabet by
-construction. `conveyor checkout` verifies the resolved worktree path
-is a true sibling of the primary checkout — any component containing a
-separator or traversal blocks, like every other ambiguous state.
-`--path` remains the explicit operator override.
+construction. `conveyor checkout` verifies the canonical container is
+directly beneath the primary checkout's parent and the resolved worktree
+path remains inside it — any symlink, separator, or traversal outcome
+outside that boundary blocks, like every other ambiguous state.
+`--path` remains the explicit operator placement override and bypasses
+only this implicit placement rule.
 
 The worktree stays authoritative across the review loop: a successor
 session (redirect, `changes_requested`) claims first, returns to the
@@ -1041,7 +1058,16 @@ same path, commits, pushes, and resubmits the existing PR. Independent
 review uses the pushed PR diff or a separate detached checkout — never
 the implementation worktree. `conveyor done <task-id>` removes the
 worktree only when the task is terminal and the worktree clean; it
-retains the branch and never touches the primary checkout.
+retains the branch and never touches the primary checkout. In addition,
+every reconciliation pass schedules equivalent best-effort cleanup for
+each merged or closed task until it succeeds or is a no-op. Cleanup
+removes only a registered, clean, non-primary task worktree; never
+deletes a branch, resets, rebases, stashes, or rewrites history; leaves
+dirty or locked worktrees untouched; treats missing registrations as a
+successful no-op; and prunes a registration whose directory is already
+missing. Failures carry workspace, task, repository, and branch context
+in logs and remain retryable without changing terminal task state or
+blocking other repository maintenance (§21.48).
 
 ### 8.3 Task dependencies and stacking
 
@@ -4713,7 +4739,58 @@ deferral, and every other §21.46 boundary.
 
 ---
 
-*End of specification. v2.7 accepted July 29, 2026 — the v2.0
+### 21.48 v2.8 — Worktree containment, terminal cleanup, and checkout repository identity (July 29, 2026)
+
+Accepted after task worktrees accumulated beside unrelated operator
+projects and out-of-band directory removal left stale primary-checkout
+registrations. Three changes:
+
+1. **Implicit task worktrees are contained (§8.2).** The deterministic
+   default moves from `../<repo>-task-<task-id>` to
+   `../conveyor-worktrees/<repo>-task-<task-id>`. The container name is
+   fixed; workspace-level `worktree_root` configuration is deliberately
+   not introduced. Repository and task ID remain one safe path component,
+   and canonical path resolution must keep the container directly beneath
+   the primary checkout's parent and the destination inside it. `--path`
+   remains the explicit placement override. Existing registered clean
+   worktrees remain reusable by assigned branch at their current location;
+   no migration, relocation, or bulk deletion is authorized.
+
+2. **Checkout verifies repository identity before Git mutation
+   (§8.2).** The assigned workspace repository's canonical configured
+   identity is compared with the current checkout's unambiguous normalized
+   `origin` before fetch, ref inspection, worktree reuse, or creation.
+   Equivalent standard GitHub HTTPS and SSH forms compare equal. Missing,
+   unreadable, ambiguous, or different identity fails closed with assigned
+   and current identity context. Worker-environment and authenticated
+   task-lookup assignments use the same rule; `--path` never bypasses it.
+   The assigned repository name remains a directory label, not proof of
+   identity.
+
+3. **Terminal cleanup and primary-registration pruning are reconciled
+   (§§8.1–8.2).** Every merged or closed task remains eligible on
+   reconciliation passes until cleanup succeeds or is a no-op. The
+   operation removes only a registered, clean, non-primary task worktree,
+   retains every branch, refuses dirty or locked worktrees, treats missing
+   registrations as success, and prunes registrations whose directories
+   are already missing. It never resets, rebases, stashes, force-updates,
+   or otherwise rewrites agent-owned history. Failures are logged with
+   workspace, task, repository, and branch context and retried without
+   changing terminal task state or blocking other repository work.
+   Background `git worktree prune` continues across the control-plane
+   cache and now also covers every available configured primary checkout;
+   per-repository failures are isolated, and live worktrees, branches, and
+   primary checkouts are outside prune semantics.
+
+Non-goals: configurable implicit roots; migration or bulk deletion of old
+worktrees; branch deletion or history rewriting; cleanup of non-terminal,
+dirty, locked, or primary worktrees; and changes to worker protocol, task
+lifecycle states, merge semantics, branch naming, or explicit `--path`
+placement.
+
+---
+
+*End of specification. v2.8 accepted July 29, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -4725,6 +4802,8 @@ deferred phases. §21.47 clarifies dependency semantics from the Phase
 6.1 implementation review: unsatisfiable edges surfaced with an audited
 operator unlink, cross-repo edges legal, the gate scoped to
 implementation claims, and queue-clock suspension while blocked. The
-body (§§1–20) is the normative
+§21.48 amendment contains implicit task worktrees, verifies checkout
+repository identity, and reconciles terminal cleanup plus
+primary-checkout pruning. The body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
