@@ -20,12 +20,18 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const lastAt = item.last_event_at || item.task.created_at
   const gate = gateBadge(item)
   const reviewDiagnostic = reviewDiagnosticBadge(item)
+  const unsatisfiable = item.stalled?.unsatisfiable_edge === true
+  const blockingIDs = item.stalled?.blocking_task_ids ?? item.task.blocking_task_ids ?? []
+  const blockingTitles = blockingIDs.map((id) => item.task.dependencies?.find((dependency) => dependency.id === id)?.title ?? id)
+  const dependencyExplanation = unsatisfiable
+    ? `Needs attention: ${blockingTitles.join(', ')} closed without merging`
+    : `Waiting for ${blockingTitles.join(', ')}`
   return (
     <Link
       to="/tasks/$taskId"
       params={{ taskId: item.task.id }}
       className={cn(
-        'block rounded-lg border bg-card p-3 transition-colors',
+        'group/card block rounded-lg border bg-card p-3 transition-colors',
         selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
       )}
     >
@@ -38,9 +44,17 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
         {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
         {item.task.hold && <Badge variant="mono">Held</Badge>}
-        {(item.task.blocking_task_ids?.length ?? 0) > 0 && (
-          <span title={`Waiting for ${item.task.blocking_task_ids!.join(', ')}`}>
-            <Badge variant="outline">Blocked</Badge>
+        {blockingIDs.length > 0 && (
+          <span className="group/dependency relative inline-flex" aria-label={dependencyExplanation}>
+            <Badge variant={unsatisfiable ? 'attention' : 'mono'}>
+              {unsatisfiable ? 'Dependency needs attention' : 'Waiting on dependencies'}
+            </Badge>
+            <span
+              role="tooltip"
+              className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-60 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/dependency:opacity-100 group-focus-visible/card:opacity-100"
+            >
+              {dependencyExplanation}
+            </span>
           </span>
         )}
         {item.task.class && <Badge>{item.task.class}</Badge>}

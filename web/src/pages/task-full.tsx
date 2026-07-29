@@ -72,7 +72,7 @@ function FullBody({ item }: { item: ActivityItem }) {
       <div className="grid grid-cols-1 lg:grid-cols-2">
         <section aria-label="Specification" className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
           {item.spec ? (
-            <SpecCard spec={item.spec} collapsible={false} />
+            <SpecCard spec={item.spec} collapsible={false} routeVariant="full" />
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">No spec yet — the spec stage has not produced a version.</p>
           )}

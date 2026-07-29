@@ -183,6 +183,8 @@ export interface StalledState {
 	reason: string
 	work_order: WorkOrder
 	last_failure?: string
+	blocking_task_ids?: string[]
+	unsatisfiable_edge?: boolean
 }
 
 export interface ForgeFailure {
@@ -457,6 +459,7 @@ export interface WorkOrder {
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
   blocking_task_ids?: string[]
+  unsatisfiable_task_ids?: string[]
   claimed_by?: string
   session_id?: string
   agent?: string

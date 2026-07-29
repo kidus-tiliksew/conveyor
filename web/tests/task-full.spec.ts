@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
 let emitLiveScrollEvent = () => {}
+const detailRequestCounts = new Map<string, number>()
 
 function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 	const specContent = taskId === 'mermaid-valid'
@@ -187,7 +188,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       id: taskId,
       workspace: 'demo',
       source: 'mcp',
-      title: overflowing ? 'Overflowing task' : 'Short task',
+      title: taskId === 'blueprint-parent' ? 'Phase 6 blueprint' : overflowing ? 'Overflowing task' : 'Short task',
       body: taskId === 'markdown-body'
         ? '# Structured context\n\nA **clear** paragraph with [safe link](https://example.test).\n\n- first item\n- [x] completed item\n\n`inline code`\n\n<script data-unsafe>window.hacked = true</script>'
         : taskId === 'long-body'
@@ -198,7 +199,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
+		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' || taskId === 'unsatisfiable' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -216,17 +217,30 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       parent_task_id: taskId === 'blueprint-child' ? 'blueprint-parent' : undefined,
       origin_spec_version: taskId === 'blueprint-child' ? 1 : undefined,
       origin_sub_id: taskId === 'blueprint-child' ? 'SUB-3' : undefined,
-      blocking_task_ids: taskId === 'blueprint-child' ? ['blueprint-sub-2'] : undefined,
-      dependencies: taskId === 'blueprint-child' ? [{ id: 'blueprint-sub-2', title: 'Runtime', state: 'running' }] : undefined,
+      blocking_task_ids: taskId === 'blueprint-child' ? ['blueprint-sub-2']
+        : taskId === 'blocked-refresh' ? ['refresh-dependency']
+          : taskId === 'unsatisfiable' ? ['closed-dependency']
+            : undefined,
+      dependencies: taskId === 'blueprint-child' ? [
+        { id: 'blueprint-sub-2', title: 'Runtime', state: 'running' },
+        { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged' },
+      ] : taskId === 'blocked-refresh' ? [{ id: 'refresh-dependency', title: 'Backend contract', state: 'running' }]
+        : taskId === 'unsatisfiable' ? [{ id: 'closed-dependency', title: 'Retired API plan', state: 'closed' }]
+          : undefined,
       children: taskId === 'blueprint-parent' ? [
         { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
         { id: 'blueprint-sub-2', title: 'Runtime', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-2' },
-        { id: 'blueprint-child', title: 'Dashboard', state: 'queued', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
+        { id: 'blueprint-child', title: 'Dashboard', state: 'closed', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
       ] : undefined,
       created_at: createdAt,
     },
 		jobs: reviewActivity.jobs,
-		events: taskId === 'blueprint-parent' ? [{ id: 1, task_id: taskId, kind: 'blueprint.materialized', actor_id: 'system', actor_role: 'system' as const, payload: { version: 1, children_total: 3 }, at: createdAt }] : reviewActivity.events,
+		events: taskId === 'blueprint-parent' ? [
+      { id: 1, task_id: taskId, kind: 'blueprint.materialized', actor_id: 'system', actor_role: 'system' as const, payload: { version: 1, children_total: 3 }, at: createdAt },
+      { id: 2, task_id: taskId, kind: 'blueprint.closed', actor_id: 'system', actor_role: 'system' as const, payload: {}, at: createdAt },
+    ] : taskId === 'unsatisfiable' ? [
+      { id: 1, task_id: taskId, kind: 'task.dependency_unsatisfiable', actor_id: 'system', actor_role: 'system' as const, payload: { depends_on_task_id: 'closed-dependency', dependency_state: 'closed' }, at: createdAt },
+    ] : reviewActivity.events,
     interventions: taskId === 'spec-approval' ? [{
 		id: 1,
 		task_id: taskId,
@@ -239,7 +253,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 	}] : [],
     checkout_available: false,
     checkout_guidance: 'Use the assigned worktree.',
-    needs_attention: taskId === 'forge-failure',
+    needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable',
     forge_failure: taskId === 'forge-failure' ? {
       category: 'forge_rate_limited',
       detail: 'merge pull request: API rate limit exceeded',
@@ -260,13 +274,29 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       materialized_children: taskId === 'blueprint-parent' ? [
         { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
         { id: 'blueprint-sub-2', title: 'Runtime', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-2' },
-        { id: 'blueprint-child', title: 'Dashboard', state: 'queued', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
+        { id: 'blueprint-child', title: 'Dashboard', state: 'closed', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
       ] : undefined,
       approved: true,
       created_at: createdAt,
       approved_at: createdAt,
     },
-		work_orders: reviewActivity.work_orders,
+		work_orders: taskId === 'unsatisfiable' ? [{
+      id: 'unsatisfiable-implement-1',
+      task_id: taskId,
+      job_id: 'unsatisfiable-implement-1',
+      stage: 'implement',
+      state: 'queued',
+      claimable: false,
+      blocking_task_ids: ['closed-dependency'],
+      unsatisfiable_task_ids: ['closed-dependency'],
+      queue_entered_at: createdAt,
+      queue_deadline: '2026-07-16T12:00:00Z',
+      redispatch_count: 0,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      self_reported: true,
+    }] : reviewActivity.work_orders,
 		verification_evidence: taskId === 'evidence' ? [
 			{
 				id: 'evidence-image',
@@ -316,7 +346,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			reason: 'automatic retry is suppressed',
 			work_order: (reviewActivity.work_orders ?? [])[0],
 			last_failure: 'harness exited: status 1',
-		} : undefined,
+		} : taskId === 'unsatisfiable' ? {
+      needed: true,
+      reason: 'dependency reached a terminal state without merging',
+      work_order: { id: 'unsatisfiable-implement-1', stage: 'implement', state: 'queued' },
+      blocking_task_ids: ['closed-dependency'],
+      unsatisfiable_edge: true,
+    } : undefined,
 		worker_status: taskId === 'interrupted-review' ? {
 			available: false,
 			required_harnesses: ['claude'],
@@ -338,6 +374,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 }
 
 async function mockTaskAPIs(page: Page) {
+  detailRequestCounts.clear()
   let liveActivityRequests = 0
   let releaseLiveStream = () => {}
   const liveStreamRelease = new Promise<void>((resolve) => { releaseLiveStream = resolve })
@@ -348,13 +385,24 @@ async function mockTaskAPIs(page: Page) {
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])
+      const requestCount = (detailRequestCounts.get(taskId) ?? 0) + 1
+      detailRequestCounts.set(taskId, requestCount)
       if (taskId === 'live-scroll') liveActivityRequests++
-	  await route.fulfill({ json: activity(taskId, taskId === 'overflowing' || taskId === 'gate', liveActivityRequests > 1 ? 19 : 18) })
+      const item = activity(taskId, taskId === 'overflowing' || taskId === 'gate', liveActivityRequests > 1 ? 19 : 18)
+      if (taskId === 'blocked-refresh' && requestCount > 1) {
+        item.task.blocking_task_ids = undefined
+        item.task.dependencies = [{ id: 'refresh-dependency', title: 'Backend contract', state: 'merged' }]
+      }
+	    await route.fulfill({ json: item })
       return
     }
 		if (url.pathname === '/v1/activity') {
 			const item = activity('diagnostics', false)
-			await route.fulfill({ json: [{ task: item.task, latest_stage: 'review', last_event_at: createdAt, needs_attention: false, review_diagnostics: item.review_diagnostics }] })
+      const parent = activity('blueprint-parent', false)
+			await route.fulfill({ json: [
+        { task: item.task, latest_stage: 'review', last_event_at: createdAt, needs_attention: false, review_diagnostics: item.review_diagnostics },
+        { task: parent.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: false },
+      ] })
 			return
 		}
     if (url.pathname.endsWith('/events/stream')) {
@@ -1112,13 +1160,105 @@ test('spec diagrams render best-effort and malformed Mermaid falls back to sourc
 test('blueprint and dependency details remain linked and read only', async ({ page }) => {
 	await page.goto('/tasks/blueprint-parent/full')
 	await expect(page.getByRole('heading', { name: 'Blueprint tasks' })).toBeVisible()
-	await expect(page.getByText('2 of 3 merged')).toBeVisible()
-	await expect(page.getByRole('link', { name: 'Dashboard' }).first()).toHaveAttribute('href', '/tasks/blueprint-child')
-	await expect(page.getByText('Blueprint approved — 3 tasks created')).toBeVisible()
+	await expect(page.getByText('2 merged · 1 closed')).toBeVisible()
+  const dashboardLinks = page.getByRole('link', { name: 'Dashboard' })
+  await expect(dashboardLinks).toHaveCount(2)
+  for (let index = 0; index < await dashboardLinks.count(); index++) {
+    await expect(dashboardLinks.nth(index)).toHaveAttribute('href', '/tasks/blueprint-child/full')
+  }
+	await expect(page.getByText('3 tasks created from the blueprint')).toBeVisible()
+  await expect(page.getByText('Blueprint completed — all child tasks are finished')).toBeVisible()
 	await expect(page.getByRole('link', { name: 'Runtime' }).first()).toBeVisible()
 
 	await page.goto('/tasks/blueprint-child/full')
-	await expect(page.getByText('Blocked')).toBeVisible()
-	await expect(page.getByText(/blueprint-parent · spec v1/)).toBeVisible()
-	await expect(page.getByRole('link', { name: /blueprint-sub-2 · running/ })).toBeVisible()
+	await expect(page.getByText('Waiting on dependencies')).toBeVisible()
+	await expect(page.getByRole('link', { name: 'Phase 6 blueprint · spec v1' })).toHaveAttribute('href', '/tasks/blueprint-parent/full')
+	await expect(page.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
+	await expect(page.getByRole('link', { name: 'Persistence · Satisfied' })).toHaveAttribute('href', '/tasks/blueprint-sub-1/full')
+  await expect(page.getByText('awaiting_human')).toHaveCount(0)
+  await expect(page.getByText('terminal outcome')).toHaveCount(0)
+})
+
+test('blocked detail polling clears waiting state without a reload and stays off when unblocked', async ({ page }) => {
+  await page.clock.install()
+  await page.goto('/tasks/blocked-refresh/full')
+  await expect(page.getByText('Waiting on dependencies')).toBeVisible()
+  expect(detailRequestCounts.get('blocked-refresh')).toBe(1)
+
+  await page.clock.fastForward(15_100)
+  await expect.poll(() => detailRequestCounts.get('blocked-refresh') ?? 0).toBeGreaterThan(1)
+  await expect(page.getByText('Waiting on dependencies')).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Backend contract · Satisfied' })).toBeVisible()
+
+  await page.goto('/tasks/no-blockers/full')
+  await expect.poll(() => detailRequestCounts.get('no-blockers') ?? 0).toBe(1)
+  const initialRequests = detailRequestCounts.get('no-blockers')
+  await page.clock.fastForward(30_000)
+  expect(detailRequestCounts.get('no-blockers')).toBe(initialRequests)
+})
+
+test('board cards show a neutral, keyboard-reachable dependency chip using titles', async ({ page }) => {
+  const item = activity('blueprint-child', false)
+  await page.route('**/v1/activity*', (route) => route.fulfill({
+    json: [{ task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: false }],
+  }))
+  await page.goto('/')
+  const card = page.getByRole('link', { name: /Short task/ })
+  await expect(card.getByText('Waiting on dependencies')).toBeVisible()
+  await card.focus()
+  await expect(card.getByRole('tooltip')).toContainText('Runtime')
+})
+
+test('unsatisfiable dependency is attention-worthy and can be unlinked with an audited reason only from detail', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator-token'))
+  let unlinked = false
+  let unlinkBody: Record<string, string> | undefined
+  const currentItem = () => {
+    const item = activity('unsatisfiable', false)
+    if (!unlinked) return item
+    return {
+      ...item,
+      task: { ...item.task, blocking_task_ids: undefined, dependencies: [] },
+      needs_attention: false,
+      stalled: undefined,
+      events: [
+        ...item.events,
+        { id: 2, task_id: 'unsatisfiable', kind: 'task.dependency_removed', actor_id: 'operator', actor_role: 'human' as const, payload: { reason: 'The retired plan is no longer required' }, at: createdAt },
+      ],
+    }
+  }
+  await page.route('**/v1/workspaces', (route) => route.fulfill({
+    json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: createdAt }],
+  }))
+  await page.route('**/v1/activity*', (route) => {
+    const item = currentItem()
+    return route.fulfill({
+      json: [{ task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: item.needs_attention, stalled: item.stalled }],
+    })
+  })
+  await page.route('**/v1/tasks/unsatisfiable/activity*', (route) => route.fulfill({ json: currentItem() }))
+  await page.route('**/v1/tasks/unsatisfiable/dependencies/closed-dependency*', async (route) => {
+    unlinkBody = route.request().postDataJSON()
+    unlinked = true
+    await route.fulfill({ json: { task: currentItem().task, request_id: unlinkBody?.request_id, removed: true } })
+  })
+
+  await page.goto('/')
+  const card = page.getByRole('link', { name: /Short task/ })
+  await expect(card.getByText('Dependency needs attention')).toBeVisible()
+  await expect(card.getByRole('button', { name: /Unlink dependency/ })).toHaveCount(0)
+  await card.click()
+
+  await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
+  await page.getByRole('button', { name: 'Unlink dependency Retired API plan' }).click()
+  const remove = page.getByRole('button', { name: 'Remove dependency' })
+  await expect(remove).toBeDisabled()
+  await page.getByPlaceholder('Why should this dependency be removed?').fill('The retired plan is no longer required')
+  await remove.click()
+
+  await expect.poll(() => unlinkBody?.reason).toBe('The retired plan is no longer required')
+  expect(unlinkBody?.request_id).toBeTruthy()
+  await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toHaveCount(0)
+  await expect(page.getByText('Dependency removed')).toBeVisible()
 })

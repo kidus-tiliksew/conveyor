@@ -2,8 +2,15 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 
 const createdAt = '2026-07-18T00:00:00Z'
 
-async function mockTaskCreateAPIs(page: Page) {
+async function mockTaskCreateAPIs(page: Page, options: {
+  taskList?: 'success' | 'error' | 'delayed'
+  createDependencyError?: boolean
+  candidates?: Array<Record<string, unknown>>
+} = {}) {
   let submitted = ''
+  let taskListRequests = 0
+  let releaseTaskList = () => {}
+  const taskListGate = new Promise<void>((resolve) => { releaseTaskList = resolve })
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     sessionStorage.setItem('conveyor-token', 'operator-token')
@@ -15,7 +22,7 @@ async function mockTaskCreateAPIs(page: Page) {
       return
     }
     if (url.pathname === '/v1/workspace') {
-      await route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 2, repos: [{ name: 'conveyor', base: 'main' }], routing: [], default_setup: 'backend', setups: [
+      await route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 2, repos: [{ name: 'conveyor', base: 'main' }, { name: 'api', base: 'develop' }], routing: [], default_setup: 'backend', setups: [
         { name: 'backend', execution_settings: { implementation: { harness: 'codex', model: 'gpt' }, review: { fallback_harness: 'codex' } }, review: { seats: [{ model: 'gpt-review' }] } },
         { name: 'frontend', execution_settings: { implementation: { harness: 'claude', model: 'claude-ui' }, review: { fallback_harness: 'claude' } }, review: { seats: [{ model: 'claude-review' }] } },
       ] } })
@@ -27,23 +34,38 @@ async function mockTaskCreateAPIs(page: Page) {
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
       submitted = route.request().postData() ?? ''
+      if (options.createDependencyError) {
+        await route.fulfill({ status: 400, body: 'invalid depends_on: dependency cycle detected' })
+        return
+      }
       await route.fulfill({ status: 201, json: { id: 'generated', workspace: 'demo', title: 'Generated title', body: 'Generate this title from context', repo: 'conveyor', state: 'queued', created_at: '2026-07-18T00:00:00Z' } })
       return
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'GET') {
-      await route.fulfill({ json: [
+      taskListRequests++
+      if (options.taskList === 'delayed') await taskListGate
+      if (options.taskList === 'error') {
+        await route.fulfill({ status: 401, body: 'unauthorized' })
+        return
+      }
+      await route.fulfill({ json: options.candidates ?? [
         { id: '260729-dependency', workspace: 'demo', title: 'Finish persistence first', body: '', repo: 'conveyor', state: 'running', created_at: createdAt },
+        { id: '260729-cross-repo', workspace: 'demo', title: 'Publish API contract', body: '', repo: 'api', state: 'running', created_at: createdAt },
         { id: '260729-terminal', workspace: 'demo', title: 'Already merged', body: '', repo: 'conveyor', state: 'merged', created_at: createdAt },
       ] })
       return
     }
     await route.fulfill({ json: [] })
   })
-  return () => submitted
+  return {
+    submitted: () => submitted,
+    taskListRequests: () => taskListRequests,
+    releaseTaskList,
+  }
 }
 
 test('new task removes title input and submits description for AI title generation', async ({ page }) => {
-  const submitted = await mockTaskCreateAPIs(page)
+  const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
 
   await expect(page.getByPlaceholder('What should change?')).toHaveCount(0)
@@ -66,7 +88,7 @@ test('new task removes title input and submits description for AI title generati
 })
 
 test('intake offers a hold toggle and advisory worker warning instead of modes', async ({ page }) => {
-  const submitted = await mockTaskCreateAPIs(page)
+  const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
 
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
@@ -80,16 +102,77 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
   await expect.poll(submitted).toContain('"hold":true')
 })
 
-test('intake declares an optional dependency from the advanced selector', async ({ page }) => {
-  const submitted = await mockTaskCreateAPIs(page)
+test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({ page }) => {
+  const { submitted, taskListRequests } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
+  expect(taskListRequests()).toBe(0)
   await page.locator('textarea').fill('Implement the dependent task')
   await page.getByText('Advanced options').click()
-  await page.getByLabel('Search dependency tasks').fill('persistence')
-  await page.getByText('Finish persistence first').click()
+  await expect.poll(taskListRequests).toBe(1)
+  await expect(page.getByText('2 matching open tasks.')).toBeVisible()
+  // The empty query proves terminal tasks are filtered independently of search.
   await expect(page.getByText('Already merged')).toHaveCount(0)
+  await page.getByText('Finish persistence first').click()
+  await page.getByText('Publish API contract').click()
+  await page.getByLabel('Repository').selectOption('api')
+  await expect(page.getByRole('button', { name: 'Remove dependency Finish persistence first' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove dependency Publish API contract' })).toBeVisible()
+  await page.getByRole('button', { name: 'Remove dependency Finish persistence first' }).click()
   await page.getByRole('button', { name: 'Create task' }).click()
-  await expect.poll(submitted).toContain('"depends_on":["260729-dependency"]')
+  await expect.poll(submitted).toContain('"depends_on":["260729-cross-repo"]')
+  await expect.poll(submitted).toContain('"repo":"api"')
+})
+
+test('dependency candidates distinguish loading, request failure, empty results, and bounded results', async ({ page }) => {
+  const delayed = await mockTaskCreateAPIs(page, { taskList: 'delayed' })
+  await page.goto('/new')
+  await page.getByText('Advanced options').click()
+  await expect(page.getByText('Loading dependency candidates…')).toBeVisible()
+  delayed.releaseTaskList()
+  await expect(page.getByText('2 matching open tasks.')).toBeVisible()
+
+  await page.unroute('**/v1/**')
+  await mockTaskCreateAPIs(page, { taskList: 'error' })
+  await page.reload()
+  await page.getByText('Advanced options').click()
+  await expect(page.getByText('Could not load dependency candidates. Check your access and try again.')).toBeVisible()
+  await expect(page.getByText('No matching open tasks.')).toHaveCount(0)
+
+  await page.unroute('**/v1/**')
+  await mockTaskCreateAPIs(page, { candidates: [] })
+  await page.reload()
+  await page.getByText('Advanced options').click()
+  await expect(page.getByText('No matching open tasks.')).toBeVisible()
+
+  await page.unroute('**/v1/**')
+  await mockTaskCreateAPIs(page, {
+    candidates: Array.from({ length: 25 }, (_, index) => ({
+      id: `candidate-${index}`,
+      workspace: 'demo',
+      title: `Candidate ${index}`,
+      body: '',
+      repo: index % 2 ? 'api' : 'conveyor',
+      state: 'running',
+      created_at: createdAt,
+    })),
+  })
+  await page.reload()
+  await page.getByText('Advanced options').click()
+  await expect(page.getByText('Showing 20 of 25 matching open tasks. Narrow your search to see more.')).toBeVisible()
+  await expect(page.locator('#dependency-results input[type="checkbox"]')).toHaveCount(20)
+})
+
+test('structured dependency validation opens Advanced options and renders the error once', async ({ page }) => {
+  await mockTaskCreateAPIs(page, { createDependencyError: true })
+  await page.goto('/new')
+  await page.locator('textarea').fill('Create a cyclic dependency')
+  await page.getByText('Advanced options').click()
+  await page.getByText('Finish persistence first').click()
+  await page.getByText('Advanced options').click()
+  await expect(page.getByLabel('Search dependency tasks')).not.toBeVisible()
+  await page.getByRole('button', { name: 'Create task' }).click()
+  await expect(page.getByLabel('Search dependency tasks')).toBeVisible()
+  await expect(page.getByText('invalid depends_on: dependency cycle detected')).toHaveCount(1)
 })
 
 test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {
