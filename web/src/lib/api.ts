@@ -182,13 +182,18 @@ export async function createTask(token: string, input: CreateTaskInput, attachme
     body,
   })
   if (!response.ok) {
-    const message = (await response.text()).trim() || response.statusText
-    // §21.47 predates a JSON error envelope on this route. Normalize its
-    // exact dependency-validation prefix at the API boundary so components
-    // consume a stable code instead of matching human-facing copy.
-    const code = response.status === 400 && message.startsWith('invalid depends_on:')
-      ? 'invalid_dependencies'
-      : 'request_failed'
+    const contentType = response.headers.get('Content-Type') ?? ''
+    const raw = await response.text()
+    let payload: { error?: string; message?: string } | undefined
+    if (contentType.includes('application/json')) {
+      try {
+        payload = JSON.parse(raw) as { error?: string; message?: string }
+      } catch {
+        // Preserve the response body as the fallback for malformed envelopes.
+      }
+    }
+    const message = payload?.message?.trim() || raw.trim() || response.statusText
+    const code = payload?.error === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
     throw new TaskIntakeError(message, code)
   }
   return response.json() as Promise<Task>

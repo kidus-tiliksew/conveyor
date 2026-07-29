@@ -555,7 +555,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.createTaskRecord(r.Context(), req, "", "api")
 	if err != nil {
-		http.Error(w, err.Error(), taskCreateStatus(err))
+		writeTaskCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, result.Task)
@@ -574,7 +574,7 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 	}
 	result, err := s.createTaskRecordWithState(r.Context(), req, r.FormValue("idempotency_key"), "api", core.TaskClaiming)
 	if err != nil {
-		http.Error(w, err.Error(), taskCreateStatus(err))
+		writeTaskCreateError(w, err)
 		return
 	}
 	if !result.Created && result.Task.State != core.TaskClaiming {

@@ -727,6 +727,47 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestCreateTaskDependencyValidationReturnsStructuredError(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	server.Repos = []string{"api"}
+	titleCalls := 0
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) {
+		titleCalls++
+		return "unused", nil
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/tasks?workspace_id=demo",
+		strings.NewReader(`{"body":"dependent work","repo":"api","depends_on":["missing"]}`),
+	)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("content-type=%q", contentType)
+	}
+	var envelope struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode error envelope: %v body=%s", err, response.Body.String())
+	}
+	if envelope.Error != "invalid_dependencies" || !strings.Contains(envelope.Message, "invalid depends_on") {
+		t.Fatalf("error envelope=%+v", envelope)
+	}
+	if titleCalls != 0 {
+		t.Fatalf("dependency validation called title generation %d times", titleCalls)
+	}
+}
+
 func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

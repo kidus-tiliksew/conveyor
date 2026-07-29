@@ -35,7 +35,11 @@ async function mockTaskCreateAPIs(page: Page, options: {
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
       submitted = route.request().postData() ?? ''
       if (options.createDependencyError) {
-        await route.fulfill({ status: 400, body: 'invalid depends_on: dependency cycle detected' })
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          json: { error: 'invalid_dependencies', message: 'The selected dependency creates a cycle.' },
+        })
         return
       }
       await route.fulfill({ status: 201, json: { id: 'generated', workspace: 'demo', title: 'Generated title', body: 'Generate this title from context', repo: 'conveyor', state: 'queued', created_at: '2026-07-18T00:00:00Z' } })
@@ -172,7 +176,7 @@ test('structured dependency validation opens Advanced options and renders the er
   await expect(page.getByLabel('Search dependency tasks')).not.toBeVisible()
   await page.getByRole('button', { name: 'Create task' }).click()
   await expect(page.getByLabel('Search dependency tasks')).toBeVisible()
-  await expect(page.getByText('invalid depends_on: dependency cycle detected')).toHaveCount(1)
+  await expect(page.getByText('The selected dependency creates a cycle.')).toHaveCount(1)
 })
 
 test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {
