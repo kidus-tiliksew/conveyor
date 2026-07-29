@@ -70,7 +70,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable />}
+      {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable routeVariant="sheet" />}
       <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
       <AttachmentsCard attachments={item.attachments ?? []} />
       <Timeline item={item} />

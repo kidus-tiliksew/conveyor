@@ -158,6 +158,15 @@ export interface CreateTaskInput {
   depends_on?: string[]
 }
 
+export class TaskIntakeError extends Error {
+  code: 'invalid_dependencies' | 'request_failed'
+
+  constructor(message: string, code: TaskIntakeError['code']) {
+    super(message)
+    this.code = code
+  }
+}
+
 export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); const result = await response.json() as WorkerList; return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) } }
 export async function issueWorkerPairing(token: string) { const response = await fetch(workspaceURL('/v1/workers/pairings'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ ttl_seconds: 600 }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<{ pairing_token: string; expires_at: string }> }
 export async function revokeWorker(token: string, id: string) { const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), { method: 'DELETE', headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()) }
@@ -172,8 +181,32 @@ export async function createTask(token: string, input: CreateTaskInput, attachme
     headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' },
     body,
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) {
+    const contentType = response.headers.get('Content-Type') ?? ''
+    const raw = await response.text()
+    let payload: { error?: string; message?: string } | undefined
+    if (contentType.includes('application/json')) {
+      try {
+        payload = JSON.parse(raw) as { error?: string; message?: string }
+      } catch {
+        // Preserve the response body as the fallback for malformed envelopes.
+      }
+    }
+    const message = payload?.message?.trim() || raw.trim() || response.statusText
+    const code = payload?.error === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
+    throw new TaskIntakeError(message, code)
+  }
   return response.json() as Promise<Task>
+}
+
+export async function removeTaskDependency(taskId: string, dependencyId: string, token: string, reason: string, requestId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(dependencyId)}`), {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ reason, request_id: requestId }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ task: Task; request_id: string; removed: boolean }>
 }
 
 export async function redispatchTask(taskId: string, token: string) {

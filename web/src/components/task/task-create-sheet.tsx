@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
-import { createTask, fetchTasks, fetchWorkers } from '../../lib/api'
+import { createTask, fetchTasks, fetchWorkers, TaskIntakeError } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
@@ -19,6 +19,8 @@ Constraints & non-goals —
 
 Acceptance ideas — how we'd know it works…`
 
+const DEPENDENCY_RESULT_LIMIT = 20
+
 // Task intake (spec §9): the dashboard is one source among github/cli/cron.
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
@@ -29,9 +31,14 @@ export function TaskCreateSheet() {
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
   const repos = workspace?.repos ?? []
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const workerHealth = useQuery({ queryKey: ['workers', token, workspace?.workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace?.workspace), refetchInterval: 5000 })
   const setups = workspace?.setups ?? []
-  const tasks = useQuery({ queryKey: ['tasks', workspace?.workspace], queryFn: fetchTasks, enabled: Boolean(workspace?.workspace) })
+  const tasks = useQuery({
+    queryKey: ['tasks', workspace?.workspace, 'dependency-candidates'],
+    queryFn: fetchTasks,
+    enabled: advancedOpen && Boolean(workspace?.workspace),
+  })
 
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
@@ -70,6 +77,9 @@ export function TaskCreateSheet() {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void navigate({ to: '/tasks/$taskId', params: { taskId: task.id } })
     },
+    onError: (error) => {
+      if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
+    },
   })
 
   const addFiles = (picked: FileList | null) => {
@@ -82,14 +92,24 @@ export function TaskCreateSheet() {
       return [...current, ...list.filter((f) => !seen.has(`${f.name}:${f.size}`))]
     })
   }
-  const dependencyOptions = (tasks.data ?? []).filter((task) => {
-    if (task.state === 'merged' || task.state === 'closed' || task.repo !== repoName) return false
+  const matchingDependencyOptions = (tasks.data ?? []).filter((task) => {
+    if (task.state === 'merged' || task.state === 'closed') return false
     const query = dependencySearch.trim().toLowerCase()
     return !query || task.id.toLowerCase().includes(query) || task.title.toLowerCase().includes(query)
   })
-  const dependencyError = mutation.error != null && /depend|cycle|workspace|repository/i.test(String(mutation.error))
-    ? String(mutation.error)
+  const dependencyOptions = matchingDependencyOptions.slice(0, DEPENDENCY_RESULT_LIMIT)
+  const dependencyError = mutation.error instanceof TaskIntakeError && mutation.error.code === 'invalid_dependencies'
+    ? mutation.error.message
     : ''
+  const dependencyStatus = tasks.isPending
+    ? 'Loading dependency candidates…'
+    : tasks.error != null
+      ? 'Could not load dependency candidates. Check your access and try again.'
+      : matchingDependencyOptions.length === 0
+        ? 'No matching open tasks.'
+        : matchingDependencyOptions.length > DEPENDENCY_RESULT_LIMIT
+          ? `Showing ${DEPENDENCY_RESULT_LIMIT} of ${matchingDependencyOptions.length} matching open tasks. Narrow your search to see more.`
+          : `${matchingDependencyOptions.length} matching open ${matchingDependencyOptions.length === 1 ? 'task' : 'tasks'}.`
 
   return (
     <Sheet onClose={close} label="New task">
@@ -117,7 +137,7 @@ export function TaskCreateSheet() {
 
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Repository">
-            <Select value={repoName} onChange={(event) => setRepo(event.target.value)}>
+            <Select aria-label="Repository" value={repoName} onChange={(event) => setRepo(event.target.value)}>
               {repos.map((entry) => (
                 <option key={entry.name} value={entry.name}>
                   {entry.name}
@@ -138,12 +158,18 @@ export function TaskCreateSheet() {
           {selectedSetup && <details className="mt-2 text-xs text-muted"><summary className="cursor-pointer">Composition</summary><p className="mt-1 font-mono">Implement: {selectedSetup.execution_settings.implementation.harness} · {selectedSetup.execution_settings.implementation.model || 'harness default'}</p><p className="font-mono">Review: {selectedSetup.review.seats.map((seat) => `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</p></details>}
         </Field>
 
-        <details className="rounded-md border border-border p-3">
+        <details
+          open={advancedOpen}
+          onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+          className="rounded-md border border-border p-3"
+        >
           <summary className="cursor-pointer text-sm font-medium">Advanced options</summary>
           <div className="mt-3">
             <Field label="Depends on" hint="Optional — this task stays queued until every selected task is merged.">
               <Input
                 aria-label="Search dependency tasks"
+                aria-controls="dependency-results"
+                aria-describedby="dependency-results-status"
                 value={dependencySearch}
                 onChange={(event) => setDependencySearch(event.target.value)}
                 placeholder="Search open tasks by title or ID"
@@ -153,7 +179,13 @@ export function TaskCreateSheet() {
                   {dependsOn.map((id) => {
                     const selected = (tasks.data ?? []).find((task) => task.id === id)
                     return (
-                      <button key={id} type="button" onClick={() => setDependsOn((current) => current.filter((value) => value !== id))} className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-1 text-xs">
+                      <button
+                        key={id}
+                        type="button"
+                        aria-label={`Remove dependency ${selected?.title ?? id}`}
+                        onClick={() => setDependsOn((current) => current.filter((value) => value !== id))}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-1 text-xs"
+                      >
                         <span className="max-w-48 truncate">{selected?.title ?? id}</span>
                         <span className="font-mono text-faint">{id}</span>
                         <X className="size-3" />
@@ -162,15 +194,18 @@ export function TaskCreateSheet() {
                   })}
                 </div>
               )}
-              <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-                {dependencyOptions.map((task) => (
+              <p id="dependency-results-status" aria-live="polite" className="mt-2 text-xs text-faint">
+                {dependencyStatus}
+              </p>
+              <div id="dependency-results" className="mt-1 max-h-40 space-y-1 overflow-y-auto">
+                {!tasks.isPending && tasks.error == null && dependencyOptions.map((task) => (
                   <label key={task.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-surface">
                     <input type="checkbox" checked={dependsOn.includes(task.id)} onChange={(event) => setDependsOn((current) => event.target.checked ? [...current, task.id] : current.filter((value) => value !== task.id))} />
                     <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                    <span className="shrink-0 text-faint">{task.repo}</span>
                     <span className="shrink-0 font-mono text-faint">{task.id}</span>
                   </label>
                 ))}
-                {dependencyOptions.length === 0 && <p className="px-2 py-1.5 text-xs text-faint">No matching open tasks in this repository.</p>}
               </div>
               {dependencyError && <p className="mt-2 text-xs text-failure">{dependencyError}</p>}
             </Field>
@@ -221,7 +256,7 @@ export function TaskCreateSheet() {
           )}
         </Field>
 
-        {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+        {mutation.error != null && !dependencyError && <p className="text-sm text-failure">{String(mutation.error)}</p>}
       </div>
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">

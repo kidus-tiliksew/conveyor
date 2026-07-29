@@ -386,10 +386,21 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       return undefined
     case 'blueprint.materialized':
       return {
-        title: `Blueprint approved — ${typeof payload.children_total === 'number' ? payload.children_total : payload.children_created ?? '?'} tasks created`,
+        title: `${typeof payload.children_total === 'number' ? payload.children_total : payload.children_created ?? '?'} tasks created from the blueprint`,
       }
     case 'blueprint.closed':
-      return { title: 'Blueprint completed — all child tasks reached a terminal outcome' }
+      return { title: 'Blueprint completed — all child tasks are finished' }
+    case 'task.dependency_unsatisfiable':
+      return {
+        title: 'Dependency needs attention',
+        detail: typeof payload.depends_on_task_id === 'string' ? `${payload.depends_on_task_id} closed without merging` : undefined,
+        alarm: true,
+      }
+    case 'task.dependency_removed':
+      return {
+        title: 'Dependency removed',
+        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+      }
     case 'github_issue.publication_queued':
       return { title: 'GitHub issue publication queued' }
     case 'github_issue.publication_retry':

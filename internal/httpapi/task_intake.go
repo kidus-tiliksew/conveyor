@@ -22,6 +22,7 @@ type taskCreateResult struct {
 
 type taskCreateError struct {
 	Status  int
+	Code    string
 	Message string
 }
 
@@ -32,6 +33,15 @@ func taskCreateStatus(err error) int {
 		return typed.Status
 	}
 	return http.StatusInternalServerError
+}
+
+func writeTaskCreateError(w http.ResponseWriter, err error) {
+	typed, ok := err.(*taskCreateError)
+	if !ok || typed.Code == "" {
+		http.Error(w, err.Error(), taskCreateStatus(err))
+		return
+	}
+	writeJSON(w, typed.Status, map[string]string{"error": typed.Code, "message": typed.Message})
 }
 
 // createTaskRecord is the single durable intake path for HTTP and MCP. MCP
@@ -117,7 +127,10 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		}
 	}
 	if err := s.Store.ValidateTaskDependencies(ctx, req.DependsOn); err != nil {
-		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: fmt.Sprintf("invalid depends_on: %v", err)}
+		return taskCreateResult{}, &taskCreateError{
+			Status: http.StatusBadRequest, Code: "invalid_dependencies",
+			Message: fmt.Sprintf("invalid depends_on: %v", err),
+		}
 	}
 	if s.GenerateTaskTitle == nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}

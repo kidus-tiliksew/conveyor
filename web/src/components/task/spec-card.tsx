@@ -2,6 +2,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import mermaid from 'mermaid'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
+import { taskStateLabels } from '../../lib/contracts'
+import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -50,10 +52,12 @@ export function SpecCard({
   spec,
   collapsible = true,
   overflowExpandable = false,
+  routeVariant = 'sheet',
 }: {
   spec: SpecVersion
   collapsible?: boolean
   overflowExpandable?: boolean
+  routeVariant?: TaskRouteVariant
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [contentExpanded, setContentExpanded] = useState(false)
@@ -69,6 +73,7 @@ export function SpecCard({
     [spec.content],
   )
   const criteria = spec.acceptance ?? []
+  const relatedRoute = relatedTaskRoute(routeVariant)
 
   useLayoutEffect(() => {
     if (!overflowExpandable || !expanded) {
@@ -160,14 +165,14 @@ export function SpecCard({
                         <li key={item.id} className="flex items-baseline gap-2 text-sm">
                           <Badge variant="mono">{item.id}</Badge>
                           {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) ? (
-                            <Link to="/tasks/$taskId" params={{ taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!.id }} className="text-primary hover:underline">
+                            <Link to={relatedRoute} params={{ taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!.id }} className="text-primary hover:underline">
                               {item.summary}
                             </Link>
                           ) : <span className="text-foreground/85">{item.summary}</span>}
                           <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
                             {item.repo}
                             {item.depends_on?.length ? ` ← ${item.depends_on.join(', ')}` : ''}
-                            {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) && ` · ${spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state}`}
+                            {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) && ` · ${taskStateLabels[spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state] ?? spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state}`}
                           </span>
                         </li>
                       ))}

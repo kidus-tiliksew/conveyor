@@ -1,13 +1,14 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
-import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, setTaskHold } from '../../lib/api'
+import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
+import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import { useOperatorToken } from '../app-shell'
+import { useActivity, useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -23,25 +24,53 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const prURL = pullRequestURL(item.events)
   const spec = item.spec
   const Heading = variant === 'full' ? 'h1' : 'h2'
+  const relatedRoute = relatedTaskRoute(variant)
+  const { data: activity } = useActivity()
+  const parent = activity?.find((entry) => entry.task.id === item.task.parent_task_id)?.task
+  const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
+  const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? item.stalled.blocking_task_ids ?? [] : [])
+  const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
+  const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
+  const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
+  const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
+  const childRollup = [
+    mergedChildren > 0 ? `${mergedChildren} merged` : '',
+    closedChildren > 0 ? `${closedChildren} closed` : '',
+    openChildren > 0 ? `${openChildren} open` : '',
+  ].filter(Boolean).join(' · ')
 
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         {/* Approved reads as good news even while it waits at the gate —
             amber stays reserved for states that are genuinely stuck. */}
-        <Badge
-          variant={
-            item.task.state === 'approved' || item.task.state === 'merged'
-              ? 'positive'
-              : item.needs_attention
-                ? 'attention'
-                : 'outline'
-          }
+        <span
+          className="group/status relative inline-flex rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          tabIndex={0}
+          aria-label={`Task status: ${stateLabel}`}
         >
-          {item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)}
-        </Badge>
+          <Badge
+            variant={
+              item.task.state === 'approved' || item.task.state === 'merged'
+                ? 'positive'
+                : item.needs_attention
+                  ? 'attention'
+                  : 'outline'
+            }
+          >
+            {stateLabel}
+          </Badge>
+          <span
+            role="tooltip"
+            className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-56 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/status:opacity-100 group-focus/status:opacity-100"
+          >
+            {item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
+          </span>
+        </span>
         <HoldControl item={item} />
-        {(item.task.blocking_task_ids?.length ?? 0) > 0 && <Badge variant="outline">Blocked</Badge>}
+        {unsatisfiableIDs.size > 0
+          ? <Badge variant="attention">Dependency needs attention</Badge>
+          : blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>}
         <CancelControl item={item} />
         {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
@@ -79,10 +108,29 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
         <Fact label="Gates" value={`spec ${item.task.spec_approval ? 'human' : 'auto'} · merge ${item.task.merge_approval ? 'human' : 'auto'}`} />
         {item.task.parent_task_id && (
-          <Fact label="Parent blueprint" value={<Link to="/tasks/$taskId" params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">{item.task.parent_task_id} · spec v{item.task.origin_spec_version}</Link>} />
+          <Fact
+            label="Parent blueprint"
+            value={(
+              <Link to={relatedRoute} params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">
+                {parent?.title ?? item.task.parent_task_id}
+                {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
+              </Link>
+            )}
+          />
         )}
         {(item.task.dependencies?.length ?? 0) > 0 && (
-          <Fact label="Dependencies" value={<span className="flex flex-wrap gap-x-2 gap-y-1">{item.task.dependencies!.map((dependency) => <Link key={dependency.id} to="/tasks/$taskId" params={{ taskId: dependency.id }} className="text-primary hover:underline">{dependency.id} · {dependency.state}</Link>)}</span>} />
+          <Fact
+            label="Dependencies"
+            value={(
+              <span className="flex flex-wrap gap-x-2 gap-y-1">
+                {item.task.dependencies!.map((dependency) => (
+                  <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
+                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, blockingIDs.has(dependency.id), unsatisfiableIDs.has(dependency.id))}
+                  </Link>
+                ))}
+              </span>
+            )}
+          />
         )}
         {item.task.setup_contract?.name && <Fact label="Frozen setup" value={<details><summary className="cursor-pointer font-mono">{item.task.setup_contract.name}</summary><span className="block font-mono text-[11px]">Implement: {item.task.setup_contract.execution_settings.implementation.harness} · {item.task.setup_contract.execution_settings.implementation.model || 'harness default'}</span><span className="block font-mono text-[11px]">Review: {item.task.setup_contract.review.seats.map((seat) => `${seat.harness || item.task.setup_contract.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</span></details>} />}
         <Fact
@@ -123,17 +171,21 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
+      {unsatisfiableIDs.size > 0 && (
+        <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />
+      )}
+
       {(item.task.children?.length ?? 0) > 0 && (
         <section className="mt-4 rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold">Blueprint tasks</h3>
-            <span className="text-xs text-muted">{item.task.children!.filter((child) => child.state === 'merged').length} of {item.task.children!.length} merged</span>
+            <span className="text-xs text-muted">{childRollup}</span>
           </div>
           <ul className="mt-2 space-y-1.5">
             {item.task.children!.map((child) => (
               <li key={child.id} className="flex items-center gap-2 text-xs">
                 <Badge variant="mono">{child.origin_sub_id}</Badge>
-                <Link to="/tasks/$taskId" params={{ taskId: child.id }} className="min-w-0 flex-1 truncate text-primary hover:underline">{child.title}</Link>
+                <Link to={relatedRoute} params={{ taskId: child.id }} className="min-w-0 flex-1 truncate text-primary hover:underline">{child.title}</Link>
                 <span className="text-faint">{taskStateLabels[child.state] ?? child.state}</span>
               </li>
             ))}
@@ -145,6 +197,88 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 
       <Checkout item={item} variant={variant} />
     </div>
+  )
+}
+
+function dependencyRelationLabel(state: string, blocking: boolean, unsatisfiable: boolean) {
+  if (unsatisfiable) return 'Needs attention'
+  if (blocking) return 'Waiting'
+  if (state === 'merged') return 'Satisfied'
+  return taskStateLabels[state as keyof typeof taskStateLabels] ?? state.replaceAll('_', ' ')
+}
+
+function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
+  const token = useOperatorToken()
+  const queryClient = useQueryClient()
+  const [selectedID, setSelectedID] = useState('')
+  const [reason, setReason] = useState('')
+  const requestID = useRef(crypto.randomUUID())
+  const selected = item.task.dependencies?.find((dependency) => dependency.id === selectedID)
+  const mutation = useMutation({
+    mutationFn: () => removeTaskDependency(item.task.id, selectedID, token, reason.trim(), requestID.current),
+    onSuccess: () => {
+      setSelectedID('')
+      setReason('')
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
+    },
+  })
+  const openDialog = (id: string) => {
+    requestID.current = crypto.randomUUID()
+    mutation.reset()
+    setReason('')
+    setSelectedID(id)
+  }
+  const closeDialog = () => {
+    mutation.reset()
+    setReason('')
+    setSelectedID('')
+  }
+  if (!token) return null
+  return (
+    <section className="mt-4 rounded-md border border-attention/40 bg-attention-soft p-3" aria-label="Dependency needs attention">
+      <p className="text-sm font-medium text-attention">A dependency closed without merging</p>
+      <p className="mt-1 text-xs leading-5 text-muted">Remove the dependency with an audit reason so this task can continue, or cancel the task above.</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {dependencyIDs.map((id) => {
+          const dependency = item.task.dependencies?.find((entry) => entry.id === id)
+          return (
+            <Button key={id} variant="secondary" size="sm" onClick={() => openDialog(id)}>
+              <Link2Off /> Unlink dependency {dependency?.title ?? id}
+            </Button>
+          )
+        })}
+      </div>
+      {selectedID && (
+        <Dialog label="Unlink dependency" onClose={() => !mutation.isPending && closeDialog()}>
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="font-semibold">Remove this dependency?</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              {selected?.title ?? selectedID} closed without merging. Removing it is audited and may let this task continue.
+            </p>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            <label className="block text-sm font-medium">Reason
+              <Textarea
+                autoFocus
+                value={reason}
+                maxLength={200}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="Why should this dependency be removed?"
+                className="mt-1.5"
+              />
+            </label>
+            {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>Keep dependency</Button>
+              <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !reason.trim()}>
+                {mutation.isPending ? 'Removing…' : 'Remove dependency'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+    </section>
   )
 }
 
