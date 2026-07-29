@@ -168,8 +168,22 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.Workers.Release(ctx, worker, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Outcome: core.WorkOrderOutcomeReleased})
 	case "get_work_order":
-		if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, stringArg("work_order_id")); err != nil {
-			return nil, err
+		if workerAuth {
+			workOrderID := stringArg("work_order_id")
+			visible, listErr := s.Workers.ListVisibleOrders(ctx, worker)
+			if listErr != nil {
+				return nil, listErr
+			}
+			for _, order := range visible {
+				if order.ID != workOrderID {
+					continue
+				}
+				if order.WorkerID == worker.ID {
+					return s.WorkOrders.Get(ctx, workOrderID, session)
+				}
+				return s.WorkOrders.GetVisible(ctx, workOrderID)
+			}
+			return nil, store.ErrWorkOrderClaimLost
 		}
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 	case "read_artifact":

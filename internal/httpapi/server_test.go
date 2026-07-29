@@ -727,6 +727,62 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	dependency := core.Task{ID: "unlink-dependency", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	dependent := core.Task{ID: "unlink-dependent", Workspace: "demo", Repo: "ui", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, dependency); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTaskWithDependencies(ctx, dependent, []string{dependency.ID}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	call := func(token, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodDelete,
+			"/v1/tasks/"+dependent.ID+"/dependencies/"+dependency.ID+"?workspace_id=demo",
+			strings.NewReader(body))
+		request.Header.Set("Authorization", token)
+		request.Header.Set("X-Conveyor-Actor", "operator-1")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("", `{"reason":"manual resolution","request_id":"unlink-rest"}`); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("Bearer token", `{"request_id":"unlink-rest"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := call("Bearer token", `{"reason":"manual resolution","request_id":"unlink-rest"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unlink status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result store.DependencyRemovalResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || !result.Removed {
+		t.Fatalf("unlink result=%+v err=%v", result, err)
+	}
+	retry := call("Bearer token", `{"reason":"manual resolution","request_id":"unlink-rest"}`)
+	if retry.Code != http.StatusOK || !strings.Contains(retry.Body.String(), `"removed":false`) {
+		t.Fatalf("retry status=%d body=%s", retry.Code, retry.Body.String())
+	}
+	events, err := st.ListEvents(ctx, dependent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "task.dependency_removed" {
+			found = event.ActorID == "operator-1" && strings.Contains(string(event.Payload), `"reason":"manual resolution"`)
+		}
+	}
+	if !found {
+		t.Fatalf("audited removal event missing: %+v", events)
+	}
+}
+
 func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *testing.T) {
 	st := store.NewMemory()
 	s := NewServer(st)

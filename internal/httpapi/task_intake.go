@@ -116,6 +116,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 			}
 		}
 	}
+	if err := s.Store.ValidateTaskDependencies(ctx, req.DependsOn); err != nil {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: fmt.Sprintf("invalid depends_on: %v", err)}
+	}
 	if s.GenerateTaskTitle == nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}
 	}
@@ -205,17 +208,16 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	if req.Setup != "" && task.SetupName != req.Setup {
 		return false
 	}
-	if len(req.DependsOn) > 0 {
-		actual := make([]string, 0, len(task.Dependencies))
-		for _, dependency := range task.Dependencies {
-			actual = append(actual, dependency.ID)
-		}
-		expected := append([]string(nil), req.DependsOn...)
-		sort.Strings(actual)
-		sort.Strings(expected)
-		if !reflect.DeepEqual(actual, expected) {
-			return false
-		}
+	actual := make([]string, 0, len(task.Dependencies))
+	for _, dependency := range task.Dependencies {
+		actual = append(actual, dependency.ID)
+	}
+	expected := make([]string, len(req.DependsOn))
+	copy(expected, req.DependsOn)
+	sort.Strings(actual)
+	sort.Strings(expected)
+	if !reflect.DeepEqual(actual, expected) {
+		return false
 	}
 	if (req.Hold || req.Mode == core.TaskModeManual) && !task.Hold {
 		return false

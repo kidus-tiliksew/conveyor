@@ -85,14 +85,18 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	if err != nil {
 		return nil, err
 	}
+	blockersByTask, err := s.Store.ListDependencyBlockers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := orders[:0]
 	for _, order := range orders {
-		blocking, blockingErr := s.Store.ListBlockingTaskIDs(ctx, order.TaskID)
-		if blockingErr != nil {
-			return nil, blockingErr
+		blockers := blockersByTask[order.TaskID]
+		if order.Stage == core.StageImplement {
+			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
+			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
 		}
-		order.BlockingTaskIDs = blocking
-		if len(blocking) > 0 {
+		if order.Stage == core.StageImplement && len(order.BlockingTaskIDs) > 0 {
 			order.Claimable = false
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
@@ -468,12 +472,32 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if err != nil {
 		return Context{}, err
 	}
+	return s.contextForOrder(ctx, order)
+}
+
+// GetVisible returns read-only context for an order already authorized by a
+// worker-facing visibility check. It does not relax mutation or artifact
+// authorization for an unclaimed order (spec §21.47).
+func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return Context{}, err
+	}
+	return s.contextForOrder(ctx, order)
+}
+
+func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Context, error) {
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return Context{}, err
 	}
 	order.BlockingTaskIDs = append([]string(nil), task.BlockingTaskIDs...)
-	if len(order.BlockingTaskIDs) > 0 {
+	for _, dependency := range task.Dependencies {
+		if dependency.State != core.TaskMerged && core.TaskTerminal(dependency.State) {
+			order.UnsatisfiableTaskIDs = append(order.UnsatisfiableTaskIDs, dependency.ID)
+		}
+	}
+	if order.Stage == core.StageImplement && len(order.BlockingTaskIDs) > 0 {
 		order.Claimable = false
 	}
 	role, err := s.Pack.Role(order.Stage)
@@ -1120,13 +1144,6 @@ func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
 	}
 	if current.State == core.WorkOrderCancelled {
 		return store.ErrWorkOrderCancelled
-	}
-	blocking, err := s.Store.ListBlockingTaskIDs(ctx, current.TaskID)
-	if err != nil {
-		return err
-	}
-	if len(blocking) > 0 {
-		return fmt.Errorf("task %s is blocked by unmerged dependencies: %s", current.TaskID, strings.Join(blocking, ", "))
 	}
 	return nil
 }

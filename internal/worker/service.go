@@ -567,9 +567,6 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if getErr != nil || task.Hold {
 			continue
 		}
-		if len(task.BlockingTaskIDs) > 0 {
-			continue
-		}
 		orderCfg := cfg
 		if task.SetupContract.Name != "" {
 			orderCfg = cfg.WithSetup(task.SetupContract)
@@ -620,18 +617,43 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 	for _, item := range claimable {
 		result = append(result, item.Order)
 	}
-	orders, err := s.Store.ListWorkOrders(ctx)
+	orders, err := s.WorkOrders.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, order := range orders {
-		if order.WorkerID != worker.ID {
+		if order.State == core.WorkOrderQueued && order.Stage == core.StageImplement &&
+			!order.Claimable && len(order.BlockingTaskIDs) > 0 {
+			task, getErr := s.Store.GetTask(ctx, order.TaskID)
+			if getErr != nil || task.Hold {
+				continue
+			}
+			orderCfg := cfg
+			if task.SetupContract.Name != "" {
+				orderCfg = cfg.WithSetup(task.SetupContract)
+			}
+			if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
+				continue
+			}
+			if _, ok := harnessForOrder(orderCfg, order); ok {
+				result = append(result, order)
+			}
 			continue
 		}
-		if order.State != core.WorkOrderClaimed && order.State != core.WorkOrderSubmitted {
-			continue
+	}
+	active, err := s.Store.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, order := range active {
+		if order.WorkerID == worker.ID &&
+			(order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
+			result = append(result, order)
 		}
-		result = append(result, order)
 	}
 	return result, nil
 }
@@ -655,7 +677,7 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	if task.Hold {
 		return core.WorkOrder{}, fmt.Errorf("task is held for operator claiming")
 	}
-	if len(task.BlockingTaskIDs) > 0 {
+	if order.Stage == core.StageImplement && len(task.BlockingTaskIDs) > 0 {
 		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))
 	}
 	if task.SetupContract.Name != "" {

@@ -418,16 +418,13 @@ func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, 
 				return fmt.Errorf("depends_on contains an empty or duplicate task id")
 			}
 			seen[dependencyID] = true
-			var dependencyWorkspace, dependencyRepo, dependencyState string
-			if err := tx.QueryRow(ctx, `SELECT workspace_id, repo_name, state FROM tasks WHERE id=$1`, dependencyID).
-				Scan(&dependencyWorkspace, &dependencyRepo, &dependencyState); err != nil {
+			var dependencyWorkspace, dependencyState string
+			if err := tx.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
+				Scan(&dependencyWorkspace, &dependencyState); err != nil {
 				return notFound(err, "dependency task %s", dependencyID)
 			}
 			if dependencyWorkspace != task.Workspace {
 				return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
-			}
-			if dependencyRepo != task.Repo {
-				return fmt.Errorf("dependency task %s belongs to another repository", dependencyID)
 			}
 			if core.TaskTerminal(core.TaskState(dependencyState)) {
 				return fmt.Errorf("dependency task %s is not open", dependencyID)
@@ -697,6 +694,9 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
 		}
+		if err := s.recordDependencyOutcomeTx(ctx, tx, id, state, time.Now().UTC()); err != nil {
+			return err
+		}
 		if command.ProjectStages {
 			if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
 				"from_stage": before.NextStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state,
@@ -768,6 +768,9 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 	if err = insertEvent(ctx, q, core.Event{TaskID: parentID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{
 		"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed},
 	})}); err != nil {
+		return false, err
+	}
+	if err = s.recordDependencyOutcomeTx(ctx, tx, parentID, closed, time.Now().UTC()); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1214,6 +1217,29 @@ func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]strin
 	return result, rows.Err()
 }
 
+func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error {
+	seen := map[string]bool{}
+	for _, dependencyID := range dependencyIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" || seen[dependencyID] {
+			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+		}
+		seen[dependencyID] = true
+		var dependencyWorkspace, dependencyState string
+		if err := s.pool.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
+			Scan(&dependencyWorkspace, &dependencyState); err != nil {
+			return notFound(err, "dependency task %s", dependencyID)
+		}
+		if dependencyWorkspace != workspace(ctx) {
+			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+		}
+		if core.TaskTerminal(core.TaskState(dependencyState)) {
+			return fmt.Errorf("dependency task %s is not open", dependencyID)
+		}
+	}
+	return nil
+}
+
 func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT task_id FROM task_dependencies
 		WHERE workspace_id=$1 AND depends_on_task_id=$2 ORDER BY task_id`, workspace(ctx), taskID)
@@ -1230,6 +1256,180 @@ func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]stri
 		result = append(result, id)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) ListDependencyBlockers(ctx context.Context) (map[string]store.DependencyBlockers, error) {
+	rows, err := s.pool.Query(ctx, `SELECT edge.task_id, dependency.id, dependency.state
+		FROM task_dependencies edge
+		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+			AND dependency.id=edge.depends_on_task_id
+		WHERE edge.workspace_id=$1 AND dependency.state<>'merged'
+		ORDER BY edge.task_id, dependency.id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]store.DependencyBlockers{}
+	for rows.Next() {
+		var taskID, dependencyID, state string
+		if err = rows.Scan(&taskID, &dependencyID, &state); err != nil {
+			return nil, err
+		}
+		blockers := result[taskID]
+		blockers.BlockingTaskIDs = append(blockers.BlockingTaskIDs, dependencyID)
+		if core.TaskTerminal(core.TaskState(state)) {
+			blockers.UnsatisfiableTaskIDs = append(blockers.UnsatisfiableTaskIDs, dependencyID)
+		}
+		result[taskID] = blockers
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) RemoveTaskDependency(ctx context.Context, request store.DependencyRemovalRequest) (store.DependencyRemovalResult, error) {
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
+		return store.DependencyRemovalResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+	}
+	actor := store.ActorFromContext(ctx)
+	removed := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		key := "conveyor:dependency-remove:" + workspace(ctx) + ":" + request.TaskID
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		var prior store.DependencyRemovalRequest
+		var actorID, actorRole string
+		err := tx.QueryRow(ctx, `SELECT task_id,depends_on_task_id,reason,request_id,actor_id,actor_role
+			FROM task_dependency_removals WHERE workspace_id=$1 AND request_id=$2`,
+			workspace(ctx), request.RequestID).
+			Scan(&prior.TaskID, &prior.DependsOnTaskID, &prior.Reason, &prior.RequestID, &actorID, &actorRole)
+		if err == nil {
+			if prior != request || actorID != actor.ID || actorRole != string(actor.Role) {
+				return fmt.Errorf("request_id %s was already used for different dependency removal inputs", request.RequestID)
+			}
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		command, err := tx.Exec(ctx, `DELETE FROM task_dependencies
+			WHERE workspace_id=$1 AND task_id=$2 AND depends_on_task_id=$3`,
+			workspace(ctx), request.TaskID, request.DependsOnTaskID)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
+			AND src_type='task' AND src_id=$2 AND dst_type='task' AND dst_id=$3 AND kind='depends_on'`,
+			workspace(ctx), request.TaskID, request.DependsOnTaskID); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if _, err = tx.Exec(ctx, `INSERT INTO task_dependency_removals
+			(workspace_id,request_id,task_id,depends_on_task_id,reason,actor_id,actor_role,created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			workspace(ctx), request.RequestID, request.TaskID, request.DependsOnTaskID,
+			request.Reason, actor.ID, actor.Role, now); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{
+			TaskID: request.TaskID, Kind: "task.dependency_removed", ActorID: actor.ID, ActorRole: actor.Role, At: now,
+			Payload: core.JSONPayload(map[string]any{
+				"task_id": request.TaskID, "depends_on_task_id": request.DependsOnTaskID,
+				"actor": actor.ID, "reason": request.Reason, "request_id": request.RequestID,
+			}),
+		}); err != nil {
+			return err
+		}
+		if err = s.resumeDependencyQueueClocksTx(ctx, tx, request.TaskID, now); err != nil {
+			return err
+		}
+		removed = true
+		return nil
+	})
+	if err != nil {
+		return store.DependencyRemovalResult{}, err
+	}
+	task, err := s.GetTask(ctx, request.TaskID)
+	if err != nil {
+		return store.DependencyRemovalResult{}, err
+	}
+	return store.DependencyRemovalResult{Task: task, RequestID: request.RequestID, Removed: removed}, nil
+}
+
+func (s *Store) resumeDependencyQueueClocksTx(ctx context.Context, tx pgx.Tx, taskID string, now time.Time) error {
+	var blocked bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM task_dependencies edge
+		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+			AND dependency.id=edge.depends_on_task_id
+		WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+	)`, workspace(ctx), taskID).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE work_orders
+		SET queue_deadline=queue_deadline+($1-queue_blocked_at),
+			queue_blocked_at=NULL, updated_at=$1
+		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+			AND state='queued' AND queue_blocked_at IS NOT NULL`,
+		now, workspace(ctx), taskID)
+	return err
+}
+
+func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, dependencyID string, state core.TaskState, now time.Time) error {
+	rows, err := tx.Query(ctx, `SELECT task_id FROM task_dependencies
+		WHERE workspace_id=$1 AND depends_on_task_id=$2 ORDER BY task_id`,
+		workspace(ctx), dependencyID)
+	if err != nil {
+		return err
+	}
+	var dependents []string
+	for rows.Next() {
+		var dependentID string
+		if err = rows.Scan(&dependentID); err != nil {
+			rows.Close()
+			return err
+		}
+		dependents = append(dependents, dependentID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if state == core.TaskMerged {
+		for _, dependentID := range dependents {
+			if err = s.resumeDependencyQueueClocksTx(ctx, tx, dependentID, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if !core.TaskTerminal(state) {
+		return nil
+	}
+	actor := store.ActorFromContext(ctx)
+	for _, dependentID := range dependents {
+		payload := core.JSONPayload(map[string]any{
+			"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,
+		})
+		if _, err = tx.Exec(ctx, `INSERT INTO events
+			(workspace_id,task_id,job_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,NULL,'task.dependency_unsatisfiable',$3,$4,$5,$6)
+			ON CONFLICT DO NOTHING`,
+			workspace(ctx), dependentID, actor.ID, actor.Role, payload, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) approveSpecVersionLegacy(ctx context.Context, taskID string, version int) error {
@@ -1440,9 +1640,21 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	if err != nil {
 		return nil, err
 	}
+	blockersByTask, err := s.ListDependencyBlockers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	hasReviewOrders := false
 	for _, order := range orders {
+		if order.Stage == core.StageImplement {
+			blockers := blockersByTask[order.TaskID]
+			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
+			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
+			if len(order.BlockingTaskIDs) > 0 {
+				order.Claimable = false
+			}
+		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
 		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
 	}
@@ -1652,6 +1864,9 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": priorState, "cancelled_work_orders": cancelled}), At: intervention.At}); err != nil {
 		return core.Task{}, err
 	}
+	if err = s.recordDependencyOutcomeTx(ctx, tx, intervention.TaskID, taskState, intervention.At); err != nil {
+		return core.Task{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.Task{}, err
 	}
@@ -1721,7 +1936,7 @@ const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
-queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
@@ -1765,23 +1980,37 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if !linked {
 			return fmt.Errorf("work order task %s and job %s are not linked in workspace %s", order.TaskID, order.JobID, workspace(ctx))
 		}
+		if order.Stage == core.StageImplement {
+			var blocked bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM task_dependencies edge
+				JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+					AND dependency.id=edge.depends_on_task_id
+				WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+			)`, workspace(ctx), order.TaskID).Scan(&blocked); err != nil {
+				return err
+			}
+			if blocked {
+				order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
+			}
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
-			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+			queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$43)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$44)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ModelEnforcement,
 			order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-			order.QueueEnteredAt, order.QueueDeadline,
+			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.QueueBlockedAt),
 			nullableTimeValue(order.ExecutionStartedAt), nullableTimeValue(order.ExecutionDeadline),
 			order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt),
 			order.AutomaticRetryCount, nullableTimeValue(order.NextRetryAt), order.RetrySuppressed,
@@ -1921,20 +2150,35 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			return err
 		}
 		order.State, order.Claimable = state, true
+		if order.Stage == core.StageImplement {
+			var blocked bool
+			if err = tx.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM task_dependencies edge
+				JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+					AND dependency.id=edge.depends_on_task_id
+				WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+			)`, workspaceID, order.TaskID).Scan(&blocked); err != nil {
+				return err
+			}
+			if blocked {
+				order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
+			}
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 			review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
 			reason_code, review_kind, review_scope, baseline_sha, head_sha,
-			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
+			queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			self_reported, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$15,$15)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$16,$16)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
-			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt)
 		if err != nil {
 			return err
 		}
@@ -2358,6 +2602,42 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
+	var blockingTaskIDs []string
+	if order.Stage == core.StageImplement {
+		blockingRows, blockingErr := tx.Query(ctx, `SELECT dependency.id
+			FROM task_dependencies edge
+			JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+				AND dependency.id=edge.depends_on_task_id
+			WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+			ORDER BY dependency.id`, workspace(ctx), order.TaskID)
+		if blockingErr != nil {
+			return core.WorkOrder{}, blockingErr
+		}
+		for blockingRows.Next() {
+			var dependencyID string
+			if err = blockingRows.Scan(&dependencyID); err != nil {
+				blockingRows.Close()
+				return core.WorkOrder{}, err
+			}
+			blockingTaskIDs = append(blockingTaskIDs, dependencyID)
+		}
+		if err = blockingRows.Err(); err != nil {
+			blockingRows.Close()
+			return core.WorkOrder{}, err
+		}
+		blockingRows.Close()
+		if len(blockingTaskIDs) > 0 {
+			return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
+		}
+		if !order.QueueBlockedAt.IsZero() {
+			order.QueueDeadline = order.QueueDeadline.Add(now.Sub(order.QueueBlockedAt))
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET queue_deadline=$1,queue_blocked_at=NULL,updated_at=$2
+				WHERE workspace_id=$3 AND id=$4`, order.QueueDeadline, now, workspace(ctx), order.ID); err != nil {
+				return core.WorkOrder{}, err
+			}
+			order.QueueBlockedAt = time.Time{}
+		}
+	}
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
 		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now)
@@ -2406,28 +2686,6 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			return core.WorkOrder{}, fmt.Errorf("work order %s automatic retry is suppressed; operator recovery is required", id)
 		}
 		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
-	}
-	var blockingTaskIDs []string
-	blockingRows, err := tx.Query(ctx, `SELECT dependency.id
-		FROM task_dependencies edge
-		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
-			AND dependency.id=edge.depends_on_task_id
-		WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
-		ORDER BY dependency.id`, workspace(ctx), order.TaskID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	for blockingRows.Next() {
-		var dependencyID string
-		if err = blockingRows.Scan(&dependencyID); err != nil {
-			blockingRows.Close()
-			return core.WorkOrder{}, err
-		}
-		blockingTaskIDs = append(blockingTaskIDs, dependencyID)
-	}
-	blockingRows.Close()
-	if len(blockingTaskIDs) > 0 {
-		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
 	}
 	hash := ""
 	if claim.ClientToken != "" {
@@ -2733,7 +2991,7 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 		WHERE workspace_id=$1 AND (
 			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
 			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
-			OR (state='queued' AND execution_started_at IS NULL AND queue_deadline <= $2)
+			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)
 		) ORDER BY task_id`, workspace(ctx), now)
 	if err != nil {
 		return nil, err
@@ -2778,7 +3036,38 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			return err
 		}
 		rows.Close()
+		var dependencyBlocked bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM task_dependencies edge
+			JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+				AND dependency.id=edge.depends_on_task_id
+			WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+		)`, workspace(ctx), taskID).Scan(&dependencyBlocked); err != nil {
+			return err
+		}
 		for _, order := range orders {
+			if order.Stage == core.StageImplement && order.State == core.WorkOrderQueued {
+				if dependencyBlocked {
+					if order.QueueBlockedAt.IsZero() {
+						if _, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
+							WHERE workspace_id=$2 AND id=$3 AND queue_blocked_at IS NULL`,
+							now, workspace(ctx), order.ID); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				if !order.QueueBlockedAt.IsZero() {
+					order.QueueDeadline = order.QueueDeadline.Add(now.Sub(order.QueueBlockedAt))
+					if _, err = tx.Exec(ctx, `UPDATE work_orders
+						SET queue_deadline=$1,queue_blocked_at=NULL,updated_at=$2
+						WHERE workspace_id=$3 AND id=$4`,
+						order.QueueDeadline, now, workspace(ctx), order.ID); err != nil {
+						return err
+					}
+					order.QueueBlockedAt = time.Time{}
+				}
+			}
 			if !order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
 				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
 					return err
@@ -2794,7 +3083,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 				continue
 			}
 			if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-				!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+				order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
 				if _, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now); err != nil {
 					return err
 				}
@@ -3484,12 +3773,12 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, rateLimit []byte
-	var lease, queueEntered, queueDeadline, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
-		&queueEntered, &queueDeadline, &executionStarted, &executionDeadline,
+		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
@@ -3513,6 +3802,9 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if queueDeadline.Valid {
 		order.QueueDeadline = queueDeadline.Time
+	}
+	if queueBlockedAt.Valid {
+		order.QueueBlockedAt = queueBlockedAt.Time
 	}
 	if executionStarted.Valid {
 		order.ExecutionStartedAt = executionStarted.Time

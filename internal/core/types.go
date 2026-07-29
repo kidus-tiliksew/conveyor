@@ -485,6 +485,7 @@ type WorkOrder struct {
 	State                  WorkOrderState   `json:"state"`
 	Claimable              bool             `json:"claimable"`
 	BlockingTaskIDs        []string         `json:"blocking_task_ids,omitempty"`
+	UnsatisfiableTaskIDs   []string         `json:"unsatisfiable_task_ids,omitempty"`
 	ClaimantID             string           `json:"claimed_by,omitempty"`
 	SessionID              string           `json:"session_id,omitempty"`
 	ClientTokenHash        string           `json:"-"`
@@ -507,6 +508,7 @@ type WorkOrder struct {
 	LeaseExpiresAt         time.Time        `json:"lease_expires_at,omitempty"`
 	QueueEnteredAt         time.Time        `json:"queue_entered_at"`
 	QueueDeadline          time.Time        `json:"queue_deadline"`
+	QueueBlockedAt         time.Time        `json:"queue_blocked_at,omitempty"`
 	ExecutionStartedAt     time.Time        `json:"execution_started_at,omitempty"`
 	ExecutionDeadline      time.Time        `json:"execution_deadline,omitempty"`
 	LastAttemptOutcome     string           `json:"last_attempt_outcome,omitempty"`
@@ -540,6 +542,7 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 	wired := struct {
 		workOrderAlias
 		LeaseExpiresAt      *time.Time `json:"lease_expires_at,omitempty"`
+		QueueBlockedAt      *time.Time `json:"queue_blocked_at,omitempty"`
 		ExecutionStartedAt  *time.Time `json:"execution_started_at,omitempty"`
 		ExecutionDeadline   *time.Time `json:"execution_deadline,omitempty"`
 		LastFailureAt       *time.Time `json:"last_failure_at,omitempty"`
@@ -549,6 +552,9 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 	}{workOrderAlias: workOrderAlias(w)}
 	if !w.LeaseExpiresAt.IsZero() {
 		wired.LeaseExpiresAt = &w.LeaseExpiresAt
+	}
+	if !w.QueueBlockedAt.IsZero() {
+		wired.QueueBlockedAt = &w.QueueBlockedAt
 	}
 	if !w.ExecutionStartedAt.IsZero() {
 		wired.ExecutionStartedAt = &w.ExecutionStartedAt

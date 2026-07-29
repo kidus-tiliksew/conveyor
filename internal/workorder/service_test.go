@@ -21,6 +21,14 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+type blockingObservationStore struct {
+	store.Store
+}
+
+func (s blockingObservationStore) ListBlockingTaskIDs(context.Context, string) ([]string, error) {
+	return []string{"new-dependency"}, nil
+}
+
 func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
@@ -79,6 +87,35 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 	if _, err = service.ReadArtifact(ctx, "order-a", "wrong-session", artifactA.ID); err == nil || !strings.Contains(err.Error(), "another session") {
 		t.Fatalf("wrong-session read error=%v", err)
+	}
+}
+
+func TestPostClaimProgressDoesNotReevaluateDependencies(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "claimed-before-edge", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "claimed-before-edge-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage,
+		QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "implementer", ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: blockingObservationStore{Store: st}}
+	progress, err := service.Progress(ctx, job.ID, "implementer", "still working")
+	if err != nil || progress.Progress != "still working" {
+		t.Fatalf("post-claim progress=%+v err=%v", progress, err)
 	}
 }
 

@@ -1360,21 +1360,10 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 }
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
-	if err := d.transition(ctx, taskID, core.TaskMergeConfirm, "", ""); err != nil {
-		return err
-	}
-	dependents, err := d.Store.ListDependentTaskIDs(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	for _, dependentID := range dependents {
-		// The original queued order and FIFO timestamp remain untouched. This
-		// dispatch nudge only makes the newly satisfied task visible promptly
-		// to a waiting worker (spec §6.3).
-		_ = d.Store.EnsureTaskEnqueued(ctx, dependentID)
-		d.Enqueue(ctx, dependentID)
-	}
-	return nil
+	// The task transition atomically resumes dependent queue clocks. Worker
+	// polling discovers the now-claimable order; the old durable-queue nudge
+	// was a no-op because the existing stage order already owns dispatch.
+	return d.transition(ctx, taskID, core.TaskMergeConfirm, "", "")
 }
 
 func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {
