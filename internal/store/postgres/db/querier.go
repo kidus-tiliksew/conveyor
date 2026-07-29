@@ -34,7 +34,7 @@ type Querier interface {
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
-	ListTasks(ctx context.Context, workspaceID string) ([]Task, error)
+	ListTasks(ctx context.Context, workspaceID string) ([]ListTasksRow, error)
 	MarkTaskApprovalStale(ctx context.Context, arg MarkTaskApprovalStaleParams) (Task, error)
 	SkipTaskRefresh(ctx context.Context, arg SkipTaskRefreshParams) (Task, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)

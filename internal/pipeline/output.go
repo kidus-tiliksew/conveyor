@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,12 +42,7 @@ type AcceptanceCriterion struct {
 	Ref       string `yaml:"ref,omitempty" json:"ref,omitempty"`
 }
 
-type DecompositionItem struct {
-	ID        string   `yaml:"id" json:"id"`
-	Repo      string   `yaml:"repo" json:"repo"`
-	Summary   string   `yaml:"summary" json:"summary"`
-	DependsOn []string `yaml:"depends_on" json:"depends_on"`
-}
+type DecompositionItem = core.BlueprintDecompositionItem
 
 type Spec struct {
 	Markdown      string
@@ -63,8 +59,7 @@ type StructuredSpec struct {
 }
 
 var (
-	acceptanceIDPattern    = regexp.MustCompile(`^AC-[1-9][0-9]*$`)
-	decompositionIDPattern = regexp.MustCompile(`^SUB-[1-9][0-9]*$`)
+	acceptanceIDPattern = regexp.MustCompile(`^AC-[1-9][0-9]*$`)
 )
 
 func ParseTriage(output string) (Triage, error) {
@@ -140,7 +135,7 @@ func ParseSpec(output string) (Spec, error) {
 		if err := decodeYAMLList(decompositionBlocks[0], &decomposition); err != nil {
 			return Spec{}, fmt.Errorf("decomposition block: %w", err)
 		}
-		if err := validateDecomposition(decomposition); err != nil {
+		if err := core.ValidateBlueprintDecomposition(decomposition); err != nil {
 			return Spec{}, err
 		}
 	}
@@ -213,7 +208,7 @@ func RenderStructuredSpec(output string) (Spec, error) {
 	if err := validateAcceptance(value.Acceptance); err != nil {
 		return Spec{}, err
 	}
-	if err := validateDecomposition(value.Decomposition); err != nil {
+	if err := core.ValidateBlueprintDecomposition(value.Decomposition); err != nil {
 		return Spec{}, err
 	}
 	acceptanceYAML, err := yaml.Marshal(value.Acceptance)
@@ -261,60 +256,6 @@ func validateAcceptance(acceptance []AcceptanceCriterion) error {
 		case "test", "playwright", "computer-use", "human":
 		default:
 			return fmt.Errorf("acceptance criterion %s has invalid verify value %q; want test, playwright, computer-use, or human", criterion.ID, criterion.Verify)
-		}
-	}
-	return nil
-}
-
-func validateDecomposition(decomposition []DecompositionItem) error {
-	ids := map[string]bool{}
-	byID := map[string]DecompositionItem{}
-	for index, item := range decomposition {
-		if !decompositionIDPattern.MatchString(item.ID) {
-			return fmt.Errorf("decomposition item %d has invalid id %q; want SUB-n", index+1, item.ID)
-		}
-		if ids[item.ID] {
-			return fmt.Errorf("decomposition contains duplicate id %q", item.ID)
-		}
-		if strings.TrimSpace(item.Repo) == "" {
-			return fmt.Errorf("decomposition %s has an empty repo", item.ID)
-		}
-		if strings.TrimSpace(item.Summary) == "" {
-			return fmt.Errorf("decomposition %s has an empty summary", item.ID)
-		}
-		ids[item.ID] = true
-		byID[item.ID] = item
-	}
-	for _, item := range decomposition {
-		for _, dependency := range item.DependsOn {
-			if !ids[dependency] {
-				return fmt.Errorf("decomposition %s depends on unknown %s", item.ID, dependency)
-			}
-		}
-	}
-	visiting := map[string]bool{}
-	visited := map[string]bool{}
-	var visit func(string) error
-	visit = func(id string) error {
-		if visiting[id] {
-			return fmt.Errorf("decomposition dependency cycle includes %s", id)
-		}
-		if visited[id] {
-			return nil
-		}
-		visiting[id] = true
-		for _, dependency := range byID[id].DependsOn {
-			if err := visit(dependency); err != nil {
-				return err
-			}
-		}
-		delete(visiting, id)
-		visited[id] = true
-		return nil
-	}
-	for id := range byID {
-		if err := visit(id); err != nil {
-			return err
 		}
 	}
 	return nil

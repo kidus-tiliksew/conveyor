@@ -1031,52 +1031,71 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id FROM tasks WHERE workspace_id = $1 ORDER BY created_at, id
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.feature_id, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id,
+       EXISTS (
+           SELECT 1 FROM task_dependencies edge
+           WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
+       ) AS has_dependencies,
+       EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ) AS has_children
+FROM tasks t
+WHERE t.workspace_id = $1
+ORDER BY t.created_at, t.id
 `
 
-func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]Task, error) {
+type ListTasksRow struct {
+	Task            Task `json:"task"`
+	HasDependencies bool `json:"has_dependencies"`
+	HasChildren     bool `json:"has_children"`
+}
+
+func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]ListTasksRow, error) {
 	rows, err := q.db.Query(ctx, listTasks, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Task{}
+	items := []ListTasksRow{}
 	for rows.Next() {
-		var i Task
+		var i ListTasksRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.Source,
-			&i.Title,
-			&i.Body,
-			&i.Class,
-			&i.EscalationLevel,
-			&i.RepoName,
-			&i.BaseBranch,
-			&i.Branch,
-			&i.State,
-			&i.ParentTaskID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.NextStage,
-			&i.RecoveryStage,
-			&i.FeatureID,
-			&i.IntakeKey,
-			&i.Mode,
-			&i.SpecApproval,
-			&i.MergeApproval,
-			&i.PolicyVersion,
-			&i.SetupName,
-			&i.SetupContract,
-			&i.Hold,
-			&i.ReviewedHeadSha,
-			&i.ApprovedHeadSha,
-			&i.ApprovalStale,
-			&i.RefreshBaselineSha,
-			&i.RefreshHeadSha,
-			&i.RefreshReviewScope,
-			&i.OriginSpecVersion,
-			&i.OriginSubID,
+			&i.Task.ID,
+			&i.Task.WorkspaceID,
+			&i.Task.Source,
+			&i.Task.Title,
+			&i.Task.Body,
+			&i.Task.Class,
+			&i.Task.EscalationLevel,
+			&i.Task.RepoName,
+			&i.Task.BaseBranch,
+			&i.Task.Branch,
+			&i.Task.State,
+			&i.Task.ParentTaskID,
+			&i.Task.CreatedAt,
+			&i.Task.UpdatedAt,
+			&i.Task.NextStage,
+			&i.Task.RecoveryStage,
+			&i.Task.FeatureID,
+			&i.Task.IntakeKey,
+			&i.Task.Mode,
+			&i.Task.SpecApproval,
+			&i.Task.MergeApproval,
+			&i.Task.PolicyVersion,
+			&i.Task.SetupName,
+			&i.Task.SetupContract,
+			&i.Task.Hold,
+			&i.Task.ReviewedHeadSha,
+			&i.Task.ApprovedHeadSha,
+			&i.Task.ApprovalStale,
+			&i.Task.RefreshBaselineSha,
+			&i.Task.RefreshHeadSha,
+			&i.Task.RefreshReviewScope,
+			&i.Task.OriginSpecVersion,
+			&i.Task.OriginSubID,
+			&i.HasDependencies,
+			&i.HasChildren,
 		); err != nil {
 			return nil, err
 		}
