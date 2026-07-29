@@ -503,6 +503,7 @@ type createTaskReq struct {
 	SpecApproval  *bool                `json:"spec_approval,omitempty"`
 	MergeApproval *bool                `json:"merge_approval,omitempty"`
 	Setup         string               `json:"setup,omitempty"`
+	DependsOn     []string             `json:"depends_on,omitempty"`
 }
 
 func (req *createTaskReq) UnmarshalJSON(data []byte) error {
@@ -694,6 +695,9 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "spec not found", http.StatusNotFound)
 		return
 	}
+	if task, taskErr := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); taskErr == nil {
+		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
+	}
 	writeJSON(w, http.StatusOK, spec)
 }
 
@@ -805,6 +809,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var specPointer *core.SpecVersion
 	if hasSpec {
+		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
 		specPointer = &spec
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(r.Context(), id)
@@ -814,6 +819,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	if workOrders == nil {
 		workOrders = []core.WorkOrder{}
+	}
+	for index := range workOrders {
+		workOrders[index].BlockingTaskIDs = append([]string(nil), task.BlockingTaskIDs...)
+		if len(workOrders[index].BlockingTaskIDs) > 0 {
+			workOrders[index].Claimable = false
+		}
 	}
 	decorateWorkOrderAgentActivity(workOrders, events)
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)

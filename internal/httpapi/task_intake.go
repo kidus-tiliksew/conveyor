@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +46,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
 	req.Setup = strings.TrimSpace(req.Setup)
+	for index := range req.DependsOn {
+		req.DependsOn[index] = strings.TrimSpace(req.DependsOn[index])
+	}
 	intakeKey = strings.TrimSpace(intakeKey)
 	if strings.TrimSpace(req.Body) == "" {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "body is required"}
@@ -145,7 +150,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		NextStage:     core.StageTriage,
 		CreatedAt:     time.Now().UTC(),
 	}
-	if err := s.Store.CreateTask(ctx, task); err != nil {
+	if err := s.Store.CreateTaskWithDependencies(ctx, task, req.DependsOn); err != nil {
 		// A concurrent retry may win the unique intake-key race between the
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {
@@ -199,6 +204,18 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	}
 	if req.Setup != "" && task.SetupName != req.Setup {
 		return false
+	}
+	if len(req.DependsOn) > 0 {
+		actual := make([]string, 0, len(task.Dependencies))
+		for _, dependency := range task.Dependencies {
+			actual = append(actual, dependency.ID)
+		}
+		expected := append([]string(nil), req.DependsOn...)
+		sort.Strings(actual)
+		sort.Strings(expected)
+		if !reflect.DeepEqual(actual, expected) {
+			return false
+		}
 	}
 	if (req.Hold || req.Mode == core.TaskModeManual) && !task.Hold {
 		return false

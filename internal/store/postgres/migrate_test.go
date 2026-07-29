@@ -119,6 +119,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 40 {
 		t.Fatalf("monitor and drift version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/041_blueprint_dependencies.sql")
+	if err != nil || version != 41 {
+		t.Fatalf("blueprint dependency version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)

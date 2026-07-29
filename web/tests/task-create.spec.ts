@@ -1,5 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+const createdAt = '2026-07-18T00:00:00Z'
+
 async function mockTaskCreateAPIs(page: Page) {
   let submitted = ''
   await page.addInitScript(() => {
@@ -26,6 +28,13 @@ async function mockTaskCreateAPIs(page: Page) {
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
       submitted = route.request().postData() ?? ''
       await route.fulfill({ status: 201, json: { id: 'generated', workspace: 'demo', title: 'Generated title', body: 'Generate this title from context', repo: 'conveyor', state: 'queued', created_at: '2026-07-18T00:00:00Z' } })
+      return
+    }
+    if (url.pathname === '/v1/tasks' && route.request().method() === 'GET') {
+      await route.fulfill({ json: [
+        { id: '260729-dependency', workspace: 'demo', title: 'Finish persistence first', body: '', repo: 'conveyor', state: 'running', created_at: createdAt },
+        { id: '260729-terminal', workspace: 'demo', title: 'Already merged', body: '', repo: 'conveyor', state: 'merged', created_at: createdAt },
+      ] })
       return
     }
     await route.fulfill({ json: [] })
@@ -69,6 +78,18 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect.poll(submitted).toContain('"hold":true')
+})
+
+test('intake declares an optional dependency from the advanced selector', async ({ page }) => {
+  const submitted = await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+  await page.locator('textarea').fill('Implement the dependent task')
+  await page.getByText('Advanced options').click()
+  await page.getByLabel('Search dependency tasks').fill('persistence')
+  await page.getByText('Finish persistence first').click()
+  await expect(page.getByText('Already merged')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('"depends_on":["260729-dependency"]')
 })
 
 test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {

@@ -67,7 +67,10 @@ func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testin
 	}
 	taskID := core.NewTaskID()
 	task := core.Task{ID: taskID, Workspace: workspace, Repo: "repo", Branch: "conveyor/task-" + taskID, State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
-	if err = st.CreateTask(ctx, task); err != nil {
+	if _, err = pool.Exec(ctx, `INSERT INTO tasks
+		(id,workspace_id,source,title,body,class,escalation_level,repo_name,base_branch,branch,state,parent_task_id,created_at,mode,spec_approval,merge_approval)
+		VALUES ($1,$2,'test','migration task','','','L2','repo','main',$3,$4,'',$5,'',true,true)`,
+		task.ID, workspace, task.Branch, task.State, task.CreatedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = pool.Exec(ctx, `
@@ -85,7 +88,7 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 40 {
+	if afterVersion != 41 {
 		t.Fatalf("post-upgrade migration version=%d", afterVersion)
 	}
 	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {

@@ -49,6 +49,7 @@ type WorkspaceControlStore interface {
 type Store interface {
 	IsDurable() bool
 	CreateTask(ctx context.Context, t core.Task) error
+	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
@@ -98,6 +99,9 @@ type Store interface {
 	CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error)
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
+	ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error)
+	ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error)
+	ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error)
 	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
 	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
@@ -520,6 +524,7 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder) *ReviewRecoveryState {
 func NewMemory() Store {
 	return &memory{
 		tasks:                       map[string]core.Task{},
+		dependencies:                map[string]map[string]struct{}{},
 		jobs:                        map[string][]core.Job{},
 		events:                      map[string][]core.Event{},
 		interventions:               map[string][]core.Intervention{},
@@ -557,6 +562,7 @@ type memoryArtifactKey struct {
 type memory struct {
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
+	dependencies                map[string]map[string]struct{}
 	jobs                        map[string][]core.Job
 	events                      map[string][]core.Event
 	interventions               map[string][]core.Intervention
@@ -1719,6 +1725,16 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
 	}
+	var blockingTaskIDs []string
+	for dependencyID := range m.dependencies[order.TaskID] {
+		if dependency, ok := m.tasks[dependencyID]; ok && dependency.State != core.TaskMerged {
+			blockingTaskIDs = append(blockingTaskIDs, dependencyID)
+		}
+	}
+	if len(blockingTaskIDs) > 0 {
+		sort.Strings(blockingTaskIDs)
+		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
+	}
 	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
@@ -2390,6 +2406,173 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	return nil
 }
 
+type blueprintDecompositionItem struct {
+	ID        string   `json:"id"`
+	Repo      string   `json:"repo"`
+	Summary   string   `json:"summary"`
+	DependsOn []string `json:"depends_on"`
+}
+
+func validateBlueprintDecomposition(items []blueprintDecompositionItem) error {
+	byID := make(map[string]blueprintDecompositionItem, len(items))
+	for _, item := range items {
+		if _, exists := byID[item.ID]; exists {
+			return fmt.Errorf("duplicate blueprint origin %s", item.ID)
+		}
+		byID[item.ID] = item
+	}
+	for _, item := range items {
+		for _, dependency := range item.DependsOn {
+			if _, exists := byID[dependency]; !exists {
+				return fmt.Errorf("blueprint %s depends on unknown %s", item.ID, dependency)
+			}
+		}
+	}
+	visiting, visited := map[string]bool{}, map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return fmt.Errorf("blueprint dependency cycle includes %s", id)
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dependency := range byID[id].DependsOn {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		delete(visiting, id)
+		visited[id] = true
+		return nil
+	}
+	for id := range byID {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	versions := m.specs[taskID]
+	if len(versions) == 0 || versions[len(versions)-1].Version != version {
+		return nil, fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
+	}
+	parent, ok := m.tasks[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	var decomposition []blueprintDecompositionItem
+	if len(versions[len(versions)-1].Decomposition) > 0 {
+		if err := json.Unmarshal(versions[len(versions)-1].Decomposition, &decomposition); err != nil {
+			return nil, fmt.Errorf("decode blueprint decomposition: %w", err)
+		}
+	}
+	if len(decomposition) == 0 {
+		versions[len(versions)-1].Approved = true
+		versions[len(versions)-1].ApprovedAt = time.Now().UTC()
+		m.specs[taskID] = versions
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+		return nil, nil
+	}
+	if err := validateBlueprintDecomposition(decomposition); err != nil {
+		return nil, err
+	}
+	createdAt := time.Now().UTC()
+	childrenBySub := map[string]core.Task{}
+	for _, existing := range m.tasks {
+		if existing.ParentTaskID == taskID && existing.OriginSpecVersion == version &&
+			existing.OriginSubID != "" && !core.TaskTerminal(existing.State) {
+			childrenBySub[existing.OriginSubID] = existing
+		}
+	}
+	for _, item := range decomposition {
+		if _, exists := childrenBySub[item.ID]; exists {
+			continue
+		}
+		id := core.NewTaskID()
+		for {
+			if _, exists := m.tasks[id]; !exists {
+				break
+			}
+			id = core.NewTaskID()
+		}
+		title := strings.TrimSpace(item.Summary)
+		if len(title) > 200 {
+			title = title[:200]
+		}
+		child := core.Task{
+			ID: id, Workspace: parent.Workspace,
+			Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
+			Title:  title,
+			Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
+			Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
+			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
+			PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
+			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
+			BaseBranch: parent.BaseBranch, Branch: "conveyor/task-" + id,
+			State: core.TaskQueued, NextStage: core.StageImplement,
+			ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
+			CreatedAt: createdAt,
+		}
+		m.tasks[id] = child
+		childrenBySub[item.ID] = child
+		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: core.JSONPayload(child), At: createdAt})
+	}
+	for _, item := range decomposition {
+		child := childrenBySub[item.ID]
+		if m.dependencies[child.ID] == nil {
+			m.dependencies[child.ID] = map[string]struct{}{}
+		}
+		for _, dependency := range item.DependsOn {
+			m.dependencies[child.ID][childrenBySub[dependency].ID] = struct{}{}
+		}
+	}
+	versions[len(versions)-1].Approved = true
+	versions[len(versions)-1].ApprovedAt = createdAt
+	m.specs[taskID] = versions
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]any{"version": version, "children_created": len(childrenBySub)})})
+	result := make([]core.Task, 0, len(childrenBySub))
+	for _, item := range decomposition {
+		result = append(result, m.hydrateTaskLocked(childrenBySub[item.ID]))
+	}
+	return result, nil
+}
+
+func (m *memory) ListBlockingTaskIDs(_ context.Context, taskID string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.tasks[taskID]; !ok {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	var result []string
+	for dependencyID := range m.dependencies[taskID] {
+		if dependency, ok := m.tasks[dependencyID]; ok && dependency.State != core.TaskMerged {
+			result = append(result, dependencyID)
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (m *memory) ListDependentTaskIDs(_ context.Context, taskID string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []string
+	for dependentID, dependencies := range m.dependencies {
+		if _, ok := dependencies[taskID]; ok {
+			result = append(result, dependentID)
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
 func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2452,6 +2635,10 @@ func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHu
 func (m *memory) ReconcileGitHubLifecycles(context.Context) (int, error) { return 0, nil }
 
 func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
+	return m.CreateTaskWithDependencies(ctx, t, nil)
+}
+
+func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.tasks[t.ID]; exists {
@@ -2462,6 +2649,27 @@ func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 			return fmt.Errorf("branch %s already belongs to task %s", t.Branch, existing.ID)
 		}
 	}
+	seen := map[string]bool{}
+	for _, dependencyID := range dependencyIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" || seen[dependencyID] {
+			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+		}
+		seen[dependencyID] = true
+		dependency, ok := m.tasks[dependencyID]
+		if !ok {
+			return fmt.Errorf("dependency task %s not found", dependencyID)
+		}
+		if dependency.Workspace != t.Workspace {
+			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+		}
+		if dependency.Repo != t.Repo {
+			return fmt.Errorf("dependency task %s belongs to another repository", dependencyID)
+		}
+		if core.TaskTerminal(dependency.State) {
+			return fmt.Errorf("dependency task %s is not open", dependencyID)
+		}
+	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
@@ -2469,8 +2677,50 @@ func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 		t.NextStage = core.InitialStage(t.Level)
 	}
 	m.tasks[t.ID] = t
+	if len(seen) > 0 {
+		m.dependencies[t.ID] = map[string]struct{}{}
+		for dependencyID := range seen {
+			m.dependencies[t.ID][dependencyID] = struct{}{}
+		}
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt})
 	return nil
+}
+
+func (m *memory) hydrateTaskLocked(task core.Task) core.Task {
+	task.Dependencies = nil
+	task.BlockingTaskIDs = nil
+	task.Children = nil
+	for dependencyID := range m.dependencies[task.ID] {
+		dependency, ok := m.tasks[dependencyID]
+		if !ok {
+			continue
+		}
+		task.Dependencies = append(task.Dependencies, core.TaskRelation{
+			ID: dependency.ID, Title: dependency.Title, State: dependency.State,
+			OriginSpecVersion: dependency.OriginSpecVersion, OriginSubID: dependency.OriginSubID,
+		})
+		if dependency.State != core.TaskMerged {
+			task.BlockingTaskIDs = append(task.BlockingTaskIDs, dependency.ID)
+		}
+	}
+	for _, child := range m.tasks {
+		if child.ParentTaskID == task.ID {
+			task.Children = append(task.Children, core.TaskRelation{
+				ID: child.ID, Title: child.Title, State: child.State,
+				OriginSpecVersion: child.OriginSpecVersion, OriginSubID: child.OriginSubID,
+			})
+		}
+	}
+	sort.Slice(task.Dependencies, func(i, j int) bool { return task.Dependencies[i].ID < task.Dependencies[j].ID })
+	sort.Strings(task.BlockingTaskIDs)
+	sort.Slice(task.Children, func(i, j int) bool {
+		if task.Children[i].OriginSpecVersion != task.Children[j].OriginSpecVersion {
+			return task.Children[i].OriginSpecVersion < task.Children[j].OriginSpecVersion
+		}
+		return task.Children[i].OriginSubID < task.Children[j].OriginSubID
+	})
+	return task
 }
 
 func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
@@ -2484,7 +2734,7 @@ func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
 		copy := lifecycle
 		t.GitHub = &copy
 	}
-	return t, nil
+	return m.hydrateTaskLocked(t), nil
 }
 
 func (m *memory) GetTaskByIntakeKey(_ context.Context, key string) (core.Task, bool, error) {
@@ -2496,7 +2746,7 @@ func (m *memory) GetTaskByIntakeKey(_ context.Context, key string) (core.Task, b
 				copy := lifecycle
 				task.GitHub = &copy
 			}
-			return task, true, nil
+			return m.hydrateTaskLocked(task), true, nil
 		}
 	}
 	return core.Task{}, false, nil
@@ -2511,7 +2761,7 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 			copy := lifecycle
 			t.GitHub = &copy
 		}
-		out = append(out, t)
+		out = append(out, m.hydrateTaskLocked(t))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -2640,6 +2890,27 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	if command.ProjectStages {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state})})
+	}
+	if task.ParentTaskID != "" && core.TaskTerminal(state) {
+		allTerminal := true
+		childCount := 0
+		for _, sibling := range m.tasks {
+			if sibling.ParentTaskID != task.ParentTaskID {
+				continue
+			}
+			childCount++
+			if !core.TaskTerminal(sibling.State) {
+				allTerminal = false
+				break
+			}
+		}
+		parent := m.tasks[task.ParentTaskID]
+		if childCount > 0 && allTerminal && parent.State == core.TaskQueued {
+			parent.State = core.TaskClosed
+			m.tasks[parent.ID] = parent
+			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskQueued, "to": core.TaskClosed, "command": core.TaskBlueprintClose})})
+			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
+		}
 	}
 	return task, nil
 }

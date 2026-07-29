@@ -38,6 +38,11 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
         {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
         {item.task.hold && <Badge variant="mono">Held</Badge>}
+        {(item.task.blocking_task_ids?.length ?? 0) > 0 && (
+          <span title={`Waiting for ${item.task.blocking_task_ids!.join(', ')}`}>
+            <Badge variant="outline">Blocked</Badge>
+          </span>
+        )}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         <Badge variant="accent" className="max-w-36 truncate">{provenance.label}</Badge>
       </div>

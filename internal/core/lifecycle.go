@@ -67,6 +67,7 @@ const (
 	TaskConflictDispatch          TaskCommand = "conflict.dispatch"
 	TaskRecover                   TaskCommand = "task.recover"
 	TaskCancel                    TaskCommand = "task.cancel"
+	TaskBlueprintClose            TaskCommand = "blueprint.close"
 )
 
 type WorkOrderCommand string
@@ -93,7 +94,7 @@ type lifecycleTable map[string]map[string]string
 
 var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
-	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskCancel): string(TaskClosed)},
+	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskCancel): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
 	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriageRouteHuman): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskCancel): string(TaskClosed)},
 	string(TaskAwaiting): {string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed)},

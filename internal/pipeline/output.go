@@ -268,6 +268,7 @@ func validateAcceptance(acceptance []AcceptanceCriterion) error {
 
 func validateDecomposition(decomposition []DecompositionItem) error {
 	ids := map[string]bool{}
+	byID := map[string]DecompositionItem{}
 	for index, item := range decomposition {
 		if !decompositionIDPattern.MatchString(item.ID) {
 			return fmt.Errorf("decomposition item %d has invalid id %q; want SUB-n", index+1, item.ID)
@@ -282,12 +283,38 @@ func validateDecomposition(decomposition []DecompositionItem) error {
 			return fmt.Errorf("decomposition %s has an empty summary", item.ID)
 		}
 		ids[item.ID] = true
+		byID[item.ID] = item
 	}
 	for _, item := range decomposition {
 		for _, dependency := range item.DependsOn {
 			if !ids[dependency] {
 				return fmt.Errorf("decomposition %s depends on unknown %s", item.ID, dependency)
 			}
+		}
+	}
+	visiting := map[string]bool{}
+	visited := map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return fmt.Errorf("decomposition dependency cycle includes %s", id)
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dependency := range byID[id].DependsOn {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		delete(visiting, id)
+		visited[id] = true
+		return nil
+	}
+	for id := range byID {
+		if err := visit(id); err != nil {
+			return err
 		}
 	}
 	return nil

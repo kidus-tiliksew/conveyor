@@ -29,11 +29,14 @@ INSERT INTO tasks (
     id, workspace_id, source, title, body, class, escalation_level, mode, hold, spec_approval, merge_approval, policy_version,
     setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
     refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
-    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id, feature_id, intake_key, created_at
+    repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id,
+    origin_spec_version, origin_sub_id, feature_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     $13, $14, $15, $16, $17, $18, $19, $20,
-    $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+    $21, $22, $23, $24, $25, $26, sqlc.narg(parent_task_id),
+    sqlc.arg(origin_spec_version), sqlc.arg(origin_sub_id),
+    sqlc.arg(feature_id), sqlc.arg(intake_key), sqlc.arg(created_at)
 )
 RETURNING *;
 
