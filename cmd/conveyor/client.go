@@ -156,6 +156,16 @@ func (c *client) closeTask(id, reason string) (core.Task, error) {
 	return task, err
 }
 
+func (c *client) removeTaskDependency(taskID, dependencyID, reason, requestID string) (store.DependencyRemovalResult, error) {
+	if c.token == "" {
+		return store.DependencyRemovalResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for dependency removal")
+	}
+	payload, _ := json.Marshal(map[string]string{"reason": reason, "request_id": requestID})
+	var result store.DependencyRemovalResult
+	err := c.do(http.MethodDelete, "/v1/tasks/"+taskID+"/dependencies/"+dependencyID, payload, &result)
+	return result, err
+}
+
 func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
 	if c.token == "" {
 		return config.VersionedDocument{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")

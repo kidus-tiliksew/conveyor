@@ -42,6 +42,98 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryDependencyOutcomesUnlinkAndQueueClock(t *testing.T) {
+	ctx := WithWorkspace(WithActor(t.Context(), Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := NewMemory()
+	dependency := core.Task{ID: "dependency", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, dependency); err != nil {
+		t.Fatal(err)
+	}
+	dependent := core.Task{ID: "dependent", Workspace: "demo", Repo: "ui", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTaskWithDependencies(ctx, dependent, []string{dependency.ID}); err != nil {
+		t.Fatalf("cross-repository dependency rejected: %v", err)
+	}
+	queuedAt := time.Now().UTC().Add(-2 * time.Hour)
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement} {
+		job := core.Job{ID: dependent.ID + "-" + string(stage), TaskID: dependent.ID, Stage: stage, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		deadline := queuedAt.Add(time.Hour)
+		if stage == core.StageSpec {
+			deadline = time.Now().UTC().Add(time.Hour)
+		}
+		if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{
+			ID: job.ID, TaskID: dependent.ID, JobID: job.ID, Stage: stage,
+			QueueEnteredAt: queuedAt, QueueDeadline: deadline, CreatedAt: queuedAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, dependent.ID+"-spec", core.WorkOrderClaim{
+		SessionID: "spec-session", ClientToken: "spec-token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	}); err != nil {
+		t.Fatalf("blocked spec order was not claimable: %v", err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, dependent.ID+"-implement", core.WorkOrderClaim{
+		SessionID: "implement-session", ClientToken: "implement-token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	}); err == nil || !strings.Contains(err.Error(), dependency.ID) {
+		t.Fatalf("blocked implement claim error=%v", err)
+	}
+
+	if _, err := taskops.New(st).Cancel(ctx, core.Intervention{
+		TaskID: dependency.ID, Action: core.InterventionCancel, ReasonCode: "will-not-merge",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := st.CountEvents(ctx, dependent.ID, "task.dependency_unsatisfiable"); err != nil || count != 1 {
+		t.Fatalf("unsatisfiable events=%d err=%v", count, err)
+	}
+	blockers, err := st.ListDependencyBlockers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := st.GetWorkOrder(ctx, dependent.ID+"-implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	order.BlockingTaskIDs = blockers[dependent.ID].BlockingTaskIDs
+	order.UnsatisfiableTaskIDs = blockers[dependent.ID].UnsatisfiableTaskIDs
+	stalled := StalledTask([]core.WorkOrder{order})
+	if stalled == nil || !stalled.UnsatisfiableEdge || len(stalled.BlockingTaskIDs) != 1 || stalled.BlockingTaskIDs[0] != dependency.ID {
+		t.Fatalf("stalled dependency projection=%+v", stalled)
+	}
+
+	request := DependencyRemovalRequest{
+		TaskID: dependent.ID, DependsOnTaskID: dependency.ID,
+		Reason: "operator chose independent delivery", RequestID: "unlink-1",
+	}
+	result, err := st.RemoveTaskDependency(ctx, request)
+	if err != nil || !result.Removed || len(result.Task.Dependencies) != 0 {
+		t.Fatalf("unlink result=%+v err=%v", result, err)
+	}
+	retry, err := st.RemoveTaskDependency(ctx, request)
+	if err != nil || retry.Removed {
+		t.Fatalf("idempotent unlink=%+v err=%v", retry, err)
+	}
+	changed := request
+	changed.Reason = "different"
+	if _, err = st.RemoveTaskDependency(ctx, changed); err == nil {
+		t.Fatal("request_id reuse with different unlink inputs succeeded")
+	}
+	if count, err := st.CountEvents(ctx, dependent.ID, "task.dependency_removed"); err != nil || count != 1 {
+		t.Fatalf("dependency removed events=%d err=%v", count, err)
+	}
+	order, err = st.GetWorkOrder(ctx, dependent.ID+"-implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !order.QueueBlockedAt.IsZero() || order.State != core.WorkOrderQueued || !order.Claimable ||
+		!order.QueueEnteredAt.Equal(queuedAt) || !order.QueueDeadline.After(time.Now().UTC()) {
+		t.Fatalf("resumed queue clock=%+v", order)
+	}
+}
+
 func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(t.Context(), "demo")

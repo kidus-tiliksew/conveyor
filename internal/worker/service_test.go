@@ -357,6 +357,53 @@ func TestAutoHealthIsScopedToSelectedSetup(t *testing.T) {
 	}
 }
 
+func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
+	worker := core.Worker{
+		ID: "worker", Workspace: "demo", LeaseExpiresAt: now.Add(time.Minute),
+		Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}},
+	}
+	dependency := core.Task{ID: "dependency", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: now}
+	if err := st.CreateTask(ctx, dependency); err != nil {
+		t.Fatal(err)
+	}
+	dependent := core.Task{ID: "dependent", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: now}
+	if err := st.CreateTaskWithDependencies(ctx, dependent, []string{dependency.ID}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "dependent-implement-1", TaskID: dependent.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: dependent.ID, JobID: job.ID, Stage: job.Stage,
+		QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if claimable, err := service.ListClaimable(ctx, worker); err != nil || len(claimable) != 0 {
+		t.Fatalf("claimable=%+v err=%v", claimable, err)
+	}
+	visible, err := service.ListVisibleOrders(ctx, worker)
+	if err != nil || len(visible) != 1 {
+		t.Fatalf("visible=%+v err=%v", visible, err)
+	}
+	if visible[0].ID != job.ID || visible[0].Claimable || len(visible[0].BlockingTaskIDs) != 1 ||
+		visible[0].BlockingTaskIDs[0] != dependency.ID {
+		t.Fatalf("blocked visibility=%+v", visible[0])
+	}
+	if _, err = service.ClaimForWorker(ctx, worker, job.ID, core.WorkOrderClaim{
+		SessionID: "blocked", ClientToken: "secret",
+	}); err == nil || !strings.Contains(err.Error(), dependency.ID) {
+		t.Fatalf("blocked worker claim error=%v", err)
+	}
+}
+
 func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()

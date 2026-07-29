@@ -214,12 +214,34 @@ func taskCmd() *cobra.Command {
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
 		closeTaskCmd(),
+		removeTaskDependencyCmd(),
 		changeTaskSetupCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
 		reviewTaskCmd(core.InterventionRedirect),
 	)
 	return cmd
+}
+
+func removeTaskDependencyCmd() *cobra.Command {
+	var reason, requestID string
+	command := &cobra.Command{
+		Use: "unlink <task-id> <dependency-task-id>", Short: "Remove one blocking dependency edge", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
+				return fmt.Errorf("--reason and --request-id are required")
+			}
+			result, err := newClient().removeTaskDependency(args[0], args[1], reason, requestID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed dependency %s -> %s (request %s)\n", args[0], args[1], result.RequestID)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&reason, "reason", "r", "", "operator reason")
+	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
+	return command
 }
 
 func closeTaskCmd() *cobra.Command {

@@ -509,6 +509,57 @@ func TestMCPCreateTaskSelectsSetupAndRejectsUnknownName(t *testing.T) {
 	}
 }
 
+func TestMCPDependencyValidationPrecedesTitleAndIdempotencyIsSymmetric(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	dependency := core.Task{ID: "dependency-api", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, dependency); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.Repos = []string{"api", "ui"}
+	generated := 0
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) {
+		generated++
+		return "Cross-repository dependent", nil
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	base := map[string]any{
+		"workspace_id": "demo", "body": "ship the UI after API", "repo": "ui",
+		"depends_on": []any{dependency.ID}, "idempotency_key": "dependency-intake",
+	}
+	result, err := server.callMCPTool(request, "create_task", base)
+	if err != nil {
+		t.Fatalf("cross-repository dependency: %v", err)
+	}
+	created := result.(map[string]any)["task"].(core.Task)
+	if len(created.Dependencies) != 0 {
+		t.Fatalf("create response unexpectedly hydrated relations: %+v", created.Dependencies)
+	}
+	persisted, err := st.GetTask(ctx, created.ID)
+	if err != nil || len(persisted.Dependencies) != 1 || persisted.Dependencies[0].ID != dependency.ID {
+		t.Fatalf("persisted dependencies=%+v err=%v", persisted.Dependencies, err)
+	}
+	withoutDependency := maps.Clone(base)
+	delete(withoutDependency, "depends_on")
+	if _, err = server.callMCPTool(request, "create_task", withoutDependency); err == nil || !strings.Contains(err.Error(), "different task") {
+		t.Fatalf("removed dependency idempotency error=%v", err)
+	}
+	if generated != 1 {
+		t.Fatalf("idempotency conflict regenerated title %d times", generated)
+	}
+	invalid := maps.Clone(base)
+	invalid["idempotency_key"] = "missing-dependency"
+	invalid["depends_on"] = []any{"missing"}
+	if _, err = server.callMCPTool(request, "create_task", invalid); err == nil || !strings.Contains(err.Error(), "invalid depends_on") {
+		t.Fatalf("invalid dependency error=%v", err)
+	}
+	if generated != 1 {
+		t.Fatalf("invalid dependency called title generation; count=%d", generated)
+	}
+}
+
 func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()

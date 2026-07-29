@@ -100,8 +100,11 @@ type Store interface {
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
 	ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error)
+	ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error
 	ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error)
 	ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error)
+	ListDependencyBlockers(ctx context.Context) (map[string]DependencyBlockers, error)
+	RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error)
 	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
 	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
@@ -343,13 +346,33 @@ type RecoveryRefreeze struct {
 	ExecutionTimeoutText  string
 }
 
+type DependencyBlockers struct {
+	BlockingTaskIDs      []string
+	UnsatisfiableTaskIDs []string
+}
+
+type DependencyRemovalRequest struct {
+	TaskID          string `json:"task_id"`
+	DependsOnTaskID string `json:"depends_on_task_id"`
+	Reason          string `json:"reason"`
+	RequestID       string `json:"request_id"`
+}
+
+type DependencyRemovalResult struct {
+	Task      core.Task `json:"task"`
+	RequestID string    `json:"request_id"`
+	Removed   bool      `json:"removed"`
+}
+
 // StalledState is derived presentation data for operator-actionable work that
 // cannot make forward progress on its own (spec §21.34).
 type StalledState struct {
-	Needed      bool           `json:"needed"`
-	Reason      string         `json:"reason"`
-	WorkOrder   core.WorkOrder `json:"work_order"`
-	LastFailure string         `json:"last_failure,omitempty"`
+	Needed            bool           `json:"needed"`
+	Reason            string         `json:"reason"`
+	WorkOrder         core.WorkOrder `json:"work_order"`
+	LastFailure       string         `json:"last_failure,omitempty"`
+	BlockingTaskIDs   []string       `json:"blocking_task_ids,omitempty"`
+	UnsatisfiableEdge bool           `json:"unsatisfiable_edge,omitempty"`
 }
 
 func StalledTask(orders []core.WorkOrder) *StalledState {
@@ -362,6 +385,8 @@ func StalledTask(orders []core.WorkOrder) *StalledState {
 		}
 		reason := ""
 		switch {
+		case len(order.UnsatisfiableTaskIDs) > 0:
+			reason = "dependency reached a terminal state without merging"
 		case order.RetrySuppressed:
 			reason = "automatic retry is suppressed"
 		case order.State == core.WorkOrderStale:
@@ -374,7 +399,11 @@ func StalledTask(orders []core.WorkOrder) *StalledState {
 			if failure == "" {
 				failure = strings.TrimSpace(order.LastFailureDetail)
 			}
-			return &StalledState{Needed: true, Reason: reason, WorkOrder: order, LastFailure: failure}
+			return &StalledState{
+				Needed: true, Reason: reason, WorkOrder: order, LastFailure: failure,
+				BlockingTaskIDs:   append([]string(nil), order.UnsatisfiableTaskIDs...),
+				UnsatisfiableEdge: len(order.UnsatisfiableTaskIDs) > 0,
+			}
 		}
 	}
 	return nil
@@ -542,6 +571,7 @@ func NewMemory() Store {
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
+		dependencyRemovals:          map[string]memoryDependencyRemoval{},
 		monitorObservations:         map[string]monitor.ObservationRecord{},
 		monitorDrift:                map[string]monitor.Drift{},
 		monitorActivity:             map[string][]monitor.Activity{},
@@ -557,6 +587,11 @@ type memoryArtifact struct {
 type memoryArtifactKey struct {
 	workspace string
 	id        string
+}
+
+type memoryDependencyRemoval struct {
+	Request DependencyRemovalRequest
+	Actor   Actor
 }
 
 type memory struct {
@@ -580,6 +615,7 @@ type memory struct {
 	reviewRetries               map[string]memoryReviewRoundRetry
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
+	dependencyRemovals          map[string]memoryDependencyRemoval
 	monitorObservations         map[string]monitor.ObservationRecord
 	monitorDrift                map[string]monitor.Drift
 	monitorLastSuccess          map[string]time.Time
@@ -1271,7 +1307,13 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	} else if order.State != expected {
 		return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: "", Command: string(core.WorkOrderCmdCreate), Allowed: []core.TransitionAlternative{{Command: string(core.WorkOrderCmdCreate), To: string(expected)}}}
 	}
+	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
+		order.QueueBlockedAt = order.QueueEnteredAt
+	}
 	order.Claimable = order.ClaimableAt(now)
+	if !order.QueueBlockedAt.IsZero() {
+		order.Claimable = false
+	}
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	return nil
@@ -1384,9 +1426,21 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 		return false, err
 	}
 	order.State, order.Claimable, order.UpdatedAt = state, true, now
+	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
+		order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
+	}
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	return true, nil
+}
+
+func (m *memory) taskBlockedLocked(taskID string) bool {
+	for dependencyID := range m.dependencies[taskID] {
+		if dependency, exists := m.tasks[dependencyID]; exists && dependency.State != core.TaskMerged {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
@@ -1608,8 +1662,12 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		order.RetrySuppressed = true
 		return order
 	}
+	if order.State == core.WorkOrderQueued && !order.QueueBlockedAt.IsZero() {
+		order.Claimable = false
+		return order
+	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
 		order.State = core.WorkOrderStale
 		order.Claimable = false
 		return order
@@ -1661,7 +1719,7 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 			!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
 		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-			!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
+			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
 		if elapsedExecution || elapsedClaim || elapsedQueue {
 			seen[order.TaskID] = struct{}{}
 		}
@@ -1706,6 +1764,11 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
+	if order.Stage == core.StageImplement && !order.QueueBlockedAt.IsZero() && !m.taskBlockedLocked(order.TaskID) {
+		order.QueueDeadline = order.QueueDeadline.Add(now.Sub(order.QueueBlockedAt))
+		order.QueueBlockedAt = time.Time{}
+		m.workOrders[id] = order
+	}
 	order = m.refreshWorkOrderLocked(ctx, order, now)
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)
@@ -1725,15 +1788,17 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
 	}
-	var blockingTaskIDs []string
-	for dependencyID := range m.dependencies[order.TaskID] {
-		if dependency, ok := m.tasks[dependencyID]; ok && dependency.State != core.TaskMerged {
-			blockingTaskIDs = append(blockingTaskIDs, dependencyID)
+	if order.Stage == core.StageImplement {
+		var blockingTaskIDs []string
+		for dependencyID := range m.dependencies[order.TaskID] {
+			if dependency, ok := m.tasks[dependencyID]; ok && dependency.State != core.TaskMerged {
+				blockingTaskIDs = append(blockingTaskIDs, dependencyID)
+			}
 		}
-	}
-	if len(blockingTaskIDs) > 0 {
-		sort.Strings(blockingTaskIDs)
-		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
+		if len(blockingTaskIDs) > 0 {
+			sort.Strings(blockingTaskIDs)
+			return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
+		}
 	}
 	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {
@@ -2012,7 +2077,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"outcome": order.LastAttemptOutcome, "retry_suppressed": true}), At: now})
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
+		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
 		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdMarkStale)
 		if err != nil {
 			return order
@@ -2560,6 +2625,31 @@ func (m *memory) ListBlockingTaskIDs(_ context.Context, taskID string) ([]string
 	return result, nil
 }
 
+func (m *memory) ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	seen := map[string]bool{}
+	for _, dependencyID := range dependencyIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" || seen[dependencyID] {
+			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+		}
+		seen[dependencyID] = true
+		dependency, ok := m.tasks[dependencyID]
+		if !ok {
+			return fmt.Errorf("dependency task %s not found", dependencyID)
+		}
+		if workspace != "" && dependency.Workspace != workspace {
+			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+		}
+		if core.TaskTerminal(dependency.State) {
+			return fmt.Errorf("dependency task %s is not open", dependencyID)
+		}
+	}
+	return nil
+}
+
 func (m *memory) ListDependentTaskIDs(_ context.Context, taskID string) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -2571,6 +2661,80 @@ func (m *memory) ListDependentTaskIDs(_ context.Context, taskID string) ([]strin
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func (m *memory) ListDependencyBlockers(ctx context.Context) (map[string]DependencyBlockers, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	result := map[string]DependencyBlockers{}
+	for dependentID, dependencies := range m.dependencies {
+		task, ok := m.tasks[dependentID]
+		if !ok || (workspace != "" && task.Workspace != workspace) {
+			continue
+		}
+		blockers := result[dependentID]
+		for dependencyID := range dependencies {
+			dependency, exists := m.tasks[dependencyID]
+			if !exists || dependency.State == core.TaskMerged {
+				continue
+			}
+			blockers.BlockingTaskIDs = append(blockers.BlockingTaskIDs, dependencyID)
+			if core.TaskTerminal(dependency.State) {
+				blockers.UnsatisfiableTaskIDs = append(blockers.UnsatisfiableTaskIDs, dependencyID)
+			}
+		}
+		sort.Strings(blockers.BlockingTaskIDs)
+		sort.Strings(blockers.UnsatisfiableTaskIDs)
+		if len(blockers.BlockingTaskIDs) > 0 {
+			result[dependentID] = blockers
+		}
+	}
+	return result, nil
+}
+
+func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error) {
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
+		return DependencyRemovalResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[request.TaskID]
+	workspace, _ := WorkspaceFromContext(ctx)
+	if !ok || (workspace != "" && task.Workspace != workspace) {
+		return DependencyRemovalResult{}, fmt.Errorf("task %s not found", request.TaskID)
+	}
+	actor := ActorFromContext(ctx)
+	key := task.Workspace + "\x00" + request.RequestID
+	if prior, exists := m.dependencyRemovals[key]; exists {
+		if prior.Request != request || prior.Actor != actor {
+			return DependencyRemovalResult{}, fmt.Errorf("request_id %s was already used for different dependency removal inputs", request.RequestID)
+		}
+		return DependencyRemovalResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID}, nil
+	}
+	dependencies := m.dependencies[request.TaskID]
+	if dependencies == nil {
+		return DependencyRemovalResult{}, fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+	}
+	if _, exists := dependencies[request.DependsOnTaskID]; !exists {
+		return DependencyRemovalResult{}, fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+	}
+	delete(dependencies, request.DependsOnTaskID)
+	m.dependencyRemovals[key] = memoryDependencyRemoval{Request: request, Actor: actor}
+	now := time.Now().UTC()
+	m.appendEventLocked(ctx, core.Event{
+		TaskID: request.TaskID, Kind: "task.dependency_removed", ActorID: actor.ID, ActorRole: actor.Role, At: now,
+		Payload: core.JSONPayload(map[string]any{
+			"task_id": request.TaskID, "depends_on_task_id": request.DependsOnTaskID,
+			"actor": actor.ID, "reason": request.Reason, "request_id": request.RequestID,
+		}),
+	})
+	m.resumeDependencyQueueClocksLocked(request.TaskID, now)
+	return DependencyRemovalResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID, Removed: true}, nil
 }
 
 func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
@@ -2663,9 +2827,6 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 		if dependency.Workspace != t.Workspace {
 			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
 		}
-		if dependency.Repo != t.Repo {
-			return fmt.Errorf("dependency task %s belongs to another repository", dependencyID)
-		}
 		if core.TaskTerminal(dependency.State) {
 			return fmt.Errorf("dependency task %s is not open", dependencyID)
 		}
@@ -2685,6 +2846,64 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt})
 	return nil
+}
+
+func (m *memory) recordDependencyOutcomeLocked(ctx context.Context, dependencyID string, state core.TaskState, at time.Time) {
+	if state == core.TaskMerged || !core.TaskTerminal(state) {
+		for dependentID, dependencies := range m.dependencies {
+			if _, exists := dependencies[dependencyID]; exists {
+				m.resumeDependencyQueueClocksLocked(dependentID, at)
+			}
+		}
+		return
+	}
+	for dependentID, dependencies := range m.dependencies {
+		if _, exists := dependencies[dependencyID]; !exists {
+			continue
+		}
+		duplicate := false
+		for _, event := range m.events[dependentID] {
+			if event.Kind != "task.dependency_unsatisfiable" {
+				continue
+			}
+			var payload struct {
+				DependsOnTaskID string         `json:"depends_on_task_id"`
+				DependencyState core.TaskState `json:"dependency_state"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil &&
+				payload.DependsOnTaskID == dependencyID && payload.DependencyState == state {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			m.appendEventLocked(ctx, core.Event{
+				TaskID: dependentID, Kind: "task.dependency_unsatisfiable", At: at,
+				Payload: core.JSONPayload(map[string]any{
+					"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,
+				}),
+			})
+		}
+	}
+}
+
+func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time) {
+	for dependencyID := range m.dependencies[taskID] {
+		if dependency, exists := m.tasks[dependencyID]; exists && dependency.State != core.TaskMerged {
+			return
+		}
+	}
+	for id, order := range m.workOrders {
+		if order.TaskID != taskID || order.Stage != core.StageImplement ||
+			order.State != core.WorkOrderQueued || order.QueueBlockedAt.IsZero() {
+			continue
+		}
+		order.QueueDeadline = order.QueueDeadline.Add(now.Sub(order.QueueBlockedAt))
+		order.QueueBlockedAt = time.Time{}
+		order.Claimable = order.ClaimableAt(now)
+		order.UpdatedAt = now
+		m.workOrders[id] = order
+	}
 }
 
 func (m *memory) hydrateTaskLocked(task core.Task) core.Task {
@@ -2888,6 +3107,7 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	}
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
+	m.recordDependencyOutcomeLocked(ctx, id, state, time.Now().UTC())
 	if command.ProjectStages {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state})})
 	}
@@ -2910,6 +3130,7 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 			m.tasks[parent.ID] = parent
 			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskQueued, "to": core.TaskClosed, "command": core.TaskBlueprintClose})})
 			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
+			m.recordDependencyOutcomeLocked(ctx, parent.ID, core.TaskClosed, time.Now().UTC())
 		}
 	}
 	return task, nil
@@ -3068,8 +3289,20 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	if err != nil {
 		return nil, err
 	}
+	blockersByTask, err := m.ListDependencyBlockers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
+		if order.Stage == core.StageImplement {
+			blockers := blockersByTask[order.TaskID]
+			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
+			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
+			if len(order.BlockingTaskIDs) > 0 {
+				order.Claimable = false
+			}
+		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
 	}
 	m.mu.RLock()
@@ -3204,6 +3437,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	m.tasks[task.ID] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
+	m.recordDependencyOutcomeLocked(ctx, task.ID, taskState, intervention.At)
 	return task, nil
 }
 

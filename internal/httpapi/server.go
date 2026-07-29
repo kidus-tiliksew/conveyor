@@ -116,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)
+			r.With(s.requireMutationAuth).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
@@ -307,6 +308,28 @@ type closeTaskRequest struct {
 	Reason     string `json:"reason"`
 	ReasonCode string `json:"reason_code"`
 	Comment    string `json:"comment"`
+}
+
+type removeTaskDependencyRequest struct {
+	Reason    string `json:"reason"`
+	RequestID string `json:"request_id"`
+}
+
+func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
+	var request removeTaskDependencyRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.Store.RemoveTaskDependency(r.Context(), store.DependencyRemovalRequest{
+		TaskID: chi.URLParam(r, "id"), DependsOnTaskID: chi.URLParam(r, "dependency_id"),
+		Reason: request.Reason, RequestID: request.RequestID,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
@@ -821,7 +844,15 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		workOrders = []core.WorkOrder{}
 	}
 	for index := range workOrders {
+		if workOrders[index].Stage != core.StageImplement {
+			continue
+		}
 		workOrders[index].BlockingTaskIDs = append([]string(nil), task.BlockingTaskIDs...)
+		for _, dependency := range task.Dependencies {
+			if dependency.State != core.TaskMerged && core.TaskTerminal(dependency.State) {
+				workOrders[index].UnsatisfiableTaskIDs = append(workOrders[index].UnsatisfiableTaskIDs, dependency.ID)
+			}
+		}
 		if len(workOrders[index].BlockingTaskIDs) > 0 {
 			workOrders[index].Claimable = false
 		}

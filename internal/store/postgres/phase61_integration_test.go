@@ -20,7 +20,7 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 	}
 	defer st.Close()
 	workspace := "phase61-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator", Role: core.ActorHuman})
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -72,10 +72,11 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 		t.Fatalf("cycle trigger error=%v", err)
 	}
 	job := core.Job{ID: "phase61-order", TaskID: bySub["SUB-2"].ID, Stage: core.StageImplement, State: core.JobPending}
+	queueEnteredAt := time.Now().UTC()
 	order := core.WorkOrder{
 		ID: "phase61-order", TaskID: job.TaskID, JobID: job.ID, Stage: job.Stage,
-		State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: time.Now().UTC(),
-		QueueDeadline: time.Now().Add(time.Hour),
+		State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: queueEnteredAt,
+		QueueDeadline: queueEnteredAt.Add(time.Hour),
 	}
 	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
 		t.Fatal(err)
@@ -83,7 +84,15 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "secret"}); err == nil || !strings.Contains(err.Error(), bySub["SUB-1"].ID) {
 		t.Fatalf("transactional blocked claim error=%v", err)
 	}
+	if blocked, getErr := st.GetWorkOrder(ctx, order.ID); getErr != nil || blocked.QueueBlockedAt.IsZero() ||
+		!blocked.QueueEnteredAt.Equal(queueEnteredAt) || blocked.Claimable {
+		t.Fatalf("blocked queue clock=%+v err=%v", blocked, getErr)
+	}
 	transitionPhase61TaskToMerged(t, ctx, st, bySub["SUB-1"].ID)
+	if resumed, getErr := st.GetWorkOrder(ctx, order.ID); getErr != nil || !resumed.QueueBlockedAt.IsZero() ||
+		!resumed.QueueEnteredAt.Equal(queueEnteredAt) || !resumed.Claimable {
+		t.Fatalf("resumed queue clock=%+v err=%v", resumed, getErr)
+	}
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "ready", ClientToken: "secret"}); err != nil {
 		t.Fatalf("claim after dependency merge: %v", err)
 	}
@@ -98,6 +107,19 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 		if cancelErr := <-cancelErrs; cancelErr != nil {
 			t.Fatal(cancelErr)
 		}
+	}
+	if count, countErr := st.CountEvents(ctx, bySub["SUB-3"].ID, "task.dependency_unsatisfiable"); countErr != nil || count != 1 {
+		t.Fatalf("unsatisfiable event count=%d err=%v", count, countErr)
+	}
+	removal := store.DependencyRemovalRequest{
+		TaskID: bySub["SUB-3"].ID, DependsOnTaskID: bySub["SUB-2"].ID,
+		Reason: "operator resolved terminal dependency", RequestID: "phase61-unlink",
+	}
+	if result, removeErr := st.RemoveTaskDependency(ctx, removal); removeErr != nil || !result.Removed {
+		t.Fatalf("dependency removal=%+v err=%v", result, removeErr)
+	}
+	if result, removeErr := st.RemoveTaskDependency(ctx, removal); removeErr != nil || result.Removed {
+		t.Fatalf("dependency removal retry=%+v err=%v", result, removeErr)
 	}
 	closed, err := st.GetTask(ctx, parent.ID)
 	if err != nil || closed.State != core.TaskClosed {
