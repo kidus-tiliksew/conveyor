@@ -76,7 +76,7 @@ type Store interface {
 	// WithTaskSideEffectLock serializes one workspace-scoped external side effect across
 	// concurrent control-plane instances while its callback rechecks durable
 	// state. Implementations must release the lock when the callback returns.
-	WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error
+	WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error
 
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
@@ -874,13 +874,13 @@ func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration
 	return delay
 }
 
-func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error {
+func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error {
 	workspace, _ := WorkspaceFromContext(ctx)
 	value, _ := m.taskLocks.LoadOrStore(workspace+"/"+taskID, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
 	lock.Lock()
 	defer lock.Unlock()
-	return fn()
+	return fn(ctx)
 }
 
 func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {

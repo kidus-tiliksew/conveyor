@@ -1237,8 +1237,8 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 // authoritative pre-merge read makes retries after a process restart safe by
 // reconciling a PR that GitHub already merged (spec §4, §13.2).
 func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
-	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func() error {
-		return d.mergeApprovedTaskLocked(ctx, task)
+	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		return d.mergeApprovedTaskLocked(lockedCtx, task)
 	})
 }
 

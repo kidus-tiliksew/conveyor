@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
@@ -149,7 +150,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 	ctx := store.WithWorkspace(root, "lock-workspace")
 	entered, release, done := make(chan int, 2), make(chan struct{}), make(chan error, 2)
 	go func() {
-		done <- st.WithTaskSideEffectLock(ctx, "same-task", func() error {
+		done <- st.WithTaskSideEffectLock(ctx, "same-task", func(context.Context) error {
 			entered <- 1
 			<-release
 			return nil
@@ -160,7 +161,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 	}
 	otherWorkspace := make(chan error, 1)
 	go func() {
-		otherWorkspace <- st.WithTaskSideEffectLock(store.WithWorkspace(root, "other-workspace"), "same-task", func() error {
+		otherWorkspace <- st.WithTaskSideEffectLock(store.WithWorkspace(root, "other-workspace"), "same-task", func(context.Context) error {
 			return nil
 		})
 	}()
@@ -173,7 +174,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 		t.Fatal("another workspace was blocked by the task lock")
 	}
 	go func() {
-		done <- st.WithTaskSideEffectLock(ctx, "same-task", func() error {
+		done <- st.WithTaskSideEffectLock(ctx, "same-task", func(context.Context) error {
 			entered <- 2
 			return nil
 		})
@@ -191,6 +192,50 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestTaskSideEffectLockAllowsNestedLifecycleTransitionIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	root := context.Background()
+	st, err := Open(root, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	workspaceID := "nested-lock-" + core.NewTaskID()
+	if _, err = st.CreateWorkspace(
+		store.WithActor(root, store.Actor{ID: "test", Role: core.ActorHuman}),
+		workspaceID,
+		"Nested lock "+workspaceID,
+		isolationConfig(workspaceID),
+	); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(store.WithWorkspace(root, workspaceID), 2*time.Second)
+	defer cancel()
+	task := isolationTask(workspaceID, "merge-"+core.NewTaskID())
+	task.State = core.TaskApproved
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	err = st.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		_, transitionErr := taskops.New(st).Perform(lockedCtx, task.ID, taskops.Command{
+			Kind: core.TaskMergeConfirm, ProjectStages: true,
+		})
+		return transitionErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != core.TaskMerged {
+		t.Fatalf("state=%s want=%s", current.State, core.TaskMerged)
 	}
 }
 

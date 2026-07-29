@@ -38,6 +38,8 @@ type Store struct {
 	river   *river.Client[pgx.Tx]
 }
 
+type sideEffectConnKey struct{}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -67,7 +69,7 @@ func (s *Store) IsDurable() bool     { return true }
 // WithTaskSideEffectLock holds a workspace-scoped Postgres advisory lock across one
 // external side effect. This keeps duplicate dashboard requests and multiple
 // daemon instances from issuing concurrent forge merge calls.
-func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func() error) error {
+func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -88,7 +90,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 		}
 		conn.Release()
 	}()
-	return fn()
+	return fn(context.WithValue(ctx, sideEffectConnKey{}, conn))
 }
 
 func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
@@ -3230,7 +3232,19 @@ func nullableTimeValue(value time.Time) any {
 }
 
 func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
-	tx, err := s.pool.Begin(ctx)
+	var (
+		tx  pgx.Tx
+		err error
+	)
+	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
+		// A lifecycle command inside WithTaskSideEffectLock must use the same
+		// PostgreSQL session. Advisory locks are re-entrant within one session;
+		// starting this transaction through the pool can select another session
+		// and deadlock against the outer task-operation lock.
+		tx, err = conn.Begin(ctx)
+	} else {
+		tx, err = s.pool.Begin(ctx)
+	}
 	if err != nil {
 		return err
 	}
