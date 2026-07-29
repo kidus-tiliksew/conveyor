@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Trash2 } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
 import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, setTaskHold } from '../../lib/api'
@@ -40,6 +41,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           {item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)}
         </Badge>
         <HoldControl item={item} />
+        {(item.task.blocking_task_ids?.length ?? 0) > 0 && <Badge variant="outline">Blocked</Badge>}
         <CancelControl item={item} />
         {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
@@ -76,6 +78,12 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
         <Fact label="Gates" value={`spec ${item.task.spec_approval ? 'human' : 'auto'} · merge ${item.task.merge_approval ? 'human' : 'auto'}`} />
+        {item.task.parent_task_id && (
+          <Fact label="Parent blueprint" value={<Link to="/tasks/$taskId" params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">{item.task.parent_task_id} · spec v{item.task.origin_spec_version}</Link>} />
+        )}
+        {(item.task.dependencies?.length ?? 0) > 0 && (
+          <Fact label="Dependencies" value={<span className="flex flex-wrap gap-x-2 gap-y-1">{item.task.dependencies!.map((dependency) => <Link key={dependency.id} to="/tasks/$taskId" params={{ taskId: dependency.id }} className="text-primary hover:underline">{dependency.id} · {dependency.state}</Link>)}</span>} />
+        )}
         {item.task.setup_contract?.name && <Fact label="Frozen setup" value={<details><summary className="cursor-pointer font-mono">{item.task.setup_contract.name}</summary><span className="block font-mono text-[11px]">Implement: {item.task.setup_contract.execution_settings.implementation.harness} · {item.task.setup_contract.execution_settings.implementation.model || 'harness default'}</span><span className="block font-mono text-[11px]">Review: {item.task.setup_contract.review.seats.map((seat) => `${seat.harness || item.task.setup_contract.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</span></details>} />}
         <Fact
           label="Verification"
@@ -114,6 +122,24 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           />
         )}
       </dl>
+
+      {(item.task.children?.length ?? 0) > 0 && (
+        <section className="mt-4 rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">Blueprint tasks</h3>
+            <span className="text-xs text-muted">{item.task.children!.filter((child) => child.state === 'merged').length} of {item.task.children!.length} merged</span>
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {item.task.children!.map((child) => (
+              <li key={child.id} className="flex items-center gap-2 text-xs">
+                <Badge variant="mono">{child.origin_sub_id}</Badge>
+                <Link to="/tasks/$taskId" params={{ taskId: child.id }} className="min-w-0 flex-1 truncate text-primary hover:underline">{child.title}</Link>
+                <span className="text-faint">{taskStateLabels[child.state] ?? child.state}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <SetupChangeControl item={item} variant={variant} />
 

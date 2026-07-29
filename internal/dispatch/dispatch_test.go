@@ -79,6 +79,38 @@ func TestTransitionDoesNotPersistWithoutKnownDestination(t *testing.T) {
 	}
 }
 
+func TestBlueprintParentDoesNotCreateImplementOrder(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	parent := core.Task{
+		ID: "blueprint-parent-no-order", Workspace: "demo", Repo: "conveyor",
+		Branch: "conveyor/task-blueprint-parent-no-order",
+		State:  core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+	child := core.Task{
+		ID: "blueprint-child-order-owner", Workspace: "demo", Repo: "conveyor",
+		Branch: "conveyor/task-blueprint-child-order-owner",
+		State:  core.TaskQueued, NextStage: core.StageImplement,
+		ParentTaskID: parent.ID, OriginSpecVersion: 1, OriginSubID: "SUB-1",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, nil, nil)
+	if err := dispatcher.DispatchNow(ctx, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, parent.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("parent orders=%+v err=%v", orders, err)
+	}
+}
+
 func newConcurrentSpecDispatchStore(st store.Store) *concurrentSpecDispatchStore {
 	return &concurrentSpecDispatchStore{
 		Store:          st,

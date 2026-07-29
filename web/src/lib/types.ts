@@ -77,9 +77,22 @@ export interface Task {
   next_stage?: Stage
   recovery_stage?: Stage
   parent_task_id?: string
+  origin_spec_version?: number
+  origin_sub_id?: string
+  dependencies?: TaskRelation[]
+  blocking_task_ids?: string[]
+  children?: TaskRelation[]
   feature_id?: string
   github?: GitHubLifecycle
   created_at: string
+}
+
+export interface TaskRelation {
+  id: string
+  title: string
+  state: TaskState
+  origin_spec_version?: number
+  origin_sub_id?: string
 }
 
 export interface Job {
@@ -147,6 +160,7 @@ export interface SpecVersion {
   acceptance_count: number
   acceptance: AcceptanceCriterion[] | null
   decomposition: DecompositionItem[] | null
+  materialized_children?: TaskRelation[]
   approved: boolean
   created_at: string
   approved_at?: string
@@ -442,6 +456,7 @@ export interface WorkOrder {
   stage: 'spec' | 'implement' | 'review'
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
+  blocking_task_ids?: string[]
   claimed_by?: string
   session_id?: string
   agent?: string

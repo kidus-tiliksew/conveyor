@@ -384,6 +384,12 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       // The approval intervention renders the richer human "Approved" card.
       // Retain the audit event in the API without repeating it in the timeline.
       return undefined
+    case 'blueprint.materialized':
+      return {
+        title: `Blueprint approved — ${typeof payload.children_total === 'number' ? payload.children_total : payload.children_created ?? '?'} tasks created`,
+      }
+    case 'blueprint.closed':
+      return { title: 'Blueprint completed — all child tasks reached a terminal outcome' }
     case 'github_issue.publication_queued':
       return { title: 'GitHub issue publication queued' }
     case 'github_issue.publication_retry':

@@ -55,12 +55,19 @@ func (c *client) createTaskWithMode(body, repo, base string, mode core.TaskMode,
 }
 
 func (c *client) createTaskWithSetup(body, repo, base string, hold bool, mode core.TaskMode, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
+	return c.createTaskWithDependencies(body, repo, base, hold, mode, specApproval, mergeApproval, setup, nil)
+}
+
+func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, mode core.TaskMode, specApproval, mergeApproval *bool, setup string, dependsOn []string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
 	payload := map[string]any{"body": body, "repo": repo, "base_branch": base, "source": "cli"}
 	if setup != "" {
 		payload["setup"] = setup
+	}
+	if len(dependsOn) > 0 {
+		payload["depends_on"] = dependsOn
 	}
 	if hold {
 		payload["hold"] = true

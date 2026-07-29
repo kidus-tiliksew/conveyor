@@ -155,6 +155,7 @@ export interface CreateTaskInput {
   spec_approval?: boolean
   merge_approval?: boolean
   setup?: string
+  depends_on?: string[]
 }
 
 export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); const result = await response.json() as WorkerList; return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) } }

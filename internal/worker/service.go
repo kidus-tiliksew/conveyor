@@ -567,6 +567,9 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if getErr != nil || task.Hold {
 			continue
 		}
+		if len(task.BlockingTaskIDs) > 0 {
+			continue
+		}
 		orderCfg := cfg
 		if task.SetupContract.Name != "" {
 			orderCfg = cfg.WithSetup(task.SetupContract)
@@ -651,6 +654,9 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	}
 	if task.Hold {
 		return core.WorkOrder{}, fmt.Errorf("task is held for operator claiming")
+	}
+	if len(task.BlockingTaskIDs) > 0 {
+		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))
 	}
 	if task.SetupContract.Name != "" {
 		cfg = cfg.WithSetup(task.SetupContract)

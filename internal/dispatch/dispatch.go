@@ -148,6 +148,11 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 }
 
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
+	if task.ParentTaskID == "" && task.NextStage == core.StageImplement && len(task.Children) > 0 {
+		// A blueprint parent is a batch anchor, never implementation work
+		// (spec §4.1). Its children own the implement orders.
+		return nil
+	}
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
@@ -769,13 +774,20 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
 		return version, d.transition(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement)
 	}
-	if err = d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
+	children, err := d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, version.Version)
+	if err != nil {
 		return core.SpecVersion{}, err
 	}
 	if err = d.queueApprovedIssue(ctx, task, version); err != nil {
 		return core.SpecVersion{}, err
 	}
-	return version, d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageImplement, "")
+	if err = d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageImplement, ""); err != nil {
+		return core.SpecVersion{}, err
+	}
+	for _, child := range children {
+		d.Enqueue(ctx, child.ID)
+	}
+	return version, nil
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
@@ -919,13 +931,20 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			if !ok {
 				return fmt.Errorf("task %s has no spec", task.ID)
 			}
-			if err = d.Store.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
-				return err
+			children, materializeErr := d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, spec.Version)
+			if materializeErr != nil {
+				return materializeErr
 			}
 			if err = d.queueApprovedIssue(ctx, task, spec); err != nil {
 				return err
 			}
-			return d.transition(ctx, task.ID, core.TaskInterventionApproveSpec, core.StageImplement, "")
+			if err = d.transition(ctx, task.ID, core.TaskInterventionApproveSpec, core.StageImplement, ""); err != nil {
+				return err
+			}
+			for _, child := range children {
+				d.Enqueue(ctx, child.ID)
+			}
+			return nil
 		}
 		head := task.ReviewedHeadSHA
 		if head == "" {
@@ -1273,7 +1292,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "result": "already_merged"})}); err != nil {
 			return err
 		}
-		return d.transition(ctx, current.ID, core.TaskMergeConfirm, "", "")
+		return d.confirmTaskMerged(ctx, current.ID)
 	}
 	if pr.State != "open" {
 		return d.recordMergeFailure(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State))
@@ -1330,7 +1349,25 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL})}); err != nil {
 		return err
 	}
-	return d.transition(ctx, current.ID, core.TaskMergeConfirm, "", "")
+	return d.confirmTaskMerged(ctx, current.ID)
+}
+
+func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
+	if err := d.transition(ctx, taskID, core.TaskMergeConfirm, "", ""); err != nil {
+		return err
+	}
+	dependents, err := d.Store.ListDependentTaskIDs(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	for _, dependentID := range dependents {
+		// The original queued order and FIFO timestamp remain untouched. This
+		// dispatch nudge only makes the newly satisfied task visible promptly
+		// to a waiting worker (spec §6.3).
+		_ = d.Store.EnsureTaskEnqueued(ctx, dependentID)
+		d.Enqueue(ctx, dependentID)
+	}
+	return nil
 }
 
 func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {

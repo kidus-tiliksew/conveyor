@@ -140,6 +140,7 @@ func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
 	var repo, base, body, mode, setup, specGate, mergeGate string
+	var dependsOn []string
 	var hold bool
 	newCmd := &cobra.Command{
 		Use:   "new",
@@ -154,7 +155,7 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithSetup(body, repo, base, hold, core.TaskMode(mode), specApproval, mergeApproval, setup)
+			t, err := newClient().createTaskWithDependencies(body, repo, base, hold, core.TaskMode(mode), specApproval, mergeApproval, setup, dependsOn)
 			if err != nil {
 				return err
 			}
@@ -171,6 +172,7 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&setup, "setup", "", "named execution setup (defaults to workspace default)")
 	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
+	newCmd.Flags().StringSliceVar(&dependsOn, "depends-on", nil, "open task ID that must merge first (repeatable)")
 
 	listCmd := &cobra.Command{
 		Use: "list", Short: "List tasks",

@@ -87,6 +87,14 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	}
 	out := orders[:0]
 	for _, order := range orders {
+		blocking, blockingErr := s.Store.ListBlockingTaskIDs(ctx, order.TaskID)
+		if blockingErr != nil {
+			return nil, blockingErr
+		}
+		order.BlockingTaskIDs = blocking
+		if len(blocking) > 0 {
+			order.Claimable = false
+		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
 			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
 			out = append(out, order)
@@ -464,6 +472,10 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if err != nil {
 		return Context{}, err
 	}
+	order.BlockingTaskIDs = append([]string(nil), task.BlockingTaskIDs...)
+	if len(order.BlockingTaskIDs) > 0 {
+		order.Claimable = false
+	}
 	role, err := s.Pack.Role(order.Stage)
 	if err != nil {
 		return Context{}, err
@@ -482,6 +494,7 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
 		return Context{}, getErr
 	} else if ok {
+		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
 		if order.Stage == core.StageSpec {
 			result.PriorSpec = &spec
 		} else if spec.Approved {
@@ -1107,6 +1120,13 @@ func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
 	}
 	if current.State == core.WorkOrderCancelled {
 		return store.ErrWorkOrderCancelled
+	}
+	blocking, err := s.Store.ListBlockingTaskIDs(ctx, current.TaskID)
+	if err != nil {
+		return err
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("task %s is blocked by unmerged dependencies: %s", current.TaskID, strings.Join(blocking, ", "))
 	}
 	return nil
 }

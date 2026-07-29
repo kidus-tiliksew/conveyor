@@ -129,10 +129,29 @@ type Task struct {
 	State              TaskState             `json:"state"`
 	NextStage          Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage      Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID       string                `json:"parent_task_id,omitempty"` // stacked tasks (spec §8.3)
-	FeatureID          string                `json:"feature_id,omitempty"`     // requirements-tree assignment (spec §21.4)
-	GitHub             *GitHubLifecycle      `json:"github,omitempty"`         // durable forge projection (spec §21.12 change 5)
+	ParentTaskID       string                `json:"parent_task_id,omitempty"` // blueprint parent (spec §4.1)
+	OriginSpecVersion  int                   `json:"origin_spec_version,omitempty"`
+	OriginSubID        string                `json:"origin_sub_id,omitempty"`
+	Dependencies       []TaskRelation        `json:"dependencies,omitempty"`
+	BlockingTaskIDs    []string              `json:"blocking_task_ids,omitempty"`
+	Children           []TaskRelation        `json:"children,omitempty"`
+	FeatureID          string                `json:"feature_id,omitempty"` // requirements-tree assignment (spec §21.4)
+	GitHub             *GitHubLifecycle      `json:"github,omitempty"`     // durable forge projection (spec §21.12 change 5)
 	CreatedAt          time.Time             `json:"created_at"`
+}
+
+// TaskRelation is the compact live reference used by dependency and blueprint
+// read models. Blocking remains derived from relation state (spec §§4.1, 6.3).
+type TaskRelation struct {
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	State             TaskState `json:"state"`
+	OriginSpecVersion int       `json:"origin_spec_version,omitempty"`
+	OriginSubID       string    `json:"origin_sub_id,omitempty"`
+}
+
+func TaskTerminal(state TaskState) bool {
+	return state == TaskMerged || state == TaskClosed
 }
 
 type GitHubPublicationState string
@@ -446,6 +465,7 @@ type WorkOrder struct {
 	Stage                  Stage            `json:"stage"`
 	State                  WorkOrderState   `json:"state"`
 	Claimable              bool             `json:"claimable"`
+	BlockingTaskIDs        []string         `json:"blocking_task_ids,omitempty"`
 	ClaimantID             string           `json:"claimed_by,omitempty"`
 	SessionID              string           `json:"session_id,omitempty"`
 	ClientTokenHash        string           `json:"-"`
@@ -786,17 +806,18 @@ type Artifact struct {
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on
 // the exact version that becomes the implementation contract (spec §4.1).
 type SpecVersion struct {
-	TaskID          string          `json:"task_id"`
-	Version         int             `json:"version"`
-	Content         string          `json:"content"`
-	AcceptanceCount int             `json:"acceptance_count"`
-	Acceptance      json.RawMessage `json:"acceptance"`
-	Decomposition   json.RawMessage `json:"decomposition"`
-	Agent           string          `json:"agent,omitempty"`
-	Model           string          `json:"model,omitempty"`
-	Approved        bool            `json:"approved"`
-	CreatedAt       time.Time       `json:"created_at"`
-	ApprovedAt      time.Time       `json:"approved_at,omitempty"`
+	TaskID               string          `json:"task_id"`
+	Version              int             `json:"version"`
+	Content              string          `json:"content"`
+	AcceptanceCount      int             `json:"acceptance_count"`
+	Acceptance           json.RawMessage `json:"acceptance"`
+	Decomposition        json.RawMessage `json:"decomposition"`
+	MaterializedChildren []TaskRelation  `json:"materialized_children,omitempty"`
+	Agent                string          `json:"agent,omitempty"`
+	Model                string          `json:"model,omitempty"`
+	Approved             bool            `json:"approved"`
+	CreatedAt            time.Time       `json:"created_at"`
+	ApprovedAt           time.Time       `json:"approved_at,omitempty"`
 }
 
 // JSONPayload is the single fallback contract for JSON stored inside events.

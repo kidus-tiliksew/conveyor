@@ -198,7 +198,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId.startsWith('merge-') ? 'approved' : 'running',
+		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -213,10 +213,20 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
         review: { seats: [{ harness: 'codex', model: 'gpt-review', effort: 'medium' }] },
         refresh_review: 'delta',
       } : undefined,
+      parent_task_id: taskId === 'blueprint-child' ? 'blueprint-parent' : undefined,
+      origin_spec_version: taskId === 'blueprint-child' ? 1 : undefined,
+      origin_sub_id: taskId === 'blueprint-child' ? 'SUB-3' : undefined,
+      blocking_task_ids: taskId === 'blueprint-child' ? ['blueprint-sub-2'] : undefined,
+      dependencies: taskId === 'blueprint-child' ? [{ id: 'blueprint-sub-2', title: 'Runtime', state: 'running' }] : undefined,
+      children: taskId === 'blueprint-parent' ? [
+        { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
+        { id: 'blueprint-sub-2', title: 'Runtime', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-2' },
+        { id: 'blueprint-child', title: 'Dashboard', state: 'queued', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
+      ] : undefined,
       created_at: createdAt,
     },
 		jobs: reviewActivity.jobs,
-		events: reviewActivity.events,
+		events: taskId === 'blueprint-parent' ? [{ id: 1, task_id: taskId, kind: 'blueprint.materialized', actor_id: 'system', actor_role: 'system' as const, payload: { version: 1, children_total: 3 }, at: createdAt }] : reviewActivity.events,
     interventions: taskId === 'spec-approval' ? [{
 		id: 1,
 		task_id: taskId,
@@ -242,7 +252,16 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       content: specContent,
       acceptance_count: 0,
       acceptance: [],
-      decomposition: [],
+      decomposition: taskId === 'blueprint-parent' ? [
+        { id: 'SUB-1', repo: 'conveyor', summary: 'Persistence', depends_on: [] },
+        { id: 'SUB-2', repo: 'conveyor', summary: 'Runtime', depends_on: ['SUB-1'] },
+        { id: 'SUB-3', repo: 'conveyor', summary: 'Dashboard', depends_on: ['SUB-2'] },
+      ] : [],
+      materialized_children: taskId === 'blueprint-parent' ? [
+        { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
+        { id: 'blueprint-sub-2', title: 'Runtime', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-2' },
+        { id: 'blueprint-child', title: 'Dashboard', state: 'queued', origin_spec_version: 1, origin_sub_id: 'SUB-3' },
+      ] : undefined,
       approved: true,
       created_at: createdAt,
       approved_at: createdAt,
@@ -1088,4 +1107,18 @@ test('spec diagrams render best-effort and malformed Mermaid falls back to sourc
 	await page.goto('/tasks/mermaid-invalid/full')
 	await expect(page.locator('code.language-mermaid')).toContainText('this is deliberately malformed')
 	await expect(page.getByRole('heading', { name: 'Specification' }).first()).toBeVisible()
+})
+
+test('blueprint and dependency details remain linked and read only', async ({ page }) => {
+	await page.goto('/tasks/blueprint-parent/full')
+	await expect(page.getByRole('heading', { name: 'Blueprint tasks' })).toBeVisible()
+	await expect(page.getByText('2 of 3 merged')).toBeVisible()
+	await expect(page.getByRole('link', { name: 'Dashboard' }).first()).toHaveAttribute('href', '/tasks/blueprint-child')
+	await expect(page.getByText('Blueprint approved — 3 tasks created')).toBeVisible()
+	await expect(page.getByRole('link', { name: 'Runtime' }).first()).toBeVisible()
+
+	await page.goto('/tasks/blueprint-child/full')
+	await expect(page.getByText('Blocked')).toBeVisible()
+	await expect(page.getByText(/blueprint-parent · spec v1/)).toBeVisible()
+	await expect(page.getByRole('link', { name: /blueprint-sub-2 · running/ })).toBeVisible()
 })
