@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
 
 type registeredWorktree struct {
@@ -26,10 +27,16 @@ type worktreeCleanupResult struct {
 
 // checkoutTask resolves one safe, task-dedicated checkout without switching or
 // rewriting the operator's primary checkout (spec §21.8).
-func checkoutTask(ctx context.Context, branch, base, repo, taskID, destination string) (string, error) {
+func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
 		return "", fmt.Errorf("checkout must run inside the target repository: %w", err)
+	}
+	// Identity precedes fetches, ref inspection, worktree reuse, and creation.
+	// A directory label is never accepted as proof of repository ownership
+	// (spec §8.2).
+	if err := gitx.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
+		return "", err
 	}
 	worktrees, err := listRegisteredWorktrees(ctx, root)
 	if err != nil {
@@ -48,7 +55,8 @@ func checkoutTask(ctx context.Context, branch, base, repo, taskID, destination s
 		}
 	}
 
-	if destination == "" {
+	implicitDestination := destination == ""
+	if implicitDestination {
 		destination, err = implicitCheckoutDestination(primary, repo, taskID)
 		if err != nil {
 			return "", err
@@ -145,6 +153,18 @@ func checkoutTask(ctx context.Context, branch, base, repo, taskID, destination s
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("inspect destination %s: %w", destination, err)
 	}
+	if implicitDestination {
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			return "", fmt.Errorf("create implicit worktree container: %w", err)
+		}
+		validated, err := implicitCheckoutDestination(primary, repo, taskID)
+		if err != nil {
+			return "", err
+		}
+		if filepath.Clean(validated) != filepath.Clean(destination) {
+			return "", fmt.Errorf("implicit worktree destination changed during validation: %s became %s", destination, validated)
+		}
+	}
 
 	switch {
 	case localExists:
@@ -193,39 +213,8 @@ func removeTaskWorktree(ctx context.Context, branch string, state core.TaskState
 	if filepath.Clean(root) != filepath.Clean(primary) {
 		return result, fmt.Errorf("done must run inside the repository's primary checkout")
 	}
-	worktrees, err := listRegisteredWorktrees(ctx, root)
-	if err != nil {
-		return result, err
-	}
-	if gitRefExists(ctx, root, "refs/heads/"+branch) {
-		result.Branch = "retained"
-	}
-	var assigned *registeredWorktree
-	for i := range worktrees {
-		if worktrees[i].Branch == "refs/heads/"+branch {
-			assigned = &worktrees[i]
-			break
-		}
-	}
-	if assigned == nil {
-		return result, nil
-	}
-	if filepath.Clean(assigned.Path) == filepath.Clean(primary) {
-		return result, fmt.Errorf("refusing to remove the primary checkout")
-	}
-	result.Path = assigned.Path
-	if _, err := os.Stat(assigned.Path); err == nil {
-		if _, err := requireSafeWorktree(ctx, assigned.Path); err != nil {
-			return result, fmt.Errorf("refusing task worktree cleanup: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return result, fmt.Errorf("inspect task worktree %s: %w", assigned.Path, err)
-	}
-	if _, err := gitOutput(ctx, root, "worktree", "remove", assigned.Path); err != nil {
-		return result, err
-	}
-	result.Worktree = "removed"
-	return result, nil
+	cleanup, err := gitx.CleanupTaskWorktree(ctx, primary, branch)
+	return worktreeCleanupResult(cleanup), err
 }
 
 func repositoryRoot(ctx context.Context) (string, error) {
@@ -257,8 +246,9 @@ func canonicalWorktreePath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(cleaned)), nil
 }
 
-// implicitCheckoutDestination keeps the deterministic worktree name to one
-// direct sibling component, independently of configuration validation (spec §8.2).
+// implicitCheckoutDestination keeps the deterministic worktree name beneath
+// one fixed canonical container directly beside the primary checkout,
+// independently of configuration validation (spec §8.2).
 func implicitCheckoutDestination(primary, repo, taskID string) (string, error) {
 	if !safeImplicitCheckoutComponent(repo) {
 		return "", fmt.Errorf("refusing implicit checkout destination: repository name %q is not one safe path component", repo)
@@ -271,12 +261,22 @@ func implicitCheckoutDestination(primary, repo, taskID string) (string, error) {
 		return "", fmt.Errorf("resolve primary checkout path: %w", err)
 	}
 	siblingParent := filepath.Dir(canonicalPrimary)
-	destination, err := canonicalWorktreePath(filepath.Join(siblingParent, repo+"-task-"+taskID))
-	if err != nil {
-		return "", err
+	container := filepath.Join(siblingParent, "conveyor-worktrees")
+	if resolved, resolveErr := filepath.EvalSymlinks(container); resolveErr == nil {
+		if filepath.Clean(resolved) != filepath.Clean(container) {
+			return "", fmt.Errorf("refusing implicit checkout destination: container %s resolves outside the canonical path", container)
+		}
+	} else if !os.IsNotExist(resolveErr) {
+		return "", fmt.Errorf("resolve worktree container %s: %w", container, resolveErr)
 	}
-	if filepath.Clean(filepath.Dir(destination)) != filepath.Clean(siblingParent) {
-		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not a sibling of primary checkout %s", destination, canonicalPrimary)
+	destination := filepath.Join(container, repo+"-task-"+taskID)
+	if resolved, resolveErr := filepath.EvalSymlinks(destination); resolveErr == nil {
+		destination = filepath.Clean(resolved)
+	} else if !os.IsNotExist(resolveErr) {
+		return "", fmt.Errorf("resolve worktree path %s: %w", destination, resolveErr)
+	}
+	if filepath.Clean(filepath.Dir(destination)) != filepath.Clean(container) {
+		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not inside canonical container %s", destination, container)
 	}
 	return destination, nil
 }

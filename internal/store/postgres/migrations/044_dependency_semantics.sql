@@ -1,4 +1,4 @@
--- Dependency outcomes, operator unlink receipts, and suspended queue clocks
+-- Migration 044: dependency outcomes, operator unlink receipts, and suspended queue clocks
 -- (spec §§6.3, 13.2, 16; §21.47).
 ALTER TABLE work_orders
     ADD COLUMN queue_blocked_at timestamptz;

@@ -23,17 +23,54 @@ func TestAssignedCheckoutFromEnvironmentHonorsOnlyItsOwnTask(t *testing.T) {
 	t.Setenv("CONVEYOR_TASK_BRANCH", "conveyor/task-1")
 	t.Setenv("CONVEYOR_TASK_BASE_BRANCH", "main")
 	t.Setenv("CONVEYOR_TASK_REPO", "conveyor")
+	t.Setenv("CONVEYOR_TASK_REPO_URL", "https://github.com/kidus-tiliksew/conveyor.git")
 
-	branch, base, repo, ok := assignedCheckoutFromEnvironment("task-1")
-	if !ok || branch != "conveyor/task-1" || base != "main" || repo != "conveyor" {
-		t.Fatalf("assignment = %q %q %q ok=%v", branch, base, repo, ok)
+	branch, base, repo, repoURL, ok := assignedCheckoutFromEnvironment("task-1")
+	if !ok || branch != "conveyor/task-1" || base != "main" || repo != "conveyor" || repoURL != "https://github.com/kidus-tiliksew/conveyor.git" {
+		t.Fatalf("assignment = %q %q %q %q ok=%v", branch, base, repo, repoURL, ok)
 	}
-	if _, _, _, ok := assignedCheckoutFromEnvironment("task-2"); ok {
+	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-2"); ok {
 		t.Fatal("assignment for a different task must fall back to the authenticated lookup")
 	}
+	t.Setenv("CONVEYOR_TASK_REPO_URL", "")
+	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
+		t.Fatal("assignment without configured repository identity must fall back to the authenticated lookup")
+	}
+	t.Setenv("CONVEYOR_TASK_REPO_URL", "https://github.com/kidus-tiliksew/conveyor.git")
 	t.Setenv("CONVEYOR_TASK_BRANCH", "")
-	if _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
+	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
 		t.Fatal("incomplete assignment must fall back to the authenticated lookup")
+	}
+}
+
+func TestCheckoutRepositoryIdentityAppliesBeforeMutationAndPathOverride(t *testing.T) {
+	fixture := newGitFixture(t)
+	destination := filepath.Join(fixture.tmp, "operator-selected")
+	otherRepository := filepath.Join(fixture.tmp, "other-origin.git")
+
+	_, err := checkoutTask(context.Background(), "conveyor/task-mismatch", "main", "assigned-repo", otherRepository, "mismatch", destination)
+	if err == nil || !strings.Contains(err.Error(), "repository identity mismatch") ||
+		!strings.Contains(err.Error(), "assigned-repo") || !strings.Contains(err.Error(), "current repository") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-mismatch") {
+		t.Fatal("task branch created before repository identity rejection")
+	}
+	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("explicit destination created before repository identity rejection: %v", statErr)
+	}
+}
+
+func TestCheckoutAcceptsEquivalentConfiguredOriginForms(t *testing.T) {
+	fixture := newGitFixture(t)
+	destination := filepath.Join(fixture.tmp, "equivalent-origin")
+
+	got, err := checkoutTask(context.Background(), "conveyor/task-equivalent", "main", "conveyor", "file://"+fixture.origin, "equivalent", destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != destination {
+		t.Fatalf("destination = %q, want %q", got, destination)
 	}
 }
 
@@ -42,7 +79,7 @@ func TestCheckoutCreatesMissingBranchFromFreshBaseWithoutTouchingPrimary(t *test
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
 	fixture.advanceMain(t, "fresh-base.txt", "fresh base\n")
 
-	got, err := checkoutTask(context.Background(), "conveyor/task-missing", "main", "conveyor", "missing", "")
+	got, err := checkoutTask(context.Background(), "conveyor/task-missing", "main", "conveyor", fixture.origin, "missing", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +87,7 @@ func TestCheckoutCreatesMissingBranchFromFreshBaseWithoutTouchingPrimary(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(filepath.Dir(canonicalPrimary), "conveyor-task-missing")
+	want := filepath.Join(filepath.Dir(canonicalPrimary), "conveyor-worktrees", "conveyor-task-missing")
 	if got != want {
 		t.Fatalf("destination = %q, want %q", got, want)
 	}
@@ -68,7 +105,7 @@ func TestCheckoutReusesExistingLocalBranchWithoutReset(t *testing.T) {
 	localHead := fixture.createLocalBranch(t, branch, "local-only.txt", "preserve me\n")
 	destination := filepath.Join(fixture.tmp, "local-task")
 
-	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", "local", destination)
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "local", destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +124,7 @@ func TestCheckoutTracksExistingRemoteBranch(t *testing.T) {
 	remoteHead := fixture.createRemoteBranch(t, branch, "remote-only.txt", "remote work\n")
 	destination := filepath.Join(fixture.tmp, "override-path")
 
-	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", "remote", destination)
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "remote", destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +147,7 @@ func TestCheckoutFastForwardsAncestrySafeLocalBranch(t *testing.T) {
 	remoteHead := fixture.createRemoteBranch(t, branch, "remote-ahead.txt", "ahead\n")
 	destination := filepath.Join(fixture.tmp, "fast-forward")
 
-	if _, err := checkoutTask(context.Background(), branch, "main", "conveyor", "fast-forward", destination); err != nil {
+	if _, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "fast-forward", destination); err != nil {
 		t.Fatal(err)
 	}
 	if head := mustGitOutput(t, destination, "rev-parse", "HEAD"); head != remoteHead {
@@ -121,7 +158,7 @@ func TestCheckoutFastForwardsAncestrySafeLocalBranch(t *testing.T) {
 func TestCheckoutReusesOriginalRegisteredWorktreeAcrossRounds(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-review-round"
-	first, err := checkoutTask(context.Background(), branch, "main", "conveyor", "review-round", "")
+	first, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "review-round", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +167,7 @@ func TestCheckoutReusesOriginalRegisteredWorktreeAcrossRounds(t *testing.T) {
 	mustGit(t, first, "commit", "-m", "round one")
 	firstHead := mustGitOutput(t, first, "rev-parse", "HEAD")
 
-	second, err := checkoutTask(context.Background(), branch, "main", "conveyor", "review-round", filepath.Join(fixture.tmp, "ignored-override"))
+	second, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "review-round", filepath.Join(fixture.tmp, "ignored-override"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,15 +179,33 @@ func TestCheckoutReusesOriginalRegisteredWorktreeAcrossRounds(t *testing.T) {
 	}
 }
 
+func TestCheckoutReusesRegisteredWorktreeAtFormerSiblingLocation(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-legacy-location"
+	legacyPath := filepath.Join(fixture.tmp, "conveyor-task-legacy-location")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", branch, legacyPath, "origin/main")
+
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "legacy-location", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != legacyPath {
+		t.Fatalf("registered legacy worktree = %q, want %q", got, legacyPath)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.tmp, "conveyor-worktrees", "conveyor-task-legacy-location")); !os.IsNotExist(err) {
+		t.Fatalf("checkout relocated registered worktree: %v", err)
+	}
+}
+
 func TestCheckoutSupportsConcurrentTaskWorktreesAndPathOverride(t *testing.T) {
 	fixture := newGitFixture(t)
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
-	first, err := checkoutTask(context.Background(), "conveyor/task-one", "main", "conveyor", "one", "")
+	first, err := checkoutTask(context.Background(), "conveyor/task-one", "main", "conveyor", fixture.origin, "one", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	override := filepath.Join(fixture.tmp, "custom-two")
-	second, err := checkoutTask(context.Background(), "conveyor/task-two", "main", "conveyor", "two", override)
+	second, err := checkoutTask(context.Background(), "conveyor/task-two", "main", "conveyor", fixture.origin, "two", override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +217,7 @@ func TestCheckoutSupportsConcurrentTaskWorktreesAndPathOverride(t *testing.T) {
 	assertPrimaryUntouched(t, fixture.primary, primaryHead)
 }
 
-func TestCheckoutRejectsUnsafeImplicitSiblingComponents(t *testing.T) {
+func TestCheckoutRejectsUnsafeImplicitContainerComponents(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		repo   string
@@ -179,7 +234,7 @@ func TestCheckoutRejectsUnsafeImplicitSiblingComponents(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newGitFixture(t)
 			branch := "conveyor/task-unsafe-" + strings.ReplaceAll(test.name, " ", "-")
-			_, err := checkoutTask(context.Background(), branch, "main", test.repo, test.taskID, "")
+			_, err := checkoutTask(context.Background(), branch, "main", test.repo, fixture.origin, test.taskID, "")
 			if err == nil || !strings.Contains(err.Error(), "refusing implicit checkout destination") || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("checkout error = %v", err)
 			}
@@ -190,19 +245,23 @@ func TestCheckoutRejectsUnsafeImplicitSiblingComponents(t *testing.T) {
 	}
 }
 
-func TestCheckoutRejectsImplicitDestinationResolvedOutsideSiblingDirectory(t *testing.T) {
+func TestCheckoutRejectsImplicitDestinationResolvedOutsideContainer(t *testing.T) {
 	fixture := newGitFixture(t)
 	target := filepath.Join(fixture.tmp, "nested", "outside")
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	destination := filepath.Join(fixture.tmp, "conveyor-task-symlink")
+	container := filepath.Join(fixture.tmp, "conveyor-worktrees")
+	if err := os.Mkdir(container, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(container, "conveyor-task-symlink")
 	if err := os.Symlink(target, destination); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := checkoutTask(context.Background(), "conveyor/task-symlink", "main", "conveyor", "symlink", "")
-	if err == nil || !strings.Contains(err.Error(), "resolved path is not a sibling") {
+	_, err := checkoutTask(context.Background(), "conveyor/task-symlink", "main", "conveyor", fixture.origin, "symlink", "")
+	if err == nil || !strings.Contains(err.Error(), "resolved path is not inside canonical container") {
 		t.Fatalf("checkout error = %v", err)
 	}
 	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-symlink") {
@@ -210,10 +269,29 @@ func TestCheckoutRejectsImplicitDestinationResolvedOutsideSiblingDirectory(t *te
 	}
 }
 
-func TestCheckoutPathOverrideBypassesImplicitSiblingGuard(t *testing.T) {
+func TestCheckoutRejectsSymlinkedImplicitContainer(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := filepath.Join(fixture.tmp, "outside-container")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(fixture.tmp, "conveyor-worktrees")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := checkoutTask(context.Background(), "conveyor/task-container-symlink", "main", "conveyor", fixture.origin, "container-symlink", "")
+	if err == nil || !strings.Contains(err.Error(), "container") || !strings.Contains(err.Error(), "canonical path") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-container-symlink") {
+		t.Fatal("task branch created after symlinked container rejection")
+	}
+}
+
+func TestCheckoutPathOverrideBypassesImplicitContainerGuard(t *testing.T) {
 	fixture := newGitFixture(t)
 	destination := filepath.Join(fixture.tmp, "operator-selected")
-	got, err := checkoutTask(context.Background(), "conveyor/task-path-override", "main", "../malformed", "../malformed", destination)
+	got, err := checkoutTask(context.Background(), "conveyor/task-path-override", "main", "../malformed", fixture.origin, "../malformed", destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +305,7 @@ func TestCheckoutFailsSafelyForDirtyInProgressAndExistingPaths(t *testing.T) {
 		fixture := newGitFixture(t)
 		writeFile(t, filepath.Join(fixture.primary, "unrelated.txt"), "do not touch\n")
 		destination := filepath.Join(fixture.tmp, "dirty-task")
-		_, err := checkoutTask(context.Background(), "conveyor/task-dirty", "main", "conveyor", "dirty", destination)
+		_, err := checkoutTask(context.Background(), "conveyor/task-dirty", "main", "conveyor", fixture.origin, "dirty", destination)
 		if err == nil || !strings.Contains(err.Error(), "primary checkout is unsafe") {
 			t.Fatalf("checkout error = %v", err)
 		}
@@ -248,7 +326,7 @@ func TestCheckoutFailsSafelyForDirtyInProgressAndExistingPaths(t *testing.T) {
 		if err := os.MkdirAll(marker, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_, err := checkoutTask(context.Background(), "conveyor/task-operation", "main", "conveyor", "operation", filepath.Join(fixture.tmp, "operation-task"))
+		_, err := checkoutTask(context.Background(), "conveyor/task-operation", "main", "conveyor", fixture.origin, "operation", filepath.Join(fixture.tmp, "operation-task"))
 		if err == nil || !strings.Contains(err.Error(), "Git operation sequencer is in progress") {
 			t.Fatalf("checkout error = %v", err)
 		}
@@ -260,7 +338,7 @@ func TestCheckoutFailsSafelyForDirtyInProgressAndExistingPaths(t *testing.T) {
 		if err := os.Mkdir(destination, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_, err := checkoutTask(context.Background(), "conveyor/task-occupied", "main", "conveyor", "occupied", destination)
+		_, err := checkoutTask(context.Background(), "conveyor/task-occupied", "main", "conveyor", fixture.origin, "occupied", destination)
 		if err == nil || !strings.Contains(err.Error(), "already exists") {
 			t.Fatalf("checkout error = %v", err)
 		}
@@ -274,7 +352,7 @@ func TestCheckoutRejectsDivergentLocalAndRemoteTaskBranches(t *testing.T) {
 	fixture.createRemoteBranch(t, branch, "remote.txt", "remote\n")
 	destination := filepath.Join(fixture.tmp, "diverged")
 
-	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", "diverged", destination)
+	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "diverged", destination)
 	if err == nil || !strings.Contains(err.Error(), "diverged") {
 		t.Fatalf("checkout error = %v", err)
 	}
@@ -287,14 +365,14 @@ func TestCheckoutRejectsDivergentLocalAndRemoteTaskBranches(t *testing.T) {
 }
 
 func TestCheckoutRejectsDirtyRegisteredTaskWorktree(t *testing.T) {
-	newGitFixture(t)
+	fixture := newGitFixture(t)
 	branch := "conveyor/task-dirty-target"
-	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", "dirty-target", "")
+	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dirty-target", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(destination, "uncommitted.txt"), "keep\n")
-	_, err = checkoutTask(context.Background(), branch, "main", "conveyor", "dirty-target", "")
+	_, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dirty-target", "")
 	if err == nil || !strings.Contains(err.Error(), "task worktree") || !strings.Contains(err.Error(), "uncommitted") {
 		t.Fatalf("checkout error = %v", err)
 	}
@@ -307,7 +385,7 @@ func TestCheckoutRejectsAssignedBranchInSharedPrimaryCheckout(t *testing.T) {
 	mustGit(t, fixture.primary, "checkout", "-b", branch, "origin/main")
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
 
-	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", "primary", "")
+	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "primary", "")
 	if err == nil || !strings.Contains(err.Error(), "shared primary checkout") {
 		t.Fatalf("checkout error = %v", err)
 	}
@@ -322,7 +400,7 @@ func TestCheckoutAdoptsExplicitDedicatedClone(t *testing.T) {
 	branch := "conveyor/task-dedicated-clone"
 	mustGit(t, fixture.primary, "checkout", "-b", branch, "origin/main")
 
-	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", "dedicated-clone", fixture.primary)
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dedicated-clone", fixture.primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +416,7 @@ func TestCheckoutAdoptsExplicitDedicatedClone(t *testing.T) {
 func TestDoneCleansOnlyClosedTasksAndRetainsBranches(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-cleanup"
-	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", "cleanup", "")
+	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "cleanup", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,9 +446,9 @@ func TestDoneCleansOnlyClosedTasksAndRetainsBranches(t *testing.T) {
 }
 
 func TestDoneRefusesDirtyWorktreeAndHandlesMissingDirectory(t *testing.T) {
-	newGitFixture(t)
+	fixture := newGitFixture(t)
 	dirtyBranch := "conveyor/task-dirty-cleanup"
-	dirtyPath, err := checkoutTask(context.Background(), dirtyBranch, "main", "conveyor", "dirty-cleanup", "")
+	dirtyPath, err := checkoutTask(context.Background(), dirtyBranch, "main", "conveyor", fixture.origin, "dirty-cleanup", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +459,7 @@ func TestDoneRefusesDirtyWorktreeAndHandlesMissingDirectory(t *testing.T) {
 	assertFile(t, filepath.Join(dirtyPath, "dirty.txt"))
 
 	missingBranch := "conveyor/task-missing-directory"
-	missingPath, err := checkoutTask(context.Background(), missingBranch, "main", "conveyor", "missing-directory", "")
+	missingPath, err := checkoutTask(context.Background(), missingBranch, "main", "conveyor", fixture.origin, "missing-directory", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +470,7 @@ func TestDoneRefusesDirtyWorktreeAndHandlesMissingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Worktree != "removed" || result.Branch != "retained" {
+	if result.Worktree != "pruned" || result.Branch != "retained" {
 		t.Fatalf("missing-directory cleanup result = %+v", result)
 	}
 }

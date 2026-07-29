@@ -88,15 +88,20 @@ while the CLI is available.
 When the CLI is unavailable, apply this equivalent fallback without switching
 the primary checkout:
 
-1. Inspect the repository root, primary-checkout cleanliness and current
-   branch, `git worktree list --porcelain`, and merge/rebase/cherry-pick/revert
-   markers. Dirty unrelated work, detached or ambiguous state, or an
-   in-progress Git operation is a blocker. Never clean, stash, discard, or
-   repair it automatically.
+1. Before fetching or inspecting refs/worktrees, compare the current
+   checkout's normalized `origin` with the assigned configured repository URL
+   (`CONVEYOR_TASK_REPO_URL` in a worker session). Equivalent GitHub HTTPS/SSH
+   forms are acceptable; missing, ambiguous, or mismatched identity is a
+   blocker even with an explicit path. Then inspect the repository root,
+   primary-checkout cleanliness and current branch, `git worktree list
+   --porcelain`, and merge/rebase/cherry-pick/revert markers. Dirty unrelated
+   work, detached or ambiguous state, or an in-progress Git operation is a
+   blocker. Never clean, stash, discard, or repair it automatically.
 2. If a clean registered worktree already owns the assigned branch, reuse that
-   exact path. Otherwise use the deterministic sibling
-   `../<repo>-task-<task-id>` unless an explicit path was supplied. An existing
-   unregistered directory or conflicting worktree is a blocker.
+   exact path. Otherwise use the deterministic contained sibling
+   `../conveyor-worktrees/<repo>-task-<task-id>` unless an explicit path was
+   supplied. An existing unregistered directory, symlink escape, or conflicting
+   worktree is a blocker.
 3. Fetch the assigned base from `origin` and verify `origin/<base>`. Inspect the
    local task ref and query/fetch the exact remote task ref. If both exist,
    allow only an ancestry-safe relationship; fast-forward normally when remote

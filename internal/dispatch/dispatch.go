@@ -148,7 +148,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 }
 
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
-	if task.ParentTaskID == "" && task.NextStage == core.StageImplement && len(task.Children) > 0 {
+	if isBlueprintAnchor(task) {
 		// A blueprint parent is a batch anchor, never implementation work
 		// (spec §4.1). Its children own the implement orders.
 		return nil
@@ -183,6 +183,13 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
 	return d.runInProcess(ctx, cfg, task, route)
+}
+
+func isBlueprintAnchor(task core.Task) bool {
+	return task.ParentTaskID == "" &&
+		task.State == core.TaskQueued &&
+		task.NextStage == core.StageImplement &&
+		len(task.Children) > 0
 }
 
 func (d *Dispatcher) activeImplementationWorkOrder(ctx context.Context, taskID, reasonCode string) (core.WorkOrder, bool, error) {

@@ -346,15 +346,29 @@ func checkoutCmd() *cobra.Command {
 		Short: "Create or reuse the task's dedicated local worktree (spec §21.8)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			branch, base, repo, ok := assignedCheckoutFromEnvironment(args[0])
+			branch, base, repo, repoURL, ok := assignedCheckoutFromEnvironment(args[0])
 			if !ok {
-				task, err := newClient().getTask(args[0])
+				client := newClient()
+				task, err := client.getTask(args[0])
 				if err != nil {
 					return err
 				}
+				record, err := client.getWorkspaceConfig()
+				if err != nil {
+					return fmt.Errorf("load configured identity for repository %q: %w", task.Repo, err)
+				}
+				for _, configured := range record.Document.Repos {
+					if configured.Name == task.Repo {
+						repoURL = configured.URL
+						break
+					}
+				}
+				if strings.TrimSpace(repoURL) == "" {
+					return fmt.Errorf("assigned repository %q is missing from workspace configuration", task.Repo)
+				}
 				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
 			}
-			path, err := checkoutTask(cmd.Context(), branch, base, repo, args[0], destination)
+			path, err := checkoutTask(cmd.Context(), branch, base, repo, repoURL, args[0], destination)
 			if err != nil {
 				return err
 			}
@@ -362,7 +376,7 @@ func checkoutCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling <repo>-task-<id>)")
+	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling conveyor-worktrees/<repo>-task-<id>)")
 	return cmd
 }
 
@@ -371,17 +385,18 @@ func checkoutCmd() *cobra.Command {
 // authorize workspace REST reads, so a worker-spawned agent cannot call
 // getTask; the assignment is only honored for the exact task it was issued
 // for, and every other invocation falls back to the authenticated lookup.
-func assignedCheckoutFromEnvironment(taskID string) (branch, base, repo string, ok bool) {
+func assignedCheckoutFromEnvironment(taskID string) (branch, base, repo, repoURL string, ok bool) {
 	if strings.TrimSpace(os.Getenv("CONVEYOR_TASK_ID")) != taskID {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	branch = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_BRANCH"))
 	base = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_BASE_BRANCH"))
 	repo = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_REPO"))
-	if branch == "" || base == "" || repo == "" {
-		return "", "", "", false
+	repoURL = strings.TrimSpace(os.Getenv("CONVEYOR_TASK_REPO_URL"))
+	if branch == "" || base == "" || repo == "" || repoURL == "" {
+		return "", "", "", "", false
 	}
-	return branch, base, repo, true
+	return branch, base, repo, repoURL, true
 }
 
 func doneCmd() *cobra.Command {
