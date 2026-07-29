@@ -2928,27 +2928,42 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state})})
 	}
 	if task.ParentTaskID != "" && core.TaskTerminal(state) {
-		allTerminal := true
-		childCount := 0
-		for _, sibling := range m.tasks {
-			if sibling.ParentTaskID != task.ParentTaskID {
-				continue
-			}
-			childCount++
-			if !core.TaskTerminal(sibling.State) {
-				allTerminal = false
-				break
-			}
-		}
-		parent := m.tasks[task.ParentTaskID]
-		if childCount > 0 && allTerminal && parent.State == core.TaskQueued {
-			parent.State = core.TaskClosed
-			m.tasks[parent.ID] = parent
-			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskQueued, "to": core.TaskClosed, "command": core.TaskBlueprintClose})})
-			m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
-		}
+		m.closeBlueprintParentLocked(ctx, task.ParentTaskID)
+	}
+	if command.Kind == core.TaskRecover && m.closeBlueprintParentLocked(ctx, task.ID) {
+		task = m.tasks[task.ID]
 	}
 	return task, nil
+}
+
+func (m *memory) closeBlueprintParentLocked(ctx context.Context, parentID string) bool {
+	parent, ok := m.tasks[parentID]
+	if !ok {
+		return false
+	}
+	from := parent.State
+	closed, err := core.TransitionTask(from, core.TaskBlueprintClose)
+	if err != nil {
+		return false
+	}
+	childCount := 0
+	for _, child := range m.tasks {
+		if child.ParentTaskID != parentID {
+			continue
+		}
+		childCount++
+		if !core.TaskTerminal(child.State) {
+			return false
+		}
+	}
+	if childCount == 0 {
+		return false
+	}
+	parent.State = closed
+	m.tasks[parent.ID] = parent
+	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": closed, "command": core.TaskBlueprintClose})})
+	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
+	return true
 }
 
 func (m *memory) UpdateTaskClassification(ctx context.Context, id, class string) error {

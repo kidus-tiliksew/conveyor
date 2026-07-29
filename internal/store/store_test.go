@@ -42,6 +42,43 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryBlueprintClosesAfterRecovery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemory()
+	parent := core.Task{
+		ID: "memory-blueprint-parent", State: core.TaskQueued,
+		NextStage: core.StageImplement, CreatedAt: time.Now(),
+	}
+	child := core.Task{
+		ID: "memory-blueprint-child", State: core.TaskQueued,
+		NextStage: core.StageImplement, ParentTaskID: parent.ID, CreatedAt: time.Now(),
+	}
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, parent.ID, taskops.Command{
+		Kind: core.TaskDispatchFailFinal, RecoveryStage: core.StageImplement, ProjectStages: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, child.ID, taskops.Command{Kind: core.TaskCancel}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := taskops.New(st).Perform(ctx, parent.ID, taskops.Command{
+		Kind: core.TaskRecover, NextStage: core.StageImplement, ProjectStages: true,
+	})
+	if err != nil || outcome.Task.State != core.TaskClosed {
+		t.Fatalf("recovered blueprint=%+v err=%v", outcome.Task, err)
+	}
+	if count, countErr := st.CountEvents(ctx, parent.ID, "blueprint.closed"); countErr != nil || count != 1 {
+		t.Fatalf("blueprint.closed events=%d err=%v", count, countErr)
+	}
+}
+
 func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(t.Context(), "demo")

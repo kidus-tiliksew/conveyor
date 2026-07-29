@@ -36,6 +36,73 @@ type failingStageOrderStore struct {
 	err error
 }
 
+func TestRiverDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	suffix := core.NewTaskID()
+	workspace := "dispatch-blueprint-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Dispatch blueprint "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := store.WithWorkspace(ctx, workspace)
+	parent := core.Task{
+		ID: "blueprint-parent-" + suffix, Workspace: workspace, Repo: "repo", Title: "Blueprint",
+		BaseBranch: "main", Branch: "conveyor/blueprint-parent-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+	child := core.Task{
+		ID: "blueprint-child-" + suffix, Workspace: workspace, Repo: "repo", Title: "Blueprint child",
+		BaseBranch: "main", Branch: "conveyor/blueprint-child-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageImplement, ParentTaskID: parent.ID,
+		OriginSpecVersion: 1, OriginSubID: "SUB-1", CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(taskCtx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateTask(taskCtx, child); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err = tx.Exec(ctx, `DELETE FROM river_job
+		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`,
+		workspace, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, cfg, nil)
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, &dispatchTaskWorker{dispatcher: dispatcher})
+	result, err := testWorker.Work(ctx, t, tx,
+		queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID},
+		&river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts})
+	if err != nil {
+		t.Fatalf("blueprint dispatch returned %v, want completion", err)
+	}
+	if result.Job.State != rivertype.JobStateCompleted || result.Job.Attempt != 1 {
+		t.Fatalf("blueprint River row state=%s attempt=%d, want completed attempt 1", result.Job.State, result.Job.Attempt)
+	}
+	persisted, err := st.GetTask(taskCtx, parent.ID)
+	if err != nil || persisted.State != core.TaskQueued {
+		t.Fatalf("blueprint parent=%+v err=%v", persisted, err)
+	}
+	orders, err := st.ListTaskWorkOrders(taskCtx, parent.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("blueprint parent orders=%+v err=%v", orders, err)
+	}
+}
+
 func (s *failingStageOrderStore) CreateStageWorkOrderCommand(context.Context, taskops.TaskLease, core.Job, core.WorkOrder) (bool, error) {
 	return false, s.err
 }

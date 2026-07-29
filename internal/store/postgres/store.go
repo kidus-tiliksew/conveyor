@@ -705,52 +705,72 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			}
 		}
 		if before.ParentTaskID.Valid && core.TaskTerminal(state) {
-			parentKey := "conveyor:blueprint-parent:" + before.WorkspaceID + ":" + before.ParentTaskID.String
-			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", parentKey); err != nil {
+			if _, err := s.closeBlueprintParentTx(ctx, tx, q, before.ParentTaskID.String); err != nil {
 				return err
-			}
-			var childCount, nonTerminal int
-			if err := tx.QueryRow(ctx, `SELECT count(*),
-				count(*) FILTER (WHERE state NOT IN ('merged','closed'))
-				FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`,
-				before.WorkspaceID, before.ParentTaskID.String).Scan(&childCount, &nonTerminal); err != nil {
-				return err
-			}
-			if childCount > 0 && nonTerminal == 0 {
-				parent, parentErr := q.GetTask(ctx, db.GetTaskParams{ID: before.ParentTaskID.String, WorkspaceID: before.WorkspaceID})
-				if parentErr != nil {
-					return parentErr
-				}
-				if core.TaskState(parent.State) == core.TaskQueued {
-					closed, transitionErr := core.TransitionTask(core.TaskQueued, core.TaskBlueprintClose)
-					if transitionErr != nil {
-						return transitionErr
-					}
-					if _, parentErr = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
-						ID: parent.ID, WorkspaceID: before.WorkspaceID, State: string(closed),
-					}); parentErr != nil {
-						return parentErr
-					}
-					if parentErr = insertEvent(ctx, q, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
-						"from": core.TaskQueued, "to": closed, "command": core.TaskBlueprintClose,
-					})}); parentErr != nil {
-						return parentErr
-					}
-					if parentErr = insertEvent(ctx, q, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{
-						"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed},
-					})}); parentErr != nil {
-						return parentErr
-					}
-				}
 			}
 		}
-		if state == core.TaskQueued {
+		if command.Kind == core.TaskRecover {
+			closed, closeErr := s.closeBlueprintParentTx(ctx, tx, q, id)
+			if closeErr != nil {
+				return closeErr
+			}
+			if closed {
+				result.State = core.TaskClosed
+			}
+		}
+		if result.State == core.TaskQueued {
 			_, err := s.enqueueTaskTx(ctx, tx, id, before.WorkspaceID)
 			return err
 		}
 		return nil
 	})
 	return result, err
+}
+
+// closeBlueprintParentTx applies the level-triggered blueprint close edge
+// while holding the same task-operation lock as every ordinary lifecycle
+// command and a row lock shared with human cancellation. State and child
+// eligibility are revalidated after both locks are held (spec §§3.3, 4.1).
+func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, parentID string) (bool, error) {
+	parentKey := "conveyor:task-operation:" + workspace(ctx) + ":" + parentID
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", parentKey); err != nil {
+		return false, err
+	}
+	var parentState core.TaskState
+	if err := tx.QueryRow(ctx, `SELECT state FROM tasks
+		WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), parentID).Scan(&parentState); err != nil {
+		return false, notFound(err, "task %s", parentID)
+	}
+	closed, err := core.TransitionTask(parentState, core.TaskBlueprintClose)
+	if err != nil {
+		return false, nil
+	}
+	var childCount, nonTerminal int
+	if err = tx.QueryRow(ctx, `SELECT count(*),
+		count(*) FILTER (WHERE state NOT IN ('merged','closed'))
+		FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`,
+		workspace(ctx), parentID).Scan(&childCount, &nonTerminal); err != nil {
+		return false, err
+	}
+	if childCount == 0 || nonTerminal != 0 {
+		return false, nil
+	}
+	if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
+		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed),
+	}); err != nil {
+		return false, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: parentID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+		"from": parentState, "to": closed, "command": core.TaskBlueprintClose,
+	})}); err != nil {
+		return false, err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: parentID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{
+		"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed},
+	})}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) UpdateTaskClassification(ctx context.Context, id, class string) error {
@@ -796,6 +816,15 @@ SELECT t.id
 FROM tasks t
 WHERE t.workspace_id = $1
   AND t.state = 'queued'
+  AND NOT (
+      t.parent_task_id IS NULL
+      AND t.next_stage = 'implement'
+      AND EXISTS (
+          SELECT 1 FROM tasks child
+          WHERE child.workspace_id=t.workspace_id
+            AND child.parent_task_id=t.id
+      )
+  )
   AND NOT EXISTS (
       SELECT 1 FROM river_job r
       WHERE r.kind = 'dispatch_task'
@@ -839,6 +868,64 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 		return nil
 	})
 	return repaired, err
+}
+
+// ReconcileBlueprintClosures repairs missed close edges for blueprint parents.
+// Candidate discovery is a pure read; each close revalidates under the
+// parent's lifecycle and row locks so concurrent ticks and commands are
+// exactly-once (spec §§3.3, 4.1).
+func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT parent.id
+FROM tasks parent
+WHERE parent.workspace_id=$1
+  AND parent.state='queued'
+  AND EXISTS (
+      SELECT 1 FROM tasks child
+      WHERE child.workspace_id=parent.workspace_id
+        AND child.parent_task_id=parent.id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM tasks child
+      WHERE child.workspace_id=parent.workspace_id
+        AND child.parent_task_id=parent.id
+        AND child.state NOT IN ('merged','closed')
+  )
+ORDER BY parent.created_at,parent.id`, workspace(ctx))
+	if err != nil {
+		return 0, err
+	}
+	var parentIDs []string
+	for rows.Next() {
+		var parentID string
+		if err = rows.Scan(&parentID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		parentIDs = append(parentIDs, parentID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	closed := 0
+	for _, parentID := range parentIDs {
+		didClose := false
+		err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+			var closeErr error
+			didClose, closeErr = s.closeBlueprintParentTx(ctx, tx, q, parentID)
+			return closeErr
+		})
+		if err != nil {
+			return closed, err
+		}
+		if didClose {
+			closed++
+		}
+	}
+	return closed, nil
 }
 
 func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
