@@ -35,8 +35,19 @@ order flow already produces decompositions.*
 3. **Claim gating:** blocked is a derived predicate (an unmerged
    dependency exists), enforced in `ListClaimable` and the claim
    enforcement layer alongside hold and the self-review guard — never a
-   stored state. Orders queue openly with blocking task IDs visible;
-   original queue entry preserved.
+   stored state. Scoped by §21.47: the gate applies to **implementation
+   orders only, at claim time only** — spec orders stay claimable, and
+   an already-claimed order is never rejected mid-flight for blocking.
+   Orders queue openly with blocking task IDs visible on every surface
+   including worker-facing MCP listings; original queue entry
+   preserved, and the queue-timeout clock is **suspended while
+   blocked** (§21.47). A dependency that terminates unmerged makes the
+   dependent **unsatisfiable**: `task.dependency_unsatisfiable` event,
+   distinct rendering, needs-operator tray entry, and an audited
+   operator unlink (`task.dependency_removed`; UI/CLI/REST, not MCP) or
+   cancel as the only resolutions. Cross-repo edges are legal
+   (workspace-scoped, acyclic — intake's same-repo restriction drops,
+   §21.47).
 4. **Unblock nudge:** on a dependency reaching `merged`, re-enqueue
    each dependent's dispatch so a waiting worker sees the order within
    one poll rather than at `work_order_queue_timeout`.

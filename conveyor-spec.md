@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.6**
+**Specification — v2.7**
 **Date:** July 29, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -825,18 +825,35 @@ conflict-fix enqueue) proceeds regardless, and system-dispatched orders
 inherit the hold. There is no execution mode: modes were removed by
 §21.31, and existing records keep theirs as history.
 
-**Dependencies gate claiming the same way** (Phase 6.1, §21.46). A task
-with unmerged dependencies (§8.3) is not claimable. Blocked is a
-**derived predicate** — an unmerged dependency exists — never a stored
-state: no new lifecycle state, nothing to drift out of sync. It is
-enforced server-side in the same layer as hold and the self-review
-guard, and every surface that renders claimability names the blocking
-task IDs. Dispatch still creates the order, which queues openly with
-the reason visible and keeps its original queue entry, so a
-long-blocked task is served promptly once unblocked. When a dependency
+**Dependencies gate implementation claiming the same way** (Phase 6.1,
+§21.46; scoped by §21.47). A task with unmerged dependencies (§8.3)
+cannot have its **implementation work orders** claimed; spec orders
+stay claimable — dependencies order code landing, not design. Blocked
+is a **derived predicate** — an unmerged dependency exists — never a
+stored state: no new lifecycle state, nothing to drift out of sync. It
+is enforced **at claim time** in the same server-side layer as hold and
+the self-review guard; an already-claimed order is never rejected
+mid-flight for blocking (edges added after claim cannot destroy
+in-progress work, §21.47). Every surface that renders claimability
+names the blocking task IDs — worker-facing MCP listings included.
+Dispatch still creates the order, which queues openly with the reason
+visible and keeps its original queue entry; while a task is blocked,
+its orders' queue-timeout clock is **suspended**, so the stall backstop
+cannot stale a legitimately waiting order and FIFO position survives
+long dependency chains (§21.47). When a dependency
 reaches `merged`, the control plane re-nudges each dependent's dispatch
 so a waiting worker sees the order within one poll rather than at the
 queue-timeout backstop.
+
+**A dependency that reaches a terminal state other than `merged` makes
+the dependent's edge *unsatisfiable*** (§21.47): waiting will never end,
+so it is surfaced distinctly from ordinary blocking — an event on the
+dependent (`task.dependency_unsatisfiable`) and the needs-operator tray
+(§13.2) — and resolved only by an audited operator action: remove the
+dependency edge (`task.dependency_removed`; UI/CLI/REST, deliberately
+not MCP, like cancel) or cancel the dependent. Nothing removes an edge
+automatically, and an unsatisfiable dependent never counts as
+delivered.
 
 **Claim order is deterministic** (§21.41). Among the orders a given
 claimant is eligible for, `claim_work_order` serves the oldest queue
@@ -1031,9 +1048,13 @@ retains the branch and never touches the primary checkout.
 A task may depend on other tasks. Dependencies are first-class edges
 (`task_dependencies`, §16) — materialized from a blueprint's
 `depends_on` (§4.1) or declared at intake — validated acyclic at write
-time. **v1 dependencies are ordering gates, not stacked branches**
+time, **workspace-scoped, and free to span repositories** (§21.47;
+§4.1's canonical example is cross-repo). Removal is an audited
+operator action only (§6.3). **v1 dependencies are ordering gates, not
+stacked branches**
 (§21.46): every task branches from its recorded base; a dependent
-simply cannot be claimed until its dependencies merge (§6.3), so its
+simply cannot have its implementation claimed until its dependencies
+merge (§6.3), so its
 branch is cut from a base that already contains them. Full stacking —
 cutting the branch from the dependency's branch with a rebase task on
 parent landing — is explicitly deferred, not designed here; the model
@@ -1264,9 +1285,12 @@ history.
   reuses task state `closed`, distinguished by the recorded
   intervention; it never touches agent-owned branches or worktrees.
 - **Stalled tasks surface, not vanish:** retry-suppressed orders,
-  queue-timed-out orders, and repeating dispatch failures badge the
+  queue-timed-out orders, repeating dispatch failures, and
+  unsatisfiable dependencies (§6.3) badge the
   task as stalled (a derived presentation state) and appear in the tray
-  with recovery and cancel actions plus last-failure evidence.
+  with recovery and cancel actions plus last-failure evidence — for an
+  unsatisfiable dependency, the actions are dependency removal or
+  cancel (§21.47).
   Recovery operations are explicit, scoped, idempotent, and audited:
   order recovery with setup re-freeze (§6.2), stale-order redispatch,
   **Retry review round** for a terminal timed-out panel (a whole new
@@ -1295,7 +1319,9 @@ blueprints serving it, and full task/PR/evidence lineage (§4.2); the
 (Phase 6.2) — session list and chat with streamed replies,
 tool-activity markers, and attachments, ending in a blueprint hand-off
 to the ordinary spec gate; and **dependency affordances** (Phase 6.1) —
-blocked chips naming the blocking tasks in feed and detail, and a
+blocked chips naming the blocking tasks in feed and detail — an
+unsatisfiable dependency (§6.3) rendered distinctly from ordinary
+waiting, with the audited unlink action on the detail surface — and a
 child-progress rollup (n of m merged) on blueprint parent tasks.
 
 ---
@@ -1375,8 +1401,10 @@ and event in one transaction (§3.3). The core tables:
   drift amendment). The deprecated `features` tree is retired:
   content-bearing nodes seed requirement documents, empty nodes drop,
   and `tasks.feature_id` assignments convert to history links (§21.46).
-- `task_dependencies` — acyclic `(task, depends_on)` edges enforcing
-  §6.3 claim gating; written by blueprint materialization or intake.
+- `task_dependencies` — acyclic, workspace-scoped, repo-spanning
+  `(task, depends_on)` edges enforcing
+  §6.3 claim gating; written by blueprint materialization or intake;
+  removed only by the audited operator unlink action (§6.3, §21.47).
 - `planning_sessions` — durable planning chats (§9): status, message
   log, finalized requirement/parent-task link; transcript archived as
   an artifact on finalize.
@@ -4631,7 +4659,61 @@ structure the pipeline currently drops. Ten changes:
 
 ---
 
-*End of specification. v2.6 accepted July 29, 2026 — the v2.0
+### 21.47 v2.7 — Dependency semantics: unsatisfiable edges, cross-repo, stage scope, clock suspension (July 29, 2026)
+
+Adopted from the Phase 6.1 implementation review (task `260729-b7df17`,
+PR #160): the review surfaced four cases §6.3/§8.3 never contemplated,
+and the operator decided each. Four changes:
+
+1. **Unsatisfiable dependencies are surfaced and operator-resolved,
+   never silent (§6.3, §13.2, §13.3).** The v2.6 predicate ("unmerged
+   dependency exists") is correct but incomplete: a dependency that
+   reaches a terminal state other than `merged` (cancelled, rejected)
+   can never satisfy the edge, and the review found this produced a
+   permanent, indistinguishable block with no escape hatch. Now: the
+   dependent gets a `task.dependency_unsatisfiable` event, renders
+   distinctly from ordinary waiting, and enters the needs-operator
+   tray. Resolution is an explicit audited operator action — remove
+   the edge (`task.dependency_removed`; UI/CLI/REST, deliberately not
+   MCP, matching the cancel precedent: agents file work, humans decide
+   its fate) or cancel the dependent. No automatic pruning: a
+   dependency dying is a planning fact the operator should see, not
+   one the machinery quietly absorbs.
+
+2. **Dependency edges may span repositories (§8.3, §16).** The intake
+   path's same-repo restriction is dropped; edges are workspace-scoped
+   and acyclic, nothing more. §4.1's canonical decomposition example
+   (`api` → `web`) was already cross-repo, and blueprint
+   materialization already wrote such edges — intake and
+   materialization now share one rule. Cross-*workspace* edges remain
+   rejected (Phase 9 territory, §7.2).
+
+3. **The dependency gate applies to implementation work orders only,
+   at claim time only (§6.3).** Spec orders on a dependent stay
+   claimable while dependencies are unmerged — dependencies order code
+   landing, not design; a dependent's spec work is exactly what an
+   operator wants underway while the dependency merges. And the gate
+   is evaluated only at claim: an already-claimed order is never
+   rejected mid-flight for blocking, so an edge added after claim (a
+   re-materialization, a manual link) cannot invalidate in-progress
+   work at `report_progress`/`submit_for_review` time.
+
+4. **A blocked task's queue-timeout clock is suspended (§6.3).** v2.6
+   promised blocked orders keep their original queue entry, but the
+   §6.3 `work_order_queue_timeout` backstop (default 24h) would stale
+   any order blocked longer than the timeout — guaranteed for serial
+   chains under human-gated cadence — and recovery resets FIFO
+   position, contradicting the promise. Resolution: while the blocking
+   predicate holds, the queue clock does not run; it resumes on
+   unblock. The backstop still protects unblocked orders unchanged.
+
+Out of scope, unchanged: the derived-predicate design, one queue, no
+priority field, FIFO ordering, hold semantics, branch-stacking
+deferral, and every other §21.46 boundary.
+
+---
+
+*End of specification. v2.7 accepted July 29, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -4639,6 +4721,10 @@ Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
 closes Phase 5 and accepts Phase 6 — planning & the knowledge graph:
 requirement documents, blueprint materialization, dependency-gated
 claiming, planning sessions, and lineage links — renumbering the
-deferred phases. The body (§§1–20) is the normative
+deferred phases. §21.47 clarifies dependency semantics from the Phase
+6.1 implementation review: unsatisfiable edges surfaced with an audited
+operator unlink, cross-repo edges legal, the gate scoped to
+implementation claims, and queue-clock suspension while blocked. The
+body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
