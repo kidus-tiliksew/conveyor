@@ -48,23 +48,33 @@ type Feature struct {
 }
 
 type GithubLifecycle struct {
-	WorkspaceID       string             `json:"workspace_id"`
-	TaskID            string             `json:"task_id"`
-	Repository        string             `json:"repository"`
-	SpecVersion       int32              `json:"spec_version"`
-	Source            string             `json:"source"`
-	SourceIssueNumber int32              `json:"source_issue_number"`
-	IssueNumber       int32              `json:"issue_number"`
-	IssueUrl          string             `json:"issue_url"`
-	Outcome           string             `json:"outcome"`
-	State             string             `json:"state"`
-	Attempts          int32              `json:"attempts"`
-	LastError         string             `json:"last_error"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	CreateState       string             `json:"create_state"`
-	CreateAttempts    int32              `json:"create_attempts"`
-	ReconcileMisses   int32              `json:"reconcile_misses"`
+	WorkspaceID        string             `json:"workspace_id"`
+	TaskID             string             `json:"task_id"`
+	Repository         string             `json:"repository"`
+	SpecVersion        int32              `json:"spec_version"`
+	Source             string             `json:"source"`
+	SourceIssueNumber  int32              `json:"source_issue_number"`
+	IssueNumber        int32              `json:"issue_number"`
+	IssueUrl           string             `json:"issue_url"`
+	Outcome            string             `json:"outcome"`
+	State              string             `json:"state"`
+	Attempts           int32              `json:"attempts"`
+	LastError          string             `json:"last_error"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	CreateState        string             `json:"create_state"`
+	CreateAttempts     int32              `json:"create_attempts"`
+	ReconcileMisses    int32              `json:"reconcile_misses"`
+	ForgeErrorCategory string             `json:"forge_error_category"`
+}
+
+type HarnessModelFailure struct {
+	WorkspaceID string             `json:"workspace_id"`
+	Harness     string             `json:"harness"`
+	Model       string             `json:"model"`
+	Detail      string             `json:"detail"`
+	WorkOrderID string             `json:"work_order_id"`
+	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
 }
 
 type InterruptedReviewRecovery struct {
@@ -108,6 +118,57 @@ type Job struct {
 	AuthMode        string             `json:"auth_mode"`
 }
 
+type Link struct {
+	WorkspaceID    string             `json:"workspace_id"`
+	SrcType        string             `json:"src_type"`
+	SrcID          string             `json:"src_id"`
+	DstType        string             `json:"dst_type"`
+	DstID          string             `json:"dst_id"`
+	Kind           string             `json:"kind"`
+	CreatedByEvent string             `json:"created_by_event"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type MonitorActivity struct {
+	ID          int64              `json:"id"`
+	WorkspaceID string             `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	PayloadJson []byte             `json:"payload_json"`
+	At          pgtype.Timestamptz `json:"at"`
+}
+
+type MonitorObservation struct {
+	WorkspaceID        string             `json:"workspace_id"`
+	Identity           string             `json:"identity"`
+	Repository         string             `json:"repository"`
+	Kind               string             `json:"kind"`
+	OccurrenceID       string             `json:"occurrence_id"`
+	SourceUrl          string             `json:"source_url"`
+	CommitSha          string             `json:"commit_sha"`
+	PullRequestNumber  int32              `json:"pull_request_number"`
+	CheckRunID         string             `json:"check_run_id"`
+	FeatureID          string             `json:"feature_id"`
+	ObservedAt         pgtype.Timestamptz `json:"observed_at"`
+	ContextJson        []byte             `json:"context_json"`
+	HintContextJson    []byte             `json:"hint_context_json"`
+	TaskID             pgtype.Text        `json:"task_id"`
+	TaskOutcome        string             `json:"task_outcome"`
+	State              string             `json:"state"`
+	DeduplicatedCount  int32              `json:"deduplicated_count"`
+	ForgeErrorCategory string             `json:"forge_error_category"`
+	LastError          string             `json:"last_error"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MonitorStatus struct {
+	WorkspaceID        string             `json:"workspace_id"`
+	LastSuccessfulAt   pgtype.Timestamptz `json:"last_successful_at"`
+	CurrentError       string             `json:"current_error"`
+	ForgeErrorCategory string             `json:"forge_error_category"`
+	BackoffUntil       pgtype.Timestamptz `json:"backoff_until"`
+}
+
 type Repo struct {
 	WorkspaceID      string             `json:"workspace_id"`
 	Name             string             `json:"name"`
@@ -116,6 +177,20 @@ type Repo struct {
 	DefaultBase      string             `json:"default_base"`
 	DevcontainerPath string             `json:"devcontainer_path"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type RepositoryDrift struct {
+	WorkspaceID string             `json:"workspace_id"`
+	ID          string             `json:"id"`
+	Repository  string             `json:"repository"`
+	Kind        string             `json:"kind"`
+	SourceUrl   string             `json:"source_url"`
+	CommitSha   string             `json:"commit_sha"`
+	FeatureID   string             `json:"feature_id"`
+	TaskID      string             `json:"task_id"`
+	DetectedAt  pgtype.Timestamptz `json:"detected_at"`
+	ResolvedAt  pgtype.Timestamptz `json:"resolved_at"`
+	Outcome     string             `json:"outcome"`
 }
 
 type ReviewPublication struct {
@@ -144,6 +219,7 @@ type ReviewPublication struct {
 	RequiredHarness        string             `json:"required_harness"`
 	ModelEnforcement       string             `json:"model_enforcement"`
 	RequiredEffort         string             `json:"required_effort"`
+	ForgeErrorCategory     string             `json:"forge_error_category"`
 }
 
 type ReviewRoundRetry struct {
@@ -170,7 +246,7 @@ type Task struct {
 	BaseBranch         string             `json:"base_branch"`
 	Branch             string             `json:"branch"`
 	State              string             `json:"state"`
-	ParentTaskID       string             `json:"parent_task_id"`
+	ParentTaskID       pgtype.Text        `json:"parent_task_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	NextStage          string             `json:"next_stage"`
@@ -190,6 +266,25 @@ type Task struct {
 	RefreshBaselineSha string             `json:"refresh_baseline_sha"`
 	RefreshHeadSha     string             `json:"refresh_head_sha"`
 	RefreshReviewScope string             `json:"refresh_review_scope"`
+	OriginSpecVersion  int32              `json:"origin_spec_version"`
+	OriginSubID        string             `json:"origin_sub_id"`
+}
+
+type TaskDependency struct {
+	WorkspaceID     string             `json:"workspace_id"`
+	TaskID          string             `json:"task_id"`
+	DependsOnTaskID string             `json:"depends_on_task_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type TaskSetupChange struct {
+	WorkspaceID string             `json:"workspace_id"`
+	RequestID   string             `json:"request_id"`
+	TaskID      string             `json:"task_id"`
+	RequestJson []byte             `json:"request_json"`
+	ResultJson  []byte             `json:"result_json"`
+	ActorID     string             `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type TaskSpec struct {
@@ -255,18 +350,22 @@ type WorkOrder struct {
 	ExecutionTimeout       string             `json:"execution_timeout"`
 	LastAttemptOutcome     string             `json:"last_attempt_outcome"`
 	LastFailureMessage     string             `json:"last_failure_message"`
-	LastFailureDetail      string             `json:"last_failure_detail"`
 	LastFailureExitStatus  pgtype.Int4        `json:"last_failure_exit_status"`
 	LastFailureAt          pgtype.Timestamptz `json:"last_failure_at"`
 	AutomaticRetryCount    int32              `json:"automatic_retry_count"`
 	NextRetryAt            pgtype.Timestamptz `json:"next_retry_at"`
 	RetrySuppressed        bool               `json:"retry_suppressed"`
-	RetrySuppressionReason string             `json:"retry_suppression_reason"`
 	ReasonCode             string             `json:"reason_code"`
 	ReviewKind             string             `json:"review_kind"`
 	ReviewScope            string             `json:"review_scope"`
 	BaselineSha            string             `json:"baseline_sha"`
 	HeadSha                string             `json:"head_sha"`
+	LastFailureDetail      string             `json:"last_failure_detail"`
+	RetrySuppressionReason string             `json:"retry_suppression_reason"`
+	ReviewSuperseded       bool               `json:"review_superseded"`
+	RequiredEffort         string             `json:"required_effort"`
+	RateLimit              []byte             `json:"rate_limit"`
+	RateLimitObservedAt    pgtype.Timestamptz `json:"rate_limit_observed_at"`
 }
 
 type WorkOrderRecovery struct {

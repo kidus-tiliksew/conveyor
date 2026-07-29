@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import mermaid from 'mermaid'
+import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
@@ -158,10 +159,15 @@ export function SpecCard({
                       {spec.decomposition!.map((item) => (
                         <li key={item.id} className="flex items-baseline gap-2 text-sm">
                           <Badge variant="mono">{item.id}</Badge>
-                          <span className="text-foreground/85">{item.summary}</span>
+                          {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) ? (
+                            <Link to="/tasks/$taskId" params={{ taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!.id }} className="text-primary hover:underline">
+                              {item.summary}
+                            </Link>
+                          ) : <span className="text-foreground/85">{item.summary}</span>}
                           <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
                             {item.repo}
                             {item.depends_on?.length ? ` ← ${item.depends_on.join(', ')}` : ''}
+                            {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) && ` · ${spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state}`}
                           </span>
                         </li>
                       ))}

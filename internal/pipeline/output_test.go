@@ -158,3 +158,21 @@ func TestRenderStructuredSpecRejectsModelAuthoredMachineFence(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestRenderStructuredSpecRejectsDecompositionCycle(t *testing.T) {
+	t.Parallel()
+	encoded, err := json.Marshal(StructuredSpec{
+		Markdown:   "# Cycle\n\n## Intent\nShip it.\n\n## Non-goals\nNone.",
+		Acceptance: []AcceptanceCriterion{{ID: "AC-1", Criterion: "No cycle", Verify: "test"}},
+		Decomposition: []DecompositionItem{
+			{ID: "SUB-1", Repo: "conveyor", Summary: "one", DependsOn: []string{"SUB-2"}},
+			{ID: "SUB-2", Repo: "conveyor", Summary: "two", DependsOn: []string{"SUB-1"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = RenderStructuredSpec(string(encoded)); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("cycle error=%v", err)
+	}
+}

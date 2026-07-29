@@ -38,6 +38,55 @@ type Store struct {
 	river   *river.Client[pgx.Tx]
 }
 
+type blueprintDecompositionItem struct {
+	ID        string   `json:"id"`
+	Repo      string   `json:"repo"`
+	Summary   string   `json:"summary"`
+	DependsOn []string `json:"depends_on"`
+}
+
+func validateBlueprintDecomposition(items []blueprintDecompositionItem) error {
+	byID := make(map[string]blueprintDecompositionItem, len(items))
+	for _, item := range items {
+		if _, exists := byID[item.ID]; exists {
+			return fmt.Errorf("duplicate blueprint origin %s", item.ID)
+		}
+		byID[item.ID] = item
+	}
+	for _, item := range items {
+		for _, dependency := range item.DependsOn {
+			if _, exists := byID[dependency]; !exists {
+				return fmt.Errorf("blueprint %s depends on unknown %s", item.ID, dependency)
+			}
+		}
+	}
+	visiting, visited := map[string]bool{}, map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return fmt.Errorf("blueprint dependency cycle includes %s", id)
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dependency := range byID[id].DependsOn {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		delete(visiting, id)
+		visited[id] = true
+		return nil
+	}
+	for id := range byID {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -346,6 +395,10 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 }
 
 func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
+	return s.CreateTaskWithDependencies(ctx, task, nil)
+}
+
+func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, dependencyIDs []string) error {
 	if task.Workspace != workspace(ctx) {
 		return fmt.Errorf("task workspace %q does not match store workspace %q", task.Workspace, workspace(ctx))
 	}
@@ -356,6 +409,28 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 		task.NextStage = core.InitialStage(task.Level)
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		seen := map[string]bool{}
+		for _, dependencyID := range dependencyIDs {
+			dependencyID = strings.TrimSpace(dependencyID)
+			if dependencyID == "" || seen[dependencyID] {
+				return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			}
+			seen[dependencyID] = true
+			var dependencyWorkspace, dependencyRepo, dependencyState string
+			if err := tx.QueryRow(ctx, `SELECT workspace_id, repo_name, state FROM tasks WHERE id=$1`, dependencyID).
+				Scan(&dependencyWorkspace, &dependencyRepo, &dependencyState); err != nil {
+				return notFound(err, "dependency task %s", dependencyID)
+			}
+			if dependencyWorkspace != task.Workspace {
+				return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+			}
+			if dependencyRepo != task.Repo {
+				return fmt.Errorf("dependency task %s belongs to another repository", dependencyID)
+			}
+			if core.TaskTerminal(core.TaskState(dependencyState)) {
+				return fmt.Errorf("dependency task %s is not open", dependencyID)
+			}
+		}
 		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 			return err
 		}
@@ -366,6 +441,18 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 			At:      task.CreatedAt,
 		}); err != nil {
 			return err
+		}
+		for dependencyID := range seen {
+			if _, err := tx.Exec(ctx, `INSERT INTO task_dependencies (workspace_id, task_id, depends_on_task_id)
+				VALUES ($1,$2,$3)`, task.Workspace, task.ID, dependencyID); err != nil {
+				return fmt.Errorf("depends_on %s: %w", dependencyID, err)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO links
+				(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event)
+				VALUES ($1,'task',$2,'task',$3,'depends_on','task.created')
+				ON CONFLICT DO NOTHING`, task.Workspace, task.ID, dependencyID); err != nil {
+				return err
+			}
 		}
 		if task.State == core.TaskQueued {
 			_, err := s.enqueueTaskTx(ctx, tx, task.ID, task.Workspace)
@@ -381,6 +468,9 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 		return core.Task{}, notFound(err, "task %s", id)
 	}
 	result := taskFromDB(task)
+	if err = s.hydrateTaskRelations(ctx, &result); err != nil {
+		return core.Task{}, err
+	}
 	if err = s.hydrateGitHubLifecycle(ctx, &result); err != nil {
 		return core.Task{}, err
 	}
@@ -396,6 +486,9 @@ func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, 
 		return core.Task{}, false, err
 	}
 	result := taskFromDB(task)
+	if err = s.hydrateTaskRelations(ctx, &result); err != nil {
+		return core.Task{}, false, err
+	}
 	if err = s.hydrateGitHubLifecycle(ctx, &result); err != nil {
 		return core.Task{}, false, err
 	}
@@ -410,11 +503,56 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	result := make([]core.Task, len(rows))
 	for i := range rows {
 		result[i] = taskFromDB(rows[i])
+		if err = s.hydrateTaskRelations(ctx, &result[i]); err != nil {
+			return nil, err
+		}
 		if err = s.hydrateGitHubLifecycle(ctx, &result[i]); err != nil {
 			return nil, err
 		}
 	}
 	return result, nil
+}
+
+func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error {
+	rows, err := s.pool.Query(ctx, `SELECT dependency.id, dependency.title, dependency.state,
+		dependency.origin_spec_version, dependency.origin_sub_id
+		FROM task_dependencies edge
+		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+			AND dependency.id=edge.depends_on_task_id
+		WHERE edge.workspace_id=$1 AND edge.task_id=$2
+		ORDER BY dependency.id`, workspace(ctx), task.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var relation core.TaskRelation
+		if err = rows.Scan(&relation.ID, &relation.Title, &relation.State, &relation.OriginSpecVersion, &relation.OriginSubID); err != nil {
+			return err
+		}
+		task.Dependencies = append(task.Dependencies, relation)
+		if relation.State != core.TaskMerged {
+			task.BlockingTaskIDs = append(task.BlockingTaskIDs, relation.ID)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	childRows, err := s.pool.Query(ctx, `SELECT id,title,state,origin_spec_version,origin_sub_id
+		FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2
+		ORDER BY origin_spec_version,origin_sub_id,id`, workspace(ctx), task.ID)
+	if err != nil {
+		return err
+	}
+	defer childRows.Close()
+	for childRows.Next() {
+		var relation core.TaskRelation
+		if err = childRows.Scan(&relation.ID, &relation.Title, &relation.State, &relation.OriginSpecVersion, &relation.OriginSubID); err != nil {
+			return err
+		}
+		task.Children = append(task.Children, relation)
+	}
+	return childRows.Err()
 }
 
 func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) error {
@@ -562,6 +700,46 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 				"from_stage": before.NextStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state,
 			})}); err != nil {
 				return err
+			}
+		}
+		if before.ParentTaskID.Valid && core.TaskTerminal(state) {
+			parentKey := "conveyor:blueprint-parent:" + before.WorkspaceID + ":" + before.ParentTaskID.String
+			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", parentKey); err != nil {
+				return err
+			}
+			var childCount, nonTerminal int
+			if err := tx.QueryRow(ctx, `SELECT count(*),
+				count(*) FILTER (WHERE state NOT IN ('merged','closed'))
+				FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`,
+				before.WorkspaceID, before.ParentTaskID.String).Scan(&childCount, &nonTerminal); err != nil {
+				return err
+			}
+			if childCount > 0 && nonTerminal == 0 {
+				parent, parentErr := q.GetTask(ctx, db.GetTaskParams{ID: before.ParentTaskID.String, WorkspaceID: before.WorkspaceID})
+				if parentErr != nil {
+					return parentErr
+				}
+				if core.TaskState(parent.State) == core.TaskQueued {
+					closed, transitionErr := core.TransitionTask(core.TaskQueued, core.TaskBlueprintClose)
+					if transitionErr != nil {
+						return transitionErr
+					}
+					if _, parentErr = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
+						ID: parent.ID, WorkspaceID: before.WorkspaceID, State: string(closed),
+					}); parentErr != nil {
+						return parentErr
+					}
+					if parentErr = insertEvent(ctx, q, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+						"from": core.TaskQueued, "to": closed, "command": core.TaskBlueprintClose,
+					})}); parentErr != nil {
+						return parentErr
+					}
+					if parentErr = insertEvent(ctx, q, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{
+						"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed},
+					})}); parentErr != nil {
+						return parentErr
+					}
+				}
 			}
 		}
 		if state == core.TaskQueued {
@@ -758,6 +936,183 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 }
 
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
+	_, err := s.ApproveSpecVersionAndMaterialize(ctx, taskID, version)
+	return err
+}
+
+func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	var children []core.Task
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		key := "conveyor:blueprint-approval:" + workspace(ctx) + ":" + taskID
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		parentRow, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", taskID)
+		}
+		parent := taskFromDB(parentRow)
+		var decompositionJSON []byte
+		if err = tx.QueryRow(ctx, `SELECT decomposition FROM task_specs
+			WHERE task_id=$1 AND version=$2
+			  AND version=(SELECT MAX(version) FROM task_specs WHERE task_id=$1)
+			FOR UPDATE`, taskID, version).Scan(&decompositionJSON); err != nil {
+			return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
+		}
+		var decomposition []blueprintDecompositionItem
+		if len(decompositionJSON) > 0 {
+			if err = json.Unmarshal(decompositionJSON, &decomposition); err != nil {
+				return fmt.Errorf("decode blueprint decomposition: %w", err)
+			}
+		}
+		if err = validateBlueprintDecomposition(decomposition); err != nil {
+			return err
+		}
+		childrenBySub := map[string]core.Task{}
+		rows, err := tx.Query(ctx, `SELECT id,title,state,origin_spec_version,origin_sub_id FROM tasks
+			WHERE workspace_id=$1 AND parent_task_id=$2 AND origin_spec_version=$3
+			  AND origin_sub_id<>'' AND state NOT IN ('merged','closed')
+			ORDER BY origin_sub_id`, workspace(ctx), taskID, version)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var child core.Task
+			if scanErr := rows.Scan(&child.ID, &child.Title, &child.State, &child.OriginSpecVersion, &child.OriginSubID); scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			childrenBySub[child.OriginSubID] = child
+		}
+		rows.Close()
+		createdAt := time.Now().UTC()
+		createdCount := 0
+		for _, item := range decomposition {
+			if _, exists := childrenBySub[item.ID]; exists {
+				continue
+			}
+			var baseBranch string
+			if err = tx.QueryRow(ctx, `SELECT default_base FROM repos WHERE workspace_id=$1 AND name=$2`,
+				workspace(ctx), strings.TrimSpace(item.Repo)).Scan(&baseBranch); err != nil {
+				return fmt.Errorf("blueprint %s repository %q is not configured in workspace %s", item.ID, item.Repo, workspace(ctx))
+			}
+			id := core.NewTaskID()
+			title := strings.TrimSpace(item.Summary)
+			if len(title) > 200 {
+				title = title[:200]
+			}
+			child := core.Task{
+				ID: id, Workspace: parent.Workspace,
+				Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
+				Title:  title,
+				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
+				Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
+				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
+				PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
+				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
+				BaseBranch: baseBranch, Branch: "conveyor/task-" + id,
+				State: core.TaskQueued, NextStage: core.StageImplement,
+				ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
+				CreatedAt: createdAt,
+			}
+			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
+				return fmt.Errorf("materialize %s: %w", item.ID, err)
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.created", Payload: core.JSONPayload(child), At: createdAt}); err != nil {
+				return err
+			}
+			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO links
+				(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event)
+				VALUES ($1,'blueprint_version',$2,'task',$3,'materializes','blueprint.materialized')
+				ON CONFLICT DO NOTHING`, workspace(ctx), fmt.Sprintf("%s:v%d", taskID, version), child.ID); err != nil {
+				return err
+			}
+			childrenBySub[item.ID] = child
+			createdCount++
+		}
+		for _, item := range decomposition {
+			child := childrenBySub[item.ID]
+			for _, dependencySubID := range item.DependsOn {
+				dependency := childrenBySub[dependencySubID]
+				if _, err = tx.Exec(ctx, `INSERT INTO task_dependencies
+					(workspace_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)
+					ON CONFLICT DO NOTHING`, workspace(ctx), child.ID, dependency.ID); err != nil {
+					return fmt.Errorf("materialize dependency %s -> %s: %w", item.ID, dependencySubID, err)
+				}
+				if _, err = tx.Exec(ctx, `INSERT INTO links
+					(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event)
+					VALUES ($1,'task',$2,'task',$3,'depends_on','blueprint.materialized')
+					ON CONFLICT DO NOTHING`, workspace(ctx), child.ID, dependency.ID); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err = q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx)}); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
+			return err
+		}
+		if len(decomposition) > 0 && createdCount > 0 {
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]any{
+				"version": version, "children_created": createdCount, "children_total": len(decomposition),
+			})}); err != nil {
+				return err
+			}
+		}
+		children = children[:0]
+		for _, item := range decomposition {
+			children = append(children, childrenBySub[item.ID])
+		}
+		return nil
+	})
+	return children, err
+}
+
+func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT dependency.id
+		FROM task_dependencies edge
+		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+			AND dependency.id=edge.depends_on_task_id
+		WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+		ORDER BY dependency.id`, workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT task_id FROM task_dependencies
+		WHERE workspace_id=$1 AND depends_on_task_id=$2 ORDER BY task_id`, workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) approveSpecVersionLegacy(ctx context.Context, taskID string, version int) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		_, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx)})
 		if err != nil {
@@ -1931,6 +2286,28 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			return core.WorkOrder{}, fmt.Errorf("work order %s automatic retry is suppressed; operator recovery is required", id)
 		}
 		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
+	}
+	var blockingTaskIDs []string
+	blockingRows, err := tx.Query(ctx, `SELECT dependency.id
+		FROM task_dependencies edge
+		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
+			AND dependency.id=edge.depends_on_task_id
+		WHERE edge.workspace_id=$1 AND edge.task_id=$2 AND dependency.state<>'merged'
+		ORDER BY dependency.id`, workspace(ctx), order.TaskID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	for blockingRows.Next() {
+		var dependencyID string
+		if err = blockingRows.Scan(&dependencyID); err != nil {
+			blockingRows.Close()
+			return core.WorkOrder{}, err
+		}
+		blockingTaskIDs = append(blockingTaskIDs, dependencyID)
+	}
+	blockingRows.Close()
+	if len(blockingTaskIDs) > 0 {
+		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
 	}
 	hash := ""
 	if claim.ClientToken != "" {
@@ -3298,7 +3675,9 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		ReviewedHeadSha: task.ReviewedHeadSHA, ApprovedHeadSha: task.ApprovedHeadSHA, ApprovalStale: task.ApprovalStale,
 		RefreshBaselineSha: task.RefreshBaselineSHA, RefreshHeadSha: task.RefreshHeadSHA, RefreshReviewScope: task.RefreshReviewScope,
 		BaseBranch: task.BaseBranch, Branch: task.Branch, State: string(task.State),
-		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
+		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage),
+		ParentTaskID: nullableText(task.ParentTaskID), OriginSpecVersion: int32(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
+		FeatureID: nullableText(task.FeatureID), IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
 	}
 }
 
@@ -3315,7 +3694,9 @@ func taskFromDB(task db.Task) core.Task {
 		ReviewedHeadSHA: task.ReviewedHeadSha, ApprovedHeadSHA: task.ApprovedHeadSha, ApprovalStale: task.ApprovalStale,
 		RefreshBaselineSHA: task.RefreshBaselineSha, RefreshHeadSHA: task.RefreshHeadSha, RefreshReviewScope: task.RefreshReviewScope,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
-		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage), ParentTaskID: task.ParentTaskID, FeatureID: task.FeatureID.String,
+		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage),
+		ParentTaskID: task.ParentTaskID.String, OriginSpecVersion: int(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
+		FeatureID: task.FeatureID.String,
 		CreatedAt: task.CreatedAt.Time,
 	}
 }
