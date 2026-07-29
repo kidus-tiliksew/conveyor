@@ -332,6 +332,12 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 			return getErr
 		}
 		if task.State == core.TaskQueued {
+			if isBlueprintAnchor(task) {
+				// Blueprint parents are passive batch anchors. Their children
+				// own implementation delivery, so this River row is complete
+				// rather than a staged pipeline row to snooze (spec §4.1).
+				return nil
+			}
 			// The currently running River row owns this task's pipeline. A
 			// queued stage transition cannot insert a duplicate while this row
 			// is active, so snooze the same row into the next stage.

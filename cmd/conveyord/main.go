@@ -218,6 +218,14 @@ func main() {
 				if repaired != 0 {
 					log.Printf("reconciled %d queued task(s) missing River jobs", repaired)
 				}
+				closedBlueprints, closeErr := pgStore.ReconcileBlueprintClosures(workspaceCtx)
+				if closeErr != nil {
+					log.Printf("reconcile blueprint closures: %v", closeErr)
+					return
+				}
+				if closedBlueprints != 0 {
+					log.Printf("reconciled %d blueprint parent closure(s) in workspace %s", closedBlueprints, workspace.ID)
+				}
 				publications, publicationErr := pgStore.ReconcileReviewPublications(workspaceCtx)
 				if publicationErr != nil {
 					log.Printf("reconcile review publications: %v", publicationErr)
