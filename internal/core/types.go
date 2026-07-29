@@ -13,9 +13,28 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
+
+// TruncateUTF8Bytes shortens value to at most limit bytes without splitting a
+// UTF-8 encoding. Callers that persist byte-limited user text share this helper
+// so memory and durable stores cannot disagree at multibyte boundaries.
+func TruncateUTF8Bytes(value string, limit int) string {
+	if limit < 1 {
+		return ""
+	}
+	value = strings.ToValidUTF8(value, "")
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
 
 // Stage is a pipeline stage (spec §4). Phase 1 exercises only Implement;
 // the rest are declared so task records and routing config are stable

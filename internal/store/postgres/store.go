@@ -973,39 +973,55 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 		if err = validateBlueprintDecomposition(decomposition); err != nil {
 			return err
 		}
-		childrenBySub := map[string]core.Task{}
-		rows, err := tx.Query(ctx, `SELECT id,title,state,origin_spec_version,origin_sub_id FROM tasks
-			WHERE workspace_id=$1 AND parent_task_id=$2 AND origin_spec_version=$3
-			  AND origin_sub_id<>'' AND state NOT IN ('merged','closed')
-			ORDER BY origin_sub_id`, workspace(ctx), taskID, version)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var child core.Task
-			if scanErr := rows.Scan(&child.ID, &child.Title, &child.State, &child.OriginSpecVersion, &child.OriginSubID); scanErr != nil {
-				rows.Close()
-				return scanErr
-			}
-			childrenBySub[child.OriginSubID] = child
-		}
-		rows.Close()
-		createdAt := time.Now().UTC()
-		createdCount := 0
+		baseBranches := make(map[string]string, len(decomposition))
 		for _, item := range decomposition {
-			if _, exists := childrenBySub[item.ID]; exists {
-				continue
-			}
 			var baseBranch string
 			if err = tx.QueryRow(ctx, `SELECT default_base FROM repos WHERE workspace_id=$1 AND name=$2`,
 				workspace(ctx), strings.TrimSpace(item.Repo)).Scan(&baseBranch); err != nil {
 				return fmt.Errorf("blueprint %s repository %q is not configured in workspace %s", item.ID, item.Repo, workspace(ctx))
 			}
+			baseBranches[item.ID] = baseBranch
+		}
+		childrenBySub := map[string]core.Task{}
+		rows, err := tx.Query(ctx, `SELECT id,origin_sub_id FROM tasks
+			WHERE workspace_id=$1 AND parent_task_id=$2 AND origin_sub_id<>''
+			ORDER BY origin_spec_version,created_at,id`, workspace(ctx), taskID)
+		if err != nil {
+			return err
+		}
+		existingIDs := map[string]string{}
+		for rows.Next() {
+			var id, originSubID string
+			if scanErr := rows.Scan(&id, &originSubID); scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			if _, exists := existingIDs[originSubID]; !exists {
+				existingIDs[originSubID] = id
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for originSubID, id := range existingIDs {
+			childRow, getErr := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+			if getErr != nil {
+				return getErr
+			}
+			childrenBySub[originSubID] = taskFromDB(childRow)
+		}
+		createdAt := time.Now().UTC()
+		createdCount := 0
+		createdSubs := make(map[string]struct{}, len(decomposition))
+		for _, item := range decomposition {
+			if _, exists := childrenBySub[item.ID]; exists {
+				continue
+			}
 			id := core.NewTaskID()
 			title := strings.TrimSpace(item.Summary)
-			if len(title) > 200 {
-				title = title[:200]
-			}
+			title = core.TruncateUTF8Bytes(title, 200)
 			child := core.Task{
 				ID: id, Workspace: parent.Workspace,
 				Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
@@ -1015,10 +1031,10 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 				PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
-				BaseBranch: baseBranch, Branch: "conveyor/task-" + id,
+				BaseBranch: baseBranches[item.ID], Branch: "conveyor/task-" + id,
 				State: core.TaskQueued, NextStage: core.StageImplement,
 				ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
-				CreatedAt: createdAt,
+				FeatureID: parent.FeatureID, CreatedAt: createdAt,
 			}
 			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
@@ -1036,9 +1052,13 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				return err
 			}
 			childrenBySub[item.ID] = child
+			createdSubs[item.ID] = struct{}{}
 			createdCount++
 		}
 		for _, item := range decomposition {
+			if _, created := createdSubs[item.ID]; !created {
+				continue
+			}
 			child := childrenBySub[item.ID]
 			for _, dependencySubID := range item.DependsOn {
 				dependency := childrenBySub[dependencySubID]
@@ -1074,7 +1094,18 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 		}
 		return nil
 	})
-	return children, err
+	if err != nil {
+		return nil, err
+	}
+	for index := range children {
+		id := children[index].ID
+		child, getErr := s.GetTask(ctx, id)
+		if getErr != nil {
+			return nil, fmt.Errorf("hydrate materialized child %s: %w", id, getErr)
+		}
+		children[index] = child
+	}
+	return children, nil
 }
 
 func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error) {

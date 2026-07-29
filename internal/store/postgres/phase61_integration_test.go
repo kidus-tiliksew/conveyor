@@ -135,6 +135,71 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 	}
 }
 
+func TestPostgresBlueprintConformanceIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	storetest.RunBlueprintConformance(t, func(t *testing.T, repos []config.Repo) storetest.BlueprintFixture {
+		t.Helper()
+		workspace := "blueprint-conformance-" + core.NewTaskID()
+		ctx := store.WithWorkspace(t.Context(), workspace)
+		if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: repos}); err != nil {
+			t.Fatal(err)
+		}
+		return storetest.BlueprintFixture{Store: st, Context: ctx, Workspace: workspace}
+	})
+}
+
+func TestBlueprintApprovalWithoutDecompositionWritesNoMaterializationRowsIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "blueprint-empty-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
+		Workspace: workspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parentID := core.NewTaskID()
+	if err = st.CreateTask(ctx, core.Task{
+		ID: parentID, Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + parentID,
+		State: core.TaskQueued, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: parentID, Content: "no decomposition", Acceptance: core.JSONPayload([]any{}),
+		Decomposition: core.JSONPayload([]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, parentID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	var children, edges, links, materializedEvents int
+	for query, destination := range map[string]*int{
+		`SELECT count(*) FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`:                                  &children,
+		`SELECT count(*) FROM task_dependencies WHERE workspace_id=$1 AND (task_id=$2 OR depends_on_task_id=$2)`:  &edges,
+		`SELECT count(*) FROM links WHERE workspace_id=$1 AND (src_id LIKE $2 || ':%' OR src_id=$2 OR dst_id=$2)`: &links,
+		`SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='blueprint.materialized'`:      &materializedEvents,
+	} {
+		if err = st.pool.QueryRow(ctx, query, workspace, parentID).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if children != 0 || edges != 0 || links != 0 || materializedEvents != 0 {
+		t.Fatalf("children=%d edges=%d links=%d materialized_events=%d, want all zero",
+			children, edges, links, materializedEvents)
+	}
+}
+
 func transitionPhase61TaskToMerged(t *testing.T, ctx context.Context, st store.Store, id string) {
 	t.Helper()
 	for _, command := range []taskops.Command{
