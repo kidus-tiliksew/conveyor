@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.5**
-**Date:** July 28, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. Subsequent changes proceed by amendment with version bumps.
+**Specification — v2.6**
+**Date:** July 29, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -58,18 +58,18 @@ was achieved July 15, 2026 (§19).
    the same repository in parallel without interfering — and without the
    factory ever mutating an operator's checkout (§8).
 7. Make the factory legible: a costed event timeline per task, a
-   requirements tree accumulating approved specs, and a task trail
-   mirrored to GitHub (§11, §13).
+   living requirement corpus with blueprint and code lineage, and a
+   task trail mirrored to GitHub (§11, §13).
 8. Close the loop over time: accumulated transcripts, reason codes, and
    the spec corpus feed a memory store and self-improvement engine
-   (Phases 6–7, §15).
+   (Phases 7–8, §15).
 
 ### 1.2 Non-goals
 
 - Building a novel coding agent or model. Conveyor is an orchestrator.
 - Owning execution environments. The sandbox execution plane — runners,
   containers, harness adapters, credential pooling — was retired by
-  §21.4; managed execution returns, if ever, as demand-triggered Phase 8
+  §21.4; managed execution returns, if ever, as demand-triggered Phase 9
   scope.
 - Environment promotion machinery (dev/staging/prod tiers). Deployment to
   production remains the responsibility of the repository's existing
@@ -108,9 +108,10 @@ Two numbers define success and are instrumented from day one:
 | **Gates** | Two independent human-approval toggles — **spec approval** and **merge approval** — workspace defaults, per-task override, resolved and frozen at intake (§13.1). |
 | **Review round / seat** | One dispatch of the setup's review panel: one work order per seat, each seat a pinned model (optionally harness and effort); rounds aggregate unanimously and round-locally (§4). |
 | **Triage brief** | Triage's structured framing output — questions the spec must answer, suspected areas, risks — delivered advisory into the spec or implement order (§4). |
-| **Requirements tree** | The browsable feature hierarchy accumulating approved specs — the spec corpus as a first-class UI module (§4.2, §13.3). |
-| **Artifact** | A workspace-scoped context file (document, image, audio) attachable to tasks and feature nodes, injected into agent context and fetchable over MCP (§9). |
-| **Prompt/policy pack** | The versioned bundle of role prompts shipped with the platform (proto-pack since Phase 3). Full pack versioning with shadow-run gating is Phase 7 scope (§2.2). |
+| **Requirement** | A living, versioned intent document: what the system is supposed to do in an area and why — generated from operator intent, maintained conversationally, amended by drift reconciliation. Flat corpus, stable `REQ-n` statement IDs, optionally served by blueprints (§4.2, §13.3). |
+| **Blueprint** | A spec (§4.1) with a non-empty `decomposition`; approval materializes child tasks with dependency edges. Optionally linked to the requirement(s) it serves — linkable at drafting or retroactively (§4.1, §4.2). |
+| **Artifact** | A workspace-scoped context file (document, image, audio) attachable to tasks and requirements, injected into agent context and fetchable over MCP (§9). |
+| **Prompt/policy pack** | The versioned bundle of role prompts shipped with the platform (proto-pack since Phase 3). Full pack versioning with shadow-run gating is Phase 8 scope (§2.2). |
 
 ### 2.1 Configuration scopes
 
@@ -170,7 +171,7 @@ Phase 3. The full pack lifecycle designed in v1.0 — workspace-pinned pack
 versions, self-improvement diffs against pack content, and **shadow-run
 gating** (candidate packs replayed against completed tasks and compared
 on routing decisions, bounce counts, and cost before adoption) — is
-Phase 7 scope, deferred until the transcript corpus exists to replay
+Phase 8 scope, deferred until the transcript corpus exists to replay
 (§15.2, §19). One invariant survives from the original design unchanged:
 behaviors live in prompts and configuration; invariants (lifecycle
 legality, self-review prohibition, redaction, credential handling) live
@@ -203,8 +204,8 @@ Conveyor is a **control plane without an execution plane of its own**.
 ```
 
 The control plane is the durable brain: pipeline state, the work-order
-queue, gates, spec versions, review aggregation, the requirements tree,
-the review UI, and the append-only audit/event store. It holds no
+queue, gates, spec versions, review aggregation, the requirement
+corpus, the review UI, and the append-only audit/event store. It holds no
 plaintext operator credentials and executes no implementation. The
 execution side is whatever the operator connects: their own agent
 sessions, or their own worker daemon driving their own harness CLIs on
@@ -238,7 +239,7 @@ implementation, and review.
 
 **Review UI.** The human gate and the factory's primary surface (§13):
 stage-grouped activity feed, per-task event timeline, verdict-first gate
-cards, the needs-operator tray, the requirements tree, and workspace
+cards, the needs-operator tray, the Requirements view, and workspace
 administration (setups, harness registry, worker health).
 
 **Audit and transcript store.** Append-only record of every job, claim,
@@ -387,7 +388,7 @@ table amendment or annotated as historical corruption, never rewritten.
 `tasks.state` and work-order state carry CHECK constraints generated from
 the machine module's state sets so schema and code cannot drift. The
 machine module is annotated `(spec §21.37)` per row group; a generated
-state diagram is published into the requirements tree UI — the diagram
+state diagram is published into the Requirements view — the diagram
 illustrates, the table governs.
 
 ### 3.4 The serialized task command plane
@@ -453,7 +454,7 @@ bounce is recorded with a reason code.
    door; intake never depends on worker availability. Output contract:
    `class` (bug/feature/chore); `route` ∈ {implement, spec, human,
    parked}, with `human` honored for every task (transition to awaiting
-   input); a proposed requirements-tree placement; and a structured
+   input); a proposed requirement link (§4.2); and a structured
    **brief** — the questions the spec must answer, suspected affected
    areas, and risks or ambiguities in the task body — recorded on
    `triage.completed` and delivered advisory into the task's spec order
@@ -556,7 +557,7 @@ returns to the submitting agent for correction. (2) Each acceptance
 criterion carries a **verification method**; `test` criteria are
 exercised by the repository's CI, `human`-tagged criteria surface on the
 review card as explicit checkboxes, and `playwright`/`computer-use`
-criteria await the Phase 8 verification agent (§12). (3) Verdicts attach
+criteria await the Phase 9 verification agent (§12). (3) Verdicts attach
 to `AC-n` IDs. (4) `Non-goals` is what review enforces when emitting
 `scope-creep` codes. (5) The *approved* spec version is the contract: a
 redirect that changes criteria produces a new version requiring
@@ -570,22 +571,95 @@ fallback; GitHub issue projection inherits diagrams natively. Role-prompt
 guidance: roughly fifteen nodes or fewer, and only where a diagram
 clarifies more than prose.
 
-### 4.2 Coherence: the spec corpus and drift governance
+**Blueprint materialization (Phase 6.1, §21.46).** A spec whose
+`decomposition` is non-empty is a **blueprint**: on approval, the
+control plane materializes each `SUB-n` into a child task in the same
+transaction. A child's body carries the SUB summary plus the blueprint
+reference; it inherits the parent's frozen gates and setup contract and
+targets the SUB's declared repo; `depends_on` entries become task
+dependency edges (§6.3, §8.3); and each child records its originating
+`(spec version, SUB-n)` as lineage (§4.2). Children enter the pipeline
+at `implement` — their scope was defined by the approved blueprint, so
+triage and a second spec stage are skipped; a child that proves
+mis-scoped is corrected through redirect or a revised blueprint
+version, never ad-hoc re-triage. Approval validates the decomposition
+as a DAG — a cycle fails approval closed — and materialization is
+idempotent per spec version: re-approval of a revised blueprint
+materializes only SUB IDs without a live child. The parent task takes
+no implement order of its own; it is the batch anchor — it holds the
+blueprint, rolls up child progress, and moves to `closed` by an audited
+control-plane transition when its last child reaches a terminal state.
+A decomposition-free spec keeps today's single-task flow unchanged.
 
-1. **The spec corpus is live now.** Approved specs accumulate in the
-   **requirements tree** (§13.3): operator-managed feature nodes, triage
-   placement suggestions with human reassignment, and per-node lineage —
-   accumulated requirement text plus every task, PR, and event that
-   touched it. There is always one queryable answer to "what is this
-   system supposed to do here."
+### 4.2 Coherence: requirements, the corpus, and drift governance
+
+1. **Requirements are living intent documents (Phase 6.2, §21.46).** A
+   requirement states what the system is supposed to do in an area and
+   why, in the operator's own language. It is created from intent — the
+   operator states what they want, the planning agent (§9) generates the
+   structured document — and maintained the same way: revisions happen by
+   chatting, never by filing. The format is deliberately §4.1-shaped:
+   prose for intent and rationale, plus one fenced
+   `conveyor:requirements` block of enumerable statements with stable
+   IDs (`REQ-n`) that citations (item 4), acceptance criteria, and
+   verdicts can reference. Requirements are **versioned and confirmed,
+   not gated**: every revision — chat edit or drift amendment — creates
+   a version the operator confirms, audited like any event; the
+   approval gate stays on blueprints (§13.1). The corpus is **flat**:
+   `relates_to` links between requirements exist, but there is no
+   hierarchy to curate — the curated feature tree is retired (§21.46)
+   because filed taxonomy rots while conversation plus pipeline
+   write-back does not. "What is this system supposed to do here" keeps
+   one queryable answer: the confirmed requirement corpus plus its
+   lineage.
+
+   **Blueprints link to requirements optionally and loosely.** A
+   blueprint drafted in a requirement's planning context auto-proposes a
+   `serves` link; any blueprint may be linked retroactively; a blueprint
+   with no requirement is legal forever (chores, refactors, exploration).
+   One requirement accumulates many blueprints over its life — that
+   accumulation is its delivery history. Links are machinery-suggested
+   (planning agent at drafting; triage proposes a requirement link for
+   stray tasks) and human-confirmed. **Staleness is surfaced, not
+   discovered**: each requirement shows its last-confirmed version
+   against subsequent merges and drift touching its linked code — the
+   alignment layer rendered per requirement.
 2. **Reverse sync is live.** The monitor watches configured repositories
    for changes landing outside recorded Conveyor task/PR lineage (direct
    pushes, external PRs, reverts) and files reconciliation tasks that
    propose a corpus amendment or flag genuine conflicts for human
-   decision. It never silently edits approved requirements or specs.
+   decision. Reconciliation's `requirements_amended` outcome targets a
+   **requirement document**: it proposes a new requirement version,
+   which the operator confirms like any other revision (item 1). It
+   never silently edits confirmed requirements or approved specs.
 3. **Drift as a metric:** count and age of
    unreconciled out-of-pipeline changes per workspace; the healthy value
    is zero. Only an audited reconciliation outcome reduces the count.
+4. **Lineage links are first-class (Phase 6.3, §21.46).** One
+   polymorphic `links` table (§16) records typed edges deposited by
+   pipeline machinery at stage transitions — planning session →
+   requirement or blueprint, requirement → blueprint (`serves`),
+   requirement → requirement (`relates_to`), blueprint version →
+   materialized child (`SUB-n`), task →
+   dependency, task → commit range and PR, evidence → verdict, spec or
+   requirement version → superseded predecessor. Links are projections of `events`,
+   rebuildable, and carry provenance (`created_by_event`); no edge is
+   volunteered as free-standing data by an agent or human, because
+   volunteered edges rot. Two layers with opposite properties:
+   the **lineage graph** (intent → requirement → blueprint → work order
+   → code → evidence) is append-only and immutable — the audit chain;
+   the **alignment layer** (current code ↔ current spec) is mutable and
+   decays, so it is maintained only where the pipeline already stops —
+   review verdicts, planning-session context reads, and monitor drift
+   records — with in-repo `REQ-n` citations (the `(spec §N)`
+   convention, generalized to requirement-statement IDs and checked at
+   review) as the one anchor class that survives refactoring: a `REQ-n`
+   outlives every blueprint that serves it. Derived
+   file/symbol maps are cache, recomputed from commit history, never
+   asserted. Context assembly for work orders and planning sessions is
+   a link traversal under a depth/size budget; vector retrieval (§15.1)
+   is a secondary index over the same nodes, never the primary
+   structure.
 
 ---
 
@@ -751,6 +825,19 @@ conflict-fix enqueue) proceeds regardless, and system-dispatched orders
 inherit the hold. There is no execution mode: modes were removed by
 §21.31, and existing records keep theirs as history.
 
+**Dependencies gate claiming the same way** (Phase 6.1, §21.46). A task
+with unmerged dependencies (§8.3) is not claimable. Blocked is a
+**derived predicate** — an unmerged dependency exists — never a stored
+state: no new lifecycle state, nothing to drift out of sync. It is
+enforced server-side in the same layer as hold and the self-review
+guard, and every surface that renders claimability names the blocking
+task IDs. Dispatch still creates the order, which queues openly with
+the reason visible and keeps its original queue entry, so a
+long-blocked task is served promptly once unblocked. When a dependency
+reaches `merged`, the control plane re-nudges each dependent's dispatch
+so a waiting worker sees the order within one poll rather than at the
+queue-timeout backstop.
+
 **Claim order is deterministic** (§21.41). Among the orders a given
 claimant is eligible for, `claim_work_order` serves the oldest queue
 entry first — workspace-scoped FIFO by the §3.2 queue clock, so service
@@ -831,7 +918,7 @@ review, push, submit).
   enrollment, hold, dedicated worktrees, gates on by default, and the
   trust labels.
 
-### 6.5 Service packaging *(Phase 5.5, planned)*
+### 6.5 Service packaging *(Phase 5.5, complete — §21.46)*
 
 `conveyor worker install` / `uninstall` / `status` wrap `worker run` as
 an OS-managed service — launchd agent (macOS), systemd user unit (Linux)
@@ -864,7 +951,7 @@ mechanics are as §2.1. Repos are `{name, url, github, base}`; per-repo
 images, tool policies, and secret references left the document with the
 execution pivot.
 
-### 7.2 Multi-repo coordination *(deferred design, Phase 8)*
+### 7.2 Multi-repo coordination *(deferred design, Phase 9)*
 
 Multi-repo worktree sets and linked-PR gating are deferred with managed
 execution. The design is preserved: expand/contract **decomposition
@@ -939,12 +1026,18 @@ the implementation worktree. `conveyor done <task-id>` removes the
 worktree only when the task is terminal and the worktree clean; it
 retains the branch and never touches the primary checkout.
 
-### 8.3 Stacked tasks
+### 8.3 Task dependencies and stacking
 
-A task may declare a dependency on another; its branch is then cut from
-the dependency's branch instead of the base, with a rebase task on
-parent landing. Full stacked-diff tooling is out of scope; the model
-does not block it.
+A task may depend on other tasks. Dependencies are first-class edges
+(`task_dependencies`, §16) — materialized from a blueprint's
+`depends_on` (§4.1) or declared at intake — validated acyclic at write
+time. **v1 dependencies are ordering gates, not stacked branches**
+(§21.46): every task branches from its recorded base; a dependent
+simply cannot be claimed until its dependencies merge (§6.3), so its
+branch is cut from a base that already contains them. Full stacking —
+cutting the branch from the dependency's branch with a rebase task on
+parent landing — is explicitly deferred, not designed here; the model
+does not block it, and reintroducing it requires an amendment.
 
 ---
 
@@ -973,16 +1066,41 @@ pipeline: the dashboard, `conveyor task new`, REST, and MCP
   automation-rate metric; MCP intake records the authenticated agent
   actor and grants no capability beyond HTTP intake.
 
+**Planning sessions (Phase 6.2, §21.46)** are the fifth intake surface:
+an in-product chat with the planning agent producing **two artifact
+types** — requirement documents and blueprints. The operator states
+intent and the agent generates the structured requirement (§4.2 item
+1); revisions to either artifact happen in the same conversation. The
+agent runs in-process on the factory credential
+— planning is Conveyor-owned, like triage; implementation stays
+delegated (§3.2, §21.4 boundary unchanged) — with read tools over the
+requirement corpus, approved specs, artifacts, and lineage links, and
+draft/revise/finalize tools. **Finalizing a requirement** creates or
+revises the versioned document for operator confirmation (§4.2 item 1
+— no gate). **Finalizing a blueprint** creates the
+parent task and its spec version through the same §4.1 validation and
+§13.1 spec gate as every other spec — and, when drafted in a
+requirement's context, proposes the `serves` link; a planning session
+grants no approval authority. Sessions are durable rows; on finalize
+the transcript is archived as an artifact linked to the produced
+requirement or parent task, so the rationale — alternatives rejected,
+constraints surfaced — is part of its lineage (§4.2). The streaming transport is the AI SDK
+UI-message protocol over SSE served by `conveyord` (§17.0/§17.3 — no
+new tier). MCP remains the headless twin: an operator agent reaches the
+identical outcome through `create_task` + `submit_spec`; both doors
+converge on one blueprint contract.
+
 **Artifacts** are workspace-scoped context files (documents, images,
-audio) uploaded through the UI, attachable to feature nodes and tasks,
+audio) uploaded through the UI, attachable to requirements and tasks,
 injected into pipeline-agent context, listed in work orders, and
 fetchable over MCP (`read_artifact`). Artifacts are context, never
 secrets; storage is size-bounded and content-addressed.
 
 **GitHub triggers:** ready-labeled issues are polled into tasks
 (provenance `github:<repo>#<n>`), and PR review comments on Conveyor PRs
-convert to redirect feedback. Chat, cron, and monitor-agent triggers are
-future scope (Phase 5.6+).
+convert to redirect feedback. Monitor-agent triggers are live (§4.2,
+§21.45); the chat trigger is the Phase 6.2 planning surface; cron
+triggers remain future scope.
 
 ---
 
@@ -1095,7 +1213,7 @@ behavior**. Current mechanics, in order of arrival:
    explicit: role `verification_evidence`; PNG, JPEG, or WebP screenshots up
    to 10 MiB; MP4 or WebM recordings up to 25 MiB; direct ownership by the
    submitting task in the active workspace. Filenames do not establish type.
-3. **The verification agent** *(Phase 8, demand-triggered)*: scripted
+3. **The verification agent** *(Phase 9, demand-triggered)*: scripted
    Playwright flows and computer-use judgment against the spec's
    acceptance criteria, with evidence attached per `AC-n`. With
    K8sRunner, this is explicitly the reintroduction of managed
@@ -1120,7 +1238,7 @@ design):
 
 The shipped default is both gates on. The historical L0–L3 escalation
 ladder and the Auto/Manual mode axis are both retired (§21.12, §21.31);
-existing records keep recorded levels/modes as history. Phase 7
+existing records keep recorded levels/modes as history. Phase 8
 graduation, when it arrives, operates on gate toggles and hold usage.
 
 ### 13.2 The review inbox
@@ -1159,7 +1277,7 @@ history.
 - Local work starts from `conveyor checkout <task-id>`, surfaced with a
   copy affordance in every task header — not a gate action.
 
-### 13.3 Activity view and requirements tree
+### 13.3 Activity view and requirements
 
 The primary UI: an app shell with a **stage-grouped feed** (Triage /
 Spec / Implementing / Reviewing / Awaiting human, with counts, hold
@@ -1169,9 +1287,16 @@ stage with its agent summary, duration, token telemetry, harness, and
 independence labels — the audit log rendered as a story; **review
 actions in place** so a reviewer never leaves the timeline to act; task
 intake; workspace administration (setups, harness registry, worker and
-per-harness health, serviceability); and the **requirements tree** —
-the browsable feature hierarchy accumulating approved specs with full
-task/PR/event lineage per node (§4.2).
+per-harness health, serviceability); the **Requirements view** —
+the flat corpus of living requirement documents, each showing its
+confirmed version, staleness against subsequent merges and drift, the
+blueprints serving it, and full task/PR/evidence lineage (§4.2); the
+**planning surface**
+(Phase 6.2) — session list and chat with streamed replies,
+tool-activity markers, and attachments, ending in a blueprint hand-off
+to the ordinary spec gate; and **dependency affordances** (Phase 6.1) —
+blocked chips naming the blocking tasks in feed and detail, and a
+child-progress rollup (n of m merged) on blueprint parent tasks.
 
 ---
 
@@ -1196,14 +1321,14 @@ Conveyor records what execution cost and never lets cost gate execution
    surfaces — observational like every other usage value, never a gate
    (§21.41).
 3. **Attribution stays visible** in the per-task timeline. The
-   aggregate cost dashboard is Phase 8, observational only; nothing
+   aggregate cost dashboard is Phase 9, observational only; nothing
    revives spending enforcement without a new accepted amendment.
 
 ---
 
-## 15. Memory and self-improvement *(Phases 6–7)*
+## 15. Memory and self-improvement *(Phases 7–8)*
 
-### 15.1 Memory store *(Phase 6)*
+### 15.1 Memory store *(Phase 7)*
 
 Workspace-scoped knowledge — architecture
 decisions, conventions, lessons — with hybrid keyword/vector retrieval
@@ -1211,9 +1336,13 @@ decisions, conventions, lessons — with hybrid keyword/vector retrieval
 already decided: control-plane MCP tools (`get_memories`,
 `store_memory`) on the §17.4 server, available to any connected session;
 the worker is deliberately uninvolved. The spec corpus half of the
-original design already shipped as the requirements tree (§4.2).
+original design ships as the requirement corpus (§4.2), and
+Phase 6.3's lineage links are the primary knowledge structure — the
+memory store is **recall over that graph**: retrieval ranks and returns
+linked nodes with their provenance, and vector similarity is the
+secondary index, never the authority (§4.2 item 4, §21.46).
 
-### 15.2 Self-improvement engine *(Phase 7)*
+### 15.2 Self-improvement engine *(Phase 8)*
 
 Consumes transcripts, reason
 codes, bounce histories, and telemetry; produces human-reviewable
@@ -1238,7 +1367,22 @@ and event in one transaction (§3.3). The core tables:
 - `repos` — `{name, url, github, base}` per workspace.
 - `tasks` — state (CHECK-constrained from the machine module), current
   stage, assigned branch/base metadata, frozen setup contract, frozen
-  gates, hold, provenance, generated title, GFM body, feature link.
+  gates, hold, provenance, generated title, GFM body,
+  parent (blueprint) task link with originating `(spec version, SUB-n)`.
+- `requirements` / `requirement_versions` — living intent documents
+  (§4.2): slug, current confirmed version; versions carry prose, the
+  `REQ-n` statement block, confirmation, and origin (chat revision or
+  drift amendment). The deprecated `features` tree is retired:
+  content-bearing nodes seed requirement documents, empty nodes drop,
+  and `tasks.feature_id` assignments convert to history links (§21.46).
+- `task_dependencies` — acyclic `(task, depends_on)` edges enforcing
+  §6.3 claim gating; written by blueprint materialization or intake.
+- `planning_sessions` — durable planning chats (§9): status, message
+  log, finalized requirement/parent-task link; transcript archived as
+  an artifact on finalize.
+- `links` — polymorphic typed lineage edges
+  `(src_type, src_id, dst_type, dst_id, kind, created_by_event)`;
+  projections of `events`, rebuildable (§4.2 item 4).
 - `work_orders` — stage-typed; state, queue/execution/lease clocks,
   retry/suppression state, harness snapshot and fingerprint, claim
   identity (worker, session, client token), review round/seat linkage.
@@ -1250,8 +1394,8 @@ and event in one transaction (§3.3). The core tables:
 - `interventions` — every human decision with action, derived or
   curated reason code, comment, and (for approvals) the approved head
   SHA.
-- Spec versions, review rounds and verdicts, requirements-tree feature
-  nodes, artifacts (content-addressed), intake idempotency keys, and
+- Spec versions, review rounds and verdicts, artifacts
+  (content-addressed), intake idempotency keys, and
   worker enrollments (credential hashes, probe results) round out the
   schema.
 
@@ -1276,7 +1420,7 @@ Postgres. (TanStack Start was considered and rejected — SSR and server
 functions would add a Node tier an authenticated internal dashboard
 doesn't use; cheaply reversible since Start builds on Router.)
 
-**Permitted exception:** the Phase 7 analysis side of the
+**Permitted exception:** the Phase 8 analysis side of the
 self-improvement engine may run as a small Python sidecar if transcript
 mining outgrows Go; everything else stays in the two stacks above.
 
@@ -1309,7 +1453,9 @@ conveyor config export | import             # git-versioned config backup
 
 ### 17.3 HTTP API
 
-REST + SSE mirroring the CLI and UI: task CRUD and intake, job/timeline
+REST + SSE mirroring the CLI and UI: task CRUD and intake,
+planning-session lifecycle and chat streaming (AI SDK UI-message
+protocol over SSE, §9), job/timeline
 streaming, review actions, hold toggle, setup reassignment, recovery
 operations (order recovery, redispatch, review-round retry/recover),
 workspace CRUD and config read/write (`If-Match` optimistic
@@ -1381,8 +1527,8 @@ enterprise-ready (no SSO/SAML, SCIM, RBAC enforcement, or HA story) but
 avoids foreclosing it: authentication flows through a pluggable identity
 interface, every actor and event carries a role for later RBAC
 enforcement, and operations stay boring — one Postgres, documented
-backup/restore, versioned upgrades. SSO/OIDC, SCIM, and RBAC are Phase 9,
-demand-triggered.
+backup/restore, versioned upgrades. SSO/OIDC, SCIM, and RBAC are Phase
+10, demand-triggered.
 
 ---
 
@@ -1399,18 +1545,21 @@ demand-triggered.
 | **5.2** | Adversarial review panel: per-seat pinned models/efforts, unanimous round-local aggregation, independence labels | Complete (operational; extensions continue by amendment) |
 | **5.3** | Factory-coordinated GitHub: issue create/update on spec approval, portable aggregate review status, deterministic PR verdict/resolution comment (§21.22, §21.43) | Complete |
 | **5.4** | Evidence-gated `submit_for_review` (§12, §21.44) | Complete |
-| **5.5** | Worker service packaging: `conveyor worker install`/`uninstall`/`status` (§6.5) | Planned |
+| **5.5** | Worker service packaging: `conveyor worker install`/`uninstall`/`status` (§6.5) | Complete (§21.46) |
 | **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints (§21.45) | Complete |
 | **—** | Lifecycle state machines & command plane implementation (§3.3–§3.4, accepted §21.37–§21.38): machine module + event-corpus audit, then staged `taskops` migration — lands ahead of further 5.2+ lifecycle growth | In flight (factory-executed) |
-| **6** | Memory store: pgvector retrieval, lessons, MCP memory tools (§15) | Post-Beta, sequenced after the worker phases |
-| **7** | Flywheel: transcript mining, self-improvement proposals, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
-| **8** | Managed-execution reintroduction, demand-triggered: verification agent (§12), K8sRunner, multi-repo worktree sets and linked-PR gating (§7.2), aggregate cost dashboard | Demand-triggered |
-| **9** | SSO/OIDC, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Demand-triggered |
+| **6** | Planning & the knowledge graph: **6.1** blueprint materialization + dependency-gated claiming (§4.1, §6.3, §8.3), **6.2** planning sessions — intent → requirement documents, chat → blueprints, features-tree migration (§4.2, §9, §13.3, §17.3), **6.3** lineage links + graph context assembly (§4.2 item 4, §16) | Accepted (§21.46) — next up |
+| **7** | Memory store: recall over lineage links; hybrid keyword/pgvector as secondary index; MCP memory tools (§15.1) | Post-Phase-6 |
+| **8** | Flywheel: transcript mining, self-improvement proposals, gate/hold graduation, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
+| **9** | Managed-execution reintroduction, demand-triggered: verification agent (§12), K8sRunner, multi-repo worktree sets and linked-PR gating (§7.2), aggregate cost dashboard | Demand-triggered |
+| **10** | SSO/OIDC, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Demand-triggered |
 
-Sequence: 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6; the state-machine /
+Sequence: **Phase 5 is complete** (5.1 → 5.6, closed by §21.43–§21.46;
+working breakdown in docs/phase5-plan.md). Phase 6 runs 6.1 → 6.2 →
+6.3, with the first lineage links written by 6.1's materialization; the
+working breakdown lives in docs/phase6-plan.md. The state-machine /
 command-plane implementation lands ahead of further lifecycle-surface
-growth. The working breakdown lives in docs/phase5-plan.md; this section
-is authoritative for scope and ordering.
+growth. This section is authoritative for scope and ordering.
 
 **Beta exit criterion (met July 15, 2026):** five consecutive real tasks
 on the Conveyor repository shipped through the full pipeline — issue →
@@ -1464,7 +1613,7 @@ Standing resolutions, with retired ones marked:
 8. **Titles and bodies.** Titles are generated at the trusted creation
    boundary and are not intake input; bodies are GitHub-flavored
    Markdown stored verbatim (§21.24–§21.25, §21.39).
-9. **Cross-repo coordination** *(design preserved, Phase 8):*
+9. **Cross-repo coordination** *(design preserved, Phase 9):*
    expand/contract decomposition first, linked-PR gating as the
    non-overridable safety floor, merge train deferred until incident
    data justifies it (§7.2).
@@ -4327,12 +4476,169 @@ Phase 6 memory, Phase 7 self-improvement, Phase 8 automated verification and
 managed execution, provider adapters, the retired sandbox plane, automatic
 requirements edits, and deployment remain out of scope.
 
+*(Phase numbers in this entry are as of v2.5; §21.46 renumbers the
+deferred phases.)*
+
 ---
 
-*End of specification. v2.5 accepted July 28, 2026 — the v2.0 consolidated
-restatement of v1.0–v1.40 (§21.40), supervision hygiene (§21.41), and
-worker-side first-activity liveness (§21.42), with the completed Phase 5.3
-review projection (§21.43) and Phase 5.4 verification evidence (§21.44). The
-completed Phase 5.6 monitor and advisory repository hints are recorded in
-§21.45. The body (§§1–20) is the normative authority; §21 is the change
-record. Subsequent changes proceed by amendment with version bumps.*
+### 21.46 v2.6 — Phase 5 closure; Phase 6: planning & the knowledge graph (July 29, 2026)
+
+Phase 5 closes, and the next phase reorients the factory around
+planning, dependencies, and lineage. The operating observation behind
+the scope: dogfooding proved the pipeline as a per-task orchestrator,
+but intake is one task at a time, the spec agent's `decomposition`
+output is validated and then discarded, planning conversations
+happen outside the factory — so their rationale never enters the
+corpus — and the curated requirements tree accretes without driving
+anything. The compounding value of a software factory is that task N is
+cheaper than task 1; that requires owning planning and keeping the
+structure the pipeline currently drops. Ten changes:
+
+1. **Phase 5.5 closes; Phase 5 is complete.** `conveyor worker
+   install` / `uninstall` / `status` shipped July 28, 2026 (PR #156)
+   with tests and operations documentation; the operator accepted the
+   phase July 29, 2026. §6.5 and the §19 table flip to complete. With
+   §21.43–§21.45, every Phase 5 sub-phase is closed and
+   docs/phase5-plan.md is a historical record.
+
+2. **Phase 6 accepted: planning & the knowledge graph**, in three
+   sub-phases — 6.1 blueprint materialization and dependency-gated
+   claiming, 6.2 planning sessions, 6.3 lineage links and graph context
+   assembly. Working breakdown in docs/phase6-plan.md; §19 is
+   authoritative for scope and ordering. 6.1 lands first deliberately:
+   it pays off with the existing MCP spec flow before any chat surface
+   exists.
+
+3. **Blueprint materialization (§4.1).** A spec with a non-empty
+   `decomposition` is a blueprint; approval materializes each `SUB-n`
+   into a child task transactionally — children inherit frozen gates
+   and setup, carry `(spec version, SUB-n)` lineage, and enter at
+   `implement` (their scope was just defined by an approved spec;
+   re-triage is redundant and could re-route them). The decomposition
+   must be a DAG — approval fails closed on cycles, closing the known
+   validation gap. Materialization is idempotent per spec version. The
+   parent takes no implement order; it is the batch anchor and closes
+   by an audited control-plane transition when its last child is
+   terminal — the §3.3 task machine gains exactly that edge, and the
+   machine module and CHECK templates move together as §21.37 requires.
+   A decomposition-free spec keeps the single-task flow byte-identical.
+
+4. **Dependencies are ordering gates enforced at claim time (§6.3,
+   §8.3).** `task_dependencies` edges, acyclic at write time. Blocked
+   is a derived predicate — an unmerged dependency exists — never a
+   stored lifecycle state, enforced in the same server-side layer as
+   hold and the self-review guard; surfaces name the blocking tasks.
+   Merge of a dependency re-nudges dependents' dispatch. The §21.31
+   one-queue contract is untouched: no priority field, FIFO and the
+   reserved review slot unchanged, orders queue openly with the reason
+   visible. §8.3's stacked branches (cut from the dependency's branch,
+   rebase on parent landing) are explicitly deferred: v1 dependents
+   branch from a base that already contains their dependencies, which
+   captures the ordering value without rebase-cascade coordination
+   against agent-owned worktrees; reintroduction requires an amendment.
+
+5. **Planning sessions: the factory owns planning (§9, §13.3,
+   §17.3).** An in-product chat — the fifth intake surface — producing
+   two artifact types: requirement documents (change 7) and blueprints.
+   The agent
+   runs in-process on the factory credential like triage, with read
+   tools over the requirement corpus, approved specs, artifacts, and
+   links, plus
+   draft/revise/finalize; finalizing a blueprint creates the parent
+   task and spec
+   version through unchanged §4.1 validation and the unchanged §13.1
+   spec gate — a session grants no approval authority. The transcript
+   archives as an artifact linked to what it produced: the rationale —
+   alternatives rejected, constraints surfaced — becomes lineage
+   rather than evaporating in an external chat window. Rationale for
+   in-product rather than delegated: context-switching to external
+   agent sessions is a poor operating experience, planning quality is
+   core factory value, and externally-drafted blueprints arrive with
+   their provenance amputated. The §21.4 boundary is intact —
+   implementation and review stay delegated; MCP (`create_task` +
+   `submit_spec`) remains the headless twin converging on the same
+   blueprint contract. Transport is the AI SDK UI-message protocol over
+   SSE served by `conveyord`; the UI uses the stock chat component
+   family. No new tier, no sidecar (§17.0 unchanged).
+
+6. **Lineage links (§4.2 item 4, §16).** One polymorphic `links` table:
+   typed edges deposited only by pipeline machinery at stage
+   transitions — requirement `serves`/`relates_to` edges included —
+   carrying `created_by_event` provenance, rebuildable as
+   projections of `events`. Two layers by design: the append-only
+   lineage graph (requirement → blueprint → work order → code
+   → evidence) and the mutable alignment layer, maintained only where
+   the pipeline already stops (review, planning reads, monitor drift)
+   with in-repo `REQ-n` citations as the refactor-surviving anchor.
+   Explicitly rejected: a graph database (Postgres per §17.0 at this
+   scale), free-standing volunteered edges (they rot), asserted
+   file/symbol maps (derived cache only), and embeddings as primary
+   structure (recall without provenance).
+
+7. **Requirements become living intent documents; the curated tree
+   retires (§4.2, §13.3, §16).** The `features` tree was the factory's
+   only hand-curated structure — filed taxonomy with no lifecycle, no
+   content obligation, and no pipeline write-back — and dogfooding
+   showed it accretes without driving anything, the failure mode this
+   amendment's own doctrine predicts for volunteered structure. Its
+   replacement is authored, not derived, because the intent layer needs
+   a home in the operator's own language: a **requirement** is a
+   versioned document generated from stated intent by the planning
+   agent and revised the same way — plus by drift reconciliation, whose
+   `requirements_amended` outcome now proposes a new requirement
+   version for confirmation. Versioned and confirmed, never gated (the
+   approval gate stays on blueprints); flat, never a hierarchy
+   (`relates_to` links only); `REQ-n` statement IDs give citations,
+   acceptance criteria, and verdicts a stable target that outlives any
+   blueprint. Blueprint linkage is optional and loose by design —
+   `serves` edges proposed by machinery (planning context, triage
+   suggestions) and confirmed by humans; unlinked blueprints are legal
+   forever; a requirement's accumulated blueprints are its delivery
+   history. Staleness is surfaced per requirement, not discovered.
+   **No epic entity**: the lineage chain is requirement → blueprint →
+   code → evidence; the blueprint parent task remains the mechanical
+   carrier (authoring, approval, events, child rollup) with no
+   conceptual elevation and no separate surface. Migration: `features`
+   nodes that accumulated approved specs seed requirement documents,
+   empty nodes drop, `tasks.feature_id` assignments convert to history
+   links, and `triage.feature_suggested` retires in favor of triage
+   proposing a requirement link.
+
+8. **Deferred phases renumber.** Memory → Phase 7 (rescoped in §15.1 to
+   recall over the lineage graph, vector retrieval as secondary index;
+   MCP transport decision of §21.12 unchanged); flywheel/graduation →
+   Phase 8; managed-execution reintroduction and cross-repo
+   coordination → Phase 9; enterprise SSO/SCIM/RBAC/HA → Phase 10.
+   Body references updated in §§1–20; §21 entries keep their original
+   numbering as history.
+
+9. **Data model (§16).** New: `requirements` / `requirement_versions`,
+   `task_dependencies`, `planning_sessions`,
+   `links`; `tasks` gains the parent-blueprint link with `(spec
+   version, SUB-n)` origin; `features` and `tasks.feature_id` are
+   deprecated per change 7's migration. `events` remains append-only and
+   authoritative; every new edge type commits with its event.
+
+10. **Out of scope for Phase 6**, restated to prevent drift: branch
+    stacking and rebase tasks (change 4); automatic edits to confirmed
+    requirements or approved specs (§4.2 reverse-sync boundary
+    unchanged — reconciliation proposes, humans confirm); memory
+    MCP tools (Phase 7); a task priority field (§6.3, still
+    amendment-gated); cross-repo dependency edges (Phase 9, §7.2);
+    requirement hierarchy or any curated taxonomy (change 7); an epic
+    entity or surface (change 7); any
+    in-product implementation or review execution (§21.4).
+
+---
+
+*End of specification. v2.6 accepted July 29, 2026 — the v2.0
+consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
+(§21.41), worker-side first-activity liveness (§21.42), the completed
+Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
+(§21.44), and Phase 5.6 monitor and advisory hints (§21.45). §21.46
+closes Phase 5 and accepts Phase 6 — planning & the knowledge graph:
+requirement documents, blueprint materialization, dependency-gated
+claiming, planning sessions, and lineage links — renumbering the
+deferred phases. The body (§§1–20) is the normative
+authority; §21 is the change record. Subsequent changes proceed by
+amendment with version bumps.*

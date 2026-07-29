@@ -330,6 +330,13 @@ review card and the PR without leaving either surface.
 Placed after 5.4 by deliberate prioritization; technically independent of
 5.2–5.4.*
 
+**Status: complete (§21.46).** `conveyor worker install`/`uninstall`/
+`status` shipped July 28, 2026 (task 260728-d66b8b, PR #156) with unit
+coverage and the worker-operations runbook; the operator accepted the
+phase July 29, 2026. With §21.43–§21.45 this closes every Phase 5
+sub-phase — this document is now a historical record; current work is
+docs/phase6-plan.md.
+
 1. **`conveyor worker install`:** writes and loads a launchd agent (macOS)
    or systemd user unit (Linux) wrapping `conveyor worker run` — restart on
    failure, start on boot/login. Requires existing enrollment; refuses with

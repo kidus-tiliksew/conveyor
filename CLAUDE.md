@@ -1,8 +1,8 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.2,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41
-supervision hygiene and §21.42 worker first-activity liveness; the body
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.6,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.46
+through Phase 5 closure and the accepted Phase 6; the body
 §§1–20 is normative, §21 is the change record). When code and spec disagree,
 the spec wins; spec changes go by amendment with a version bump (§21), never
 silent edits.
@@ -58,26 +58,40 @@ checkout or reset task history.
 Workspace context is explicit across REST, CLI, MCP, dispatch, and
 reconciliation (§21.10); omission is compatible only for a singleton workspace.
 
-Beta was achieved July 15, 2026 (§19 exit criterion met). Post-Beta scope is
-accepted by spec §21.12–§21.21 and now active (working breakdown in
-[docs/phase5-plan.md](docs/phase5-plan.md)): Phase 5.1 worker (`conveyor worker run`) + independent
-spec/merge gate toggles replacing L0–L3 + harness registry (execution modes
-were subsequently removed by §21.31 — one queue, workers claim what they can
-serve, with a per-task hold as the reservation primitive); Phase 5.2 adversarial
-review panel; Phase 5.3 factory-coordinated GitHub (issue on spec approval,
-verdict mirroring; PR stays at submit, §21.15); Phase 5.4 evidence-gated
-`submit_for_review`; Phase 5.5 worker service packaging (`conveyor worker
-install`, §21.16). Sequence 5.1 → {5.2 ∥ 5.3} → 5.4 → 5.5 → 5.6. The worker is
+Beta was achieved July 15, 2026 (§19 exit criterion met). **Phase 5 is
+complete** (5.1–5.6, closed by §21.43–§21.46; historical breakdown in
+[docs/phase5-plan.md](docs/phase5-plan.md)): worker + gate toggles + one
+queue with per-task hold (§21.31), adversarial review panel,
+factory-coordinated GitHub, evidence-gated `submit_for_review`, worker
+service packaging, monitor agent + `.conveyor/hints.yaml`. The worker is
 a thin supervisor over the unchanged §17.4 MCP lifecycle — never a second
 protocol, adapter interface, or credential pool.
 
-Do NOT build post-Beta or deferred surfaces beyond that:
-monitor agent, `.conveyor/` repo hints (Phase 5.6, after the worker); memory
-store / pgvector (Phase 6 — transport decided as MCP tools by §21.12, scope
-not pulled forward); transcript mining / self-improvement / eval rig
-(Phase 7); managed-execution reintroduction — independent verification
-agent, K8sRunner, multi-repo worktree sets, aggregate cost dashboard
-(Phase 8, demand-triggered); enterprise SSO/SCIM/RBAC/HA (Phase 9,
-demand-triggered). The command-policy shim approval cards and environment
-inference/repair are retired (§21.4), not deferred — do not build them at
-all.
+**Active scope is Phase 6 — planning & the knowledge graph** (§21.46;
+working breakdown in [docs/phase6-plan.md](docs/phase6-plan.md)), in
+order: 6.1 blueprint materialization (approved specs with a
+`decomposition` fan out into child tasks entering at `implement`) +
+dependency-gated claiming (blocked is a derived predicate in the same
+enforcement layer as hold — never a stored state, never a priority
+field); 6.2 planning sessions producing requirement documents (living,
+versioned intent docs with `REQ-n` statement IDs — confirmed, never
+gated; the curated features tree retires and migrates) and blueprints
+(through the unchanged §4.1 validation and §13.1 spec gate; optional
+`serves` links to requirements); AI SDK stream protocol over SSE served
+by `conveyord` — no Node sidecar; transcripts archived as artifacts;
+6.3 lineage links (one polymorphic `links` table, edges written only by
+pipeline machinery, projections of `events`) + graph-walk context
+assembly. The chain is requirement → blueprint → code → evidence — no
+epic entity, flat requirement corpus (no hierarchy curation). v1
+dependencies are ordering gates — branch stacking stays deferred
+(§8.3).
+
+Do NOT build deferred surfaces beyond that: memory store / pgvector /
+MCP memory tools (Phase 7 — recall over the lineage graph, transport
+decided by §21.12, scope not pulled forward); transcript mining /
+self-improvement / eval rig (Phase 8); managed-execution
+reintroduction — independent verification agent, K8sRunner, multi-repo
+worktree sets, aggregate cost dashboard (Phase 9, demand-triggered);
+enterprise SSO/SCIM/RBAC/HA (Phase 10, demand-triggered). The
+command-policy shim approval cards and environment inference/repair are
+retired (§21.4), not deferred — do not build them at all.
