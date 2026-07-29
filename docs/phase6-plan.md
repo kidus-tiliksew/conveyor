@@ -59,7 +59,8 @@ terminal; a decomposition-free spec behaves byte-identically to today.
 ## Phase 6.2 — Planning sessions & requirement documents
 
 *Proves: the factory owns planning; intent goes from conversation to a
-confirmed requirement and an approved blueprint without leaving the
+confirmed requirement, and to the first of the many blueprints that may
+serve it over its life, without leaving the
 product (§4.2, §9, §13.3, §17.3).*
 
 1. **Streaming transport:** the AI SDK UI-message protocol over SSE
