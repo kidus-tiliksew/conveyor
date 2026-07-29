@@ -696,9 +696,19 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if task, taskErr := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); taskErr == nil {
-		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
+		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 	}
 	writeJSON(w, http.StatusOK, spec)
+}
+
+func materializedChildrenForSpec(children []core.TaskRelation, version int) []core.TaskRelation {
+	var result []core.TaskRelation
+	for _, child := range children {
+		if child.OriginSpecVersion == version {
+			result = append(result, child)
+		}
+	}
+	return result
 }
 
 type reviewItem struct {
@@ -809,7 +819,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var specPointer *core.SpecVersion
 	if hasSpec {
-		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
+		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 		specPointer = &spec
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(r.Context(), id)

@@ -522,8 +522,23 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder) *ReviewRecoveryState {
 }
 
 func NewMemory() Store {
+	return NewMemoryWithConfig(nil)
+}
+
+// NewMemoryWithConfig gives the volatile store the same repository contract as
+// the durable store. Blueprint materialization must validate and resolve each
+// SUB repository from workspace configuration (spec §4.1).
+func NewMemoryWithConfig(cfg *config.Config) Store {
+	repositories := map[string]map[string]string{}
+	if cfg != nil {
+		repositories[cfg.Workspace] = map[string]string{}
+		for _, repo := range cfg.Repos {
+			repositories[cfg.Workspace][repo.Name] = repo.Base
+		}
+	}
 	return &memory{
 		tasks:                       map[string]core.Task{},
+		repositories:                repositories,
 		dependencies:                map[string]map[string]struct{}{},
 		jobs:                        map[string][]core.Job{},
 		events:                      map[string][]core.Event{},
@@ -562,6 +577,7 @@ type memoryArtifactKey struct {
 type memory struct {
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
+	repositories                map[string]map[string]string
 	dependencies                map[string]map[string]struct{}
 	jobs                        map[string][]core.Job
 	events                      map[string][]core.Event
@@ -2393,17 +2409,8 @@ func (m *memory) GetLatestSpecVersion(_ context.Context, taskID string) (core.Sp
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	versions := m.specs[taskID]
-	if len(versions) == 0 || versions[len(versions)-1].Version != version {
-		return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
-	}
-	versions[len(versions)-1].Approved = true
-	versions[len(versions)-1].ApprovedAt = time.Now().UTC()
-	m.specs[taskID] = versions
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
-	return nil
+	_, err := m.ApproveSpecVersionAndMaterialize(ctx, taskID, version)
+	return err
 }
 
 type blueprintDecompositionItem struct {
@@ -2482,14 +2489,27 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	if err := validateBlueprintDecomposition(decomposition); err != nil {
 		return nil, err
 	}
+	baseBranches := make(map[string]string, len(decomposition))
+	for _, item := range decomposition {
+		repo := strings.TrimSpace(item.Repo)
+		baseBranch, exists := m.repositories[parent.Workspace][repo]
+		if !exists {
+			return nil, fmt.Errorf("blueprint %s repository %q is not configured in workspace %s", item.ID, item.Repo, parent.Workspace)
+		}
+		baseBranches[item.ID] = baseBranch
+	}
 	createdAt := time.Now().UTC()
 	childrenBySub := map[string]core.Task{}
 	for _, existing := range m.tasks {
-		if existing.ParentTaskID == taskID && existing.OriginSpecVersion == version &&
-			existing.OriginSubID != "" && !core.TaskTerminal(existing.State) {
+		if existing.ParentTaskID != taskID || existing.OriginSubID == "" {
+			continue
+		}
+		current, exists := childrenBySub[existing.OriginSubID]
+		if !exists || blueprintChildPrecedes(existing, current) {
 			childrenBySub[existing.OriginSubID] = existing
 		}
 	}
+	createdSubs := make(map[string]struct{}, len(decomposition))
 	for _, item := range decomposition {
 		if _, exists := childrenBySub[item.ID]; exists {
 			continue
@@ -2502,9 +2522,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			id = core.NewTaskID()
 		}
 		title := strings.TrimSpace(item.Summary)
-		if len(title) > 200 {
-			title = title[:200]
-		}
+		title = core.TruncateUTF8Bytes(title, 200)
 		child := core.Task{
 			ID: id, Workspace: parent.Workspace,
 			Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
@@ -2514,16 +2532,20 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 			PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
 			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
-			BaseBranch: parent.BaseBranch, Branch: "conveyor/task-" + id,
+			BaseBranch: baseBranches[item.ID], Branch: "conveyor/task-" + id,
 			State: core.TaskQueued, NextStage: core.StageImplement,
 			ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
-			CreatedAt: createdAt,
+			FeatureID: parent.FeatureID, CreatedAt: createdAt,
 		}
 		m.tasks[id] = child
 		childrenBySub[item.ID] = child
+		createdSubs[item.ID] = struct{}{}
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: core.JSONPayload(child), At: createdAt})
 	}
 	for _, item := range decomposition {
+		if _, created := createdSubs[item.ID]; !created {
+			continue
+		}
 		child := childrenBySub[item.ID]
 		if m.dependencies[child.ID] == nil {
 			m.dependencies[child.ID] = map[string]struct{}{}
@@ -2536,12 +2558,26 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	versions[len(versions)-1].ApprovedAt = createdAt
 	m.specs[taskID] = versions
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]any{"version": version, "children_created": len(childrenBySub)})})
+	if len(createdSubs) > 0 {
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]any{
+			"version": version, "children_created": len(createdSubs), "children_total": len(decomposition),
+		})})
+	}
 	result := make([]core.Task, 0, len(childrenBySub))
 	for _, item := range decomposition {
 		result = append(result, m.hydrateTaskLocked(childrenBySub[item.ID]))
 	}
 	return result, nil
+}
+
+func blueprintChildPrecedes(candidate, current core.Task) bool {
+	if candidate.OriginSpecVersion != current.OriginSpecVersion {
+		return candidate.OriginSpecVersion < current.OriginSpecVersion
+	}
+	if !candidate.CreatedAt.Equal(current.CreatedAt) {
+		return candidate.CreatedAt.Before(current.CreatedAt)
+	}
+	return candidate.ID < current.ID
 }
 
 func (m *memory) ListBlockingTaskIDs(_ context.Context, taskID string) ([]string, error) {
