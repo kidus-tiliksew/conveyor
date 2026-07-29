@@ -92,7 +92,7 @@ func main() {
 		closeStore = pgStore.Close
 		log.Printf("using durable Postgres store with River schema")
 	case "memory":
-		st = store.NewMemory()
+		st = store.NewMemoryWithConfig(cfg)
 		closeStore = func() {}
 		log.Printf("WARNING: using volatile memory store; set CONVEYOR_DATABASE_URL for Phase 2 durability")
 	}

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -13,7 +14,10 @@ import (
 func TestBlueprintMaterializationDependencyClaimsAndParentClose(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(context.Background(), "demo")
-	st := NewMemory()
+	st := NewMemoryWithConfig(&config.Config{
+		Workspace: "demo",
+		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+	})
 	parent := core.Task{
 		ID: "blueprint", Workspace: "demo", Title: "Blueprint", Repo: "conveyor",
 		BaseBranch: "main", Branch: "conveyor/task-blueprint", State: core.TaskQueued,
@@ -115,7 +119,10 @@ func transitionTaskToMerged(t *testing.T, ctx context.Context, st Store, id stri
 func TestBlueprintCycleFailsApprovalWithoutPartialState(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(context.Background(), "demo")
-	st := NewMemory()
+	st := NewMemoryWithConfig(&config.Config{
+		Workspace: "demo",
+		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+	})
 	parent := core.Task{ID: "cycle-parent", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/task-cycle-parent", State: core.TaskQueued}
 	if err := st.CreateTask(ctx, parent); err != nil {
 		t.Fatal(err)
