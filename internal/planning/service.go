@@ -230,11 +230,51 @@ func (s *Service) Run(ctx context.Context, sessionID string, user UserMessage, e
 			return emit(map[string]any{"type": "finish", "finishReason": "stop"})
 		}
 
-		var terminal *produced
+		if containsFinalize(next.ToolCalls) {
+			call := next.ToolCalls[0]
+			var chunk map[string]any
+			err = s.Store.WithPlanningSessionFinalization(runCtx, session.ID, func(lockedCtx context.Context) error {
+				execution, executeErr := s.executeTool(lockedCtx, session, call, model)
+				if executeErr != nil {
+					return fmt.Errorf("planning tool %s: %w", call.Name, executeErr)
+				}
+				if execution.Produced == nil {
+					return fmt.Errorf("planning tool %s did not produce final lineage", call.Name)
+				}
+				output, marshalErr := s.boundedOutput(execution.Output)
+				if marshalErr != nil {
+					return fmt.Errorf("planning tool %s: %w", call.Name, marshalErr)
+				}
+				chunk = map[string]any{
+					"type": "tool-output-available", "toolCallId": call.ID, "output": output,
+				}
+				if _, appendErr := s.Store.AppendPlanningMessage(lockedCtx, core.PlanningMessage{
+					SessionID: sessionID, Role: core.PlanningMessageTool,
+					Content: string(mustJSON(output)), Parts: core.JSONPayload([]map[string]any{chunk}),
+				}); appendErr != nil {
+					return appendErr
+				}
+				return s.archiveAndFinalize(lockedCtx, session, *execution.Produced)
+			})
+			if err != nil {
+				return err
+			}
+			if err = emit(chunk); err != nil {
+				return err
+			}
+			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
+				return err
+			}
+			return emit(map[string]any{"type": "finish", "finishReason": "tool-calls"})
+		}
+
 		for _, call := range next.ToolCalls {
 			execution, executeErr := s.executeTool(runCtx, session, call, model)
 			if executeErr != nil {
 				return fmt.Errorf("planning tool %s: %w", call.Name, executeErr)
+			}
+			if execution.Produced != nil {
+				return fmt.Errorf("planning tool %s produced terminal lineage outside finalization", call.Name)
 			}
 			output, marshalErr := s.boundedOutput(execution.Output)
 			if marshalErr != nil {
@@ -252,18 +292,6 @@ func (s *Service) Run(ctx context.Context, sessionID string, user UserMessage, e
 			if err = emit(chunk); err != nil {
 				return err
 			}
-			if execution.Produced != nil {
-				terminal = execution.Produced
-			}
-		}
-		if terminal != nil {
-			if err = s.archiveAndFinalize(runCtx, session, *terminal); err != nil {
-				return err
-			}
-			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
-				return err
-			}
-			return emit(map[string]any{"type": "finish", "finishReason": "tool-calls"})
 		}
 		if err = emit(map[string]any{"type": "finish-step"}); err != nil {
 			return err

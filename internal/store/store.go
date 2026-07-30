@@ -172,6 +172,10 @@ type Store interface {
 	ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error)
 	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
 	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
+	// WithPlanningSessionFinalization serializes the complete produced-artifact
+	// write path against abandonment and invokes fn only while the session is
+	// active. Implementations must release the lock when fn returns.
+	WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error
 	FinalizePlanningSession(ctx context.Context, request PlanningFinalizeRequest) (core.PlanningSession, error)
 	// AbandonPlanningSession closes a session that produced nothing. A
 	// finalized session cannot be abandoned; that would strand its lineage.
@@ -975,7 +979,35 @@ func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration
 
 func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error {
 	workspace, _ := WorkspaceFromContext(ctx)
-	value, _ := m.taskLocks.LoadOrStore(workspace+"/"+taskID, &sync.Mutex{})
+	value, _ := m.taskLocks.LoadOrStore("task/"+workspace+"/"+taskID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn(ctx)
+}
+
+func (m *memory) WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error {
+	return m.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
+		m.mu.RLock()
+		session, ok := m.planningSessions[memoryScopedKey{
+			workspace: workspaceOrDefault(lockedCtx, ""),
+			id:        sessionID,
+		}]
+		m.mu.RUnlock()
+		if !ok {
+			return fmt.Errorf("planning session %s not found", sessionID)
+		}
+		if session.Status != core.PlanningSessionActive {
+			return fmt.Errorf(
+				"planning session %s is %s and cannot produce an artifact", sessionID, session.Status)
+		}
+		return fn(lockedCtx)
+	})
+}
+
+func (m *memory) withPlanningSessionLock(ctx context.Context, sessionID string, fn func(context.Context) error) error {
+	workspace, _ := WorkspaceFromContext(ctx)
+	value, _ := m.taskLocks.LoadOrStore("planning-session/"+workspace+"/"+sessionID, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
 	lock.Lock()
 	defer lock.Unlock()

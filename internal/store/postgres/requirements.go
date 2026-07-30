@@ -481,32 +481,34 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 
 func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
 	var session core.PlanningSession
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		existing, err := scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
-			` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), sessionID), sessionID)
-		if err != nil {
-			return err
-		}
-		if existing.Status == core.PlanningSessionAbandoned {
-			session = existing
-			return nil
-		}
-		if existing.Status == core.PlanningSessionFinalized {
-			// Abandoning would strand what the session produced.
-			return fmt.Errorf("planning session %s is already finalized", sessionID)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
-			SET status='abandoned', updated_at=$3
-			WHERE workspace_id=$1 AND id=$2`,
-			workspace(ctx), sessionID, time.Now().UTC()); err != nil {
-			return err
-		}
-		if session, err = scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
-			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID), sessionID); err != nil {
-			return err
-		}
-		return insertRequirementEvent(ctx, q, "planning_session.abandoned", map[string]any{
-			"workspace_id": workspace(ctx), "session_id": session.ID,
+	err := s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
+		return s.inTx(lockedCtx, func(tx pgx.Tx, q *db.Queries) error {
+			existing, err := scanPlanningSession(tx.QueryRow(lockedCtx, planningSessionSelect+
+				` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(lockedCtx), sessionID), sessionID)
+			if err != nil {
+				return err
+			}
+			if existing.Status == core.PlanningSessionAbandoned {
+				session = existing
+				return nil
+			}
+			if existing.Status == core.PlanningSessionFinalized {
+				// Abandoning would strand what the session produced.
+				return fmt.Errorf("planning session %s is already finalized", sessionID)
+			}
+			if _, err := tx.Exec(lockedCtx, `UPDATE planning_sessions
+				SET status='abandoned', updated_at=$3
+				WHERE workspace_id=$1 AND id=$2`,
+				workspace(lockedCtx), sessionID, time.Now().UTC()); err != nil {
+				return err
+			}
+			if session, err = scanPlanningSession(tx.QueryRow(lockedCtx, planningSessionSelect+
+				` WHERE workspace_id=$1 AND id=$2`, workspace(lockedCtx), sessionID), sessionID); err != nil {
+				return err
+			}
+			return insertRequirementEvent(lockedCtx, q, "planning_session.abandoned", map[string]any{
+				"workspace_id": workspace(lockedCtx), "session_id": session.ID,
+			})
 		})
 	})
 	if err != nil {

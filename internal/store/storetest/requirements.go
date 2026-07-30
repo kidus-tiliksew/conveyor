@@ -674,6 +674,160 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("abandonment wins before produced writes", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		if _, err := st.AbandonPlanningSession(ctx, session.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		callbackInvoked := false
+		err := st.WithPlanningSessionFinalization(ctx, session.ID, func(lockedCtx context.Context) error {
+			callbackInvoked = true
+			requirement, _, createErr := st.CreateRequirement(lockedCtx,
+				core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Losing output"},
+				chatVersion("Must remain invisible.", requirementStatement("REQ-1", "One.")),
+			)
+			if createErr != nil {
+				return createErr
+			}
+			task := planningTask(workspace)
+			if createErr = st.CreateTask(lockedCtx, task); createErr != nil {
+				return createErr
+			}
+			_, createErr = st.CreateArtifact(lockedCtx, core.Artifact{
+				Name: "losing-transcript.json", ContentType: "application/json",
+				Role: core.ArtifactRoleGeneratedAudit, RequirementID: requirement.ID,
+			}, []byte(`{"must":"not survive"}`))
+			return createErr
+		})
+		if err == nil {
+			t.Fatal("finalization callback was accepted after abandonment")
+		}
+		if callbackInvoked {
+			t.Fatal("produced-write callback ran after abandonment won")
+		}
+		requirements, err := st.ListRequirements(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks, err := st.ListTasks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifacts, err := st.ListArtifacts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(requirements) != 0 || len(tasks) != 0 || len(artifacts) != 0 {
+			t.Fatalf("visible output after abandonment: requirements=%+v tasks=%+v artifacts=%+v",
+				requirements, tasks, artifacts)
+		}
+	})
+
+	t.Run("finalization boundary serializes abandonment across produced writes", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		produced := make(chan struct{})
+		continueFinalization := make(chan struct{})
+		finalizeDone := make(chan error, 1)
+		go func() {
+			finalizeDone <- st.WithPlanningSessionFinalization(ctx, session.ID, func(lockedCtx context.Context) error {
+				requirement, _, err := st.CreateRequirement(
+					lockedCtx,
+					core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Serialized Finalization"},
+					chatVersion("Serialized prose.", requirementStatement("REQ-1", "One.")),
+				)
+				if err != nil {
+					return err
+				}
+				transcript, err := st.CreateArtifact(lockedCtx, core.Artifact{
+					Name: "serialized-planning-transcript.json", ContentType: "application/json",
+					Role: core.ArtifactRoleGeneratedAudit, RequirementID: requirement.ID,
+				}, []byte(`{"status":"produced-before-session-transition"}`))
+				if err != nil {
+					return err
+				}
+				close(produced)
+				select {
+				case <-continueFinalization:
+				case <-lockedCtx.Done():
+					return lockedCtx.Err()
+				}
+				_, err = st.FinalizePlanningSession(lockedCtx, store.PlanningFinalizeRequest{
+					SessionID: session.ID, RequirementID: requirement.ID,
+					TranscriptArtifactID: transcript.ID,
+				})
+				return err
+			})
+		}()
+		select {
+		case <-produced:
+		case <-time.After(2 * time.Second):
+			t.Fatal("finalization did not reach the interleaving point")
+		}
+		abandonDone := make(chan error, 1)
+		go func() {
+			_, err := st.AbandonPlanningSession(ctx, session.ID)
+			abandonDone <- err
+		}()
+		select {
+		case err := <-abandonDone:
+			t.Fatalf("abandonment split produced writes from the session transition: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(continueFinalization)
+		select {
+		case err := <-finalizeDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("finalization remained blocked")
+		}
+		select {
+		case err := <-abandonDone:
+			if err == nil {
+				t.Fatal("late abandonment replaced finalized lineage")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("late abandonment remained blocked")
+		}
+		finalized, err := st.GetPlanningSession(ctx, session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if finalized.Status != core.PlanningSessionFinalized ||
+			finalized.ProducedRequirementID == "" || finalized.TranscriptArtifactID == "" {
+			t.Fatalf("finalized session=%+v", finalized)
+		}
+		if _, err = st.GetRequirement(ctx, finalized.ProducedRequirementID); err != nil {
+			t.Fatal(err)
+		}
+		if artifact, _, artifactErr := st.GetArtifact(ctx, finalized.TranscriptArtifactID); artifactErr != nil ||
+			artifact.RequirementID != finalized.ProducedRequirementID {
+			t.Fatalf("transcript artifact=%+v err=%v", artifact, artifactErr)
+		}
+
+		// If abandon owns the boundary first, the production callback never
+		// runs, so there is nothing to compensate and no orphan can become
+		// visible after the terminal state is recorded.
+		abandoned := createPlanningSession(t, ctx, st)
+		if _, err = st.AbandonPlanningSession(ctx, abandoned.ID); err != nil {
+			t.Fatal(err)
+		}
+		callbackRan := false
+		if err = st.WithPlanningSessionFinalization(ctx, abandoned.ID, func(context.Context) error {
+			callbackRan = true
+			return nil
+		}); err == nil {
+			t.Fatal("abandoned session entered the produced-write callback")
+		}
+		if callbackRan {
+			t.Fatal("produced-write callback ran after abandonment won")
+		}
+	})
+
 	t.Run("finalize produces exactly one artifact and repeats idempotently", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		produced, _ := createRequirement(t, ctx, st, "Produced Requirement",
@@ -722,8 +876,13 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal("finalize of an unknown session was accepted")
 		}
 
-		requirementRun, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
-			SessionID: session.ID, RequirementID: produced.ID, TranscriptArtifactID: transcript.ID,
+		var requirementRun core.PlanningSession
+		err = st.WithPlanningSessionFinalization(ctx, session.ID, func(lockedCtx context.Context) error {
+			var finalizeErr error
+			requirementRun, finalizeErr = st.FinalizePlanningSession(lockedCtx, store.PlanningFinalizeRequest{
+				SessionID: session.ID, RequirementID: produced.ID, TranscriptArtifactID: transcript.ID,
+			})
+			return finalizeErr
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -777,8 +936,13 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 		// The blueprint-task branch of the exclusive contract.
 		taskSession := createPlanningSession(t, ctx, st)
-		blueprintRun, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
-			SessionID: taskSession.ID, TaskID: blueprint.ID,
+		var blueprintRun core.PlanningSession
+		err = st.WithPlanningSessionFinalization(ctx, taskSession.ID, func(lockedCtx context.Context) error {
+			var finalizeErr error
+			blueprintRun, finalizeErr = st.FinalizePlanningSession(lockedCtx, store.PlanningFinalizeRequest{
+				SessionID: taskSession.ID, TaskID: blueprint.ID,
+			})
+			return finalizeErr
 		})
 		if err != nil {
 			t.Fatal(err)

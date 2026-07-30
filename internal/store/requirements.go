@@ -413,26 +413,35 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 }
 
 func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	workspace := workspaceOrDefault(ctx, "")
-	key := memoryScopedKey{workspace: workspace, id: sessionID}
-	session, ok := m.planningSessions[key]
-	if !ok {
-		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", sessionID)
+	var abandoned core.PlanningSession
+	err := m.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		workspace := workspaceOrDefault(lockedCtx, "")
+		key := memoryScopedKey{workspace: workspace, id: sessionID}
+		session, ok := m.planningSessions[key]
+		if !ok {
+			return fmt.Errorf("planning session %s not found", sessionID)
+		}
+		if session.Status == core.PlanningSessionAbandoned {
+			abandoned = session
+			return nil
+		}
+		if session.Status == core.PlanningSessionFinalized {
+			// Abandoning would strand what the session produced.
+			return fmt.Errorf("planning session %s is already finalized", sessionID)
+		}
+		session.Status = core.PlanningSessionAbandoned
+		session.UpdatedAt = time.Now().UTC()
+		m.planningSessions[key] = session
+		m.appendEventLocked(lockedCtx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace, "session_id": session.ID,
+		})})
+		abandoned = session
+		return nil
+	})
+	if err != nil {
+		return core.PlanningSession{}, err
 	}
-	if session.Status == core.PlanningSessionAbandoned {
-		return session, nil
-	}
-	if session.Status == core.PlanningSessionFinalized {
-		// Abandoning would strand what the session produced.
-		return core.PlanningSession{}, fmt.Errorf("planning session %s is already finalized", sessionID)
-	}
-	session.Status = core.PlanningSessionAbandoned
-	session.UpdatedAt = time.Now().UTC()
-	m.planningSessions[key] = session
-	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(map[string]any{
-		"workspace_id": workspace, "session_id": session.ID,
-	})})
-	return session, nil
+	return abandoned, nil
 }
