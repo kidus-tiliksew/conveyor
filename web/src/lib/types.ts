@@ -505,5 +505,89 @@ export interface WorkOrder {
 }
 
 export interface Feature { id: string; workspace: string; parent_id?: string; name: string; description?: string; created_at: string }
-export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; feature_id?: string; download_url?: string; created_at: string }
-export interface RequirementNode { feature: Feature; tasks: Task[] | null; approved_specs: SpecVersion[] | null; events: TaskEvent[] | null }
+export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; feature_id?: string; requirement_id?: string; download_url?: string; created_at: string }
+
+export interface RequirementStatement {
+  id: string
+  statement: string
+}
+
+export interface Requirement {
+  id: string
+  slug: string
+  title: string
+  current_version?: number
+  statement_high_water_mark: number
+  workspace: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RequirementVersion {
+  requirement_id: string
+  version: number
+  content: string
+  statements: RequirementStatement[]
+  origin: 'chat' | 'drift_amendment' | 'feature_migration'
+  origin_session_id?: string
+  origin_drift_id?: string
+  confirmed: boolean
+  confirmed_by?: string
+  confirmed_at?: string
+  workspace: string
+  created_at: string
+}
+
+export interface PlanningSession {
+  id: string
+  title?: string
+  status: 'active' | 'finalized' | 'abandoned'
+  requirement_context_id?: string
+  produced_requirement_id?: string
+  produced_task_id?: string
+  transcript_artifact_id?: string
+  workspace: string
+  created_at: string
+  updated_at: string
+  finalized_at?: string
+}
+
+export interface PlanningMessage {
+  session_id: string
+  seq: number
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  parts?: PlanningMessagePart[]
+  workspace: string
+  created_at: string
+}
+
+export interface PlanningMessagePart {
+  type: string
+  text?: string
+  delta?: string
+  toolName?: string
+  toolCallId?: string
+  state?: string
+  input?: unknown
+  output?: unknown
+  errorText?: string
+  [key: string]: unknown
+}
+
+export interface BlueprintLineage {
+  task: Task
+  spec?: SpecVersion
+  events: TaskEvent[]
+}
+
+export interface RequirementView {
+  requirement: Requirement
+  current_version?: RequirementVersion
+  pending_versions: RequirementVersion[]
+  serving_blueprints: BlueprintLineage[]
+  planning_sessions: PlanningSession[]
+  artifacts: Artifact[]
+  lineage: TaskEvent[]
+  stale: boolean
+}

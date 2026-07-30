@@ -884,7 +884,7 @@ func TestCreateTaskTitleGenerationFailsClosed(t *testing.T) {
 	}
 }
 
-func TestGitHubLifecycleAppearsInTaskActivityAndRequirementsReads(t *testing.T) {
+func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "github-visible", Workspace: "demo", Repo: "api", Title: "Visible lifecycle", State: core.TaskRunning, CreatedAt: time.Now()}
@@ -911,13 +911,22 @@ func TestGitHubLifecycleAppearsInTaskActivityAndRequirementsReads(t *testing.T) 
 	}
 	server := NewServer(st)
 	server.Workspace = "demo"
-	for _, path := range []string{"/v1/tasks/github-visible", "/v1/tasks/github-visible/activity", "/v1/requirements"} {
+	for _, path := range []string{"/v1/tasks/github-visible", "/v1/tasks/github-visible/activity"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), lifecycle.IssueURL) {
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+	// The Requirements read model no longer leaks task.feature_id or the
+	// retired feature hierarchy. Requirement/blueprint lineage is deposited by
+	// planning and rendered from living documents instead (spec §21.46).
+	request := httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("requirements status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
