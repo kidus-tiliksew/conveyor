@@ -371,7 +371,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		}
 	}
 	if request.TaskID != "" {
-		if _, exists := m.tasks[request.TaskID]; !exists {
+		// m.tasks is keyed by id alone, so the workspace has to be compared
+		// explicitly. Postgres enforces the same thing structurally through the
+		// composite (workspace_id, produced_task_id) foreign key.
+		task, exists := m.tasks[request.TaskID]
+		if !exists || task.Workspace != workspace {
 			return core.PlanningSession{}, fmt.Errorf("task %s not found", request.TaskID)
 		}
 	}
