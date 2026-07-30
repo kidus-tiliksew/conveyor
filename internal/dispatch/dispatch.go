@@ -544,10 +544,10 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
 	if stage == core.StageTriage {
-		features, _ := d.Store.ListFeatures(ctx)
-		prompt.WriteString("\n# Requirements-tree features\n\nPropose only an ID from this list, or an empty feature_id:\n")
-		for _, feature := range features {
-			fmt.Fprintf(&prompt, "- %s: %s\n", feature.ID, feature.Name)
+		requirements, _ := d.Store.ListRequirements(ctx)
+		prompt.WriteString("\n# Requirement corpus\n\nPropose only an ID from this list, or an empty requirement_id:\n")
+		for _, requirement := range requirements {
+			fmt.Fprintf(&prompt, "- %s: %s\n", requirement.ID, requirement.Title)
 		}
 	}
 	events, _ := d.Store.ListEvents(ctx, task.ID)
@@ -717,7 +717,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 			return err
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
-		d.recordFeatureSuggestion(ctx, task, result.FeatureID)
+		d.recordRequirementSuggestion(ctx, task, result.RequirementID)
 		if task.Level == core.L3 || result.Route == "human" {
 			return d.transition(ctx, task.ID, core.TaskTriageRouteHuman, "", core.StageTriage)
 		}
@@ -887,15 +887,22 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 	return d.transition(ctx, taskID, core.TaskStageBounce, core.StageImplement, "")
 }
 
-func (d *Dispatcher) recordFeatureSuggestion(ctx context.Context, task core.Task, featureID string) {
-	featureID = strings.TrimSpace(featureID)
-	if featureID == "" {
+// recordRequirementSuggestion proposes a requirement relation for a stray task.
+// It replaces the retired triage.feature_suggested event (spec §4.2 item 1,
+// §21.46 change 5). The event is the durable proposal — links are projections
+// of events, and a requirement relation is machinery-suggested and
+// human-confirmed, never volunteered as a standing edge by an agent.
+func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string) {
+	requirementID = strings.TrimSpace(requirementID)
+	if requirementID == "" {
 		return
 	}
-	features, _ := d.Store.ListFeatures(ctx)
-	for _, feature := range features {
-		if feature.ID == featureID {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "triage.feature_suggested", Payload: core.JSONPayload(map[string]string{"feature_id": feature.ID, "feature_name": feature.Name})})
+	requirements, _ := d.Store.ListRequirements(ctx)
+	for _, requirement := range requirements {
+		if requirement.ID == requirementID {
+			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.requirement_suggested", Payload: core.JSONPayload(map[string]string{
+				"requirement_id": requirement.ID, "requirement_slug": requirement.Slug, "requirement_title": requirement.Title,
+			})})
 			return
 		}
 	}
