@@ -433,13 +433,17 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			return err
 		}
 		if existing.Status == core.PlanningSessionFinalized {
-			// Idempotent for an identical finalize; a different produced
-			// artifact is a contradiction, not a retry, so lineage stands.
-			if existing.ProducedRequirementID == request.RequirementID && existing.ProducedTaskID == request.TaskID {
+			// Idempotent for an identical finalize; any difference in the
+			// recorded lineage — produced artifact or archived transcript — is
+			// a contradiction, not a retry, so the stored lineage stands.
+			if existing.ProducedRequirementID == request.RequirementID &&
+				existing.ProducedTaskID == request.TaskID &&
+				existing.TranscriptArtifactID == request.TranscriptArtifactID {
 				session = existing
 				return nil
 			}
-			return fmt.Errorf("planning session %s is already finalized", request.SessionID)
+			return fmt.Errorf(
+				"planning session %s is already finalized with different lineage", request.SessionID)
 		}
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `UPDATE planning_sessions

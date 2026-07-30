@@ -358,12 +358,16 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		return core.PlanningSession{}, err
 	}
 	if session.Status == core.PlanningSessionFinalized {
-		// Idempotent for an identical finalize; a different produced artifact is
-		// a contradiction, not a retry, so it must not overwrite lineage.
-		if session.ProducedRequirementID == request.RequirementID && session.ProducedTaskID == request.TaskID {
+		// Idempotent for an identical finalize; any difference in the recorded
+		// lineage — produced artifact or archived transcript — is a
+		// contradiction, not a retry, so it must not overwrite what was stored.
+		if session.ProducedRequirementID == request.RequirementID &&
+			session.ProducedTaskID == request.TaskID &&
+			session.TranscriptArtifactID == request.TranscriptArtifactID {
 			return session, nil
 		}
-		return core.PlanningSession{}, fmt.Errorf("planning session %s is already finalized", request.SessionID)
+		return core.PlanningSession{}, fmt.Errorf(
+			"planning session %s is already finalized with different lineage", request.SessionID)
 	}
 	if request.RequirementID != "" {
 		if _, exists := m.requirements[memoryScopedKey{workspace: workspace, id: request.RequirementID}]; !exists {

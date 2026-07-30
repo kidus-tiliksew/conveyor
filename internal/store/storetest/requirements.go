@@ -146,7 +146,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		seed, seedVersion, err := st.CreateRequirement(ctx,
 			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Migrated Feature Node"},
 			core.RequirementVersion{
-				Content: "Verbatim text carried over from the retired feature tree.",
+				Content:    "Verbatim text carried over from the retired feature tree.",
 				Statements: statements, Origin: core.RequirementOriginFeatureMigration,
 			})
 		if err != nil {
@@ -671,6 +671,15 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// A second, equally valid transcript for the same requirement: the
+		// finalize contract has to distinguish it from the archived one.
+		otherTranscript, err := st.CreateArtifact(ctx, core.Artifact{
+			Name: "planning-transcript-retry.json", ContentType: "application/json",
+			Role: core.ArtifactRoleGeneratedAudit, RequirementID: produced.ID,
+		}, []byte(`{"session":"`+core.NewTaskID()+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		// A session produces a requirement or a blueprint task, never both and
 		// never neither — a session that produced nothing is abandoned (§9).
@@ -719,17 +728,26 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("idempotent finalize=%+v, want %+v", repeat, requirementRun)
 		}
 		// A different artifact is a contradiction, not a retry: overwriting
-		// would strand the lineage the first finalize recorded.
+		// would strand the lineage the first finalize recorded. The archived
+		// transcript is part of that lineage, so naming a different one — or
+		// dropping it — contradicts just as much as a different requirement
+		// would; accepting it silently would acknowledge a transcript that was
+		// never persisted.
 		for name, request := range map[string]store.PlanningFinalizeRequest{
 			"a different requirement": {SessionID: session.ID, RequirementID: other.ID},
 			"a blueprint task":        {SessionID: session.ID, TaskID: blueprint.ID},
+			"a different transcript": {SessionID: session.ID, RequirementID: produced.ID,
+				TranscriptArtifactID: otherTranscript.ID},
+			"no transcript at all": {SessionID: session.ID, RequirementID: produced.ID},
 		} {
 			if _, err = st.FinalizePlanningSession(ctx, request); err == nil {
 				t.Fatalf("contradicting finalize naming %s was accepted", name)
 			}
 		}
 		if intact, getErr := st.GetPlanningSession(ctx, session.ID); getErr != nil ||
-			intact.ProducedRequirementID != produced.ID || intact.ProducedTaskID != "" {
+			intact.ProducedRequirementID != produced.ID || intact.ProducedTaskID != "" ||
+			intact.TranscriptArtifactID != transcript.ID ||
+			!intact.FinalizedAt.Equal(requirementRun.FinalizedAt) {
 			t.Fatalf("session after contradicting finalize=%+v err=%v", intact, getErr)
 		}
 		// Abandoning would strand what the session produced.
