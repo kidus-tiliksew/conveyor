@@ -80,10 +80,8 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 // and session finalization. AbandonPlanningSession takes the same lock, so only
 // one terminal outcome can win across daemon instances (spec §9).
 func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error {
-	key := "conveyor:planning-session:" + workspace(ctx) + ":" + sessionID
-	return s.withAdvisoryLock(ctx, key, func(lockedCtx context.Context) error {
-		conn := lockedCtx.Value(sideEffectConnKey{}).(*pgxpool.Conn)
-		session, err := scanPlanningSession(conn.QueryRow(lockedCtx, planningSessionSelect+
+	return s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
+		session, err := scanPlanningSession(s.pool.QueryRow(lockedCtx, planningSessionSelect+
 			` WHERE workspace_id=$1 AND id=$2`, workspace(lockedCtx), sessionID), sessionID)
 		if err != nil {
 			return err
@@ -98,7 +96,7 @@ func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID s
 
 func (s *Store) withPlanningSessionLock(ctx context.Context, sessionID string, fn func(context.Context) error) error {
 	key := "conveyor:planning-session:" + workspace(ctx) + ":" + sessionID
-	return s.withAdvisoryLock(ctx, key, fn)
+	return s.withDetachedAdvisoryLock(ctx, key, fn)
 }
 
 func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
@@ -122,6 +120,31 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 		conn.Release()
 	}()
 	return fn(context.WithValue(ctx, sideEffectConnKey{}, conn))
+}
+
+// withDetachedAdvisoryLock removes the lock connection from the pool while the
+// callback runs. Planning finalization performs ordinary Store reads as well
+// as nested transactions; reserving one counted pool slot for the session lock
+// could otherwise make a saturated or single-connection pool self-deadlock.
+// The detached connection is always closed, which also releases the session
+// lock if the explicit unlock fails.
+func (s *Store) withDetachedAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	pooled, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	conn := pooled.Hijack()
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
+		_ = conn.Close(ctx)
+		return err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, "SELECT pg_advisory_unlock(hashtext($1))", key)
+		_ = conn.Close(unlockCtx)
+	}()
+	return fn(ctx)
 }
 
 func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
