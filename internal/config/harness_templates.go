@@ -35,9 +35,12 @@ func HarnessTemplates() []HarnessTemplate {
 			Label:       "Claude Code",
 			Description: "Anthropic's coding agent",
 			Harness: Harness{
-				Name:             "claude",
-				MCPTransport:     MCPTransportJSONFile,
-				Command:          []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*"},
+				Name:         "claude",
+				MCPTransport: MCPTransportJSONFile,
+				// stream-json keeps stdout flowing from the first event; plain -p
+				// buffers until completion and trips first_activity_timeout (§21.42)
+				// on any run longer than the liveness window.
+				Command:          []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose"},
 				ModelArgs:        []string{"--model", "{model}"},
 				EffortArgs:       map[string][]string{"high": {"--effort", "high"}},
 				ProbeCommand:     []string{"claude", "--version"},
