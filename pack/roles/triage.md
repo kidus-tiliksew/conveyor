@@ -32,12 +32,14 @@ route on the merits anyway; the pipeline applies the level.
 
 Frame the next agent's investigation with an advisory `brief`: list the
 questions a spec must answer, suspected affected areas, and risks or
-ambiguities. Propose `feature_id` only from the feature list supplied in the
-prompt; use an empty string when no listed feature is a sound placement.
+ambiguities. Propose `requirement_id` only from the requirement corpus supplied
+in the prompt; use an empty string when no listed requirement is a sound
+placement. The proposal is advisory — it records which intent this task appears
+to serve and confirms nothing.
 
 Keep any prose brief. End your answer with exactly one machine-owned block
 and nothing after it:
 
 ```conveyor:triage
-{"class":"bug|feature|chore","route":"implement|spec|human|parked","summary":"concise rationale a human can act on","brief":{"questions":[],"affected_areas":[],"risks":[]},"feature_id":"listed feature id or empty"}
+{"class":"bug|feature|chore","route":"implement|spec|human|parked","summary":"concise rationale a human can act on","brief":{"questions":[],"affected_areas":[],"risks":[]},"requirement_id":"listed requirement id or empty"}
 ```

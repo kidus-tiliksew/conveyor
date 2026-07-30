@@ -49,6 +49,16 @@ CREATE TABLE requirement_versions (
         (confirmed AND confirmed_at IS NOT NULL AND confirmed_by <> '')
         OR
         (NOT confirmed AND confirmed_at IS NULL AND confirmed_by = '')
+    ),
+    -- Every version names the act that produced it, and only that act, so a
+    -- pending revision an operator is asked to confirm always traces back to a
+    -- session or a drift record they can open (core.ValidateRequirementOrigin).
+    CHECK (
+        (origin = 'chat' AND origin_session_id <> '' AND origin_drift_id = '')
+        OR
+        (origin = 'drift_amendment' AND origin_drift_id <> '' AND origin_session_id = '')
+        OR
+        (origin = 'feature_migration' AND origin_session_id = '' AND origin_drift_id = '')
     )
 );
 
@@ -122,7 +132,7 @@ ALTER TABLE events ADD CONSTRAINT events_scope_check CHECK (
         'requirement.created', 'requirement.version_proposed',
         'requirement.version_confirmed', 'planning_session.created',
         'planning_session.message_appended', 'planning_session.finalized',
-        'planning_session.abandoned', 'feature.migrated'
+        'planning_session.abandoned'
     ) AND job_id IS NULL)
 );
 
@@ -142,8 +152,15 @@ ALTER TABLE artifact_links
 -- ---------------------------------------------------------------------------
 
 -- A node is content-bearing when it holds text, owns a task assignment
--- (directly or through a materialized blueprint child), or holds an artifact.
--- Anything else is empty taxonomy and drops.
+-- (directly or through a materialized blueprint child), holds an artifact, or
+-- is named by a monitor observation or drift record. Anything else is empty
+-- taxonomy and drops.
+--
+-- The monitor and drift clauses matter for losslessness rather than for
+-- content: migration 040 denormalized feature_id onto both tables as plain
+-- text with no foreign key, so deleting a node they name would strand the
+-- reference silently instead of failing. Keeping such a node makes it a
+-- requirement document whose lineage stays intact.
 CREATE TEMPORARY TABLE migration_046_content_features AS
 SELECT feature.id, feature.workspace_id, feature.name, feature.description
 FROM features feature
@@ -166,6 +183,16 @@ WHERE btrim(coalesce(feature.description, '')) <> ''
        SELECT 1 FROM artifact_links link
        WHERE link.feature_id = feature.id
          AND link.workspace_id = feature.workspace_id
+   )
+   OR EXISTS (
+       SELECT 1 FROM monitor_observations observation
+       WHERE observation.feature_id = feature.id
+         AND observation.workspace_id = feature.workspace_id
+   )
+   OR EXISTS (
+       SELECT 1 FROM repository_drift drift
+       WHERE drift.feature_id = feature.id
+         AND drift.workspace_id = feature.workspace_id
    );
 
 -- Slugs are workspace-unique, but feature names were only unique per parent,

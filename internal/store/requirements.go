@@ -58,8 +58,8 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement slug %s already exists", requirement.Slug)
 		}
 	}
-	if !first.Origin.Valid() {
-		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("invalid requirement origin %q", first.Origin)
+	if err := core.ValidateRequirementOrigin(first); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	if err := core.ValidateRequirementStatements(first.Statements); err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
@@ -137,15 +137,19 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	if !ok {
 		return core.RequirementVersion{}, fmt.Errorf("requirement %s not found", version.RequirementID)
 	}
-	if !version.Origin.Valid() {
-		return core.RequirementVersion{}, fmt.Errorf("invalid requirement origin %q", version.Origin)
+	if err := core.ValidateRequirementOrigin(version); err != nil {
+		return core.RequirementVersion{}, err
 	}
 	existing := m.requirementVersions[key]
-	var previous []core.RequirementStatement
-	if len(existing) != 0 {
-		previous = existing[len(existing)-1].Statements
+	// Every REQ-n the document has ever issued, so reinstating a statement that
+	// an unconfirmed proposal dropped is not mistaken for identifier reuse.
+	var issued []string
+	for _, previous := range existing {
+		for _, statement := range previous.Statements {
+			issued = append(issued, statement.ID)
+		}
 	}
-	if err := core.ValidateRequirementRevision(requirement.StatementHighWaterMark, previous, version.Statements); err != nil {
+	if err := core.ValidateRequirementRevision(requirement.StatementHighWaterMark, issued, version.Statements); err != nil {
 		return core.RequirementVersion{}, err
 	}
 	now := time.Now().UTC()
@@ -389,6 +393,31 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		"produced_requirement_id": session.ProducedRequirementID,
 		"produced_task_id":        session.ProducedTaskID,
 		"transcript_artifact_id":  session.TranscriptArtifactID,
+	})})
+	return session, nil
+}
+
+func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: sessionID}
+	session, ok := m.planningSessions[key]
+	if !ok {
+		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", sessionID)
+	}
+	if session.Status == core.PlanningSessionAbandoned {
+		return session, nil
+	}
+	if session.Status == core.PlanningSessionFinalized {
+		// Abandoning would strand what the session produced.
+		return core.PlanningSession{}, fmt.Errorf("planning session %s is already finalized", sessionID)
+	}
+	session.Status = core.PlanningSessionAbandoned
+	session.UpdatedAt = time.Now().UTC()
+	m.planningSessions[key] = session
+	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "session_id": session.ID,
 	})})
 	return session, nil
 }

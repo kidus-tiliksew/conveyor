@@ -27,8 +27,8 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 	if requirement.Slug == "" {
 		requirement.Slug = core.RequirementSlug(requirement.Title)
 	}
-	if !first.Origin.Valid() {
-		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("invalid requirement origin %q", first.Origin)
+	if err := core.ValidateRequirementOrigin(first); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	if err := core.ValidateRequirementStatements(first.Statements); err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
@@ -117,8 +117,8 @@ func (s *Store) ListRequirements(ctx context.Context) ([]core.Requirement, error
 }
 
 func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
-	if !version.Origin.Valid() {
-		return core.RequirementVersion{}, fmt.Errorf("invalid requirement origin %q", version.Origin)
+	if err := core.ValidateRequirementOrigin(version); err != nil {
+		return core.RequirementVersion{}, err
 	}
 	version.Workspace = workspace(ctx)
 	version.Confirmed = false
@@ -140,23 +140,21 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 			}
 			return err
 		}
+		// Every REQ-n the document has ever issued, not just its latest
+		// version's, so reinstating a statement that an unconfirmed proposal
+		// dropped is not mistaken for identifier reuse.
 		var latestVersion int
-		var previousStatements []core.RequirementStatement
-		var rawPrevious []byte
-		err := tx.QueryRow(ctx,
-			`SELECT version, statements_json FROM requirement_versions
-			 WHERE workspace_id=$1 AND requirement_id=$2
-			 ORDER BY version DESC LIMIT 1`,
-			version.Workspace, version.RequirementID).Scan(&latestVersion, &rawPrevious)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		var issued []string
+		if err := tx.QueryRow(ctx,
+			`SELECT coalesce(max(version), 0),
+			        coalesce(array_agg(DISTINCT statement.id) FILTER (WHERE statement.id IS NOT NULL), '{}')
+			 FROM requirement_versions
+			 LEFT JOIN LATERAL jsonb_to_recordset(statements_json) AS statement(id text) ON true
+			 WHERE workspace_id=$1 AND requirement_id=$2`,
+			version.Workspace, version.RequirementID).Scan(&latestVersion, &issued); err != nil {
 			return err
 		}
-		if err == nil {
-			if previousStatements, err = unmarshalRequirementStatements(rawPrevious); err != nil {
-				return err
-			}
-		}
-		if err := core.ValidateRequirementRevision(highWaterMark, previousStatements, version.Statements); err != nil {
+		if err := core.ValidateRequirementRevision(highWaterMark, issued, version.Statements); err != nil {
 			return err
 		}
 		version.Version = latestVersion + 1
@@ -462,6 +460,42 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			"produced_requirement_id": session.ProducedRequirementID,
 			"produced_task_id":        session.ProducedTaskID,
 			"transcript_artifact_id":  session.TranscriptArtifactID,
+		})
+	})
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	return session, nil
+}
+
+func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
+	var session core.PlanningSession
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		existing, err := scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
+			` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), sessionID), sessionID)
+		if err != nil {
+			return err
+		}
+		if existing.Status == core.PlanningSessionAbandoned {
+			session = existing
+			return nil
+		}
+		if existing.Status == core.PlanningSessionFinalized {
+			// Abandoning would strand what the session produced.
+			return fmt.Errorf("planning session %s is already finalized", sessionID)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
+			SET status='abandoned', updated_at=$3
+			WHERE workspace_id=$1 AND id=$2`,
+			workspace(ctx), sessionID, time.Now().UTC()); err != nil {
+			return err
+		}
+		if session, err = scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
+			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID), sessionID); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, q, "planning_session.abandoned", map[string]any{
+			"workspace_id": workspace(ctx), "session_id": session.ID,
 		})
 	})
 	if err != nil {

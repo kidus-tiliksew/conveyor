@@ -178,21 +178,65 @@ func ValidateRequirementStatements(statements []RequirementStatement) error {
 // reworded — that is what revising intent means — but an ID that was never
 // issued must be greater than every ID the document has ever used, so a
 // retired statement's identity is never reassigned.
-func ValidateRequirementRevision(highWaterMark int, previous, next []RequirementStatement) error {
+//
+// issuedIDs is every REQ-n the document has ever carried, not just its latest
+// version's. Scoping it to the immediate predecessor would strand a document
+// that dropped a statement in an unconfirmed proposal: reinstating that same
+// statement from the still-confirmed text would look like reuse of a retired
+// identifier, and because versions cannot be discarded there would be no way
+// out. An ID belongs to its statement for the document's whole life, so the
+// check that matters is whether the ID is new to the *document*.
+func ValidateRequirementRevision(highWaterMark int, issuedIDs []string, next []RequirementStatement) error {
 	if err := ValidateRequirementStatements(next); err != nil {
 		return err
 	}
-	known := map[string]bool{}
-	for _, statement := range previous {
-		known[statement.ID] = true
+	issued := map[string]bool{}
+	for _, id := range issuedIDs {
+		issued[id] = true
 	}
 	for _, statement := range next {
-		if known[statement.ID] {
+		if issued[statement.ID] {
 			continue
 		}
 		number, _ := RequirementStatementNumber(statement.ID)
 		if number <= highWaterMark {
 			return fmt.Errorf("requirement statement %s reuses a retired identifier; new statements must exceed REQ-%d", statement.ID, highWaterMark)
+		}
+	}
+	return nil
+}
+
+// ValidateRequirementOrigin enforces that a version names the act that
+// produced it. Provenance is what makes a pending version auditable (spec
+// §4.2 item 1): a chat revision carries its planning session and a
+// requirements_amended revision carries its drift record, so every proposal an
+// operator is asked to confirm traces back to something they can open. The two
+// identifiers are exclusive — a version has exactly one origin.
+func ValidateRequirementOrigin(version RequirementVersion) error {
+	if !version.Origin.Valid() {
+		return fmt.Errorf("invalid requirement origin %q", version.Origin)
+	}
+	session := strings.TrimSpace(version.OriginSessionID)
+	drift := strings.TrimSpace(version.OriginDriftID)
+	switch version.Origin {
+	case RequirementOriginChat:
+		if session == "" {
+			return fmt.Errorf("requirement origin %s requires the planning session that revised it", version.Origin)
+		}
+		if drift != "" {
+			return fmt.Errorf("requirement origin %s must not carry a drift id", version.Origin)
+		}
+	case RequirementOriginDriftAmendment:
+		if drift == "" {
+			return fmt.Errorf("requirement origin %s requires the drift record that amended it", version.Origin)
+		}
+		if session != "" {
+			return fmt.Errorf("requirement origin %s must not carry a planning session id", version.Origin)
+		}
+	case RequirementOriginFeatureMigration:
+		// A seed is produced by migration 046, not by a session or a drift.
+		if session != "" || drift != "" {
+			return fmt.Errorf("requirement origin %s carries no session or drift id", version.Origin)
 		}
 	}
 	return nil

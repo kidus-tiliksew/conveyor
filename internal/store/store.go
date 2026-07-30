@@ -173,6 +173,9 @@ type Store interface {
 	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
 	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
 	FinalizePlanningSession(ctx context.Context, request PlanningFinalizeRequest) (core.PlanningSession, error)
+	// AbandonPlanningSession closes a session that produced nothing. A
+	// finalized session cannot be abandoned; that would strand its lineage.
+	AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error)
 
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
@@ -2390,8 +2393,16 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	}
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
+	if err := artifact.ValidateAttachmentTarget(); err != nil {
+		return core.Artifact{}, err
+	}
+	if artifact.RequirementID != "" {
+		if _, ok := m.requirements[memoryScopedKey{workspace: artifact.Workspace, id: artifact.RequirementID}]; !ok {
+			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", artifact.Workspace)
+		}
+	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
-		if artifact.TaskID == "" || artifact.FeatureID != "" {
+		if artifact.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
 		}
 		task, ok := m.tasks[artifact.TaskID]
@@ -2410,7 +2421,7 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
 	if existing, ok := m.artifacts[key]; ok {
 		for _, link := range existing.links {
-			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.Role == artifact.Role {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.Role == artifact.Role {
 				return link, nil
 			}
 		}
