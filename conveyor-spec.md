@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.8**
-**Date:** July 29, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. Subsequent changes proceed by amendment with version bumps.
+**Specification — v2.9**
+**Date:** July 30, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -587,7 +587,9 @@ as a DAG — a cycle fails approval closed — and materialization is
 idempotent per spec version: re-approval of a revised blueprint
 materializes only SUB IDs without a live child. The parent task takes
 no implement order of its own; it is the batch anchor — it holds the
-blueprint, rolls up child progress, and moves to `closed` by an audited
+blueprint, rolls up child progress, is presented through the Blueprints
+surface rather than as ordinary work (§13.3, §21.49), and moves to
+`closed` by an audited
 control-plane transition when its last child reaches a terminal state.
 A decomposition-free spec keeps today's single-task flow unchanged.
 
@@ -1347,8 +1349,16 @@ tool-activity markers, and attachments, ending in a blueprint hand-off
 to the ordinary spec gate; and **dependency affordances** (Phase 6.1) —
 blocked chips naming the blocking tasks in feed and detail — an
 unsatisfiable dependency (§6.3) rendered distinctly from ordinary
-waiting, with the audited unlink action on the detail surface — and a
-child-progress rollup (n of m merged) on blueprint parent tasks.
+waiting, with the audited unlink action on the detail surface — and the
+**Blueprints surface** (§21.49): blueprint anchors are intent
+artifacts, not work, so they are excluded from the stage-grouped feed
+and presented on the planning side — a list of blueprints with child
+rollup and delivery state, and a detail view leading with the approved
+spec, the materialized children in dependency order with per-child
+state, the batch timeline, and lineage. Anchor detail suppresses the
+task affordances that are inert on an anchor (checkout, assigned
+branch, hold); cancel remains, as lifecycle. Children remain ordinary
+tasks in the feed.
 
 ---
 
@@ -4790,7 +4800,42 @@ placement.
 
 ---
 
-*End of specification. v2.8 accepted July 29, 2026 — the v2.0
+### 21.49 v2.9 — Blueprint presentation surface (July 30, 2026)
+
+Adopted from operating the first materialized blueprint (task
+`260730-c6750c`, the Phase 6.2 batch): rendering the anchor as an
+ordinary task misdirects — "Queued" reads as waiting-for-a-worker,
+Hold/Checkout and the assigned branch are inert on a task that takes no
+orders and never receives a commit, and a stage column implies pipeline
+motion the anchor will never make. The anchor is a contract with a
+progress bar, not a work item. Three changes:
+
+1. **Blueprints get a dedicated presentation surface (§13.3).** On the
+   planning side, next to requirements: a list of blueprint anchors
+   with child rollup and delivery state, and a detail view that leads
+   with the approved spec, the materialized children in dependency
+   order with per-child state, the batch timeline, and lineage
+   (including `serves` links once Phase 6.2 lands). Anchor detail
+   suppresses inert task affordances — checkout, assigned branch,
+   hold — while cancel remains available as lifecycle.
+
+2. **Anchors leave the stage-grouped feed.** The activity board is a
+   view of work — things agents claim and execute; blueprints are
+   intent artifacts. Children remain ordinary tasks in the feed; the
+   anchor is reached through the Blueprints surface and through its
+   children's parent references.
+
+3. **Presentation only; the entity bar stands.** This supersedes the
+   "no separate surface" clause of §21.46 change 7, which was aimed at
+   (and still bars) an epic *entity*: no new table, no new lifecycle,
+   no new noun in the data model. The blueprint parent task remains
+   the sole carrier — authoring, approval, events, close — and
+   "Blueprint" was already first-class §2 vocabulary (§21.46). What
+   changes is which room it is shown in.
+
+---
+
+*End of specification. v2.9 accepted July 30, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -4804,6 +4849,9 @@ operator unlink, cross-repo edges legal, the gate scoped to
 implementation claims, and queue-clock suspension while blocked. The
 §21.48 amendment contains implicit task worktrees, verifies checkout
 repository identity, and reconciles terminal cleanup plus
-primary-checkout pruning. The body (§§1–20) is the normative
+primary-checkout pruning. §21.49 moves blueprint anchors onto a
+dedicated presentation surface — intent artifacts beside requirements,
+out of the stage-grouped feed — with the data model unchanged. The
+body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*

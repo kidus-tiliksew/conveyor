@@ -106,8 +106,12 @@ product (§4.2, §9, §13.3, §17.3).*
    blueprints, and lineage — plus session list + chat built on the
    stock shadcn chat family (MessageScroller, Message, Bubble,
    Attachment, Marker); tool activity rendered as markers; attachments
-   flow into the ordinary artifact machinery. No epic surface: the
-   blueprint parent task carries the child rollup.
+   flow into the ordinary artifact machinery. No epic *entity*; the
+   blueprint parent task carries the child rollup, and §21.49 (adopted
+   from operating the first materialized blueprint) gives anchors a
+   dedicated presentation surface beside requirements — delivered as a
+   follow-up task after the 6.2 SUBs, not by revising the running
+   blueprint.
 7. **Headless twin unchanged:** MCP `create_task` + `submit_spec`
    reaches the identical blueprint contract; no planning-only MCP
    surface in this phase.
