@@ -369,6 +369,13 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		return core.PlanningSession{}, fmt.Errorf(
 			"planning session %s is already finalized with different lineage", request.SessionID)
 	}
+	if session.Status != core.PlanningSessionActive {
+		// Abandonment is terminal. In particular, an in-flight planning run
+		// must not resurrect a session after the abandon request wins this
+		// lock (spec §9).
+		return core.PlanningSession{}, fmt.Errorf(
+			"planning session %s is %s and cannot be finalized", request.SessionID, session.Status)
+	}
 	if request.RequirementID != "" {
 		if _, exists := m.requirements[memoryScopedKey{workspace: workspace, id: request.RequirementID}]; !exists {
 			return core.PlanningSession{}, fmt.Errorf("requirement %s not found", request.RequirementID)

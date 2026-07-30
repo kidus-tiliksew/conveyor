@@ -640,6 +640,26 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}); err == nil {
 			t.Fatal("message appended to an abandoned session")
 		}
+		// Model the losing side of an abandon/finalize race deterministically:
+		// once abandon commits under the session lock, a previously in-flight
+		// run may reach finalization but cannot resurrect the session or attach
+		// produced lineage.
+		if _, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: abandoned.ID, RequirementID: requirement.ID,
+		}); err == nil {
+			t.Fatal("abandoned session was resurrected by finalize")
+		}
+		stillAbandoned, err := st.GetPlanningSession(ctx, abandoned.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stillAbandoned.Status != core.PlanningSessionAbandoned ||
+			stillAbandoned.ProducedRequirementID != "" ||
+			stillAbandoned.ProducedTaskID != "" ||
+			stillAbandoned.TranscriptArtifactID != "" ||
+			!stillAbandoned.FinalizedAt.IsZero() {
+			t.Fatalf("session after losing finalize=%+v, want terminal abandoned state", stillAbandoned)
+		}
 		for _, sessionID := range []string{finalized.ID, abandoned.ID} {
 			messages, err := st.ListPlanningMessages(ctx, sessionID)
 			if err != nil {

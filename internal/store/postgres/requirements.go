@@ -445,6 +445,13 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			return fmt.Errorf(
 				"planning session %s is already finalized with different lineage", request.SessionID)
 		}
+		if existing.Status != core.PlanningSessionActive {
+			// The row lock serializes finalize against abandon. When abandon
+			// wins, its terminal state must not be overwritten by the
+			// in-flight planning run (spec §9).
+			return fmt.Errorf(
+				"planning session %s is %s and cannot be finalized", request.SessionID, existing.Status)
+		}
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
 			SET status='finalized', produced_requirement_id=NULLIF($3,''),
