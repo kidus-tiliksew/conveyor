@@ -21,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
+	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -157,6 +158,10 @@ func main() {
 		return cfg, nil
 	}}
 	srv.WorkOrders = workOrders
+	srv.Planning = &planning.Service{
+		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
+		FinalizeBlueprint: d.CreatePlanningBlueprint,
+	}
 	startDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("resolve daemon working directory: %v", err)

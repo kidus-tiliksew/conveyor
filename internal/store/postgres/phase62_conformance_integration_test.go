@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -15,7 +16,14 @@ import (
 // together are the guarantee that requirement versioning, confirmation, and
 // planning transcripts behave identically whichever store a deployment uses.
 func TestPhase62RequirementConformanceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	databaseURL, err := url.Parse(integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := databaseURL.Query()
+	query.Set("pool_max_conns", "1")
+	databaseURL.RawQuery = query.Encode()
+	st, err := Open(t.Context(), databaseURL.String())
 	if err != nil {
 		t.Fatal(err)
 	}

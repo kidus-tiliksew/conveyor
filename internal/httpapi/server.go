@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -63,6 +64,7 @@ type Server struct {
 	WorkOrders            *workorder.Service
 	Workers               *workerservice.Service
 	Monitor               *monitor.Service
+	Planning              *planning.Service
 }
 
 func NewServer(s store.Store) *Server { return &Server{Store: s} }
@@ -107,6 +109,13 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/monitor", s.getMonitorStatus)
 			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
 			r.Get("/requirements", s.listRequirements)
+			r.Get("/planning-sessions", s.listPlanningSessions)
+			r.With(s.requireMutationAuth).Post("/planning-sessions", s.createPlanningSession)
+			r.Get("/planning-sessions/{id}", s.getPlanningSession)
+			r.Get("/planning-sessions/{id}/messages", s.listPlanningMessages)
+			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/messages", s.streamPlanningMessage)
+			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/chat", s.streamPlanningMessage)
+			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/abandon", s.abandonPlanningSession)
 			r.Get("/lifecycle-diagram", s.getLifecycleDiagram)
 			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
