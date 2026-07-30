@@ -14,11 +14,14 @@ import (
 )
 
 type Triage struct {
-	Class     string      `json:"class"`
-	Route     string      `json:"route"`
-	Summary   string      `json:"summary"`
-	Brief     TriageBrief `json:"brief"`
-	FeatureID string      `json:"feature_id,omitempty"`
+	Class   string      `json:"class"`
+	Route   string      `json:"route"`
+	Summary string      `json:"summary"`
+	Brief   TriageBrief `json:"brief"`
+	// RequirementID proposes a requirement relation for a stray task. It
+	// replaces the retired feature suggestion (spec §4.2 item 1, §21.46
+	// change 5): triage proposes, an operator confirms.
+	RequirementID string `json:"requirement_id,omitempty"`
 }
 
 // TriageBrief frames downstream investigation without becoming normative.

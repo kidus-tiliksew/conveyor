@@ -821,11 +821,33 @@ type Artifact struct {
 	Name        string       `json:"name"`
 	ContentType string       `json:"content_type"`
 	SizeBytes   int64        `json:"size_bytes"`
-	Role        ArtifactRole `json:"role"`
-	TaskID      string       `json:"task_id,omitempty"`
-	FeatureID   string       `json:"feature_id,omitempty"`
-	DownloadURL string       `json:"download_url,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+	Role      ArtifactRole `json:"role"`
+	TaskID    string       `json:"task_id,omitempty"`
+	FeatureID string       `json:"feature_id,omitempty"`
+	// RequirementID is the attachment target that replaces FeatureID as the
+	// feature tree retires (spec §21.46 change 5). It is how a finalized
+	// planning transcript attaches to the requirement it produced (§9), and
+	// where migration 046 re-homes feature-scoped attachments. Exactly one of
+	// TaskID, FeatureID, and RequirementID may be set.
+	RequirementID string    `json:"requirement_id,omitempty"`
+	DownloadURL   string    `json:"download_url,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// ValidateAttachmentTarget keeps the attachment owner exclusive, mirroring the
+// artifact_links CHECK. An artifact may float unattached at workspace scope,
+// but it never claims two owners (spec §21.46 change 5).
+func (a Artifact) ValidateAttachmentTarget() error {
+	targets := 0
+	for _, id := range []string{a.TaskID, a.FeatureID, a.RequirementID} {
+		if id != "" {
+			targets++
+		}
+	}
+	if targets > 1 {
+		return fmt.Errorf("artifact attaches to one of a task, feature, or requirement, not %d of them", targets)
+	}
+	return nil
 }
 
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on

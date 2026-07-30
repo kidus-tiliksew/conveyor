@@ -1,0 +1,1030 @@
+package storetest
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// Cross-implementation conformance for requirement documents and planning
+// sessions (spec §4.2 item 1, §9, §21.46 change 2). Requirements are versioned
+// and confirmed, never gated: this suite is what proves the in-memory store and
+// Postgres agree on that, so a behaviour an operator relies on cannot hold in
+// one deployment and quietly fail in the other.
+//
+// Assertions are on behaviour, not on error text. The two implementations reach
+// the same rejections by different routes — the in-memory store pre-checks
+// existence and uniqueness while Postgres relies on primary keys, unique
+// indexes, foreign keys, and CHECK constraints — so the contract is "this is
+// refused", not "refused with this sentence".
+
+// RequirementFixture is one isolated workspace on a live Store.
+type RequirementFixture struct {
+	Store     store.Store
+	Context   context.Context
+	Workspace string
+}
+
+// RequirementFactory provisions a fresh workspace per subtest, mirroring
+// BlueprintFactory so both suites share one harness shape.
+type RequirementFactory func(*testing.T, []config.Repo) RequirementFixture
+
+// requirementConformanceActor is the confirming operator. Confirmation records
+// identity (spec §16), so the suite owns the actor rather than depending on
+// whatever each harness happens to install in its context.
+const requirementConformanceActor = "operator-conformance"
+
+// requirementCanonicalParts is written in the exact byte form a Postgres jsonb
+// column renders — object keys sorted, one space after each colon — so both
+// implementations hand back identical bytes and the suite can assert byte
+// identity of a restored AI SDK part, not merely that it decodes the same.
+const requirementCanonicalParts = `[{"text": "Stream restored verbatim.", "type": "text"}]`
+
+var requirementConformanceRepos = []config.Repo{
+	{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"},
+}
+
+// RunRequirementConformance exercises the externally visible requirement and
+// planning-session persistence contract against any Store implementation
+// (spec §4.2 item 1 AC-1, §9 AC-2).
+func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
+	t.Helper()
+
+	t.Run("creation commits a pending document and its first version", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		id := "req-" + core.NewTaskID()
+		requirement, first, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: id, Title: "Planning Intent Corpus"},
+			chatVersion("Operators must see pending intent.",
+				requirementStatement("REQ-1", "Intent is versioned."),
+				requirementStatement("REQ-2", "Confirmation is explicit.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A new document is never silently authoritative: current_version stays
+		// unset and the high-water mark starts at the first block's largest
+		// REQ-n (spec §4.2 item 1).
+		if requirement.ID != id || requirement.Workspace != workspace ||
+			requirement.Slug != "planning-intent-corpus" || requirement.Title != "Planning Intent Corpus" ||
+			requirement.CurrentVersion != 0 || requirement.StatementHighWaterMark != 2 ||
+			requirement.CreatedAt.IsZero() || requirement.UpdatedAt.IsZero() {
+			t.Fatalf("created requirement=%+v", requirement)
+		}
+		if first.RequirementID != id || first.Workspace != workspace || first.Version != 1 ||
+			first.Confirmed || first.ConfirmedBy != "" || !first.ConfirmedAt.IsZero() ||
+			first.CreatedAt.IsZero() {
+			t.Fatalf("first version=%+v, want pending v1", first)
+		}
+		assertRequirementRoundTrip(t, ctx, st, requirement)
+		assertRequirementVersionRoundTrip(t, ctx, st, first)
+
+		// A caller cannot smuggle authority in through the create call either.
+		forgedID := "req-" + core.NewTaskID()
+		forged := chatVersion("Forged authority.", requirementStatement("REQ-1", "Should stay pending."))
+		forged.Confirmed = true
+		forged.ConfirmedBy = "impostor"
+		forged.ConfirmedAt = time.Now().UTC()
+		forgedDoc, forgedVersion, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: forgedID, Title: "Forged Authority"}, forged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if forgedDoc.CurrentVersion != 0 || forgedVersion.Confirmed ||
+			forgedVersion.ConfirmedBy != "" || !forgedVersion.ConfirmedAt.IsZero() {
+			t.Fatalf("forged create doc=%+v version=%+v, want pending", forgedDoc, forgedVersion)
+		}
+		assertRequirementVersionRoundTrip(t, ctx, st, forgedVersion)
+
+		// An explicit slug is honoured; only omission derives one.
+		explicit, _, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Slug: "custom-handle", Title: "Ignored For Slug"},
+			chatVersion("Explicit handle.", requirementStatement("REQ-1", "Handle is stable.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit.Slug != "custom-handle" {
+			t.Fatalf("explicit slug=%q, want custom-handle", explicit.Slug)
+		}
+
+		// Identity and handle are both workspace-unique: two documents claiming
+		// the same REQ corpus entry would make citations ambiguous.
+		rejected := map[string]core.Requirement{
+			"duplicate id":            {ID: id, Title: "A Different Title Entirely"},
+			"duplicate derived slug":  {ID: "req-" + core.NewTaskID(), Title: "Planning Intent Corpus"},
+			"duplicate explicit slug": {ID: "req-" + core.NewTaskID(), Slug: "custom-handle", Title: "Another Title"},
+			"missing id":              {Title: "No Identity"},
+			"missing title":           {ID: "req-" + core.NewTaskID()},
+		}
+		for name, candidate := range rejected {
+			if _, _, err = st.CreateRequirement(ctx, candidate,
+				chatVersion("Must not commit.", requirementStatement("REQ-1", "Rejected."))); err == nil {
+				t.Fatalf("%s was accepted", name)
+			}
+		}
+		// A malformed statement block is refused with the document, so a
+		// requirement never exists without a first version.
+		if _, _, err = st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Bad Statement Block"},
+			chatVersion("Bad block.", requirementStatement("REQ-0", "Zero is not a REQ-n."))); err == nil {
+			t.Fatal("invalid statement id was accepted")
+		}
+		// Every rejection rolled back: only the three good documents exist.
+		assertRequirementCount(t, ctx, st, 3)
+	})
+
+	t.Run("origin provenance names the act that produced a version", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		statements := []core.RequirementStatement{requirementStatement("REQ-1", "Intent is traceable.")}
+		// A migration seed is produced by neither a session nor a drift record,
+		// so it carries neither identifier (spec §21.46 change 2).
+		seed, seedVersion, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Migrated Feature Node"},
+			core.RequirementVersion{
+				Content:    "Verbatim text carried over from the retired feature tree.",
+				Statements: statements, Origin: core.RequirementOriginFeatureMigration,
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seedVersion.Origin != core.RequirementOriginFeatureMigration ||
+			seedVersion.OriginSessionID != "" || seedVersion.OriginDriftID != "" || seedVersion.Confirmed {
+			t.Fatalf("migration seed version=%+v", seedVersion)
+		}
+
+		// The monitor's requirements_amended outcome proposes a *pending*
+		// version carrying its drift record (spec §4.2 item 2, AC-1).
+		driftID := "drift-" + core.NewTaskID()
+		amended, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: seed.ID, Content: "Amended after observed drift.",
+			Statements: statements, Origin: core.RequirementOriginDriftAmendment, OriginDriftID: driftID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if amended.Version != 2 || amended.Confirmed || amended.OriginDriftID != driftID ||
+			amended.OriginSessionID != "" {
+			t.Fatalf("drift amendment version=%+v", amended)
+		}
+		assertRequirementVersionRoundTrip(t, ctx, st, amended)
+		if current, getErr := st.GetRequirement(ctx, seed.ID); getErr != nil || current.CurrentVersion != 0 {
+			t.Fatalf("document after drift amendment=%+v err=%v, want still pending", current, getErr)
+		}
+
+		// The identifiers are exclusive: exactly one act produced the version.
+		for name, candidate := range map[string]core.RequirementVersion{
+			"chat without a session":               {Origin: core.RequirementOriginChat},
+			"chat carrying a drift id":             {Origin: core.RequirementOriginChat, OriginSessionID: "session-x", OriginDriftID: "drift-x"},
+			"drift amendment without a drift":      {Origin: core.RequirementOriginDriftAmendment},
+			"drift amendment carrying a session":   {Origin: core.RequirementOriginDriftAmendment, OriginDriftID: "drift-x", OriginSessionID: "session-x"},
+			"feature migration carrying a session": {Origin: core.RequirementOriginFeatureMigration, OriginSessionID: "session-x"},
+			"feature migration carrying a drift":   {Origin: core.RequirementOriginFeatureMigration, OriginDriftID: "drift-x"},
+			"unrecognised origin":                  {Origin: "operator_hunch", OriginSessionID: "session-x"},
+		} {
+			candidate.Content = "Must not commit."
+			candidate.Statements = statements
+			candidate.RequirementID = seed.ID
+			if _, err = st.ProposeRequirementVersion(ctx, candidate); err == nil {
+				t.Fatalf("%s was accepted as a proposal", name)
+			}
+			if _, _, err = st.CreateRequirement(ctx,
+				core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Rejected " + name}, candidate); err == nil {
+				t.Fatalf("%s was accepted at document creation", name)
+			}
+		}
+		// None of those rejections consumed a version number or a document.
+		next, err := st.ProposeRequirementVersion(ctx, chatVersionFor(seed.ID, "Third revision.", statements...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Version != 3 {
+			t.Fatalf("version after rejected proposals=%d, want 3", next.Version)
+		}
+		assertRequirementCount(t, ctx, st, 1)
+	})
+
+	t.Run("proposals append monotonically and are never born confirmed", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		requirement, first := createRequirement(t, ctx, st, "Monotonic Revisions",
+			chatVersion("First intent.", requirementStatement("REQ-1", "One.")))
+
+		// Confirmation is a separate audited operator act, so a proposal that
+		// asks to be confirmed is still stored pending (spec §13.1).
+		forged := chatVersionFor(requirement.ID, "Second intent.",
+			requirementStatement("REQ-1", "One, reworded."), requirementStatement("REQ-2", "Two."))
+		forged.Confirmed = true
+		forged.ConfirmedBy = "impostor"
+		forged.ConfirmedAt = time.Now().UTC()
+		second, err := st.ProposeRequirementVersion(ctx, forged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second.Version != 2 || second.Confirmed || second.ConfirmedBy != "" ||
+			!second.ConfirmedAt.IsZero() || second.Workspace != workspace {
+			t.Fatalf("second version=%+v, want pending v2", second)
+		}
+		assertRequirementVersionRoundTrip(t, ctx, st, second)
+		// The high-water mark advances with the block so REQ-2 can never be
+		// reissued to a different statement later.
+		advanced, err := st.GetRequirement(ctx, requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if advanced.StatementHighWaterMark != 2 || advanced.CurrentVersion != 0 || advanced.UpdatedAt.IsZero() {
+			t.Fatalf("document after v2=%+v, want high-water 2 and no current version", advanced)
+		}
+
+		third, err := st.ProposeRequirementVersion(ctx, driftVersionFor(requirement.ID, "Third intent.",
+			requirementStatement("REQ-1", "One."), requirementStatement("REQ-2", "Two."),
+			requirementStatement("REQ-3", "Three.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if third.Version != 3 {
+			t.Fatalf("third version=%d, want 3", third.Version)
+		}
+		if advanced, err = st.GetRequirement(ctx, requirement.ID); err != nil || advanced.StatementHighWaterMark != 3 {
+			t.Fatalf("document after v3=%+v err=%v, want high-water 3", advanced, err)
+		}
+
+		versions, err := st.ListRequirementVersions(ctx, requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(versions) != 3 {
+			t.Fatalf("versions=%d, want 3", len(versions))
+		}
+		for index, version := range versions {
+			if version.Version != index+1 || version.Confirmed || version.RequirementID != requirement.ID {
+				t.Fatalf("version %d=%+v, want ascending and unconfirmed", index, version)
+			}
+		}
+		if !sameRequirementStatements(versions[0].Statements, first.Statements) {
+			t.Fatalf("listed v1 statements=%+v, want %+v", versions[0].Statements, first.Statements)
+		}
+
+		// A proposal for a document that does not exist is refused, never
+		// silently creating one.
+		if _, err = st.ProposeRequirementVersion(ctx,
+			chatVersionFor("req-does-not-exist", "Orphan.", requirementStatement("REQ-1", "One."))); err == nil {
+			t.Fatal("proposal against an unknown requirement was accepted")
+		}
+	})
+
+	t.Run("REQ-n identifiers are never reissued", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		// v1 issues REQ-1 and REQ-5, so the mark is 5 while REQ-2..REQ-4 were
+		// never issued by this document.
+		requirement, _ := createRequirement(t, ctx, st, "Stable Statement Identity",
+			chatVersion("Sparse identifiers.",
+				requirementStatement("REQ-1", "One."), requirementStatement("REQ-5", "Five.")))
+		if requirement.StatementHighWaterMark != 5 {
+			t.Fatalf("initial high-water=%d, want 5", requirement.StatementHighWaterMark)
+		}
+
+		// Dropping a statement in a revision is allowed and does not lower the
+		// mark: the identifier stays retired, not reusable.
+		dropped, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Five retired.",
+			requirementStatement("REQ-1", "One.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dropped.Version != 2 {
+			t.Fatalf("drop revision version=%d, want 2", dropped.Version)
+		}
+		if current, getErr := st.GetRequirement(ctx, requirement.ID); getErr != nil || current.StatementHighWaterMark != 5 {
+			t.Fatalf("high-water after drop=%+v err=%v, want 5", current, getErr)
+		}
+
+		// A never-issued identifier at or below the mark would hand a retired
+		// statement's identity to different intent, breaking every REQ-n
+		// citation that outlived it (spec §4.2 items 1 and 4).
+		for _, reused := range []string{"REQ-2", "REQ-4"} {
+			if _, err = st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Reuse attempt.",
+				requirementStatement("REQ-1", "One."), requirementStatement(reused, "Different intent."))); err == nil {
+				t.Fatalf("never-issued identifier %s at or below the high-water mark was accepted", reused)
+			}
+		}
+
+		// Reinstating an identifier an earlier version issued is allowed —
+		// otherwise a document that dropped a statement in an unconfirmed
+		// proposal could never restore its own confirmed text.
+		reinstated, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Five reinstated.",
+			requirementStatement("REQ-1", "One."), requirementStatement("REQ-5", "Five, reworded.")))
+		if err != nil {
+			t.Fatalf("reinstating a previously issued identifier: %v", err)
+		}
+		// The rejected proposals consumed no version numbers.
+		if reinstated.Version != 3 {
+			t.Fatalf("reinstating version=%d, want 3", reinstated.Version)
+		}
+
+		// New statements must exceed the mark.
+		grown, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Six added.",
+			requirementStatement("REQ-1", "One."), requirementStatement("REQ-5", "Five."),
+			requirementStatement("REQ-6", "Six.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if grown.Version != 4 {
+			t.Fatalf("growth version=%d, want 4", grown.Version)
+		}
+		if current, getErr := st.GetRequirement(ctx, requirement.ID); getErr != nil || current.StatementHighWaterMark != 6 {
+			t.Fatalf("high-water after growth=%+v err=%v, want 6", current, getErr)
+		}
+	})
+
+	t.Run("confirmation is forward-only and records the operator", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		requirement, _ := createRequirement(t, ctx, st, "Confirmed Intent",
+			chatVersion("First intent.", requirementStatement("REQ-1", "One.")))
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Second intent.",
+			requirementStatement("REQ-1", "One."), requirementStatement("REQ-2", "Two."))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Third intent.",
+			requirementStatement("REQ-1", "One."), requirementStatement("REQ-2", "Two."),
+			requirementStatement("REQ-3", "Three."))); err != nil {
+			t.Fatal(err)
+		}
+
+		confirmedDoc, confirmedVersion, err := st.ConfirmRequirementVersion(ctx, requirement.ID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if confirmedDoc.CurrentVersion != 2 || confirmedDoc.UpdatedAt.IsZero() {
+			t.Fatalf("document after confirming v2=%+v", confirmedDoc)
+		}
+		if !confirmedVersion.Confirmed || confirmedVersion.Version != 2 ||
+			confirmedVersion.ConfirmedBy != requirementConformanceActor || confirmedVersion.ConfirmedAt.IsZero() {
+			t.Fatalf("confirmed version=%+v, want v2 confirmed by %s", confirmedVersion, requirementConformanceActor)
+		}
+		assertRequirementRoundTrip(t, ctx, st, confirmedDoc)
+		assertRequirementVersionRoundTrip(t, ctx, st, confirmedVersion)
+		// Exactly that version is current: neighbours stay pending.
+		for _, neighbour := range []int{1, 3} {
+			stored, getErr := st.GetRequirementVersion(ctx, requirement.ID, neighbour)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if stored.Confirmed || stored.ConfirmedBy != "" || !stored.ConfirmedAt.IsZero() {
+				t.Fatalf("neighbour version %d=%+v, want untouched", neighbour, stored)
+			}
+		}
+
+		// Re-confirming the current version is a no-op retry, not an error.
+		repeatDoc, repeatVersion, err := st.ConfirmRequirementVersion(ctx, requirement.ID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if repeatDoc.CurrentVersion != 2 || !repeatVersion.Confirmed ||
+			repeatVersion.ConfirmedBy != requirementConformanceActor ||
+			!sameInstant(repeatVersion.ConfirmedAt, confirmedVersion.ConfirmedAt) {
+			t.Fatalf("repeat confirm doc=%+v version=%+v, want the original confirmation", repeatDoc, repeatVersion)
+		}
+
+		// Confirming backwards would silently revert intent the operator
+		// already advanced past.
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, 1); err == nil {
+			t.Fatal("confirming a superseded version was accepted")
+		}
+		if reread, getErr := st.GetRequirement(ctx, requirement.ID); getErr != nil || reread.CurrentVersion != 2 {
+			t.Fatalf("document after rejected backward confirm=%+v err=%v, want current version 2", reread, getErr)
+		}
+
+		// Forward is fine.
+		if forwardDoc, _, forwardErr := st.ConfirmRequirementVersion(ctx, requirement.ID, 3); forwardErr != nil ||
+			forwardDoc.CurrentVersion != 3 {
+			t.Fatalf("confirming v3 doc=%+v err=%v", forwardDoc, forwardErr)
+		}
+
+		// Versions that do not exist cannot be confirmed.
+		for _, missing := range []int{0, -1, 99} {
+			if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, missing); err == nil {
+				t.Fatalf("confirming nonexistent version %d was accepted", missing)
+			}
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, "req-does-not-exist", 1); err == nil {
+			t.Fatal("confirming a version of an unknown requirement was accepted")
+		}
+
+		// A statement-less version cannot become current intent: a migration
+		// seed carries the retired node's prose verbatim and must be edited
+		// before it is authoritative (spec §21.46 change 2).
+		seed, _, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Seed Without Statements"},
+			core.RequirementVersion{
+				Content: "Prose only, no machine block.", Origin: core.RequirementOriginFeatureMigration,
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, seed.ID, 1); err == nil {
+			t.Fatal("confirming a version with no REQ-n statements was accepted")
+		}
+		if reread, getErr := st.GetRequirement(ctx, seed.ID); getErr != nil || reread.CurrentVersion != 0 {
+			t.Fatalf("seed after rejected confirm=%+v err=%v, want still pending", reread, getErr)
+		}
+	})
+
+	t.Run("reads are deterministic and absence is an error", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		// Inserted in reverse title order with ids that also run backwards, so
+		// the listing order can only come from the title.
+		for _, seeded := range []struct{ id, title string }{
+			{"req-a-inserted-first", "Gamma Intent"},
+			{"req-b-inserted-second", "Beta Intent"},
+			{"req-c-inserted-third", "Alpha Intent"},
+		} {
+			if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: seeded.id, Title: seeded.title},
+				chatVersion(seeded.title+" prose.", requirementStatement("REQ-1", "One."))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		listed, err := st.ListRequirements(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotTitles := make([]string, len(listed))
+		for index, requirement := range listed {
+			gotTitles[index] = requirement.Title
+		}
+		if !reflect.DeepEqual(gotTitles, []string{"Alpha Intent", "Beta Intent", "Gamma Intent"}) {
+			t.Fatalf("listed titles=%v, want title order", gotTitles)
+		}
+		for _, requirement := range listed {
+			if requirement.ID == "" || requirement.Slug == "" || requirement.CreatedAt.IsZero() {
+				t.Fatalf("listing returned a partially populated document: %+v", requirement)
+			}
+		}
+
+		if _, err = st.GetRequirement(ctx, "req-does-not-exist"); err == nil {
+			t.Fatal("reading an unknown requirement succeeded")
+		}
+		if _, err = st.GetRequirementVersion(ctx, "req-a-inserted-first", 2); err == nil {
+			t.Fatal("reading an unwritten version succeeded")
+		}
+		if _, err = st.GetRequirementVersion(ctx, "req-does-not-exist", 1); err == nil {
+			t.Fatal("reading a version of an unknown requirement succeeded")
+		}
+		// Listing versions of an unknown document is empty rather than an
+		// error: it is a projection, not an identity lookup.
+		if versions, listErr := st.ListRequirementVersions(ctx, "req-does-not-exist"); listErr != nil || len(versions) != 0 {
+			t.Fatalf("versions of an unknown requirement=%+v err=%v, want empty", versions, listErr)
+		}
+	})
+
+	t.Run("planning sessions restore their transcript in order", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		opened, _ := createRequirement(t, ctx, st, "Session Context",
+			chatVersion("Context prose.", requirementStatement("REQ-1", "One.")))
+
+		sessionID := "session-" + core.NewTaskID()
+		session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: sessionID, Title: "Plan the queue rewrite", RequirementContextID: opened.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if session.ID != sessionID || session.Workspace != workspace ||
+			session.Status != core.PlanningSessionActive || session.Title != "Plan the queue rewrite" ||
+			session.RequirementContextID != opened.ID || session.ProducedRequirementID != "" ||
+			session.ProducedTaskID != "" || session.TranscriptArtifactID != "" ||
+			!session.FinalizedAt.IsZero() || session.CreatedAt.IsZero() || session.UpdatedAt.IsZero() {
+			t.Fatalf("created session=%+v", session)
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, session)
+
+		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{ID: sessionID}); err == nil {
+			t.Fatal("duplicate planning session id was accepted")
+		}
+		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{ID: ""}); err == nil {
+			t.Fatal("planning session without an id was accepted")
+		}
+		// A session opened "from" a requirement must name a real one — that
+		// link is what auto-proposes serves later (spec §4.2 item 1).
+		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), RequirementContextID: "req-does-not-exist",
+		}); err == nil {
+			t.Fatal("planning session referencing an unknown requirement was accepted")
+		}
+
+		// Sequence numbers start at 1 and increment, because the transport
+		// restores a session by replaying them in order (spec §9).
+		appended := []core.PlanningMessage{}
+		for index, message := range []core.PlanningMessage{
+			{SessionID: sessionID, Role: core.PlanningMessageUser, Content: "Rewrite the queue.",
+				Parts: json.RawMessage(requirementCanonicalParts)},
+			{SessionID: sessionID, Role: core.PlanningMessageAssistant, Content: "Reading the spec.",
+				Parts: json.RawMessage(`[{"type":"tool-call","toolName":"read","args":{"path":"spec.md"}}]`)},
+			{SessionID: sessionID, Role: core.PlanningMessageTool, Content: "spec.md contents",
+				Parts: json.RawMessage(`[{"type":"tool-result","result":{"ok":true,"lines":42}}]`)},
+			{SessionID: sessionID, Role: core.PlanningMessageSystem, Content: "Session policy."},
+		} {
+			stored, appendErr := st.AppendPlanningMessage(ctx, message)
+			if appendErr != nil {
+				t.Fatal(appendErr)
+			}
+			if stored.Seq != index+1 || stored.Workspace != workspace ||
+				stored.SessionID != sessionID || stored.CreatedAt.IsZero() {
+				t.Fatalf("appended message=%+v, want seq %d", stored, index+1)
+			}
+			appended = append(appended, message)
+		}
+
+		restored, err := st.ListPlanningMessages(ctx, sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(restored) != len(appended) {
+			t.Fatalf("restored messages=%d, want %d", len(restored), len(appended))
+		}
+		for index, message := range restored {
+			want := appended[index]
+			if message.Seq != index+1 || message.Role != want.Role || message.Content != want.Content ||
+				message.SessionID != sessionID || message.CreatedAt.IsZero() {
+				t.Fatalf("restored message %d=%+v, want %+v", index, message, want)
+			}
+			assertSamePlanningParts(t, message.Parts, want.Parts)
+		}
+		// The first message's parts were supplied in canonical form, so the
+		// exact bytes survive the round trip in both implementations.
+		if string(restored[0].Parts) != requirementCanonicalParts {
+			t.Fatalf("canonical parts round trip=%s, want %s", restored[0].Parts, requirementCanonicalParts)
+		}
+
+		if _, err = st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: sessionID, Role: "narrator", Content: "Invalid role.",
+		}); err == nil {
+			t.Fatal("invalid planning message role was accepted")
+		}
+		if _, err = st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: "session-does-not-exist", Role: core.PlanningMessageUser, Content: "Orphan.",
+		}); err == nil {
+			t.Fatal("message against an unknown session was accepted")
+		}
+		// The rejections did not consume a sequence number.
+		if next, appendErr := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: sessionID, Role: core.PlanningMessageUser, Content: "Still going.",
+		}); appendErr != nil || next.Seq != len(appended)+1 {
+			t.Fatalf("next seq=%+v err=%v, want %d", next, appendErr, len(appended)+1)
+		}
+
+		// Listing is most-recently-touched first: appending to the older
+		// session brings it back to the top.
+		quiet, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Title: "Untouched",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: sessionID, Role: core.PlanningMessageUser, Content: "One more turn.",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		sessions, err := st.ListPlanningSessions(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 2 || sessions[0].ID != sessionID || sessions[1].ID != quiet.ID {
+			t.Fatalf("listed sessions=%+v, want %s before %s", sessions, sessionID, quiet.ID)
+		}
+		for _, listed := range sessions {
+			if listed.Status != core.PlanningSessionActive || listed.Workspace != workspace ||
+				listed.CreatedAt.IsZero() || listed.UpdatedAt.IsZero() {
+				t.Fatalf("listing returned a partially populated session: %+v", listed)
+			}
+		}
+		// Messages of an unknown session are an empty transcript, not an error.
+		if messages, listErr := st.ListPlanningMessages(ctx, "session-does-not-exist"); listErr != nil || len(messages) != 0 {
+			t.Fatalf("messages of an unknown session=%+v err=%v, want empty", messages, listErr)
+		}
+	})
+
+	t.Run("closed sessions accept no further messages", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		requirement, _ := createRequirement(t, ctx, st, "Closed Session Product",
+			chatVersion("Product prose.", requirementStatement("REQ-1", "One.")))
+
+		finalized := createPlanningSession(t, ctx, st)
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: finalized.ID, Role: core.PlanningMessageUser, Content: "Before finalize.",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: finalized.ID, RequirementID: requirement.ID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// A finalized transcript is the archived record of what produced the
+		// artifact; appending to it would rewrite history (spec §9).
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: finalized.ID, Role: core.PlanningMessageUser, Content: "After finalize.",
+		}); err == nil {
+			t.Fatal("message appended to a finalized session")
+		}
+
+		abandoned := createPlanningSession(t, ctx, st)
+		if _, err := st.AbandonPlanningSession(ctx, abandoned.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: abandoned.ID, Role: core.PlanningMessageUser, Content: "After abandon.",
+		}); err == nil {
+			t.Fatal("message appended to an abandoned session")
+		}
+		for _, sessionID := range []string{finalized.ID, abandoned.ID} {
+			messages, err := st.ListPlanningMessages(ctx, sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sessionID == finalized.ID && len(messages) != 1 {
+				t.Fatalf("finalized transcript=%d messages, want the one appended while active", len(messages))
+			}
+			if sessionID == abandoned.ID && len(messages) != 0 {
+				t.Fatalf("abandoned transcript=%d messages, want none", len(messages))
+			}
+		}
+	})
+
+	t.Run("finalize produces exactly one artifact and repeats idempotently", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		produced, _ := createRequirement(t, ctx, st, "Produced Requirement",
+			chatVersion("Produced prose.", requirementStatement("REQ-1", "One.")))
+		other, _ := createRequirement(t, ctx, st, "Other Requirement",
+			chatVersion("Other prose.", requirementStatement("REQ-1", "One.")))
+		blueprint := planningTask(workspace)
+		if err := st.CreateTask(ctx, blueprint); err != nil {
+			t.Fatal(err)
+		}
+		transcript, err := st.CreateArtifact(ctx, core.Artifact{
+			Name: "planning-transcript.json", ContentType: "application/json",
+			Role: core.ArtifactRoleGeneratedAudit, RequirementID: produced.ID,
+		}, []byte(`{"session":"`+core.NewTaskID()+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A second, equally valid transcript for the same requirement: the
+		// finalize contract has to distinguish it from the archived one.
+		otherTranscript, err := st.CreateArtifact(ctx, core.Artifact{
+			Name: "planning-transcript-retry.json", ContentType: "application/json",
+			Role: core.ArtifactRoleGeneratedAudit, RequirementID: produced.ID,
+		}, []byte(`{"session":"`+core.NewTaskID()+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// A session produces a requirement or a blueprint task, never both and
+		// never neither — a session that produced nothing is abandoned (§9).
+		session := createPlanningSession(t, ctx, st)
+		for name, request := range map[string]store.PlanningFinalizeRequest{
+			"both artifacts": {SessionID: session.ID, RequirementID: produced.ID, TaskID: blueprint.ID},
+			"no artifact":    {SessionID: session.ID},
+		} {
+			if _, err = st.FinalizePlanningSession(ctx, request); err == nil {
+				t.Fatalf("finalize with %s was accepted", name)
+			}
+		}
+		if unchanged, getErr := st.GetPlanningSession(ctx, session.ID); getErr != nil ||
+			unchanged.Status != core.PlanningSessionActive || !unchanged.FinalizedAt.IsZero() {
+			t.Fatalf("session after rejected finalize=%+v err=%v, want still active", unchanged, getErr)
+		}
+		if _, err = st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: "session-does-not-exist", RequirementID: produced.ID,
+		}); err == nil {
+			t.Fatal("finalize of an unknown session was accepted")
+		}
+
+		requirementRun, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: session.ID, RequirementID: produced.ID, TranscriptArtifactID: transcript.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if requirementRun.Status != core.PlanningSessionFinalized ||
+			requirementRun.ProducedRequirementID != produced.ID || requirementRun.ProducedTaskID != "" ||
+			requirementRun.TranscriptArtifactID != transcript.ID || requirementRun.FinalizedAt.IsZero() {
+			t.Fatalf("finalized session=%+v", requirementRun)
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, requirementRun)
+
+		// An identical repeat is a retry — a stream that reconnected — so it
+		// must not error or move the finalized timestamp.
+		repeat, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: session.ID, RequirementID: produced.ID, TranscriptArtifactID: transcript.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if repeat.ProducedRequirementID != produced.ID || repeat.ProducedTaskID != "" ||
+			!repeat.FinalizedAt.Equal(requirementRun.FinalizedAt) {
+			t.Fatalf("idempotent finalize=%+v, want %+v", repeat, requirementRun)
+		}
+		// A different artifact is a contradiction, not a retry: overwriting
+		// would strand the lineage the first finalize recorded. The archived
+		// transcript is part of that lineage, so naming a different one — or
+		// dropping it — contradicts just as much as a different requirement
+		// would; accepting it silently would acknowledge a transcript that was
+		// never persisted.
+		for name, request := range map[string]store.PlanningFinalizeRequest{
+			"a different requirement": {SessionID: session.ID, RequirementID: other.ID},
+			"a blueprint task":        {SessionID: session.ID, TaskID: blueprint.ID},
+			"a different transcript": {SessionID: session.ID, RequirementID: produced.ID,
+				TranscriptArtifactID: otherTranscript.ID},
+			"no transcript at all": {SessionID: session.ID, RequirementID: produced.ID},
+		} {
+			if _, err = st.FinalizePlanningSession(ctx, request); err == nil {
+				t.Fatalf("contradicting finalize naming %s was accepted", name)
+			}
+		}
+		if intact, getErr := st.GetPlanningSession(ctx, session.ID); getErr != nil ||
+			intact.ProducedRequirementID != produced.ID || intact.ProducedTaskID != "" ||
+			intact.TranscriptArtifactID != transcript.ID ||
+			!intact.FinalizedAt.Equal(requirementRun.FinalizedAt) {
+			t.Fatalf("session after contradicting finalize=%+v err=%v", intact, getErr)
+		}
+		// Abandoning would strand what the session produced.
+		if _, err = st.AbandonPlanningSession(ctx, session.ID); err == nil {
+			t.Fatal("abandoning a finalized session was accepted")
+		}
+
+		// The blueprint-task branch of the exclusive contract.
+		taskSession := createPlanningSession(t, ctx, st)
+		blueprintRun, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: taskSession.ID, TaskID: blueprint.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blueprintRun.ProducedTaskID != blueprint.ID || blueprintRun.ProducedRequirementID != "" ||
+			blueprintRun.Status != core.PlanningSessionFinalized || blueprintRun.FinalizedAt.IsZero() {
+			t.Fatalf("blueprint-producing session=%+v", blueprintRun)
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, blueprintRun)
+
+		// Abandonment is idempotent, so a closed browser tab retried twice
+		// leaves one record.
+		spare := createPlanningSession(t, ctx, st)
+		firstAbandon, err := st.AbandonPlanningSession(ctx, spare.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if firstAbandon.Status != core.PlanningSessionAbandoned || !firstAbandon.FinalizedAt.IsZero() {
+			t.Fatalf("abandoned session=%+v", firstAbandon)
+		}
+		secondAbandon, err := st.AbandonPlanningSession(ctx, spare.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if secondAbandon.Status != core.PlanningSessionAbandoned ||
+			!secondAbandon.UpdatedAt.Equal(firstAbandon.UpdatedAt) {
+			t.Fatalf("repeat abandon=%+v, want %+v", secondAbandon, firstAbandon)
+		}
+		if _, err = st.AbandonPlanningSession(ctx, "session-does-not-exist"); err == nil {
+			t.Fatal("abandoning an unknown session was accepted")
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, secondAbandon)
+	})
+
+	t.Run("every read is workspace scoped", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		requirement, first := createRequirement(t, ctx, st, "Scoped Intent",
+			chatVersion("Scoped prose.", requirementStatement("REQ-1", "One.")))
+		session := createPlanningSession(t, ctx, st)
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: session.ID, Role: core.PlanningMessageUser, Content: "Scoped turn.",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// A neighbouring workspace sees none of it. The sibling scope needs no
+		// provisioning because only reads are exercised through it — the point
+		// is that identity alone never crosses the boundary (spec §21.10).
+		sibling := store.WithWorkspace(ctx, workspace+"-sibling")
+		if _, err := st.GetRequirement(sibling, requirement.ID); err == nil {
+			t.Fatal("requirement was readable from another workspace")
+		}
+		if _, err := st.GetRequirementVersion(sibling, requirement.ID, first.Version); err == nil {
+			t.Fatal("requirement version was readable from another workspace")
+		}
+		if _, err := st.GetPlanningSession(sibling, session.ID); err == nil {
+			t.Fatal("planning session was readable from another workspace")
+		}
+		if listed, err := st.ListRequirements(sibling); err != nil || len(listed) != 0 {
+			t.Fatalf("cross-workspace ListRequirements=%+v err=%v, want empty", listed, err)
+		}
+		if versions, err := st.ListRequirementVersions(sibling, requirement.ID); err != nil || len(versions) != 0 {
+			t.Fatalf("cross-workspace ListRequirementVersions=%+v err=%v, want empty", versions, err)
+		}
+		if sessions, err := st.ListPlanningSessions(sibling); err != nil || len(sessions) != 0 {
+			t.Fatalf("cross-workspace ListPlanningSessions=%+v err=%v, want empty", sessions, err)
+		}
+		if messages, err := st.ListPlanningMessages(sibling, session.ID); err != nil || len(messages) != 0 {
+			t.Fatalf("cross-workspace ListPlanningMessages=%+v err=%v, want empty", messages, err)
+		}
+		// Confirmation cannot reach across either: an operator in one workspace
+		// must not be able to make another workspace's intent authoritative.
+		if _, _, err := st.ConfirmRequirementVersion(sibling, requirement.ID, first.Version); err == nil {
+			t.Fatal("requirement version was confirmable from another workspace")
+		}
+		// The owning workspace still sees everything.
+		if _, err := st.GetRequirement(ctx, requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		if messages, err := st.ListPlanningMessages(ctx, session.ID); err != nil || len(messages) != 1 {
+			t.Fatalf("owning workspace messages=%+v err=%v, want 1", messages, err)
+		}
+	})
+}
+
+func newRequirementFixture(t *testing.T, factory RequirementFactory) (store.Store, context.Context, string) {
+	t.Helper()
+	fixture := factory(t, requirementConformanceRepos)
+	return fixture.Store,
+		store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorHuman}),
+		fixture.Workspace
+}
+
+func requirementStatement(id, statement string) core.RequirementStatement {
+	return core.RequirementStatement{ID: id, Statement: statement}
+}
+
+// chatVersion builds a planning-session revision. Chat origin carries the
+// session that revised the document (spec §9).
+func chatVersion(content string, statements ...core.RequirementStatement) core.RequirementVersion {
+	return core.RequirementVersion{
+		Content: content, Statements: statements,
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-" + core.NewTaskID(),
+	}
+}
+
+func chatVersionFor(requirementID, content string, statements ...core.RequirementStatement) core.RequirementVersion {
+	version := chatVersion(content, statements...)
+	version.RequirementID = requirementID
+	return version
+}
+
+// driftVersionFor builds the monitor's requirements_amended revision, which
+// carries the drift record instead of a session (spec §4.2 item 2).
+func driftVersionFor(requirementID, content string, statements ...core.RequirementStatement) core.RequirementVersion {
+	return core.RequirementVersion{
+		RequirementID: requirementID, Content: content, Statements: statements,
+		Origin: core.RequirementOriginDriftAmendment, OriginDriftID: "drift-" + core.NewTaskID(),
+	}
+}
+
+func createRequirement(t *testing.T, ctx context.Context, st store.Store, title string, first core.RequirementVersion) (core.Requirement, core.RequirementVersion) {
+	t.Helper()
+	requirement, version, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: "req-" + core.NewTaskID(), Title: title}, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirement, version
+}
+
+func createPlanningSession(t *testing.T, ctx context.Context, st store.Store) core.PlanningSession {
+	t.Helper()
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+		ID: "session-" + core.NewTaskID(), Title: "Planning",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func planningTask(workspace string) core.Task {
+	id := core.NewTaskID()
+	return core.Task{
+		ID: id, Workspace: workspace, Source: "test:planning", Title: "Blueprint from planning",
+		Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id,
+		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+}
+
+func assertRequirementRoundTrip(t *testing.T, ctx context.Context, st store.Store, want core.Requirement) {
+	t.Helper()
+	got, err := st.GetRequirement(ctx, want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != want.ID || got.Slug != want.Slug || got.Title != want.Title ||
+		got.Workspace != want.Workspace || got.CurrentVersion != want.CurrentVersion ||
+		got.StatementHighWaterMark != want.StatementHighWaterMark ||
+		!sameInstant(got.CreatedAt, want.CreatedAt) || got.UpdatedAt.IsZero() {
+		t.Fatalf("read back requirement=%+v, want %+v", got, want)
+	}
+}
+
+func assertRequirementVersionRoundTrip(t *testing.T, ctx context.Context, st store.Store, want core.RequirementVersion) {
+	t.Helper()
+	got, err := st.GetRequirementVersion(ctx, want.RequirementID, want.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RequirementID != want.RequirementID || got.Version != want.Version ||
+		got.Content != want.Content || got.Workspace != want.Workspace ||
+		got.Origin != want.Origin || got.OriginSessionID != want.OriginSessionID ||
+		got.OriginDriftID != want.OriginDriftID || got.Confirmed != want.Confirmed ||
+		got.ConfirmedBy != want.ConfirmedBy || !sameInstant(got.ConfirmedAt, want.ConfirmedAt) ||
+		!sameInstant(got.CreatedAt, want.CreatedAt) {
+		t.Fatalf("read back version=%+v, want %+v", got, want)
+	}
+	if !sameRequirementStatements(got.Statements, want.Statements) {
+		t.Fatalf("read back statements=%+v, want %+v", got.Statements, want.Statements)
+	}
+}
+
+func assertPlanningSessionRoundTrip(t *testing.T, ctx context.Context, st store.Store, want core.PlanningSession) {
+	t.Helper()
+	got, err := st.GetPlanningSession(ctx, want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != want.ID || got.Title != want.Title || got.Status != want.Status ||
+		got.Workspace != want.Workspace || got.RequirementContextID != want.RequirementContextID ||
+		got.ProducedRequirementID != want.ProducedRequirementID || got.ProducedTaskID != want.ProducedTaskID ||
+		got.TranscriptArtifactID != want.TranscriptArtifactID ||
+		!sameInstant(got.CreatedAt, want.CreatedAt) || !sameInstant(got.FinalizedAt, want.FinalizedAt) {
+		t.Fatalf("read back session=%+v, want %+v", got, want)
+	}
+}
+
+func assertRequirementCount(t *testing.T, ctx context.Context, st store.Store, want int) {
+	t.Helper()
+	listed, err := st.ListRequirements(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != want {
+		t.Fatalf("requirements=%d, want %d", len(listed), want)
+	}
+}
+
+// sameRequirementStatements compares statement blocks by content and order. It
+// treats a nil block and an empty block as equal: the in-memory store returns
+// the caller's nil slice for a statement-less migration seed while Postgres
+// round-trips it through an empty jsonb array. Nothing an operator can observe
+// distinguishes them.
+func sameRequirementStatements(got, want []core.RequirementStatement) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// assertSamePlanningParts compares AI SDK message parts by decoded value.
+// Postgres stores parts in a jsonb column, which re-serializes canonically
+// (sorted keys, its own spacing), while the in-memory store hands back exactly
+// the bytes it was given. The contract both keep is that nothing in the payload
+// is lost, so the suite asserts decoded equality here and asserts byte identity
+// separately against a payload already written in canonical form.
+func assertSamePlanningParts(t *testing.T, got, want json.RawMessage) {
+	t.Helper()
+	if len(want) == 0 {
+		// An omitted parts payload is stored as nil by one implementation and
+		// as an empty JSON array by the other; both mean "no parts".
+		if len(got) != 0 && string(got) != "[]" {
+			t.Fatalf("parts for a message with none=%s, want empty", got)
+		}
+		return
+	}
+	var decodedGot, decodedWant any
+	if err := json.Unmarshal(got, &decodedGot); err != nil {
+		t.Fatalf("restored parts %s are not JSON: %v", got, err)
+	}
+	if err := json.Unmarshal(want, &decodedWant); err != nil {
+		t.Fatalf("submitted parts %s are not JSON: %v", want, err)
+	}
+	if !reflect.DeepEqual(decodedGot, decodedWant) {
+		t.Fatalf("restored parts=%s, want %s", got, want)
+	}
+}
+
+// sameInstant compares timestamps at the coarsest precision both stores keep.
+// Postgres timestamptz truncates to microseconds while the in-memory store
+// keeps the nanosecond clock reading, so an exact comparison would fail on a
+// difference that carries no meaning.
+func sameInstant(got, want time.Time) bool {
+	if got.IsZero() != want.IsZero() {
+		return false
+	}
+	delta := got.Sub(want)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta < time.Microsecond
+}

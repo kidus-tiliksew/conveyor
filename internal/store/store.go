@@ -152,6 +152,31 @@ type Store interface {
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
+
+	// Requirements are living intent documents: versioned and confirmed, never
+	// gated (spec §4.2 item 1). CreateRequirement commits the document and its
+	// first proposed version together; nothing becomes current intent until
+	// ConfirmRequirementVersion records an operator's confirmation.
+	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
+	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
+	ListRequirements(ctx context.Context) ([]core.Requirement, error)
+	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
+	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error)
+	GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error)
+	ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error)
+
+	// Planning sessions are durable chats that produce at most one artifact and
+	// grant no approval authority over it (spec §9, §13.1).
+	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
+	GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error)
+	ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error)
+	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
+	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
+	FinalizePlanningSession(ctx context.Context, request PlanningFinalizeRequest) (core.PlanningSession, error)
+	// AbandonPlanningSession closes a session that produced nothing. A
+	// finalized session cannot be abandoned; that would strand its lineage.
+	AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error)
+
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
 	GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error)
@@ -579,6 +604,10 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		publications:                map[string]core.ReviewPublication{},
 		github:                      map[string]core.GitHubLifecycle{},
 		features:                    map[string]core.Feature{},
+		requirements:                map[memoryScopedKey]core.Requirement{},
+		requirementVersions:         map[memoryScopedKey][]core.RequirementVersion{},
+		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
+		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
 		pairings:                    map[string]core.WorkerPairing{},
 		workers:                     map[string]core.Worker{},
@@ -605,6 +634,13 @@ type memoryArtifactKey struct {
 	id        string
 }
 
+// memoryScopedKey keys workspace-scoped corpora so the in-memory store honours
+// the same isolation the Postgres store enforces with a composite primary key.
+type memoryScopedKey struct {
+	workspace string
+	id        string
+}
+
 type memoryDependencyRemoval struct {
 	Request DependencyRemovalRequest
 	Actor   Actor
@@ -624,6 +660,10 @@ type memory struct {
 	publications                map[string]core.ReviewPublication
 	github                      map[string]core.GitHubLifecycle
 	features                    map[string]core.Feature
+	requirements                map[memoryScopedKey]core.Requirement
+	requirementVersions         map[memoryScopedKey][]core.RequirementVersion
+	planningSessions            map[memoryScopedKey]core.PlanningSession
+	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
 	pairings                    map[string]core.WorkerPairing
 	workers                     map[string]core.Worker
@@ -2353,8 +2393,16 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	}
 	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
 	artifact.SizeBytes = int64(len(content))
+	if err := artifact.ValidateAttachmentTarget(); err != nil {
+		return core.Artifact{}, err
+	}
+	if artifact.RequirementID != "" {
+		if _, ok := m.requirements[memoryScopedKey{workspace: artifact.Workspace, id: artifact.RequirementID}]; !ok {
+			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", artifact.Workspace)
+		}
+	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
-		if artifact.TaskID == "" || artifact.FeatureID != "" {
+		if artifact.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
 		}
 		task, ok := m.tasks[artifact.TaskID]
@@ -2373,7 +2421,7 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
 	if existing, ok := m.artifacts[key]; ok {
 		for _, link := range existing.links {
-			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.Role == artifact.Role {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.Role == artifact.Role {
 				return link, nil
 			}
 		}

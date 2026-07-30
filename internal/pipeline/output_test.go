@@ -17,6 +17,20 @@ func TestParseTriageAndReview(t *testing.T) {
 	}
 }
 
+func TestParseTriageTakesRequirementIDAndRejectsRetiredFeatureID(t *testing.T) {
+	t.Parallel()
+	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")
+	if err != nil || triage.RequirementID != "req-1" {
+		t.Fatalf("triage=%+v err=%v", triage, err)
+	}
+	// feature_id retired with the feature tree (spec §21.46 change 5). The
+	// parser disallows unknown fields precisely so a model still emitting the
+	// old key fails loudly instead of having its proposal silently dropped.
+	if _, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"feature_id\":\"feature-1\"}\n```"); err == nil || !strings.Contains(err.Error(), "feature_id") {
+		t.Fatalf("retired feature_id error = %v", err)
+	}
+}
+
 func TestParseSpecValidatesMachineBlocks(t *testing.T) {
 	valid := `# Change
 
