@@ -280,9 +280,11 @@ func RequirementSlug(title string) string {
 	if slug == "" {
 		return "requirement"
 	}
-	const maxSlugRunes = 80
-	if len(slug) > maxSlugRunes {
-		slug = requirementSlugTrimPattern.ReplaceAllString(slug[:maxSlugRunes], "")
+	// The strip pattern has already reduced the slug to [a-z0-9-], so bytes and
+	// runes coincide and a byte bound cannot split a character.
+	const maxSlugBytes = 80
+	if len(slug) > maxSlugBytes {
+		slug = requirementSlugTrimPattern.ReplaceAllString(slug[:maxSlugBytes], "")
 	}
 	return slug
 }
