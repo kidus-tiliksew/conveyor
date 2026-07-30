@@ -82,6 +82,7 @@ type Store interface {
 
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
@@ -3326,6 +3327,31 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	events := append([]core.Event(nil), m.events[taskID]...)
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].At.Equal(events[j].At) {
+			return events[i].ID < events[j].ID
+		}
+		return events[i].At.Before(events[j].At)
+	})
+	return events, nil
+}
+
+func (m *memory) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	events := []core.Event{}
+	for _, event := range m.events[""] {
+		var payload struct {
+			WorkspaceID   string `json:"workspace_id"`
+			RequirementID string `json:"requirement_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil ||
+			payload.WorkspaceID != workspace || payload.RequirementID != requirementID {
+			continue
+		}
+		events = append(events, event)
+	}
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].At.Equal(events[j].At) {
 			return events[i].ID < events[j].ID

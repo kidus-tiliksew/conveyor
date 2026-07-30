@@ -32,6 +32,7 @@ type Querier interface {
 	ListActivityMarkers(ctx context.Context, workspaceID string) ([]ListActivityMarkersRow, error)
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
+	ListRequirementEvents(ctx context.Context, arg ListRequirementEventsParams) ([]Event, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
 	ListTasks(ctx context.Context, workspaceID string) ([]ListTasksRow, error)

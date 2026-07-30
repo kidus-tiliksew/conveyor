@@ -895,6 +895,49 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 	return items, nil
 }
 
+const listRequirementEvents = `-- name: ListRequirementEvents :many
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
+WHERE e.workspace_id = $1
+  AND e.task_id IS NULL
+  AND e.payload_json->>'requirement_id' = $2
+ORDER BY e.at, e.id
+`
+
+type ListRequirementEventsParams struct {
+	WorkspaceID   string `json:"workspace_id"`
+	RequirementID string `json:"requirement_id"`
+}
+
+func (q *Queries) ListRequirementEvents(ctx context.Context, arg ListRequirementEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listRequirementEvents, arg.WorkspaceID, arg.RequirementID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.JobID,
+			&i.Kind,
+			&i.ActorID,
+			&i.ActorRole,
+			&i.PayloadJson,
+			&i.At,
+			&i.WorkspaceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsAfter = `-- name: ListEventsAfter :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 JOIN tasks t ON t.id = e.task_id

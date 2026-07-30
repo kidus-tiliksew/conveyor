@@ -1,11 +1,9 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -106,14 +104,13 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	if err != nil {
 		return nil, err
 	}
-	requirementEvents, err := s.Store.ListEvents(r.Context(), "")
-	if err != nil {
-		return nil, err
-	}
-
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
 		versions, listErr := s.Store.ListRequirementVersions(r.Context(), requirement.ID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		requirementEvents, listErr := s.Store.ListRequirementEvents(r.Context(), requirement.ID)
 		if listErr != nil {
 			return nil, listErr
 		}
@@ -146,11 +143,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Artifacts = append(view.Artifacts, artifact)
 			}
 		}
-		for _, event := range requirementEvents {
-			if eventReferencesRequirement(event, requirement.ID, requirement.Workspace) {
-				view.Lineage = append(view.Lineage, event)
-			}
-		}
+		view.Lineage = append(view.Lineage, requirementEvents...)
 		blueprints := map[string]bool{}
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&
@@ -195,17 +188,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		views = append(views, view)
 	}
 	return views, nil
-}
-
-func eventReferencesRequirement(event core.Event, requirementID, workspace string) bool {
-	var payload map[string]any
-	if json.Unmarshal(event.Payload, &payload) != nil {
-		return false
-	}
-	value, _ := payload["requirement_id"].(string)
-	eventWorkspace, _ := payload["workspace_id"].(string)
-	return strings.TrimSpace(value) == requirementID &&
-		(eventWorkspace == "" || strings.TrimSpace(eventWorkspace) == workspace)
 }
 
 func mergedAfter(events []core.Event, at time.Time) bool {

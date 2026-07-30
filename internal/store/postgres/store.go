@@ -1687,6 +1687,20 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 	return result, nil
 }
 
+func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
+	rows, err := s.queries.ListRequirementEvents(ctx, db.ListRequirementEventsParams{
+		WorkspaceID: workspace(ctx), RequirementID: requirementID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]core.Event, len(rows))
+	for i := range rows {
+		result[i] = eventFromDB(rows[i])
+	}
+	return result, nil
+}
+
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
 	rows, err := s.queries.ListEventsAfter(ctx, db.ListEventsAfterParams{
 		TaskID: nullableText(taskID), WorkspaceID: workspace(ctx), ID: afterID,
