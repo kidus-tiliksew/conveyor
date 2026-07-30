@@ -768,6 +768,84 @@ func (d *Dispatcher) ApplyExternalSpec(ctx context.Context, task core.Task, job 
 	return d.completeSpecVersion(ctx, task, result, agent, model)
 }
 
+// CreatePlanningBlueprint materializes a planning-agent draft onto the same
+// task/spec contract used by every other blueprint. The planning session is an
+// intake surface, not an approval surface: completeSpecVersion leaves the new
+// version at the unchanged spec gate when workspace policy requires it
+// (spec §§9, 13.1, 21.46).
+func (d *Dispatcher) CreatePlanningBlueprint(
+	ctx context.Context,
+	sessionID, taskID, title, repoName string,
+	value pipeline.StructuredSpec,
+	model string,
+) (core.Task, core.SpecVersion, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	result, err := pipeline.RenderStructuredSpec(string(raw))
+	if err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	repo, ok := cfg.Repo(strings.TrimSpace(repoName))
+	if !ok {
+		return core.Task{}, core.SpecVersion{}, fmt.Errorf("repository %q is not configured", repoName)
+	}
+	title = strings.TrimSpace(title)
+	if title == "" || len(title) > 200 {
+		return core.Task{}, core.SpecVersion{}, fmt.Errorf("blueprint title must be between 1 and 200 characters")
+	}
+	if existing, getErr := d.Store.GetTask(ctx, taskID); getErr == nil {
+		if existing.Source != "planning:"+sessionID || existing.Title != title || existing.Repo != repo.Name {
+			return core.Task{}, core.SpecVersion{}, fmt.Errorf("planning blueprint task %s already exists with different input", taskID)
+		}
+		version, exists, specErr := d.Store.GetLatestSpecVersion(ctx, taskID)
+		if specErr != nil {
+			return core.Task{}, core.SpecVersion{}, specErr
+		}
+		if !exists || version.Content != result.Markdown {
+			return core.Task{}, core.SpecVersion{}, fmt.Errorf("planning blueprint task %s already exists without the identical spec", taskID)
+		}
+		return existing, version, nil
+	}
+	setup, ok := cfg.Setup("")
+	if !ok {
+		return core.Task{}, core.SpecVersion{}, fmt.Errorf("workspace default setup is unavailable")
+	}
+	effective := cfg.WithSetup(setup)
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	task := core.Task{
+		ID: taskID, Workspace: workspace, Source: "planning:" + sessionID,
+		Title: title, Body: result.Markdown, Class: "feature",
+		SpecApproval: effective.Execution.SpecApproval, MergeApproval: effective.Execution.MergeApproval,
+		PolicyVersion: 1, SetupName: setup.Name, SetupContract: setup,
+		Repo: repo.Name, BaseBranch: repo.Base, Branch: gitx.BranchName(taskID),
+		State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now().UTC(),
+	}
+	if err = d.Store.CreateTaskWithDependencies(ctx, task, nil); err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	version, err := d.completeSpecVersion(ctx, task, result, "planning-agent", model)
+	if err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return core.Task{}, core.SpecVersion{}, err
+	}
+	if session, sessionErr := d.Store.GetPlanningSession(ctx, sessionID); sessionErr == nil {
+		// Planning in a requirement's context proposes the same advisory,
+		// human-confirmed relation as triage. The event is the durable source;
+		// the generalized link is a projection (spec §4.2 item 1, §9).
+		d.recordRequirementSuggestion(ctx, current, session.RequirementContextID)
+	}
+	return current, version, nil
+}
+
 func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) error {
 	_, err := d.completeSpecVersion(ctx, task, result, agent, model)
 	return err
