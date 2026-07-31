@@ -174,6 +174,8 @@ type Store interface {
 	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
 	GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error)
 	ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error)
+	PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error)
+	RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error)
 	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
 	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
 	// WithPlanningSessionFinalization serializes the complete produced-artifact

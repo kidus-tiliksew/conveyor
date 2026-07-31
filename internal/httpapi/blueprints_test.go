@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +209,8 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	// this anchor is the confirmed serves link the surface renders.
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: "session-anchor", Title: "Plan bounded retries", RequirementContextID: "req-retries",
+		Model: "gpt-plan", Effort: "high", ExplorationOutputTokens: 12_000,
+		PrimaryRepo: "conveyor", PinnedRevisions: map[string]string{"conveyor": strings.Repeat("a", 40)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +274,12 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	}
 	if len(view.Serves) != 1 || view.Serves[0].ID != "req-retries" || view.Serves[0].Title != "Retry behavior" {
 		t.Fatalf("serves=%+v, want the requirement the session was planned in", view.Serves)
+	}
+	if view.PlanningSession == nil || view.PlanningSession.Model != "gpt-plan" ||
+		view.PlanningSession.Effort != "high" ||
+		view.PlanningSession.ExplorationOutputTokens != 12_000 ||
+		view.PlanningSession.PinnedRevisions["conveyor"] != strings.Repeat("a", 40) {
+		t.Fatalf("planning provenance=%+v", view.PlanningSession)
 	}
 	materialized := false
 	for _, event := range view.Events {

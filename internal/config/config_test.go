@@ -29,6 +29,53 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
+	base := validConfig()
+	normalized, err := normalize(base, "planning defaults")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planning := normalized.ExecutionSettings.ControlPlane.Planning
+	if planning.Model != "gpt" || planning.ExplorationOutputTokens != DefaultPlanningExplorationOutputTokens ||
+		!reflect.DeepEqual(normalized.PlanningModels, []string{"gpt"}) {
+		t.Fatalf("planning defaults=%+v allowlist=%v", planning, normalized.PlanningModels)
+	}
+
+	document := normalized.WorkspaceDocument()
+	planning = PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "15m", ExplorationOutputTokens: 2048}
+	document.ExecutionSettings.ControlPlane.Planning = planning
+	document.Setups[0].ExecutionSettings.ControlPlane.Planning = planning
+	document.PlanningModels = []string{"planner", "planner-alt"}
+	raw, _ := yaml.Marshal(document)
+	parsed, err := ParseWorkspaceDocument(raw, normalized, "planning round trip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.ExecutionSettings.ControlPlane.Planning; got != planning ||
+		!reflect.DeepEqual(parsed.PlanningModels, document.PlanningModels) {
+		t.Fatalf("planning=%+v allowlist=%v", got, parsed.PlanningModels)
+	}
+
+	for name, mutate := range map[string]func(*WorkspaceDocument){
+		"non-positive cap": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.ExplorationOutputTokens = -1
+		},
+		"off-allowlist default": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Model = "missing"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := document
+			candidate.Setups = append([]ExecutionSetup(nil), document.Setups...)
+			mutate(&candidate)
+			raw, _ := yaml.Marshal(candidate)
+			if _, err := ParseWorkspaceDocument(raw, normalized, name); err == nil {
+				t.Fatal("accepted invalid planning configuration")
+			}
+		})
+	}
+}
+
 func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
 	cfg := validConfig()
 	cfg.Monitor = MonitorConfig{

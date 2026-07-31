@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -267,12 +268,13 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 		session.CreatedAt = now
 	}
 	session.UpdatedAt = now
-	m.planningSessions[key] = session
+	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
+	m.planningSessions[key] = clonePlanningSession(session)
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.created", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
 		"requirement_context_id": session.RequirementContextID,
 	})})
-	return session, nil
+	return clonePlanningSession(session), nil
 }
 
 func (m *memory) GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error) {
@@ -282,7 +284,7 @@ func (m *memory) GetPlanningSession(ctx context.Context, id string) (core.Planni
 	if !ok {
 		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", id)
 	}
-	return session, nil
+	return clonePlanningSession(session), nil
 }
 
 func (m *memory) ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error) {
@@ -292,7 +294,7 @@ func (m *memory) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessi
 	out := []core.PlanningSession{}
 	for key, session := range m.planningSessions {
 		if key.workspace == workspace {
-			out = append(out, session)
+			out = append(out, clonePlanningSession(session))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -302,6 +304,72 @@ func (m *memory) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessi
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+func (m *memory) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: sessionID}
+	session, ok := m.planningSessions[key]
+	if !ok {
+		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", sessionID)
+	}
+	if session.Status != core.PlanningSessionActive {
+		return core.PlanningSession{}, fmt.Errorf("planning session %s is %s and cannot pin repositories", sessionID, session.Status)
+	}
+	repo, revision = strings.TrimSpace(repo), strings.TrimSpace(revision)
+	if repo == "" || revision == "" {
+		return core.PlanningSession{}, fmt.Errorf("planning repository and revision are required")
+	}
+	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
+	if existing := session.PinnedRevisions[repo]; existing != "" {
+		if existing != revision {
+			return clonePlanningSession(session), nil
+		}
+		return clonePlanningSession(session), nil
+	}
+	session.PinnedRevisions[repo] = revision
+	session.UpdatedAt = time.Now().UTC()
+	m.planningSessions[key] = clonePlanningSession(session)
+	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.repo_pinned", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "session_id": sessionID, "repo": repo, "revision": revision,
+	})})
+	return clonePlanningSession(session), nil
+}
+
+func (m *memory) RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: sessionID}
+	session, ok := m.planningSessions[key]
+	if !ok {
+		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", sessionID)
+	}
+	if tokens < 0 {
+		return core.PlanningSession{}, fmt.Errorf("planning exploration tokens must not be negative")
+	}
+	session.ExplorationTokensUsed += tokens
+	session.UpdatedAt = time.Now().UTC()
+	m.planningSessions[key] = clonePlanningSession(session)
+	return clonePlanningSession(session), nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func clonePlanningSession(session core.PlanningSession) core.PlanningSession {
+	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
+	return session
 }
 
 func (m *memory) AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error) {
@@ -364,7 +432,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		if session.ProducedRequirementID == request.RequirementID &&
 			session.ProducedTaskID == request.TaskID &&
 			session.TranscriptArtifactID == request.TranscriptArtifactID {
-			return session, nil
+			return clonePlanningSession(session), nil
 		}
 		return core.PlanningSession{}, fmt.Errorf(
 			"planning session %s is already finalized with different lineage", request.SessionID)
@@ -409,7 +477,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		"produced_task_id":        session.ProducedTaskID,
 		"transcript_artifact_id":  session.TranscriptArtifactID,
 	})})
-	return session, nil
+	return clonePlanningSession(session), nil
 }
 
 func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
@@ -424,7 +492,7 @@ func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (
 			return fmt.Errorf("planning session %s not found", sessionID)
 		}
 		if session.Status == core.PlanningSessionAbandoned {
-			abandoned = session
+			abandoned = clonePlanningSession(session)
 			return nil
 		}
 		if session.Status == core.PlanningSessionFinalized {
@@ -437,11 +505,11 @@ func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (
 		m.appendEventLocked(lockedCtx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspace, "session_id": session.ID,
 		})})
-		abandoned = session
+		abandoned = clonePlanningSession(session)
 		return nil
 	})
 	if err != nil {
 		return core.PlanningSession{}, err
 	}
-	return abandoned, nil
+	return clonePlanningSession(abandoned), nil
 }

@@ -154,19 +154,30 @@ type ModelTimeoutSettings struct {
 	TimeoutText string `yaml:"timeout" json:"timeout"`
 }
 
+const DefaultPlanningExplorationOutputTokens = 10_000
+
+type PlanningSettings struct {
+	Model                   string `yaml:"model" json:"model"`
+	Effort                  string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	TimeoutText             string `yaml:"timeout" json:"timeout"`
+	ExplorationOutputTokens int    `yaml:"exploration_output_tokens" json:"exploration_output_tokens"`
+}
+
 type ControlPlaneSettings struct {
-	Triage ModelTimeoutSettings `yaml:"triage" json:"triage"`
+	Triage   ModelTimeoutSettings `yaml:"triage" json:"triage"`
+	Planning PlanningSettings     `yaml:"planning" json:"planning"`
 	// Spec accepts pre-v1.34 documents. Normalization moves it into the
 	// contextual spec execution settings and never emits it again (spec §21.33).
 	Spec ModelTimeoutSettings `yaml:"spec,omitempty" json:"spec,omitempty"`
 }
 
-// MarshalJSON keeps the canonical control-plane surface triage-only while the
+// MarshalJSON keeps the canonical control-plane surface while the legacy spec
 // field above remains readable for stored pre-v1.34 documents.
 func (c ControlPlaneSettings) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Triage ModelTimeoutSettings `json:"triage"`
-	}{Triage: c.Triage})
+		Triage   ModelTimeoutSettings `json:"triage"`
+		Planning PlanningSettings     `json:"planning"`
+	}{Triage: c.Triage, Planning: c.Planning})
 }
 
 type ImplementationSettings struct {
@@ -223,6 +234,7 @@ type WorkspaceDocument struct {
 	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
+	PlanningModels            []string                     `yaml:"planning_models,omitempty" json:"planning_models"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -261,6 +273,7 @@ type Config struct {
 	Execution                 ExecutionPolicy              `yaml:"execution"`
 	Repos                     []Repo                       `yaml:"repos"`
 	Monitor                   MonitorConfig                `yaml:"monitor"`
+	PlanningModels            []string                     `yaml:"planning_models,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
@@ -299,6 +312,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Execution = document.Execution
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
+	next.PlanningModels = document.PlanningModels
 	return normalize(&next, source)
 }
 
@@ -408,6 +422,18 @@ func applyContextualExecutionSettings(c *Config) {
 		settings.Spec.TimeoutText = legacy.TimeoutText
 	}
 	settings.ControlPlane.Spec = ModelTimeoutSettings{}
+	if settings.ControlPlane.Planning.Model == "" {
+		settings.ControlPlane.Planning.Model = settings.ControlPlane.Triage.Model
+	}
+	if settings.ControlPlane.Planning.Effort == "" {
+		settings.ControlPlane.Planning.Effort = settings.ControlPlane.Triage.Effort
+	}
+	if settings.ControlPlane.Planning.TimeoutText == "" {
+		settings.ControlPlane.Planning.TimeoutText = settings.ControlPlane.Triage.TimeoutText
+	}
+	if settings.ControlPlane.Planning.ExplorationOutputTokens == 0 {
+		settings.ControlPlane.Planning.ExplorationOutputTokens = DefaultPlanningExplorationOutputTokens
+	}
 	if c.Routing.Stages == nil {
 		c.Routing.Stages = map[string]StageRoute{}
 	}
@@ -459,6 +485,10 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	return &ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
 			Triage: ModelTimeoutSettings{Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText},
+			Planning: PlanningSettings{
+				Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText,
+				ExplorationOutputTokens: DefaultPlanningExplorationOutputTokens,
+			},
 		},
 		Spec: ImplementationSettings{Harness: spec.Harness, Model: spec.Model, ModelPolicy: spec.ModelPolicy, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
 		Implementation: ImplementationSettings{
@@ -603,6 +633,10 @@ func normalize(c *Config, path string) (*Config, error) {
 }
 
 func normalizeLegacy(c *Config, path string) (*Config, error) {
+	var requestedPlanning PlanningSettings
+	if c.ExecutionSettings != nil {
+		requestedPlanning = c.ExecutionSettings.ControlPlane.Planning
+	}
 	applyContextualExecutionSettings(c)
 	if c.PackDir == "" {
 		c.PackDir = "pack"
@@ -912,7 +946,36 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stageName(stage))
 		}
 	}
-	c.ExecutionSettings = contextualExecutionSettings(c.Routing)
+	normalizedSettings := contextualExecutionSettings(c.Routing)
+	planning := requestedPlanning
+	if planning.Model == "" {
+		planning.Model = normalizedSettings.ControlPlane.Triage.Model
+	}
+	if planning.Effort == "" {
+		planning.Effort = normalizedSettings.ControlPlane.Triage.Effort
+	}
+	if planning.TimeoutText == "" {
+		planning.TimeoutText = normalizedSettings.ControlPlane.Triage.TimeoutText
+	}
+	if planning.ExplorationOutputTokens == 0 {
+		planning.ExplorationOutputTokens = DefaultPlanningExplorationOutputTokens
+	}
+	planning.Model = strings.TrimSpace(planning.Model)
+	planning.Effort = strings.TrimSpace(planning.Effort)
+	if planning.Model == "" {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.model is required")
+	}
+	if planning.Effort != "" && !validResponsesEffort(planning.Effort) {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.effort %q must be minimal, low, medium, or high", planning.Effort)
+	}
+	if parsed, parseErr := time.ParseDuration(planning.TimeoutText); parseErr != nil || parsed <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.timeout must be a positive duration")
+	}
+	if planning.ExplorationOutputTokens <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.exploration_output_tokens must be positive")
+	}
+	normalizedSettings.ControlPlane.Planning = planning
+	c.ExecutionSettings = normalizedSettings
 	repoNames := make(map[string]struct{}, len(c.Repos))
 	for i := range c.Repos {
 		repo := &c.Repos[i]
@@ -934,6 +997,26 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		repo.LegacyImage = ""
 		repo.LegacySecretRefs = nil
 		repo.LegacyToolPolicy = nil
+	}
+	if len(c.PlanningModels) == 0 {
+		c.PlanningModels = []string{planning.Model}
+	}
+	seenPlanningModels := make(map[string]struct{}, len(c.PlanningModels))
+	defaultAllowed := false
+	for i, model := range c.PlanningModels {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return nil, fmt.Errorf("planning_models[%d] is required", i)
+		}
+		if _, duplicate := seenPlanningModels[model]; duplicate {
+			return nil, fmt.Errorf("planning_models contains duplicate model %q", model)
+		}
+		seenPlanningModels[model] = struct{}{}
+		defaultAllowed = defaultAllowed || model == planning.Model
+		c.PlanningModels[i] = model
+	}
+	if !defaultAllowed {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.model %q must be included in planning_models", planning.Model)
 	}
 	seenMonitorRepo := make(map[string]struct{}, len(c.Monitor.Repositories))
 	for i, name := range c.Monitor.Repositories {
@@ -965,10 +1048,14 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		execution.FirstActivityTimeout = DefaultFirstActivityTimeout
 		execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
 	}
+	executionSettings := contextualExecutionSettings(c.Routing)
+	if c.ExecutionSettings != nil {
+		executionSettings.ControlPlane.Planning = c.ExecutionSettings.ControlPlane.Planning
+	}
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
-		ExecutionSettings:         contextualExecutionSettings(c.Routing),
+		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
 		Review:                    ReviewPanel{Seats: reviewSeats},
@@ -977,6 +1064,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 		Monitor:                   c.Monitor,
+		PlanningModels:            append([]string(nil), c.PlanningModels...),
 	}
 	document.Monitor.PollInterval = 0
 	document.Monitor.StartupWindow = 0

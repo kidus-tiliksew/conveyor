@@ -322,6 +322,12 @@ export interface ExecutionPolicy {
 export interface WorkspaceExecutionSettings {
     control_plane: {
       triage: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
+      planning: {
+        model: string
+        effort?: 'minimal' | 'low' | 'medium' | 'high'
+        timeout: string
+        exploration_output_tokens: number
+      }
     }
     spec: {
       harness: string
@@ -366,6 +372,7 @@ export interface WorkspaceConfigDocument {
   default_setup: string
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
+  planning_models: string[]
   monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
 }
 
@@ -549,6 +556,12 @@ export interface PlanningSession {
   produced_requirement_id?: string
   produced_task_id?: string
   transcript_artifact_id?: string
+  model?: string
+  effort?: string
+  exploration_output_tokens?: number
+  exploration_tokens_used?: number
+  primary_repo?: string
+  pinned_revisions?: Record<string, string>
   workspace: string
   created_at: string
   updated_at: string
@@ -618,6 +631,7 @@ export interface BlueprintView {
   serves: BlueprintRequirementRef[]
   events: TaskEvent[]
   artifacts: Artifact[]
+  planning_session?: PlanningSession
 }
 
 export interface RequirementView {
