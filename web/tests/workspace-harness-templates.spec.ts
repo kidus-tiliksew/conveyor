@@ -1,11 +1,43 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
+
+const codexEffortArgs = {
+  low: ['--config', 'model_reasoning_effort="low"'],
+  medium: ['--config', 'model_reasoning_effort="medium"'],
+  high: ['--config', 'model_reasoning_effort="high"'],
+}
 
 const codexHarness = {
   name: 'codex', mcp_transport: 'toml_override',
   command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'],
-  model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] },
+  model_args: ['--model', '{model}'], effort_args: codexEffortArgs,
   probe_command: ['codex', '--version'], probe_timeout: '10s',
 }
+
+const claudeHarness = {
+  name: 'claude', mcp_transport: 'json_file',
+  command: ['claude', '-p', '{prompt}', '--mcp-config', '{mcp_config}'],
+  model_args: ['--model', '{model}'],
+  effort_args: { low: ['--effort', 'low'], medium: ['--effort', 'medium'], high: ['--effort', 'high'] },
+  probe_command: ['claude', '--version'], probe_timeout: '10s',
+}
+
+const grokHarness = {
+  name: 'grok', mcp_transport: 'environment', mcp_attachment: 'conveyor',
+  command: ['grok', '--single', '{prompt}'],
+  model_args: ['--model', '{model}'],
+  effort_args: {
+    low: ['--reasoning-effort', 'low'],
+    medium: ['--reasoning-effort', 'medium'],
+    high: ['--reasoning-effort', 'high'],
+  },
+  probe_command: ['grok', '--version'], probe_timeout: '30s',
+}
+
+const harnessTemplates = [
+  { id: 'codex', label: 'Codex CLI', description: "OpenAI's coding agent", harness: codexHarness },
+  { id: 'claude', label: 'Claude Code', description: "Anthropic's coding agent", harness: claudeHarness },
+  { id: 'grok', label: 'Grok CLI', description: "xAI's coding agent", harness: grokHarness },
+]
 
 const document = {
   workspace: 'demo', max_bounces: 2, work_order_queue_timeout: '24h',
@@ -15,7 +47,7 @@ const document = {
     implementation: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '2h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'gpt', fallback_harness: 'codex' },
   },
-  routing: { stages: {} }, harnesses: [codexHarness], review: { seats: [{ model: 'gpt', harness: 'codex' }] },
+  routing: { stages: {} }, harnesses: [codexHarness, claudeHarness, grokHarness], review: { seats: [{ model: 'gpt', harness: 'codex' }] },
   setups: [], default_setup: '',
   execution: { spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
   repos: [],
@@ -32,7 +64,7 @@ async function mockAPIs(page: Page, templatesFail = false) {
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document, version: 1 } })
     if (path === '/v1/harness-templates') {
       if (templatesFail) return route.fulfill({ status: 500, body: 'catalog unavailable' })
-      return route.fulfill({ json: { templates: [{ id: 'codex', label: 'Codex CLI', description: "OpenAI's coding agent", harness: codexHarness }] } })
+      return route.fulfill({ json: { templates: harnessTemplates } })
     }
     if (path === '/v1/workers') return route.fulfill({ json: { workers: [], auto_available: false } })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
@@ -40,23 +72,50 @@ async function mockAPIs(page: Page, templatesFail = false) {
   })
 }
 
-test('harness picker inserts a suffixed template and a blank custom draft', async ({ page }) => {
+async function expectArgv(card: Locator, label: string, args: string[]) {
+  const editor = card.locator(`input[aria-label="${label}"]`).locator('..')
+  await expect(editor.locator('button[title^="Edit "]')).toHaveCount(args.length)
+  for (const arg of args) await expect(editor.getByTitle(`Edit ${arg}`, { exact: true })).toBeVisible()
+}
+
+test('harness picker preserves complete template efforts in editable unique drafts and keeps Custom blank', async ({ page }) => {
   await mockAPIs(page)
   await page.goto('/workspace')
   await page.getByRole('tab', { name: 'Harnesses' }).click()
 
-  await page.getByRole('button', { name: 'Add harness' }).click()
-  await expect(page.getByRole('menuitem', { name: /Codex CLI/ })).toContainText("OpenAI's coding agent")
-  await expect(page.getByRole('menu')).not.toContainText('TOML')
-  await page.getByRole('menuitem', { name: /Codex CLI/ }).click()
-  await expect(page.getByLabel('Harness 2 name')).toHaveValue('codex-2')
-  await expect(page.locator('input[aria-label="Command argv"]').locator('..').getByTitle('Edit codex')).toBeVisible()
+  for (const template of harnessTemplates) {
+    await page.getByRole('button', { name: 'Add harness' }).click()
+    const menuitem = page.getByRole('menuitem', { name: new RegExp(template.label) })
+    await expect(menuitem).toContainText(template.description)
+    await expect(page.getByRole('menu')).not.toContainText(template.harness.mcp_transport)
+    await menuitem.click()
+
+    const name = `${template.id}-2`
+    const card = page.getByRole('button', { name: `Toggle ${name}` }).locator('..')
+    await expect(card.getByLabel(/^Harness \d+ name$/)).toHaveValue(name)
+    await card.locator('summary').click()
+    await expectArgv(card, 'Low effort argv', template.harness.effort_args.low)
+    await expectArgv(card, 'Medium effort argv', template.harness.effort_args.medium)
+    await expectArgv(card, 'High effort argv', template.harness.effort_args.high)
+  }
+
+  const codexCard = page.getByRole('button', { name: 'Toggle codex-2' }).locator('..')
+  await codexCard.getByTitle('Edit model_reasoning_effort="low"', { exact: true }).click()
+  const lowEffort = codexCard.locator('input[aria-label="Low effort argv"]')
+  await lowEffort.fill('model_reasoning_effort="custom-low"')
+  await lowEffort.press('Enter')
+  await expect(codexCard.getByTitle('Edit model_reasoning_effort="custom-low"', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Add harness' }).click()
   await page.getByRole('menuitem', { name: /Custom/ }).click()
-  await expect(page.getByLabel('Harness 3 name')).toHaveValue('')
-  await expect(page.getByLabel('MCP transport').last()).toHaveValue('json_file')
-  await expect(page.locator('input[aria-label="Command argv"]').last()).toHaveValue('')
+  const customCard = page.getByRole('button', { name: /Toggle harness \d+/ }).last().locator('..')
+  await expect(customCard.getByLabel(/^Harness \d+ name$/)).toHaveValue('')
+  await expect(customCard.getByLabel('MCP transport')).toHaveValue('json_file')
+  await expectArgv(customCard, 'Command argv', [])
+  await customCard.locator('summary').click()
+  await expectArgv(customCard, 'Low effort argv', [])
+  await expectArgv(customCard, 'Medium effort argv', [])
+  await expectArgv(customCard, 'High effort argv', [])
 })
 
 test('harness picker degrades to Custom when catalog fetch fails', async ({ page }) => {

@@ -201,6 +201,10 @@ const gateDetail = {
   merge_readiness: { state: 'MERGEABLE', head_sha: 'a1b2c3d4', url: 'https://github.com/kidus-tiliksew/conveyor/pull/423', number: 423 },
 }
 
+// The running-sheet shots want a task mid-flight: a live review job, two
+// review seats, a costed timeline tail. That is ordinary work, so this fixture
+// carries no children — children would make it a blueprint anchor, and an
+// anchor has no sheet to screenshot and takes no work orders (spec §21.49).
 const runningDetail = {
   ...gateDetail,
   task: task({
@@ -208,19 +212,11 @@ const runningDetail = {
     title: 'Blueprint materialization fans approved decompositions into child tasks',
     source: 'github:kidus-tiliksew/conveyor#399', branch: 'conveyor/task-260731-b31f47',
     body: 'An approved spec carrying a decomposition block should fan out into child tasks entering at implement.',
-    children: [
-      { id: 'task-260731-c00001', title: 'Add the children projection to the task read model', state: 'merged', origin_sub_id: 'S-1' },
-      { id: 'task-260731-c00002', title: 'Materialize children on spec approval', state: 'running', origin_sub_id: 'S-2' },
-      { id: 'task-260731-c00003', title: 'Close the blueprint when every child settles', state: 'queued', origin_sub_id: 'S-3' },
-    ],
   }),
   needs_attention: false,
   merge_readiness: undefined,
   interventions: [],
-  events: [
-    ...gateDetail.events.slice(0, 5),
-    { id: 20, task_id: 'task-260731-b31f47', kind: 'blueprint.materialized', actor_id: 'system', actor_role: 'system', payload: { children_total: 3, children_created: 3 }, at: ago(300) },
-  ],
+  events: gateDetail.events.slice(0, 5),
   jobs: [
     ...gateDetail.jobs.slice(0, 3),
     { id: 'j-rev-live-1', task_id: 'task-260731-b31f47', stage: 'review', harness: 'codex', model_tier: 'gpt-5.6-sol', runner: 'worker', confinement: 'none', cost_usd: 0.44, tokens_in: 71000, tokens_out: 4200, state: 'running', started_at: ago(14) },

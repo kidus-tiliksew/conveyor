@@ -20,11 +20,15 @@ func HarnessTemplates() []HarnessTemplate {
 			Description: "OpenAI's coding agent",
 			// Codex uses the whole-argument TOML override transport (spec §21.20).
 			Harness: Harness{
-				Name:             "codex",
-				MCPTransport:     MCPTransportTOMLOverride,
-				Command:          []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"},
-				ModelArgs:        []string{"--model", "{model}"},
-				EffortArgs:       map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}},
+				Name:         "codex",
+				MCPTransport: MCPTransportTOMLOverride,
+				Command:      []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"},
+				ModelArgs:    []string{"--model", "{model}"},
+				EffortArgs: map[string][]string{
+					"low":    {"--config", `model_reasoning_effort="low"`},
+					"medium": {"--config", `model_reasoning_effort="medium"`},
+					"high":   {"--config", `model_reasoning_effort="high"`},
+				},
 				ProbeCommand:     []string{"codex", "--version"},
 				ProbeTimeoutText: "10s",
 				StallTimeoutText: DefaultHarnessStallTimeoutText,
@@ -44,9 +48,13 @@ func HarnessTemplates() []HarnessTemplate {
 				// §21.29 grok precedent), and --add-dir .. reaches the §21.8
 				// sibling worktrees outside the primary checkout the child
 				// starts in.
-				Command:          []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
-				ModelArgs:        []string{"--model", "{model}"},
-				EffortArgs:       map[string][]string{"high": {"--effort", "high"}},
+				Command:   []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
+				ModelArgs: []string{"--model", "{model}"},
+				EffortArgs: map[string][]string{
+					"low":    {"--effort", "low"},
+					"medium": {"--effort", "medium"},
+					"high":   {"--effort", "high"},
+				},
 				ProbeCommand:     []string{"claude", "--version"},
 				ProbeTimeoutText: "10s",
 				StallTimeoutText: DefaultHarnessStallTimeoutText,

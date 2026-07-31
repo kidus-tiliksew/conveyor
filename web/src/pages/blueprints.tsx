@@ -68,7 +68,7 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
   const specVersion = view.governing_version || view.spec?.version
   return (
     <Link
-      to="/tasks/$taskId/full"
+      to="/blueprints/$taskId"
       params={{ taskId: view.task.id }}
       className="flex items-start gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-edge hover:bg-surface"
     >
