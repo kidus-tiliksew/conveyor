@@ -30,6 +30,7 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Title                string `json:"title"`
 		RequirementContextID string `json:"requirement_context_id"`
+		Model                string `json:"model"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxPlanningRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -38,14 +39,23 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Title = strings.TrimSpace(request.Title)
 	request.RequirementContextID = strings.TrimSpace(request.RequirementContextID)
+	request.Model = strings.TrimSpace(request.Model)
 	if len(request.Title) > 200 {
 		http.Error(w, "planning session title must be at most 200 characters", http.StatusBadRequest)
 		return
 	}
-	session, err := s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
-		ID: "session-" + core.NewTaskID(), Title: request.Title,
-		RequirementContextID: request.RequirementContextID,
-	})
+	var session core.PlanningSession
+	var err error
+	if s.Planning != nil && s.Planning.ConfigProvider != nil {
+		session, err = s.Planning.CreateSession(
+			r.Context(), request.Title, request.RequirementContextID, request.Model,
+		)
+	} else {
+		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Title: request.Title,
+			RequirementContextID: request.RequirementContextID,
+		})
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

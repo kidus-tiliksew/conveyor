@@ -80,7 +80,7 @@ export async function confirmRequirementVersion(token: string, requirementId: st
 export function fetchPlanningSessions() { return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions')) }
 export function fetchPlanningSession(sessionId: string) { return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`)) }
 export function fetchPlanningMessages(sessionId: string) { return getJSON<PlanningMessage[]>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`)) }
-export async function createPlanningSession(token: string, input: { title: string; requirement_context_id?: string }) {
+export async function createPlanningSession(token: string, input: { title: string; requirement_context_id?: string; model?: string }) {
   const response = await fetch(workspaceURL('/v1/planning-sessions'), {
     method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input),
   })
