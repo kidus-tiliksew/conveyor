@@ -17,6 +17,24 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+type workOrderRowQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func cancelledSessionMatches(ctx context.Context, q workOrderRowQuerier, workspaceID, taskID, jobID, sessionID string) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	var matches bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM events e
+		JOIN tasks t ON t.id=e.task_id
+		WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.job_id=$3
+		  AND e.kind='work_order.cancelled' AND e.payload_json->>'session_id'=$4
+	)`, workspaceID, taskID, jobID, sessionID).Scan(&matches)
+	return matches, err
+}
+
 func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO worker_pairings (token_hash,workspace_id,expires_at,created_at) VALUES ($1,$2,$3,$4)`, pairing.TokenHash, workspace(ctx), pairing.ExpiresAt, pairing.CreatedAt); err != nil {
@@ -147,10 +165,15 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
-		if getErr == nil && current.State == core.WorkOrderCancelled &&
-			((current.LastAttemptID != "" && current.LastAttemptID == sessionID) ||
-				(current.WorkerID == workerID && current.SessionID == sessionID)) {
-			return core.WorkOrder{}, store.ErrWorkOrderCancelled
+		if getErr == nil && current.State == core.WorkOrderCancelled {
+			matches, matchErr := cancelledSessionMatches(ctx, s.pool, workspace(ctx), current.TaskID, current.JobID, sessionID)
+			if matchErr != nil {
+				return core.WorkOrder{}, matchErr
+			}
+			if (current.LastAttemptID != "" && current.LastAttemptID == sessionID) || matches ||
+				(current.WorkerID == workerID && current.SessionID == sessionID) {
+				return core.WorkOrder{}, store.ErrWorkOrderCancelled
+			}
 		}
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
@@ -181,10 +204,15 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	if !taskLease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdRelease)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order release requires a valid taskops lease")
 	}
-	if current.State == core.WorkOrderCancelled &&
-		((current.LastAttemptID != "" && current.LastAttemptID == release.SessionID) ||
-			(current.WorkerID == workerID && current.SessionID == release.SessionID)) {
-		return core.WorkOrder{}, store.ErrWorkOrderCancelled
+	if current.State == core.WorkOrderCancelled {
+		matches, matchErr := cancelledSessionMatches(ctx, tx, workspace(ctx), current.TaskID, current.JobID, release.SessionID)
+		if matchErr != nil {
+			return core.WorkOrder{}, matchErr
+		}
+		if (current.LastAttemptID != "" && current.LastAttemptID == release.SessionID) || matches ||
+			(current.WorkerID == workerID && current.SessionID == release.SessionID) {
+			return core.WorkOrder{}, store.ErrWorkOrderCancelled
+		}
 	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
@@ -252,9 +280,6 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		lastFailureAt = now
 	}
 	attemptID := current.AttemptID
-	if attemptID == "" {
-		attemptID = release.SessionID
-	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,last_failure_category=$3,last_failure_message=$4,last_failure_detail=$5,last_failure_exit_status=$6,last_failure_at=$7,automatic_retry_count=$8,next_retry_at=$9,retry_suppressed=$10,retry_suppression_reason=$11,queue_entered_at=$12,queue_deadline=$13,updated_at=$12 WHERE workspace_id=$14 AND id=$15 AND worker_id=$16 AND session_id=$17 AND state='claimed' RETURNING `+workOrderColumns,
 		attemptID, release.Outcome, lastFailureCategory, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, now.Add(queueTimeout), workspace(ctx), workOrderID, workerID, release.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {

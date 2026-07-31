@@ -31,6 +31,69 @@ func eventAttemptID(t *testing.T, events []core.Event, kind, jobID string) strin
 	return ""
 }
 
+func eventAttemptIDs(t *testing.T, events []core.Event, kind, jobID string) []string {
+	t.Helper()
+	var ids []string
+	for _, event := range events {
+		if event.Kind != kind || event.JobID != jobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", kind, err)
+		}
+		ids = append(ids, payload.AttemptID)
+	}
+	return ids
+}
+
+func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
+	ctx := WithWorkspace(context.Background(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "attempt-identity-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "attempt-identity-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	claim := core.WorkOrderClaim{SessionID: "warm-session", ClientToken: "warm-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}
+	first, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, claim)
+	if err != nil || first.AttemptID == "" {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	firstClosed, err := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: claim.SessionID, Outcome: core.WorkOrderOutcomeCancelled})
+	if err != nil || firstClosed.LastAttemptID != first.AttemptID {
+		t.Fatalf("first close=%+v err=%v", firstClosed, err)
+	}
+	if _, err = storetestFor(st).RecoverWorkOrder(ctx, job.ID, "same-session-reclaim", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	second, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, claim)
+	if err != nil || second.AttemptID == "" || second.AttemptID == first.AttemptID {
+		t.Fatalf("second claim=%+v first_attempt=%q err=%v", second, first.AttemptID, err)
+	}
+	secondClosed, err := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: claim.SessionID, Outcome: core.WorkOrderOutcomeCancelled})
+	if err != nil || secondClosed.LastAttemptID != second.AttemptID {
+		t.Fatalf("second close=%+v err=%v", secondClosed, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimIDs := eventAttemptIDs(t, events, "work_order.claimed", job.ID)
+	closeIDs := eventAttemptIDs(t, events, "work_order.released", job.ID)
+	if len(claimIDs) != 2 || len(closeIDs) != 2 || claimIDs[0] != first.AttemptID || claimIDs[1] != second.AttemptID || closeIDs[0] != first.AttemptID || closeIDs[1] != second.AttemptID {
+		t.Fatalf("attempt event groups claims=%v closes=%v", claimIDs, closeIDs)
+	}
+}
+
 func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	t.Parallel()
 	ctx := WithActor(context.Background(), Actor{ID: "operator-1", Role: core.ActorHuman})
@@ -765,8 +828,8 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("claim %d: %v", attempt, err)
 		}
-		if claimed.AttemptID != sessionID {
-			t.Fatalf("claim %d attempt id=%q want %q", attempt, claimed.AttemptID, sessionID)
+		if claimed.AttemptID == "" {
+			t.Fatalf("claim %d has empty attempt id", attempt)
 		}
 		if !priorStart.IsZero() && !claimed.ExecutionStartedAt.After(priorStart) {
 			t.Fatalf("attempt %d reused execution start %v", attempt, claimed.ExecutionStartedAt)
@@ -790,7 +853,7 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		if released.WorkerID != "" || !released.ExecutionStartedAt.IsZero() || !released.ExecutionDeadline.IsZero() {
 			t.Fatalf("release %d retained active attempt: %+v", attempt, released)
 		}
-		if released.AttemptID != "" || released.LastAttemptID != sessionID || released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit {
+		if released.AttemptID != "" || released.LastAttemptID != claimed.AttemptID || released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit {
 			t.Fatalf("release %d attempt projection: %+v", attempt, released)
 		}
 		if attempt < len(wantDelays) {

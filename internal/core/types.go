@@ -236,6 +236,15 @@ func NewTaskID() string {
 	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }
 
+// NewWorkOrderAttemptID returns an opaque identity for one successful claim.
+// It is deliberately independent of the worker session, which may remain warm
+// across several attempts (spec §21.53).
+func NewWorkOrderAttemptID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return "attempt-" + hex.EncodeToString(b)
+}
+
 // Job is one execution of one pipeline stage.
 type Job struct {
 	ID          string    `json:"id"`

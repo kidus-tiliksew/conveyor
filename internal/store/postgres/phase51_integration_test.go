@@ -120,6 +120,30 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.redispatched"); countErr != nil || count != 2 {
 		t.Fatalf("redispatch events=%d err=%v", count, countErr)
 	}
+	thirdClaim, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-3", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil || thirdClaim.AttemptID == "" || thirdClaim.AttemptID == secondClaim.AttemptID {
+		t.Fatalf("same-session reclaim=%+v prior_attempt=%q err=%v", thirdClaim, secondClaim.AttemptID, err)
+	}
+	thirdClosed, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Outcome: core.WorkOrderOutcomeCancelled})
+	if err != nil || thirdClosed.LastAttemptID != thirdClaim.AttemptID {
+		t.Fatalf("same-session close=%+v err=%v", thirdClosed, err)
+	}
+	attemptEvents, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimAttemptIDs := integrationEventAttemptIDs(t, attemptEvents, "work_order.claimed", job.ID)
+	closedAttemptIDs := append(integrationEventAttemptIDs(t, attemptEvents, "work_order.released", job.ID), integrationEventAttemptIDs(t, attemptEvents, "work_order.child_failed", job.ID)...)
+	if len(claimAttemptIDs) != 3 || len(closedAttemptIDs) != 3 || claimAttemptIDs[1] != secondClaim.AttemptID || claimAttemptIDs[2] != thirdClaim.AttemptID {
+		t.Fatalf("same-session attempt groups claims=%v closes=%v", claimAttemptIDs, closedAttemptIDs)
+	}
+	closedSet := map[string]bool{}
+	for _, attemptID := range closedAttemptIDs {
+		closedSet[attemptID] = true
+	}
+	if !closedSet[secondClaim.AttemptID] || !closedSet[thirdClaim.AttemptID] {
+		t.Fatalf("same-session closures lost identity: %v", closedAttemptIDs)
+	}
 
 	expiredTask := task
 	expiredTask.ID = core.NewTaskID()

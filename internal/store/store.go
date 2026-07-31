@@ -844,6 +844,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	}
 	if ok && order.State == core.WorkOrderCancelled &&
 		((order.LastAttemptID != "" && order.LastAttemptID == sessionID) ||
+			m.cancelledSessionMatchesLocked(order, sessionID) ||
 			(order.WorkerID == workerID && order.SessionID == sessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
@@ -883,6 +884,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	}
 	if ok && order.State == core.WorkOrderCancelled &&
 		((order.LastAttemptID != "" && order.LastAttemptID == release.SessionID) ||
+			m.cancelledSessionMatchesLocked(order, release.SessionID) ||
 			(order.WorkerID == workerID && order.SessionID == release.SessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
@@ -898,9 +900,6 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 		return core.WorkOrder{}, err
 	}
 	attemptID := order.AttemptID
-	if attemptID == "" {
-		attemptID = release.SessionID
-	}
 	order.LastAttemptID = attemptID
 	clearActiveAttempt(&order)
 	order.State = next
@@ -974,6 +973,23 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 func clearActiveAttempt(order *core.WorkOrder) {
 	clearClaimOwnership(order)
 	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
+}
+
+func (m *memory) cancelledSessionMatchesLocked(order core.WorkOrder, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+		event := m.events[order.TaskID][i]
+		if event.Kind != "work_order.cancelled" || event.JobID != order.JobID {
+			continue
+		}
+		var payload struct {
+			SessionID string `json:"session_id"`
+		}
+		return json.Unmarshal(event.Payload, &payload) == nil && payload.SessionID == sessionID
+	}
+	return false
 }
 
 func clearClaimOwnership(order *core.WorkOrder) {
@@ -1962,7 +1978,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	order.State, order.ClaimantID, order.SessionID, order.AttemptID = next, claim.ClaimantID, claim.SessionID, claim.SessionID
+	order.State, order.ClaimantID, order.SessionID, order.AttemptID = next, claim.ClaimantID, claim.SessionID, core.NewWorkOrderAttemptID()
 	order.Agent, order.Model, order.WorkerID, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, claim.WorkerID, now.Add(lease), now
 	if claim.ClientToken != "" {
 		order.ClientTokenHash = tokenHash(claim.ClientToken)
@@ -3594,7 +3610,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 		if order.TaskID != task.ID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
 			continue
 		}
-		attemptID := order.AttemptID
+		attemptID, sessionID := order.AttemptID, order.SessionID
 		if attemptID != "" {
 			order.LastAttemptID = attemptID
 			clearActiveAttempt(&order)
@@ -3610,6 +3626,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 		m.workOrders[id] = order
 		eventOrder := order
 		eventOrder.AttemptID = attemptID
+		eventOrder.SessionID = sessionID
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(eventOrder), At: intervention.At})
 		cancelled = append(cancelled, id)
 		if jobs := m.jobs[task.ID]; len(jobs) != 0 {

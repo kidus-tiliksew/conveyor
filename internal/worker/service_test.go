@@ -169,7 +169,7 @@ func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 	if !released.QueueEnteredAt.After(now.Add(-time.Minute)) {
 		t.Fatalf("released queue entry was not refreshed: %s", released.QueueEnteredAt)
 	}
-	if released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit || released.LastAttemptID != "release-session" {
+	if released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit || released.LastAttemptID != claimed.AttemptID {
 		t.Fatalf("released category/attempt=%+v", released)
 	}
 	listed, err = service.ListClaimable(ctx, worker)

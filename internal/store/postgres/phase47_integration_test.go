@@ -34,6 +34,24 @@ func integrationEventAttemptID(t *testing.T, events []core.Event, kind, jobID st
 	return ""
 }
 
+func integrationEventAttemptIDs(t *testing.T, events []core.Event, kind, jobID string) []string {
+	t.Helper()
+	var ids []string
+	for _, event := range events {
+		if event.Kind != kind || event.JobID != jobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", kind, err)
+		}
+		ids = append(ids, payload.AttemptID)
+	}
+	return ids
+}
+
 func TestPhase47PersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	ctx := context.Background()
