@@ -1,32 +1,264 @@
 import { useEffect, useState } from 'react'
-import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, FileUp, GitPullRequest, Plus, Workflow } from 'lucide-react'
+import { Link, useNavigate } from '@tanstack/react-router'
+import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, MessageSquarePlus, Sparkles } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Input } from '../components/ui/input'
-import { MermaidBlock } from '../components/task/spec-card'
-import { assignTaskFeature, createFeature, downloadArtifact, fetchArtifacts, fetchLifecycleDiagram, fetchRequirements, fetchTasks, uploadArtifact } from '../lib/api'
-import type { RequirementNode } from '../lib/types'
+import { MarkdownProse } from '../components/ui/markdown-prose'
+import { confirmRequirementVersion, downloadArtifact, fetchRequirements, uploadArtifact } from '../lib/api'
+import type { RequirementView } from '../lib/types'
 
 export function RequirementsPage() {
-	const token = useOperatorToken(); const { workspace } = useWorkspaceSelection(); const client = useQueryClient(); const { data: nodes } = useQuery({ queryKey: ['requirements', workspace], queryFn: fetchRequirements, enabled: Boolean(workspace) })
-	const { data: tasks } = useQuery({ queryKey: ['tasks', workspace], queryFn: fetchTasks, enabled: Boolean(workspace) })
-	const { data: lifecycle } = useQuery({ queryKey: ['lifecycle-diagram', workspace], queryFn: fetchLifecycleDiagram, enabled: Boolean(workspace) })
-	const { data: artifacts } = useQuery({ queryKey: ['artifacts', token, workspace], queryFn: () => fetchArtifacts(token), enabled: Boolean(token && workspace) })
-	const [name, setName] = useState(''); const [selected, setSelected] = useState<string>('')
-	useEffect(() => { setSelected('') }, [workspace])
-  const create = useMutation({ mutationFn: () => createFeature(token, { name, description: '', parent_id: selected || undefined }), onSuccess: () => { setName(''); void client.invalidateQueries({ queryKey: ['requirements'] }) } })
-  const upload = useMutation({ mutationFn: (file: File) => uploadArtifact(token, file, undefined, selected || undefined), onSuccess: () => void client.invalidateQueries({ queryKey: ['artifacts'] }) })
-  const assign = useMutation({ mutationFn: ({ taskId, featureId }: { taskId: string; featureId: string }) => assignTaskFeature(token, taskId, featureId), onSuccess: () => { void client.invalidateQueries({ queryKey: ['requirements'] }); void client.invalidateQueries({ queryKey: ['tasks'] }) } })
-  return <div className="h-full overflow-y-auto"><div className="mx-auto max-w-5xl px-6 py-8"><div><h1 className="text-xl font-semibold">Requirements</h1><p className="mt-1 text-sm text-muted">Approved intent linked through tasks and pull requests.</p></div>
-    {token && <Card className="mt-6"><CardContent className="flex flex-wrap items-end gap-3 pt-4"><label className="flex-1"><span className="mb-1 block text-xs text-muted">New feature {selected ? 'under selected node' : 'at root'}</span><Input value={name} onChange={(event) => setName(event.target.value)} /></label><Button disabled={!name || create.isPending} onClick={() => create.mutate()}><Plus />Add feature</Button><label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"><FileUp className="size-4" />Upload context<input className="hidden" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload.mutate(file) }} /></label></CardContent></Card>}
-    {lifecycle?.mermaid && <Card className="mt-6"><CardHeader><CardTitle>Lifecycle state machines</CardTitle><Badge variant="mono">generated</Badge></CardHeader><CardContent><p className="mb-3 text-xs text-muted">Generated from the canonical task and work-order transition tables.</p><MermaidBlock source={lifecycle.mermaid} /></CardContent></Card>}
-    <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_280px]"><Card><CardHeader><CardTitle>Feature tree</CardTitle><Badge>{nodes?.length ?? 0}</Badge></CardHeader><CardContent className="space-y-2">{tasks?.filter((task) => !task.feature_id).map((task) => <div key={task.id} className="flex items-center gap-2 rounded-lg border border-dashed border-border p-3"><span className="min-w-0 flex-1 truncate text-xs"><span className="mr-2 text-faint">Unassigned</span>{task.title}</span>{token && <select aria-label={`Assign ${task.title}`} className="rounded border border-border bg-surface px-2 py-1 text-xs" defaultValue="" onChange={(event) => assign.mutate({ taskId: task.id, featureId: event.target.value })}><option value="" disabled>Choose feature</option>{nodes?.map((candidate) => <option key={candidate.feature.id} value={candidate.feature.id}>{candidate.feature.name}</option>)}</select>}</div>)}{tree(nodes ?? []).map(({ node, depth }) => <div key={node.feature.id} onClick={() => setSelected(node.feature.id)} className={`block w-full rounded-lg border p-3 text-left ${selected === node.feature.id ? 'border-primary bg-primary/5' : 'border-border'}`} style={{ marginLeft: depth * 14, width: `calc(100% - ${depth * 14}px)` }}><div className="flex items-center gap-2"><Workflow className="size-4 text-primary" /><strong className="text-sm">{node.feature.name}</strong><Badge variant="mono">{node.tasks?.length ?? 0} tasks</Badge></div>{node.tasks?.map((task) => <div key={task.id} className="mt-2 flex items-center gap-2 rounded border border-border/60 p-2"><Link to="/tasks/$taskId" params={{ taskId: task.id }} onClick={(event) => event.stopPropagation()} className="min-w-0 flex-1 truncate text-xs text-primary hover:underline">{task.title}</Link>{task.github?.issue_url && <a href={task.github.issue_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="text-[10px] text-primary hover:underline">Issue #{task.github.issue_number}</a>}{token && <select aria-label={`Feature for ${task.title}`} className="rounded border border-border bg-surface px-2 py-1 text-xs" value={task.feature_id ?? ''} onClick={(event) => event.stopPropagation()} onChange={(event) => assign.mutate({ taskId: task.id, featureId: event.target.value })}>{nodes?.map((candidate) => <option key={candidate.feature.id} value={candidate.feature.id}>{candidate.feature.name}</option>)}</select>}</div>)}{node.approved_specs?.map((spec) => <p key={spec.task_id} className="mt-2 line-clamp-3 text-xs leading-5 text-muted">{spec.content.replace(/[#`]/g, '')}</p>)}{node.events && node.events.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{node.events.map((event) => { const pr = event.kind === 'pull_request.opened' && typeof event.payload?.url === 'string' ? event.payload.url : ''; return pr ? <a key={event.id} href={pr} target="_blank" rel="noreferrer" onClick={(click) => click.stopPropagation()} className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-1 text-[10px] text-primary"><GitPullRequest className="size-3" />{event.kind}</a> : <Link key={event.id} to="/tasks/$taskId" params={{ taskId: event.task_id }} onClick={(click) => click.stopPropagation()} className="rounded bg-surface px-2 py-1 text-[10px] text-muted hover:text-foreground">{event.kind}</Link> })}</div>}</div>)}</CardContent></Card>
-      <Card><CardHeader><CardTitle>Context artifacts</CardTitle><Badge>{artifacts?.length ?? 0}</Badge></CardHeader><CardContent className="space-y-2">{artifacts?.filter((item) => !selected || item.feature_id === selected).map((artifact) => <button key={artifact.id} onClick={() => void downloadArtifact(token, artifact)} className="block w-full rounded-lg border border-border p-2 text-left"><span className="flex items-center gap-2"><Download className="size-3 text-primary" /><span className="truncate text-sm">{artifact.name}</span></span><span className="mt-1 block font-mono text-[10px] text-faint">{artifact.content_type} · {artifact.size_bytes} B</span></button>)}{!token && <p className="text-xs text-muted">Set the operator token to browse or upload context files.</p>}</CardContent></Card></div>
-  </div></div>
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const navigate = useNavigate()
+  const client = useQueryClient()
+  const { data: requirements, isLoading, error } = useQuery({
+    queryKey: ['requirements', workspace],
+    queryFn: fetchRequirements,
+    enabled: Boolean(workspace),
+  })
+  const [selectedId, setSelectedId] = useState('')
+  useEffect(() => {
+    if (!requirements?.length) return
+    if (!requirements.some((item) => item.requirement.id === selectedId)) {
+      setSelectedId(requirements[0].requirement.id)
+    }
+  }, [requirements, selectedId])
+  const selected = requirements?.find((item) => item.requirement.id === selectedId)
+
+  const startPlanning = (requirementId?: string) => {
+    if (requirementId) sessionStorage.setItem('conveyor-planning-requirement', requirementId)
+    else sessionStorage.removeItem('conveyor-planning-requirement')
+    void navigate({ to: '/planning' })
+  }
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-7xl px-6 py-8">
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">Requirements</h1>
+              <Badge variant="mono">{requirements?.length ?? 0}</Badge>
+            </div>
+            <p className="mt-1 max-w-2xl text-sm text-muted">
+              Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.
+            </p>
+          </div>
+          <Button onClick={() => startPlanning()}>
+            <MessageSquarePlus /> New planning session
+          </Button>
+        </header>
+
+        {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
+        {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
+        {error && <EmptyMessage tone="failure">{String(error)}</EmptyMessage>}
+        {requirements?.length === 0 && (
+          <Card className="mt-8 border-dashed">
+            <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+              <Sparkles className="size-7 text-primary" />
+              <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
+              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                Describe what the system should do. Planning turns the conversation into a structured requirement for you to confirm.
+              </p>
+              <Button className="mt-5" onClick={() => startPlanning()}>Plan a requirement <ArrowRight /></Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {requirements && requirements.length > 0 && (
+          <div className="mt-7 grid min-h-[620px] gap-4 lg:grid-cols-[330px_minmax(0,1fr)]">
+            <Card className="self-start overflow-hidden">
+              <CardHeader>
+                <CardTitle>Living documents</CardTitle>
+                <span className="text-[11px] text-faint">Flat corpus</span>
+              </CardHeader>
+              <div className="divide-y divide-border">
+                {requirements.map((item) => (
+                  <button
+                    key={item.requirement.id}
+                    type="button"
+                    onClick={() => setSelectedId(item.requirement.id)}
+                    className={`block w-full px-4 py-3.5 text-left transition-colors ${
+                      selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'
+                    }`}
+                  >
+                    <span className="flex items-start gap-3">
+                      <FileText className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`} />
+                      <span className="min-w-0 flex-1">
+                        <strong className="block truncate text-sm font-medium">{item.requirement.title}</strong>
+                        <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {item.current_version
+                            ? <Badge variant="positive"><Check /> Confirmed v{item.current_version.version}</Badge>
+                            : <Badge variant="attention">Needs confirmation</Badge>}
+                          {item.stale && item.current_version && <Badge variant="attention">Stale</Badge>}
+                          {item.serving_blueprints.length > 0 && <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </Card>
+            {selected && (
+              <RequirementDetail
+                item={selected}
+                token={token}
+                onPlan={() => startPlanning(selected.requirement.id)}
+                onChanged={() => void client.invalidateQueries({ queryKey: ['requirements', workspace] })}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
-function tree(nodes: RequirementNode[]) { const children = new Map<string, RequirementNode[]>(); for (const node of nodes) { const key = node.feature.parent_id ?? ''; children.set(key, [...(children.get(key) ?? []), node]) } const result: Array<{ node: RequirementNode; depth: number }> = []; const visit = (parent: string, depth: number) => { for (const node of children.get(parent) ?? []) { result.push({ node, depth }); visit(node.feature.id, depth + 1) } }; visit('', 0); return result }
+function RequirementDetail({
+  item,
+  token,
+  onPlan,
+  onChanged,
+}: {
+  item: RequirementView
+  token: string
+  onPlan: () => void
+  onChanged: () => void
+}) {
+  const client = useQueryClient()
+  const latestPending = item.pending_versions.at(-1)
+  const confirm = useMutation({
+    mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version),
+    onSuccess: onChanged,
+  })
+  const upload = useMutation({
+    mutationFn: (file: File) => uploadArtifact(token, file, undefined, item.requirement.id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['requirements'] })
+      void client.invalidateQueries({ queryKey: ['artifacts'] })
+    },
+  })
+  const displayed = latestPending ?? item.current_version
+
+  return (
+    <div className="min-w-0 space-y-4">
+      <Card>
+        <CardHeader className="items-center">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
+            <h2 className="mt-1 truncate text-lg font-semibold">{item.requirement.title}</h2>
+          </div>
+          <Button variant="secondary" size="sm" onClick={onPlan}><MessageSquarePlus /> Plan work</Button>
+        </CardHeader>
+        <CardContent>
+          {displayed ? (
+            <>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>
+                  {displayed.confirmed ? `Confirmed v${displayed.version}` : `Proposed v${displayed.version}`}
+                </Badge>
+                <Badge variant="mono">{displayed.origin.replaceAll('_', ' ')}</Badge>
+                <time className="ml-auto text-[11px] text-faint">{formatDate(displayed.created_at)}</time>
+              </div>
+              <MarkdownProse>{displayed.content}</MarkdownProse>
+              {!displayed.confirmed && (
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
+                  <p className="text-xs leading-5 text-attention">
+                    This revision is not current intent until an operator confirms it.
+                  </p>
+                  <Button
+                    size="sm"
+                    disabled={!token || confirm.isPending}
+                    onClick={() => confirm.mutate(displayed.version)}
+                  >
+                    <Check /> {confirm.isPending ? 'Confirming…' : `Confirm version ${displayed.version}`}
+                  </Button>
+                  {confirm.error && <p className="basis-full text-xs text-failure">{String(confirm.error)}</p>}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-muted">No requirement version has been proposed yet.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Serving blueprints</CardTitle><Badge variant="mono">{item.serving_blueprints.length}</Badge></CardHeader>
+        <CardContent className="space-y-2">
+          {item.serving_blueprints.length === 0 && <p className="text-sm text-muted">No blueprint has been planned in this requirement’s context yet.</p>}
+          {item.serving_blueprints.map(({ task, spec }) => (
+            <Link
+              key={task.id}
+              to="/tasks/$taskId"
+              params={{ taskId: task.id }}
+              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+            >
+              <GitBranch className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1">
+                <strong className="block truncate text-sm">{task.title}</strong>
+                <span className="mt-1 flex gap-1.5">
+                  <Badge variant="mono">{task.state.replaceAll('_', ' ')}</Badge>
+                  {spec && <Badge variant={spec.approved ? 'positive' : 'attention'}>Spec v{spec.version} {spec.approved ? 'approved' : 'at gate'}</Badge>}
+                </span>
+              </span>
+              <ArrowRight className="size-4 text-faint" />
+            </Link>
+          ))}
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>Context artifacts</CardTitle><Badge variant="mono">{item.artifacts.length}</Badge></CardHeader>
+          <CardContent className="space-y-2">
+            {item.artifacts.map((artifact) => (
+              <button key={`${artifact.id}-${artifact.role}`} onClick={() => void downloadArtifact(token, artifact)} className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface">
+                <Download className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
+                <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
+              </button>
+            ))}
+            <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}>
+              <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
+              <input className="hidden" type="file" disabled={!token || upload.isPending} onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) upload.mutate(file)
+                event.currentTarget.value = ''
+              }} />
+            </label>
+            {upload.error && <p className="text-xs text-failure">{String(upload.error)}</p>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Lineage</CardTitle><Badge variant="mono">{item.lineage.length}</Badge></CardHeader>
+          <CardContent>
+            {item.lineage.length === 0 && <p className="text-sm text-muted">Lineage appears as planning and delivery advance.</p>}
+            <ol className="space-y-3">
+              {item.lineage.slice(-8).reverse().map((event) => (
+                <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                  <span className="min-w-0 flex-1">
+                    <strong className="font-medium">{event.kind.replaceAll('.', ' · ')}</strong>
+                    <time className="mt-0.5 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function EmptyMessage({ children, tone = 'muted' }: { children: string; tone?: 'muted' | 'failure' }) {
+  return <p className={`mt-8 rounded-md border border-border p-4 text-sm ${tone === 'failure' ? 'text-failure' : 'text-muted'}`}>{children}</p>
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}

@@ -8,7 +8,11 @@ import type {
   WorkspaceConfigReceipt,
   WorkspaceInfo,
   WorkspaceRecord,
-  RequirementNode,
+  RequirementView,
+  RequirementVersion,
+  PlanningSession,
+  PlanningMessage,
+  PlanningMessagePart,
   Artifact,
   WorkerList,
   WorkOrder,
@@ -61,14 +65,69 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
   return response.json() as Promise<WorkspaceRecord>
 }
 
-export function fetchRequirements() { return getJSON<RequirementNode[]>(workspaceURL('/v1/requirements')) }
+export function fetchRequirements() { return getJSON<RequirementView[]>(workspaceURL('/v1/requirements')) }
+export function fetchRequirement(requirementId: string) { return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`)) }
+export function fetchRequirementVersions(requirementId: string) { return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`)) }
+export async function confirmRequirementVersion(token: string, requirementId: string, version: number) {
+  const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`), {
+    method: 'POST', headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
+}
+export function fetchPlanningSessions() { return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions')) }
+export function fetchPlanningSession(sessionId: string) { return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`)) }
+export function fetchPlanningMessages(sessionId: string) { return getJSON<PlanningMessage[]>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`)) }
+export async function createPlanningSession(token: string, input: { title: string; requirement_context_id?: string }) {
+  const response = await fetch(workspaceURL('/v1/planning-sessions'), {
+    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<PlanningSession>
+}
+export async function abandonPlanningSession(token: string, sessionId: string) {
+  const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/abandon`), {
+    method: 'POST', headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<PlanningSession>
+}
+export async function streamPlanningMessage(
+  token: string,
+  sessionId: string,
+  content: string,
+  onPart: (part: PlanningMessagePart) => void,
+) {
+  const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`), {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ message: { role: 'user', content } }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.body) throw new Error('Planning response did not include a stream.')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const frames = buffer.split(/\r?\n\r?\n/)
+    buffer = frames.pop() ?? ''
+    for (const frame of frames) {
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim()).join('\n')
+      if (!data || data === '[DONE]') continue
+      const part = JSON.parse(data) as PlanningMessagePart
+      if (part.type === 'error') throw new Error(part.errorText || 'Planning failed.')
+      onPart(part)
+    }
+    if (done) break
+  }
+}
 export function fetchLifecycleDiagram() { return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram')) }
 export function fetchMonitorStatus() { return getJSON<MonitorStatus>(workspaceURL('/v1/monitor')) }
 export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
 export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
-export async function uploadArtifact(token: string, file: File, taskId?: string, featureId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (featureId) body.set('feature_id', featureId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
-export async function createFeature(token: string, input: { name: string; description: string; parent_id?: string }) { const response = await fetch(workspaceURL('/v1/features'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input) }); if (!response.ok) throw new Error(await response.text()); return response.json() }
-export async function assignTaskFeature(token: string, taskId: string, featureId: string) { const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/feature`), { method: 'PUT', headers: mutationHeaders(token), body: JSON.stringify({ feature_id: featureId }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Task> }
+export async function uploadArtifact(token: string, file: File, taskId?: string, requirementId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (requirementId) body.set('requirement_id', requirementId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
 // Fetch an attachment's bytes as an object URL for inline preview. The
 // download route requires the operator token and forces attachment
 // disposition, so an <img src> cannot load it directly — the caller revokes

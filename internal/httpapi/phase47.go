@@ -103,95 +103,8 @@ func (s *Server) recoverInterruptedReviewRound(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, result)
 }
 
-type requirementNode struct {
-	Feature core.Feature       `json:"feature"`
-	Tasks   []core.Task        `json:"tasks"`
-	Specs   []core.SpecVersion `json:"approved_specs"`
-	Events  []core.Event       `json:"events"`
-}
-
-func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
-	features, err := s.Store.ListFeatures(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	tasks, err := s.Store.ListTasks(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	nodes := make([]requirementNode, len(features))
-	byID := map[string]int{}
-	for i, feature := range features {
-		nodes[i].Feature = feature
-		byID[feature.ID] = i
-	}
-	for _, task := range tasks {
-		index, ok := byID[task.FeatureID]
-		if !ok {
-			continue
-		}
-		nodes[index].Tasks = append(nodes[index].Tasks, task)
-		if spec, exists, _ := s.Store.GetLatestSpecVersion(r.Context(), task.ID); exists && spec.Approved {
-			nodes[index].Specs = append(nodes[index].Specs, spec)
-		}
-		events, _ := s.Store.ListEvents(r.Context(), task.ID)
-		nodes[index].Events = append(nodes[index].Events, events...)
-	}
-	writeJSON(w, 200, nodes)
-}
-
 func (s *Server) getLifecycleDiagram(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"mermaid": core.LifecycleStateDiagram()})
-}
-
-func (s *Server) createFeature(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		ParentID    string `json:"parent_id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	request.Name = strings.TrimSpace(request.Name)
-	if request.Name == "" {
-		http.Error(w, "name is required", 400)
-		return
-	}
-	feature := core.Feature{ID: "feature-" + core.NewTaskID(), Workspace: s.Workspace, ParentID: request.ParentID, Name: request.Name, Description: request.Description, CreatedAt: time.Now().UTC()}
-	if s.ConfigProvider != nil {
-		if cfg, err := s.ConfigProvider(r.Context()); err == nil {
-			feature.Workspace = cfg.Workspace
-		}
-	}
-	if err := s.Store.CreateFeature(r.Context(), feature); err != nil {
-		http.Error(w, err.Error(), 409)
-		return
-	}
-	writeJSON(w, 201, feature)
-}
-
-func (s *Server) assignTaskFeature(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		FeatureID string `json:"feature_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	if err := s.Store.AssignTaskFeature(r.Context(), chi.URLParam(r, "id"), request.FeatureID); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, err.Error(), 404)
-		return
-	}
-	writeJSON(w, 200, task)
 }
 
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +159,15 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "artifact role must be task_context or verification_evidence", http.StatusBadRequest)
 		return
 	}
-	artifact := core.Artifact{ID: fmt.Sprintf("%x", sum), Workspace: workspace, Name: safeFilename(header), ContentType: contentType, SizeBytes: int64(len(content)), Role: role, TaskID: strings.TrimSpace(r.FormValue("task_id")), FeatureID: strings.TrimSpace(r.FormValue("feature_id")), CreatedAt: time.Now().UTC()}
+	artifact := core.Artifact{
+		ID: fmt.Sprintf("%x", sum), Workspace: workspace, Name: safeFilename(header),
+		ContentType: contentType, SizeBytes: int64(len(content)), Role: role,
+		TaskID: strings.TrimSpace(r.FormValue("task_id")),
+		// Requirement attachments replace feature attachments on the live API
+		// while FeatureID remains readable for migrated history (spec §21.46).
+		RequirementID: strings.TrimSpace(r.FormValue("requirement_id")),
+		CreatedAt:     time.Now().UTC(),
+	}
 	artifact, err = s.Store.CreateArtifact(r.Context(), artifact, content)
 	if err != nil {
 		http.Error(w, err.Error(), 400)

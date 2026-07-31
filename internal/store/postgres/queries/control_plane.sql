@@ -192,6 +192,13 @@ JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND t.workspace_id = $2
 ORDER BY e.at, e.id;
 
+-- name: ListRequirementEvents :many
+SELECT e.* FROM events e
+WHERE e.workspace_id = sqlc.arg(workspace_id)
+  AND e.task_id IS NULL
+  AND e.payload_json->>'requirement_id' = sqlc.arg(requirement_id)
+ORDER BY e.at, e.id;
+
 -- name: ListEventsAfter :many
 SELECT e.* FROM events e
 JOIN tasks t ON t.id = e.task_id
