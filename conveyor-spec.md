@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.11**
+**Specification — v2.12**
 **Date:** July 31, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1155,8 +1155,11 @@ citations use `repo:path:line`. No
 `ref` parameter, no shell, no sandbox, no writes: reading for planning
 is not execution, and the §21.4 boundary is untouched. Repo content
 entering the planning prompt is untrusted data (§18). Output is
-budgeted (per-call token caps with annotated truncation; a soft
-per-session exploration budget) and shaped for **cross-model
+budgeted — the per-call cap is
+`control_plane.planning.exploration_output_tokens` (default 10 000,
+validated positive, hot-reloaded like all §2.1 configuration; the
+soft session exploration budget defaults to fifteen times it,
+§21.52) — with annotated truncation, and shaped for **cross-model
 legibility** — the planning model is configurable, so tool contracts
 never assume a model family.
 
@@ -4964,7 +4967,24 @@ model — are unchanged.
 
 ---
 
-*End of specification. v2.11 accepted July 31, 2026 — the v2.0
+### 21.52 v2.12 — Exploration output cap is planning configuration (July 31, 2026)
+
+Refinement to §21.50 change 3, same day, before implementation,
+adopted from comparing harness budget designs: Codex's output budgets
+are per-model policy, not constants — and since the planning model is
+operator-configurable, a fixed exploration cap fits one model family
+and pinches another. One change: `control_plane.planning` gains
+**`exploration_output_tokens`** — the per-call output cap for the §9
+exploration tools. Default 10 000, validated positive, hot-reloaded
+like all §2.1 configuration, recorded on the session alongside model
+and effort. The soft session exploration budget defaults to fifteen
+times the per-call cap so the two scale together with one knob.
+Truncation annotations and every other §21.50–§21.51 output contract
+are unchanged.
+
+---
+
+*End of specification. v2.12 accepted July 31, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -4985,7 +5005,8 @@ grounds planning in code: four revision-pinned, read-only exploration
 tools over the §8.1 bare-clone cache, cross-model output contracts,
 and an operator-configurable planning model recorded per session;
 §21.51 extends exploration across all workspace repos with per-repo
-lazy pinning. The
+lazy pinning; §21.52 makes the per-call exploration cap planning
+configuration. The
 body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
