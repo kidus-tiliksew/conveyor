@@ -4,6 +4,7 @@ import { Board } from './components/board/board'
 import { TaskCreateSheet } from './components/task/task-create-sheet'
 import { TaskSheet } from './components/task/task-sheet'
 import { CreateWorkspaceDialog } from './components/workspace/create-workspace-dialog'
+import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
 import { RequirementsPage } from './pages/requirements'
 import { SettingsPage } from './pages/settings'
@@ -51,10 +52,12 @@ const activityRedirectRoute = createRoute({
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspacePage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
 const requirementsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requirements', component: RequirementsPage })
-// The planning-side blueprint list (spec §21.49). Anchor detail keeps living
-// at the task routes so existing direct URLs and the sheet/full variants a
-// child's parent reference resolves to stay valid.
+// The planning-side blueprint surface (spec §21.49): the list, and the
+// canonical detail route an anchor now owns. The task routes no longer render
+// an anchor — they redirect here once the task loads — so a blueprint has one
+// home and no second door back into the task costume.
 const blueprintsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/blueprints', component: BlueprintsPage })
+const blueprintDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/blueprints/$taskId', component: BlueprintDetailPage })
 const planningRoute = createRoute({ getParentRoute: () => rootRoute, path: '/planning', component: PlanningPage })
 const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitor', component: MonitorPage })
 
@@ -65,6 +68,7 @@ const routeTree = rootRoute.addChildren([
   workspaceRoute,
   requirementsRoute,
   blueprintsRoute,
+  blueprintDetailRoute,
   planningRoute,
   monitorRoute,
   settingsRoute,

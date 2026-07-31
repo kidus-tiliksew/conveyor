@@ -1,12 +1,13 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
 // Blueprint presentation surface (spec §21.49). The anchor is an intent
-// artifact: it never appears on the board, it reads in blueprint vocabulary,
-// and its detail shows none of the affordances that imply a worker will pick
-// it up.
+// artifact: it never appears on the board, it lives at its own canonical route
+// rather than borrowing the task view, it reads in blueprint vocabulary, and
+// its detail shows none of the affordances that imply a worker will pick it up.
 
 const createdAt = '2026-07-30T09:00:00Z'
 const anchorId = 'blueprint-anchor'
+const anchorBody = 'Deliver confirmed planning intent through the ordinary spec gate.'
 
 const childStates = {
   'child-sub-1': 'merged',
@@ -34,7 +35,7 @@ function childRelations() {
 function anchorTask() {
   return {
     id: anchorId, workspace: 'demo', source: 'planning', title: 'Deliver the planning flow',
-    body: 'Deliver confirmed planning intent through the ordinary spec gate.',
+    body: anchorBody,
     class: 'feature', level: '', spec_approval: true, merge_approval: true, policy_version: 1,
     setup: 'default', repo: 'conveyor', base_branch: 'main', branch: 'conveyor/task-blueprint-anchor',
     state: 'queued', next_stage: 'implement', children: childRelations(), created_at: createdAt,
@@ -158,19 +159,27 @@ async function routeAPI(page: Page, options: { feed?: unknown[]; blueprints?: un
   })
 }
 
-// AC-1: the board carries the children and never the anchor, and the anchor
-// is not counted in any column — even if the feed hands one over.
+// AC-4 (first half): the board carries the children and never the anchor, and
+// the anchor is not counted in any column — even if the feed hands one over.
 test('the board excludes the blueprint anchor from cards and column counts', async ({ page }) => {
   await initShell(page)
   await routeAPI(page, {
     feed: [
       ...activityFeed(),
-      { task: anchorTask(), latest_stage: 'implement', last_event_at: createdAt, needs_attention: false },
+      // Flagged for attention on purpose: a count that absorbed this anchor
+      // would send the operator to a board with nothing on it to resolve.
+      { task: anchorTask(), latest_stage: 'implement', last_event_at: createdAt, needs_attention: true },
     ],
   })
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+
+  // The rail's Board badge counts what the board shows — so with only an
+  // anchor needing attention, there is no badge at all.
+  const boardNav = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Board/ })
+  await expect(boardNav).toBeVisible()
+  await expect(boardNav.getByText('1')).toHaveCount(0)
   await expect(page.getByText(childTitles['child-sub-2'])).toBeVisible()
   await expect(page.getByText('Deliver the planning flow')).toHaveCount(0)
 
@@ -184,9 +193,9 @@ test('the board excludes the blueprint anchor from cards and column counts', asy
   await expect(completed.locator('header span').first()).toHaveText('2')
 })
 
-// AC-5 (second half): only the ambient presentation moved — a blueprint still
-// awaiting its spec gate has no children yet, so it stays in the inbox column
-// with its approval card intact.
+// AC-4 (second half): only the presentation of a *materialized* anchor moved. A
+// blueprint still awaiting its spec gate has no children yet, so it stays in
+// the inbox column with its approval card intact.
 test('a blueprint awaiting its spec gate stays in the review inbox', async ({ page }) => {
   await initShell(page)
   const gated = {
@@ -204,8 +213,8 @@ test('a blueprint awaiting its spec gate stays in the review inbox', async ({ pa
   await expect(inbox.getByText('Awaiting review')).toBeVisible()
 })
 
-// AC-2: the planning-side list speaks blueprint vocabulary and keeps merged
-// and closed apart.
+// AC-1 (list half): the planning-side list speaks blueprint vocabulary, keeps
+// merged and closed apart, and points at the canonical detail route.
 test('the blueprints list reports delivery, governing version, and served requirements', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)
@@ -214,7 +223,7 @@ test('the blueprints list reports delivery, governing version, and served requir
   await expect(page.getByRole('heading', { name: 'Blueprints' })).toBeVisible()
   const entry = page.getByRole('link', { name: /Deliver the planning flow/ })
   await expect(entry).toBeVisible()
-  await expect(entry).toHaveAttribute('href', `/tasks/${anchorId}/full`)
+  await expect(entry).toHaveAttribute('href', `/blueprints/${anchorId}`)
   await expect(entry.getByText('In delivery — 1 of 4')).toBeVisible()
   await expect(entry.getByText('Blueprint v3')).toBeVisible()
   await expect(entry.getByText('1 merged · 1 closed without merging · 2 in progress')).toBeVisible()
@@ -224,6 +233,140 @@ test('the blueprints list reports delivery, governing version, and served requir
   await expect(page.getByText('in_delivery')).toHaveCount(0)
 })
 
+// AC-1: opening a blueprint from the list lands on the canonical URL, and the
+// approved specification is the lead content, above the delivery list.
+test('the blueprints list opens the canonical detail route with the spec first', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+
+  await page.goto('/blueprints')
+  await page.getByRole('link', { name: /Deliver the planning flow/ }).click()
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+
+  await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
+  await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
+  await expect(page.getByText('Blueprint v3')).toBeVisible()
+  await expect(page.getByText('In-product planning')).toBeVisible()
+
+  // The approved specification renders above the delivery list.
+  const blueprintSection = page.getByRole('region', { name: 'Blueprint' })
+  await expect(blueprintSection.getByText('Blueprint planning surface')).toBeVisible()
+  const deliveryList = page.getByRole('list', { name: 'Blueprint tasks' })
+  const specBox = await blueprintSection.getByText('Blueprint planning surface').boundingBox()
+  const deliveryBox = await deliveryList.boundingBox()
+  expect(specBox!.y).toBeLessThan(deliveryBox!.y)
+
+  // Children keep dependency order, carry labelled states, and link to the
+  // task view — a child is work, so the task route is right for it.
+  const childLinks = deliveryList.getByRole('link')
+  await expect(childLinks).toHaveCount(4)
+  await expect(childLinks.nth(0)).toContainText(childTitles['child-sub-1'])
+  await expect(childLinks.nth(1)).toContainText(childTitles['child-sub-2'])
+  await expect(childLinks.nth(2)).toContainText(childTitles['child-sub-3'])
+  await expect(childLinks.nth(2)).toHaveAttribute('href', '/tasks/child-sub-3/full')
+  await expect(deliveryList.getByText('Merged', { exact: true })).toBeVisible()
+  await expect(deliveryList.getByText('Running', { exact: true })).toBeVisible()
+  await expect(deliveryList.getByText('Closed', { exact: true })).toBeVisible()
+  await expect(page.getByText('awaiting_human')).toHaveCount(0)
+
+  // The batch timeline and artifact lineage are present.
+  await expect(page.getByText('4 tasks created from the blueprint')).toBeVisible()
+  await expect(page.getByText('Lineage and artifacts')).toBeVisible()
+  await expect(page.getByText('planning-transcript.json')).toBeVisible()
+
+  // Back goes to the list the blueprint belongs to, not the board.
+  await page.getByRole('link', { name: 'Back to blueprints' }).click()
+  await expect(page).toHaveURL(/\/blueprints$/)
+})
+
+// AC-3: Cancel is the only lifecycle control, the intake body is provenance
+// behind a disclosure rather than the headline, and every execution affordance
+// an anchor can never use is gone.
+test('the canonical blueprint detail suppresses execution affordances and demotes the intake body', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+
+  await page.goto(`/blueprints/${anchorId}`)
+  await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
+
+  // Inert affordances are suppressed; Cancel — which is lifecycle — remains.
+  // These are the strings the task header actually renders, so their absence
+  // means the affordance is gone rather than merely renamed.
+  await expect(page.getByText('Work on this locally')).toHaveCount(0)
+  await expect(page.getByText('conveyor/task-blueprint-anchor')).toHaveCount(0)
+  await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Hold' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
+
+  // An anchor takes no work orders, so execution-recovery affordances are
+  // inert too: no redispatch nudge, no worker-serviceability alarm.
+  await expect(page.getByRole('button', { name: /Redispatch/ })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toHaveCount(0)
+
+  // The raw intake body is provenance: collapsed, below the blueprint, and
+  // never the first thing the page says.
+  const disclosure = page.getByText('Original request')
+  await expect(disclosure).toBeVisible()
+  await expect(page.getByText(anchorBody)).toBeHidden()
+  await disclosure.click()
+  await expect(page.getByText(anchorBody)).toBeVisible()
+  const bodyBox = await page.getByText(anchorBody).boundingBox()
+  const specBox = await page.getByRole('region', { name: 'Blueprint' }).getByText('Blueprint planning surface').boundingBox()
+  expect(specBox!.y).toBeLessThan(bodyBox!.y)
+})
+
+// AC-2: both legacy task routes for an anchor land on the canonical blueprint
+// URL instead of rendering the task costume.
+test('task routes for a blueprint anchor redirect to the canonical blueprint route', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+
+  await page.goto(`/tasks/${anchorId}/full`)
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
+  // The task costume never renders on the way through.
+  await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Work on this locally')).toHaveCount(0)
+
+  await page.goto(`/tasks/${anchorId}`)
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toHaveCount(0)
+  await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
+})
+
+// AC-2: children are work, so their task routes are untouched — and their
+// parent reference leaves the task routes for the blueprint's canonical home.
+test('child task routes stay usable and link back to the canonical blueprint', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+
+  // Full page: the child renders as an ordinary task, chrome and all.
+  await page.goto('/tasks/child-sub-2/full')
+  await expect(page).toHaveURL(/\/tasks\/child-sub-2\/full$/)
+  await expect(page.getByRole('heading', { name: childTitles['child-sub-2'] })).toBeVisible()
+  // The affordances suppressed on the blueprint are exactly the ones a child
+  // still gets — it is work, and the task view is right for it.
+  await expect(page.getByText('Branch', { exact: true })).toBeVisible()
+  await expect(page.getByText('Work on this locally')).toBeVisible()
+  const parentLinkFull = page.getByRole('link', { name: /Deliver the planning flow/ })
+  await expect(parentLinkFull).toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await parentLinkFull.click()
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+
+  // Parent to child, and back again from the sheet route.
+  await page.getByRole('list', { name: 'Blueprint tasks' })
+    .getByRole('link', { name: childTitles['child-sub-3'] }).click()
+  await expect(page).toHaveURL(/\/tasks\/child-sub-3\/full$/)
+
+  await page.goto('/tasks/child-sub-2')
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(sheet).toBeVisible()
+  await expect(sheet.getByRole('link', { name: /Deliver the planning flow/ }))
+    .toHaveAttribute('href', `/blueprints/${anchorId}`)
+})
+
+// AC-1: an honest rollup keeps a closed child out of the delivered count, and
+// a blueprint with no serves link says so rather than hiding the field.
 test('a completed blueprint reads as completed, and a missing serves link is a normal empty state', async ({ page }) => {
   await initShell(page)
   const completed = blueprintView()
@@ -238,88 +381,21 @@ test('a completed blueprint reads as completed, and a missing serves link is a n
   await expect(entry.getByText('3 merged · 1 closed without merging')).toBeVisible()
   await expect(entry.getByText('Serves')).toHaveCount(0)
 
-  // The detail renders too, and says plainly that nothing is linked yet.
+  // The detail renders the same honest rollup and says plainly that nothing
+  // is linked yet.
   await entry.click()
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page.getByText('3 merged · 1 closed without merging').first()).toBeVisible()
   await expect(page.getByText('No requirement linked yet')).toBeVisible()
 })
 
-// AC-3 and AC-4: the spec leads, children follow in dependency order with
-// labelled states, and every inert execution affordance is gone but Cancel.
-test('blueprint detail leads with the spec, orders children, and suppresses inert affordances', async ({ page }) => {
+// A task that is not an anchor has no blueprint to show: say so and point at
+// the view that does belong to it, rather than bouncing between two routes.
+test('the blueprint route explains itself for a task that is not a blueprint', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)
 
-  // Direct URL access is preserved.
-  await page.goto(`/tasks/${anchorId}/full`)
-  await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
-  await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
-
-  const blueprintSection = page.getByRole('region', { name: 'Blueprint' })
-  await expect(blueprintSection.getByText('Blueprint planning surface')).toBeVisible()
-  const deliveryList = page.getByRole('list', { name: 'Blueprint tasks' })
-
-  // The approved specification renders above the delivery list.
-  const specBox = await blueprintSection.getByText('Blueprint planning surface').boundingBox()
-  const deliveryBox = await deliveryList.boundingBox()
-  expect(specBox!.y).toBeLessThan(deliveryBox!.y)
-
-  // Children keep dependency order and carry labelled states, never raw ones.
-  const childLinks = deliveryList.getByRole('link')
-  await expect(childLinks).toHaveCount(4)
-  await expect(childLinks.nth(0)).toContainText(childTitles['child-sub-1'])
-  await expect(childLinks.nth(1)).toContainText(childTitles['child-sub-2'])
-  await expect(childLinks.nth(2)).toContainText(childTitles['child-sub-3'])
-  await expect(deliveryList.getByText('Merged', { exact: true })).toBeVisible()
-  await expect(deliveryList.getByText('Running', { exact: true })).toBeVisible()
-  await expect(deliveryList.getByText('Closed', { exact: true })).toBeVisible()
-  await expect(page.getByText('awaiting_human')).toHaveCount(0)
-
-  // Inert affordances are suppressed; Cancel — which is lifecycle — remains.
-  await expect(page.getByText('Checkout')).toHaveCount(0)
-  await expect(page.getByText('conveyor/task-blueprint-anchor')).toHaveCount(0)
-  await expect(page.getByText('Assigned branch')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Hold' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
-
-  // An anchor takes no work orders, so execution-recovery affordances are
-  // inert too: no redispatch nudge, no worker-serviceability alarm.
-  await expect(page.getByRole('button', { name: /Redispatch/ })).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toHaveCount(0)
-
-  // The batch timeline and artifact lineage are present.
-  await expect(page.getByText('4 tasks created from the blueprint')).toBeVisible()
-  await expect(page.getByText('Lineage and artifacts')).toBeVisible()
-  await expect(page.getByText('planning-transcript.json')).toBeVisible()
-})
-
-// AC-5 (first half): navigation resolves the blueprint detail in the route
-// variant it was reached from, in both directions.
-test('child and blueprint navigate to each other in the matching route variant', async ({ page }) => {
-  await initShell(page)
-  await routeAPI(page)
-
-  // Full page: the child's parent reference stays a full-page route.
-  await page.goto('/tasks/child-sub-2/full')
-  const parentLinkFull = page.getByRole('link', { name: /Deliver the planning flow/ })
-  await expect(parentLinkFull).toHaveAttribute('href', `/tasks/${anchorId}/full`)
-  await parentLinkFull.click()
-  await expect(page).toHaveURL(new RegExp(`/tasks/${anchorId}/full$`))
-  await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
-
-  // Parent to child, still full-page.
-  await page.getByRole('list', { name: 'Blueprint tasks' })
-    .getByRole('link', { name: childTitles['child-sub-3'] }).click()
-  await expect(page).toHaveURL(/\/tasks\/child-sub-3\/full$/)
-
-  // Sheet: the same references stay on the sheet route over the board.
-  await page.goto('/tasks/child-sub-2')
-  const sheet = page.getByRole('dialog', { name: 'Task detail' })
-  const parentLinkSheet = sheet.getByRole('link', { name: /Deliver the planning flow/ })
-  await expect(parentLinkSheet).toHaveAttribute('href', `/tasks/${anchorId}`)
-  await parentLinkSheet.click()
-  await expect(page).toHaveURL(new RegExp(`/tasks/${anchorId}$`))
-  await expect(sheet.getByText('In delivery — 1 of 4')).toBeVisible()
-  await expect(
-    sheet.getByRole('list', { name: 'Blueprint tasks' }).getByRole('link', { name: childTitles['child-sub-3'] }),
-  ).toHaveAttribute('href', '/tasks/child-sub-3')
+  await page.goto('/blueprints/child-sub-2')
+  await expect(page.getByText('This task is not a blueprint')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Open the task' })).toHaveAttribute('href', '/tasks/child-sub-2/full')
 })

@@ -1,9 +1,7 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
-import { findBlueprint, isBlueprintAnchor } from '../lib/blueprint'
 import type { ActivityItem } from '../lib/types'
-import { useBlueprints } from '../components/app-shell'
-import { BlueprintDetail, BlueprintDetailFallback } from '../components/blueprint/blueprint-detail'
+import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
@@ -20,6 +18,8 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const { previousId, nextId } = useTaskOrder(taskId)
+  // A blueprint anchor has one home, and it is not this page (spec §21.49).
+  const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
   return (
     <div className="flex h-full flex-col">
@@ -33,14 +33,14 @@ export function TaskFullPage() {
         <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
       </header>
-      {isLoading && (
+      {(isLoading || redirecting) && (
         <div className="space-y-3 px-6 py-6">
           <Skeleton className="h-24" />
           <Skeleton className="h-64" />
         </div>
       )}
       {error != null && <p className="px-6 py-6 text-sm text-failure">{String(error)}</p>}
-      {item && <FullBody item={item} />}
+      {item && !redirecting && <FullBody item={item} />}
     </div>
   )
 }
@@ -63,18 +63,6 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 }
 
 function FullBody({ item }: { item: ActivityItem }) {
-  // A blueprint anchor keeps this URL — the presentation is what moves
-  // (spec §21.49), so a child's parent reference and any saved deep link
-  // still resolve here, now to the blueprint detail.
-  const { data: blueprints } = useBlueprints()
-  const blueprint = isBlueprintAnchor(item.task) ? findBlueprint(blueprints, item.task.id) : undefined
-  if (isBlueprintAnchor(item.task)) {
-    return (
-      <div aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto" role="region" tabIndex={0}>
-        {blueprint ? <BlueprintDetail view={blueprint} item={item} variant="full" /> : <div className="px-6 py-4"><BlueprintDetailFallback /></div>}
-      </div>
-    )
-  }
   return (
     <div
       aria-label="Task content"
