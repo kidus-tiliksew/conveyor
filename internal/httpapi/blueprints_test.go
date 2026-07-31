@@ -409,22 +409,44 @@ func TestBlueprintsProjectionFollowsRevisedGoverningSpec(t *testing.T) {
 	}
 }
 
-// A draft created after approval has materialized nothing, so the governing
-// version stays the last approved one rather than following the draft.
-func TestBlueprintGoverningSpecIgnoresUnapprovedDraft(t *testing.T) {
-	approved := &core.SpecVersion{Version: 2, Approved: true}
-	if spec, version := governingSpec(approved, nil); spec != approved || version != 2 {
-		t.Fatalf("approved latest: spec=%+v version=%d", spec, version)
+// A draft created after approval has materialized nothing, so the surface
+// keeps rendering the approved blueprint — body, dependency order, and
+// per-child metadata included — rather than following the proposal.
+func TestBlueprintsProjectionIgnoresUnapprovedDraft(t *testing.T) {
+	st := store.NewMemoryWithConfig(&config.Config{
+		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
+	})
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	anchor := materializeBlueprint(t, st, "anchor-draft", []decompositionFixture{
+		{ID: "SUB-1", Repo: "conveyor", Summary: "Foundation"},
+		{ID: "SUB-2", Repo: "conveyor", Summary: "Surface", DependsOn: []string{"SUB-1"}},
+	})
+	// A revision the spec gate has not approved: it proposes dropping SUB-2
+	// and renaming SUB-1, so following it would corrupt the delivered view.
+	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: anchor.ID, Content: "# Blueprint draft", Decomposition: core.JSONPayload(
+			[]decompositionFixture{{ID: "SUB-9", Repo: "conveyor", Summary: "Proposed replacement"}}),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	draft := &core.SpecVersion{Version: 3, Approved: false}
-	events := []core.Event{
-		{Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": 1})},
-		{Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": 2})},
-		{Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]int{"version": 2})},
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	view := listBlueprintViews(t, server.Handler())[0]
+
+	if view.GoverningVersion != 1 || view.Spec == nil || view.Spec.Version != 1 || !view.Spec.Approved {
+		t.Fatalf("governing=%d spec=%+v, want the approved v1", view.GoverningVersion, view.Spec)
 	}
-	spec, version := governingSpec(draft, events)
-	if spec != nil || version != 2 {
-		t.Fatalf("unapproved draft: spec=%+v version=%d, want the last approved version 2", spec, version)
+	if view.Spec.Content != "# Blueprint\n\nDeliver bounded retries." {
+		t.Fatalf("rendered spec body=%q, want the approved blueprint", view.Spec.Content)
+	}
+	if len(view.Children) != 2 || view.Children[0].OriginSubID != "SUB-1" ||
+		view.Children[1].OriginSubID != "SUB-2" {
+		t.Fatalf("children=%+v, want the approved decomposition in dependency order", view.Children)
+	}
+	if view.Children[1].Summary != "Surface" || len(view.Children[1].DependsOn) != 1 ||
+		view.Children[1].DependsOn[0] != "SUB-1" {
+		t.Fatalf("draft cost the children their governing metadata: %+v", view.Children[1])
 	}
 }
 

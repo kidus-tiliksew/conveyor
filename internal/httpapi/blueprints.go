@@ -16,9 +16,12 @@ import (
 type blueprintView struct {
 	Task core.Task         `json:"task"`
 	Spec *core.SpecVersion `json:"spec,omitempty"`
-	// GoverningVersion is the spec version the children were materialized
-	// from. The children themselves record it, so it stays authoritative even
-	// if a later draft version exists on the anchor.
+	// GoverningVersion is the approved spec version delivery answers to. It
+	// cannot be read off the children: materialization reuses an existing
+	// child whenever a revision keeps its sub id, so a child created at v1
+	// still serves an approved v3, and the newest child origin can name a
+	// version that never governed anything. A later unapproved draft has
+	// materialized nothing and never displaces it.
 	GoverningVersion int `json:"governing_version"`
 	// Children are the materialized child tasks in dependency order.
 	Children  []blueprintChild          `json:"children"`
@@ -120,22 +123,18 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 			return nil, eventsErr
 		}
 		view.Events = append(view.Events, events...)
-		spec, exists, specErr := s.Store.GetLatestSpecVersion(r.Context(), task.ID)
+		governing, exists, specErr := s.Store.GetApprovedSpecVersion(r.Context(), task.ID)
 		if specErr != nil {
 			return nil, specErr
 		}
-		var governing *core.SpecVersion
 		if exists {
-			view.Spec = &spec
-		}
-		governing, view.GoverningVersion = governingSpec(view.Spec, events)
-		if governing != nil {
 			// Reused children keep the origin version that created them, so
 			// the governing decomposition claims them by sub id — matching on
 			// version would leave a revision's own children unlinked.
-			governing.MaterializedChildren = childrenForDecomposition(task.Children, decompositionItems(governing))
+			governing.MaterializedChildren = childrenForDecomposition(task.Children, decompositionItems(&governing))
+			view.Spec, view.GoverningVersion = &governing, governing.Version
 		}
-		view.Children = blueprintChildren(task.Children, governing)
+		view.Children = blueprintChildren(task.Children, view.Spec)
 		for _, artifact := range artifacts {
 			if artifact.TaskID != task.ID {
 				continue
@@ -147,36 +146,6 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 		views = append(views, view)
 	}
 	return views, nil
-}
-
-// governingSpec is the approved blueprint the anchor's children answer to,
-// with its version. It cannot be derived from the children: materialization
-// reuses an existing child whenever a revision keeps its sub id, so a child
-// created at v1 still serves an approved v3 and the newest child origin can
-// name a version that never governed anything.
-//
-// Approval only ever lands on the newest spec version, so the latest version
-// governs whenever it is approved. A newer unapproved draft is a proposal
-// that has materialized nothing; the version that did is the last one the
-// spec.version_approved audit trail records, and the projection reports that
-// number even though this checkout cannot read that older body.
-func governingSpec(spec *core.SpecVersion, events []core.Event) (*core.SpecVersion, int) {
-	if spec != nil && spec.Approved {
-		return spec, spec.Version
-	}
-	approved := 0
-	for _, event := range events {
-		if event.Kind != "spec.version_approved" {
-			continue
-		}
-		var payload struct {
-			Version int `json:"version"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err == nil && payload.Version > 0 {
-			approved = payload.Version
-		}
-	}
-	return nil, approved
 }
 
 // childrenForDecomposition claims the materialized children the governing

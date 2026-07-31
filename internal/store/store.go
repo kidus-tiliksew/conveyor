@@ -100,6 +100,7 @@ type Store interface {
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
 	CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error)
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
+	GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
 	ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error)
 	ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error
@@ -2555,6 +2556,22 @@ func (m *memory) GetLatestSpecVersion(_ context.Context, taskID string) (core.Sp
 		return core.SpecVersion{}, false, nil
 	}
 	return versions[len(versions)-1], true, nil
+}
+
+// GetApprovedSpecVersion returns the newest approved spec version, which is
+// the one that governs (spec §4.1): approval only ever lands on the newest
+// version, so a later unapproved draft is a proposal that has materialized
+// nothing and must not displace the blueprint currently in delivery.
+func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.SpecVersion, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	versions := m.specs[taskID]
+	for index := len(versions) - 1; index >= 0; index-- {
+		if versions[index].Approved {
+			return versions[index], true, nil
+		}
+	}
+	return core.SpecVersion{}, false, nil
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
