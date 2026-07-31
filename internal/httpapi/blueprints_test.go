@@ -310,6 +310,124 @@ func TestBlueprintDeliveryDistinguishesCompletionFromCancellation(t *testing.T) 
 	}
 }
 
+// Materialization reuses a child whenever a revision keeps its sub id, so the
+// governing version cannot be read off the children and the decomposition has
+// to claim them by sub id. Both revision shapes are covered: one that reuses
+// every child, and one that adds a child depending on a reused one.
+func TestBlueprintsProjectionFollowsRevisedGoverningSpec(t *testing.T) {
+	st := store.NewMemoryWithConfig(&config.Config{
+		Workspace: "demo",
+		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}, {Name: "auxiliary", Base: "release"}},
+	})
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	v1Items := []decompositionFixture{
+		{ID: "SUB-1", Repo: "conveyor", Summary: "Foundation"},
+		{ID: "SUB-2", Repo: "conveyor", Summary: "Surface", DependsOn: []string{"SUB-1"}},
+	}
+	anchor := materializeBlueprint(t, st, "anchor-revised", v1Items)
+	for _, child := range anchor.Children {
+		if child.OriginSpecVersion != 1 {
+			t.Fatalf("v1 child=%+v, want origin version 1", child)
+		}
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+
+	// A revision that reuses every child: no child records version 2, so a
+	// child-derived governing version would report 1 and lose the decomposition.
+	v2Items := []decompositionFixture{
+		{ID: "SUB-1", Repo: "conveyor", Summary: "Foundation, revised"},
+		{ID: "SUB-2", Repo: "conveyor", Summary: "Surface, revised", DependsOn: []string{"SUB-1"}},
+	}
+	v2, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: anchor.ID, Content: "# Blueprint v2", Decomposition: core.JSONPayload(v2Items),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ApproveSpecVersionAndMaterialize(ctx, anchor.ID, v2.Version); err != nil {
+		t.Fatal(err)
+	}
+	revised := listBlueprintViews(t, handler)[0]
+	if revised.GoverningVersion != v2.Version {
+		t.Fatalf("governing version=%d, want %d", revised.GoverningVersion, v2.Version)
+	}
+	if len(revised.Children) != 2 {
+		t.Fatalf("revised children=%+v, want both reused children", revised.Children)
+	}
+	if revised.Children[0].OriginSubID != "SUB-1" || revised.Children[0].Summary != "Foundation, revised" {
+		t.Fatalf("reused child lost its governing summary: %+v", revised.Children[0])
+	}
+	if revised.Children[1].OriginSubID != "SUB-2" || len(revised.Children[1].DependsOn) != 1 ||
+		revised.Children[1].DependsOn[0] != "SUB-1" {
+		t.Fatalf("reused child lost its governing dependency metadata: %+v", revised.Children[1])
+	}
+	if revised.Spec == nil || len(revised.Spec.MaterializedChildren) != 2 {
+		t.Fatalf("governing spec children=%+v, want both reused children claimed", revised.Spec)
+	}
+
+	// An expansion whose new child depends on a reused one: ordering by origin
+	// version would put the newest child first, above its own dependency.
+	v3Items := append(append([]decompositionFixture(nil), v2Items...), decompositionFixture{
+		ID: "SUB-3", Repo: "auxiliary", Summary: "New worker", DependsOn: []string{"SUB-1"},
+	})
+	v3, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: anchor.ID, Content: "# Blueprint v3", Decomposition: core.JSONPayload(v3Items),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ApproveSpecVersionAndMaterialize(ctx, anchor.ID, v3.Version); err != nil {
+		t.Fatal(err)
+	}
+	expanded := listBlueprintViews(t, handler)[0]
+	if expanded.GoverningVersion != v3.Version {
+		t.Fatalf("governing version=%d, want %d", expanded.GoverningVersion, v3.Version)
+	}
+	order := make([]string, 0, len(expanded.Children))
+	for _, child := range expanded.Children {
+		order = append(order, child.OriginSubID)
+	}
+	want := []string{"SUB-1", "SUB-2", "SUB-3"}
+	for index, sub := range want {
+		if index >= len(order) || order[index] != sub {
+			t.Fatalf("child order=%v, want %v", order, want)
+		}
+	}
+	newest := expanded.Children[2]
+	if newest.Repo != "auxiliary" || newest.Summary != "New worker" ||
+		len(newest.DependsOn) != 1 || newest.DependsOn[0] != "SUB-1" {
+		t.Fatalf("new child metadata=%+v", newest)
+	}
+	if expanded.Children[0].Summary != "Foundation, revised" {
+		t.Fatalf("reused child did not follow the governing revision: %+v", expanded.Children[0])
+	}
+	if expanded.Delivery.Total != 3 || expanded.Delivery.Open != 3 {
+		t.Fatalf("delivery=%+v, want three open children", expanded.Delivery)
+	}
+}
+
+// A draft created after approval has materialized nothing, so the governing
+// version stays the last approved one rather than following the draft.
+func TestBlueprintGoverningSpecIgnoresUnapprovedDraft(t *testing.T) {
+	approved := &core.SpecVersion{Version: 2, Approved: true}
+	if spec, version := governingSpec(approved, nil); spec != approved || version != 2 {
+		t.Fatalf("approved latest: spec=%+v version=%d", spec, version)
+	}
+	draft := &core.SpecVersion{Version: 3, Approved: false}
+	events := []core.Event{
+		{Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": 1})},
+		{Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": 2})},
+		{Kind: "blueprint.materialized", Payload: core.JSONPayload(map[string]int{"version": 2})},
+	}
+	spec, version := governingSpec(draft, events)
+	if spec != nil || version != 2 {
+		t.Fatalf("unapproved draft: spec=%+v version=%d, want the last approved version 2", spec, version)
+	}
+}
+
 func TestBlueprintsProjectionIsEmptyWithoutAnchors(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},

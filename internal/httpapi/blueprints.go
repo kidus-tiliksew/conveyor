@@ -115,21 +115,27 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 		if view.Serves == nil {
 			view.Serves = []blueprintRequirementRef{}
 		}
-		view.GoverningVersion = governingSpecVersion(task.Children)
-		spec, exists, specErr := s.Store.GetLatestSpecVersion(r.Context(), task.ID)
-		if specErr != nil {
-			return nil, specErr
-		}
-		if exists {
-			spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
-			view.Spec = &spec
-		}
-		view.Children = blueprintChildren(task.Children, view.GoverningVersion, view.Spec)
 		events, eventsErr := s.Store.ListEvents(r.Context(), task.ID)
 		if eventsErr != nil {
 			return nil, eventsErr
 		}
 		view.Events = append(view.Events, events...)
+		spec, exists, specErr := s.Store.GetLatestSpecVersion(r.Context(), task.ID)
+		if specErr != nil {
+			return nil, specErr
+		}
+		var governing *core.SpecVersion
+		if exists {
+			view.Spec = &spec
+		}
+		governing, view.GoverningVersion = governingSpec(view.Spec, events)
+		if governing != nil {
+			// Reused children keep the origin version that created them, so
+			// the governing decomposition claims them by sub id — matching on
+			// version would leave a revision's own children unlinked.
+			governing.MaterializedChildren = childrenForDecomposition(task.Children, decompositionItems(governing))
+		}
+		view.Children = blueprintChildren(task.Children, governing)
 		for _, artifact := range artifacts {
 			if artifact.TaskID != task.ID {
 				continue
@@ -143,38 +149,79 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 	return views, nil
 }
 
-// governingSpecVersion is the newest spec version that materialized children.
-func governingSpecVersion(children []core.TaskRelation) int {
-	governing := 0
-	for _, child := range children {
-		if child.OriginSpecVersion > governing {
-			governing = child.OriginSpecVersion
+// governingSpec is the approved blueprint the anchor's children answer to,
+// with its version. It cannot be derived from the children: materialization
+// reuses an existing child whenever a revision keeps its sub id, so a child
+// created at v1 still serves an approved v3 and the newest child origin can
+// name a version that never governed anything.
+//
+// Approval only ever lands on the newest spec version, so the latest version
+// governs whenever it is approved. A newer unapproved draft is a proposal
+// that has materialized nothing; the version that did is the last one the
+// spec.version_approved audit trail records, and the projection reports that
+// number even though this checkout cannot read that older body.
+func governingSpec(spec *core.SpecVersion, events []core.Event) (*core.SpecVersion, int) {
+	if spec != nil && spec.Approved {
+		return spec, spec.Version
+	}
+	approved := 0
+	for _, event := range events {
+		if event.Kind != "spec.version_approved" {
+			continue
+		}
+		var payload struct {
+			Version int `json:"version"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err == nil && payload.Version > 0 {
+			approved = payload.Version
 		}
 	}
-	return governing
+	return nil, approved
 }
 
-// blueprintChildren orders the materialized children by the governing spec's
-// decomposition dependency order, so a child never renders above something it
-// waits on. Children the governing decomposition does not name — an earlier
-// version's, or one whose sub-id it dropped — keep their stored order at the
-// end rather than disappearing.
-func blueprintChildren(children []core.TaskRelation, governing int, spec *core.SpecVersion) []blueprintChild {
-	var items []core.BlueprintDecompositionItem
-	if spec != nil && spec.Version == governing {
-		items = decompositionItems(spec)
+// childrenForDecomposition claims the materialized children the governing
+// decomposition names, by sub id rather than by origin version.
+func childrenForDecomposition(children []core.TaskRelation, items []core.BlueprintDecompositionItem) []core.TaskRelation {
+	bySub := childrenBySubID(children)
+	claimed := make([]core.TaskRelation, 0, len(items))
+	for _, item := range items {
+		if child, exists := bySub[item.ID]; exists {
+			claimed = append(claimed, child)
+		}
 	}
+	return claimed
+}
+
+// childrenBySubID indexes children by the decomposition item they deliver.
+// The store never materializes two children for one sub id, but children
+// arrive sorted by origin version, so keeping the first entry preserves the
+// same earliest-wins tie-break the store itself applies when reusing them.
+func childrenBySubID(children []core.TaskRelation) map[string]core.TaskRelation {
 	bySub := make(map[string]core.TaskRelation, len(children))
 	for _, child := range children {
-		if child.OriginSpecVersion == governing {
+		if child.OriginSubID == "" {
+			continue
+		}
+		if _, exists := bySub[child.OriginSubID]; !exists {
 			bySub[child.OriginSubID] = child
 		}
 	}
+	return bySub
+}
+
+// blueprintChildren orders the materialized children by the governing
+// decomposition's dependency order, so a child never renders above something
+// it waits on, and pairs each with the governing item's current repo,
+// summary, and declared dependencies. A child the governing decomposition
+// does not name — one whose sub id a later revision dropped — keeps its
+// stored order at the end rather than disappearing.
+func blueprintChildren(children []core.TaskRelation, governing *core.SpecVersion) []blueprintChild {
+	bySub := childrenBySubID(children)
 	ordered := make([]blueprintChild, 0, len(children))
 	placed := make(map[string]bool, len(children))
-	for _, item := range core.OrderDecompositionByDependency(items) {
+	for _, item := range core.OrderDecompositionByDependency(decompositionItems(governing)) {
 		child, exists := bySub[item.ID]
-		if !exists {
+		if !exists || placed[child.ID] {
 			continue
 		}
 		placed[child.ID] = true
