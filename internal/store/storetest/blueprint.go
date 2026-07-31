@@ -220,7 +220,7 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 		child.Repo != repo || child.BaseBranch != base || child.Branch == "" ||
 		child.State != core.TaskQueued || child.NextStage != core.StageImplement ||
 		child.ParentTaskID != parent.ID || child.OriginSpecVersion != version ||
-		child.OriginSubID == "" || child.FeatureID != parent.FeatureID || child.CreatedAt.IsZero() {
+		child.OriginSubID == "" || child.FeatureID != "" || child.CreatedAt.IsZero() {
 		t.Fatalf("partially populated or invalid child: %+v", child)
 	}
 }

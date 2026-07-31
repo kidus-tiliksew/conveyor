@@ -85,18 +85,18 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved, content, err := st.GetArtifactForContext(ctxA, artifact.ID, taskA.ID, ""); err != nil || resolved.TaskID != taskA.ID || string(content) != "a" {
+	if resolved, content, err := st.GetArtifactForContext(ctxA, artifact.ID, taskA.ID); err != nil || resolved.TaskID != taskA.ID || string(content) != "a" {
 		t.Fatalf("authorized task artifact=%+v content=%q err=%v", resolved, content, err)
 	}
-	if _, _, err := st.GetArtifactForContext(ctxA, artifact.ID, "other-task", ""); err == nil {
+	if _, _, err := st.GetArtifactForContext(ctxA, artifact.ID, "other-task"); err == nil {
 		t.Fatal("artifact read through unrelated task context")
 	}
 	featureArtifact, err := st.CreateArtifact(ctxA, core.Artifact{Name: "feature.txt", ContentType: "text/plain", FeatureID: feature.ID}, []byte("feature"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved, content, err := st.GetArtifactForContext(ctxA, featureArtifact.ID, "", feature.ID); err != nil || resolved.FeatureID != feature.ID || string(content) != "feature" {
-		t.Fatalf("authorized feature artifact=%+v content=%q err=%v", resolved, content, err)
+	if _, _, err := st.GetArtifactForContext(ctxA, featureArtifact.ID, taskA.ID); err == nil {
+		t.Fatal("retired feature-scoped artifact entered live task context")
 	}
 	if _, _, err := st.GetArtifact(ctxB, artifact.ID); err == nil {
 		t.Fatal("workspace B read workspace A artifact")

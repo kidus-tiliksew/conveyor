@@ -560,7 +560,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, fmt.Errorf("list task artifacts: %w", err)
 	}
 	for _, artifact := range artifacts {
-		if artifact.TaskID == task.ID || (task.FeatureID != "" && artifact.FeatureID == task.FeatureID) {
+		if artifact.TaskID == task.ID {
 			artifact.DownloadURL = ""
 			reference := ArtifactReference{Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact"}
 			result.Artifacts = append(result.Artifacts, reference)
@@ -591,7 +591,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	artifact, content, err := s.Store.GetArtifactForContext(ctx, artifactID, task.ID, task.FeatureID)
+	artifact, content, err := s.Store.GetArtifactForContext(ctx, artifactID, task.ID)
 	if err != nil {
 		// Keep unauthorized ownership mismatches indistinguishable from missing
 		// artifacts; artifact ids alone are never bearer capabilities (spec §21.4).

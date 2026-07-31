@@ -519,7 +519,7 @@ func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, task core.Ta
 	}
 	types := []string{}
 	for _, artifact := range artifacts {
-		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
+		if artifact.TaskID != task.ID {
 			continue
 		}
 		if !artifact.Role.ModelInputEligible() {
@@ -631,7 +631,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	seen := map[string]bool{}
 	totalBytes := 0
 	for _, artifact := range artifacts {
-		if artifact.TaskID != task.ID && (task.FeatureID == "" || artifact.FeatureID != task.FeatureID) {
+		if artifact.TaskID != task.ID {
 			continue
 		}
 		if !artifact.Role.ModelInputEligible() {
@@ -641,7 +641,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			continue
 		}
 		seen[artifact.ID] = true
-		resolved, content, getErr := d.Store.GetArtifactForContext(ctx, artifact.ID, task.ID, task.FeatureID)
+		resolved, content, getErr := d.Store.GetArtifactForContext(ctx, artifact.ID, task.ID)
 		if getErr != nil {
 			return inprocess.Input{}, fmt.Errorf("read context artifact %s for task %s: %w", artifact.ID, task.ID, getErr)
 		}
@@ -1015,14 +1015,11 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
 	case core.InterventionApprove:
-		if latest.Stage == core.StageSpec {
-			spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("task %s has no spec", task.ID)
-			}
+		spec, specGate, err := d.pendingSpecGate(ctx, task, latest)
+		if err != nil {
+			return err
+		}
+		if specGate {
 			children, materializeErr := d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, spec.Version)
 			if materializeErr != nil {
 				return materializeErr
@@ -1051,7 +1048,11 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if target == "" {
 			target = latest.Stage
 		}
-		if latest.Stage == core.StageSpec {
+		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task, latest)
+		if gateErr != nil {
+			return gateErr
+		}
+		if redirectSpecGate {
 			// RecoveryStage identifies where approval continues, so a spec gate
 			// normally points at implementation. Requested changes instead reopen
 			// the existing spec workflow and require a newly approved revision.
@@ -1064,6 +1065,33 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return nil
 	}
 	return nil
+}
+
+// pendingSpecGate recognizes both delegated spec jobs and blueprints finalized
+// by the in-product planning agent. Planning persists the exact same spec
+// contract but intentionally creates no synthetic spec-stage job, so the gate
+// must also be identifiable from its awaiting/recovery state (spec §9, §13.1).
+func (d *Dispatcher) pendingSpecGate(
+	ctx context.Context,
+	task core.Task,
+	latest core.Job,
+) (core.SpecVersion, bool, error) {
+	candidate := latest.Stage == core.StageSpec ||
+		(task.State == core.TaskAwaiting && task.RecoveryStage == core.StageImplement)
+	if !candidate {
+		return core.SpecVersion{}, false, nil
+	}
+	spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
+	if !ok {
+		return core.SpecVersion{}, false, fmt.Errorf("task %s has no spec", task.ID)
+	}
+	if latest.Stage != core.StageSpec && spec.Approved {
+		return core.SpecVersion{}, false, nil
+	}
+	return spec, true, nil
 }
 
 func (d *Dispatcher) reviewedHeadFromEvents(ctx context.Context, taskID string) string {

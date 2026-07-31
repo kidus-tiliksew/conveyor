@@ -150,6 +150,8 @@ type Store interface {
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
 
+	// Feature methods remain only for migration and historical conformance.
+	// Live control-plane surfaces retired feature-tree mutation in §21.46.
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
@@ -184,7 +186,7 @@ type Store interface {
 
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
-	GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error)
+	GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
 
@@ -2496,7 +2498,7 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
 }
 
-func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
+func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	artifact, ok := m.artifactForRead(ctx, id)
@@ -2504,7 +2506,7 @@ func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID, featureI
 		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
 	}
 	for _, link := range artifact.links {
-		if (taskID != "" && link.TaskID == taskID) || (featureID != "" && link.FeatureID == featureID) {
+		if taskID != "" && link.TaskID == taskID {
 			return link, append([]byte(nil), artifact.content...), nil
 		}
 	}
@@ -2633,7 +2635,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
 			State: core.TaskQueued, NextStage: core.StageImplement,
 			ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
-			FeatureID: parent.FeatureID, CreatedAt: createdAt,
+			CreatedAt: createdAt,
 		}
 		m.tasks[id] = child
 		childrenBySub[item.ID] = child

@@ -48,7 +48,8 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	}
 	payload, _ := json.Marshal(monitor.Observation{
 		Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "commit:abc",
-		SourceURL: "https://github.com/acme/conveyor/commit/abc", CommitSHA: "abc", Hints: &hints,
+		SourceURL: "https://github.com/acme/conveyor/commit/abc", CommitSHA: "abc",
+		RequirementID: "req-runtime", Hints: &hints,
 	})
 	post := func() *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/observations", bytes.NewReader(payload))
@@ -91,7 +92,9 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		t.Fatalf("status=%d %s", statusResponse.Code, statusResponse.Body.String())
 	}
 	var status monitor.Status
-	if err = json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil || status.DriftCount != 1 {
+	if err = json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil ||
+		status.DriftCount != 1 || len(status.Drift) != 1 ||
+		status.Drift[0].RequirementID != "req-runtime" {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }

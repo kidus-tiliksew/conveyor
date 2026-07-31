@@ -56,7 +56,7 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
   return { urls, failed }
 }
 
-// The attachments section (task feature): operator-supplied files previewed
+// The attachments section: operator-supplied task files previewed
 // as small tiles directly below the spec, each expandable in-place. Omitted
 // entirely when the task carries no attachments.
 export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {

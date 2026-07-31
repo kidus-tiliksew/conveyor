@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -183,7 +184,9 @@ func TestBlueprintDiamondDecompositionAccepted(t *testing.T) {
 		bySub[child.OriginSubID] = child
 	}
 	blocking, err := st.ListBlockingTaskIDs(ctx, bySub["SUB-4"].ID)
-	if err != nil || !reflect.DeepEqual(blocking, []string{bySub["SUB-2"].ID, bySub["SUB-3"].ID}) {
+	wantBlocking := []string{bySub["SUB-2"].ID, bySub["SUB-3"].ID}
+	sort.Strings(wantBlocking)
+	if err != nil || !reflect.DeepEqual(blocking, wantBlocking) {
 		t.Fatalf("diamond join blockers=%v err=%v", blocking, err)
 	}
 }

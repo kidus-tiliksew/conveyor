@@ -149,8 +149,8 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", featureArtifact.ID); err != nil {
-		t.Fatalf("assigned feature read: %v", err)
+	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", featureArtifact.ID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("retired feature-scoped artifact entered work-order context: %v", err)
 	}
 	if _, err = service.ReadArtifact(ctx, "order-a", "wrong-session", artifactA.ID); err == nil || !strings.Contains(err.Error(), "another session") {
 		t.Fatalf("wrong-session read error=%v", err)

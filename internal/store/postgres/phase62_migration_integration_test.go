@@ -408,7 +408,7 @@ func TestPhase62MigratedAttachmentStaysInTaskContextIntegration(t *testing.T) {
 
 	f.upgrade(t)
 
-	artifact, content, err := f.store.GetArtifactForContext(f.ctx, attachment, taskID, "feat-shared")
+	artifact, content, err := f.store.GetArtifactForContext(f.ctx, attachment, taskID)
 	if err != nil {
 		t.Fatalf("migrated attachment left the task's context: %v", err)
 	}
@@ -419,13 +419,78 @@ func TestPhase62MigratedAttachmentStaysInTaskContextIntegration(t *testing.T) {
 		t.Errorf("resolved unexpected content %q", content)
 	}
 	// The task no longer needs to know the retired feature id to reach it.
-	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, taskID, ""); err != nil {
+	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, taskID); err != nil {
 		t.Errorf("attachment unreachable without a feature id: %v", err)
 	}
 	// An unrelated task must not gain access through the requirement.
 	other := f.task(t, "", "")
-	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, other, ""); err == nil {
+	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, other); err == nil {
 		t.Error("an unrelated task resolved a requirement-scoped attachment")
+	}
+}
+
+func TestRetiredFeatureConsumersBecomeRequirementReferencesIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.feature(t, "feat-runtime", "Runtime Intent", "", "", 0)
+	taskID := f.task(t, "feat-runtime", "")
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO monitor_observations
+		 (workspace_id, identity, repository, kind, occurrence_id, source_url, feature_id, observed_at)
+		 VALUES ($1,'identity-runtime','repo','direct_push','occ-runtime',
+		         'https://example.test/runtime','feat-runtime',$2)`,
+		f.workspace, f.seeded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO repository_drift
+		 (workspace_id, id, repository, kind, source_url, feature_id, task_id, detected_at)
+		 VALUES ($1,'drift-runtime','repo','direct_push',
+		         'https://example.test/runtime','feat-runtime',$2,$3)`,
+		f.workspace, taskID, f.seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrateControlPlaneToVersion(t.Context(), f.pool, 47); err != nil {
+		t.Fatalf("migrate to version 47: %v", err)
+	}
+	var observationRequirement, driftRequirement, taskFeature string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT observation.requirement_id, drift.requirement_id,
+		        COALESCE(task.feature_id,'')
+		   FROM monitor_observations observation
+		   JOIN repository_drift drift
+		     ON drift.workspace_id=observation.workspace_id
+		    AND drift.id='drift-runtime'
+		   JOIN tasks task
+		     ON task.workspace_id=observation.workspace_id
+		    AND task.id=$2
+		  WHERE observation.workspace_id=$1
+		    AND observation.identity='identity-runtime'`,
+		f.workspace, taskID).Scan(&observationRequirement, &driftRequirement, &taskFeature); err != nil {
+		t.Fatal(err)
+	}
+	if observationRequirement != "req-feat-runtime" ||
+		driftRequirement != "req-feat-runtime" || taskFeature != "" {
+		t.Fatalf("observation requirement=%q drift requirement=%q task feature=%q",
+			observationRequirement, driftRequirement, taskFeature)
+	}
+	var historicalLinks, retiredColumns int
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT
+		    (SELECT count(*) FROM links
+		      WHERE workspace_id=$1
+		        AND kind='historical_feature_assignment'
+		        AND src_id='req-feat-runtime'
+		        AND dst_id=$2),
+		    (SELECT count(*) FROM information_schema.columns
+		      WHERE table_schema=current_schema()
+		        AND table_name IN ('monitor_observations','repository_drift')
+		        AND column_name='feature_id')`,
+		f.workspace, taskID).Scan(&historicalLinks, &retiredColumns); err != nil {
+		t.Fatal(err)
+	}
+	if historicalLinks != 1 || retiredColumns != 0 {
+		t.Fatalf("historical links=%d retired monitor columns=%d", historicalLinks, retiredColumns)
 	}
 }
 
