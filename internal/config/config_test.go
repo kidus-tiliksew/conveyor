@@ -554,6 +554,23 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 		t.Fatalf("template count = %d, want 3", len(templates))
 	}
 	wantIDs := []string{"codex", "claude", "grok"}
+	wantEffortArgs := []map[string][]string{
+		{
+			"low":    {"--config", `model_reasoning_effort="low"`},
+			"medium": {"--config", `model_reasoning_effort="medium"`},
+			"high":   {"--config", `model_reasoning_effort="high"`},
+		},
+		{
+			"low":    {"--effort", "low"},
+			"medium": {"--effort", "medium"},
+			"high":   {"--effort", "high"},
+		},
+		{
+			"low":    {"--reasoning-effort", "low"},
+			"medium": {"--reasoning-effort", "medium"},
+			"high":   {"--reasoning-effort", "high"},
+		},
+	}
 	for index, template := range templates {
 		if template.ID != wantIDs[index] {
 			t.Fatalf("template %d id = %q, want %q", index, template.ID, wantIDs[index])
@@ -563,6 +580,9 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 		}
 		if template.Harness.Name != template.ID {
 			t.Fatalf("template %q harness name = %q", template.ID, template.Harness.Name)
+		}
+		if !reflect.DeepEqual(template.Harness.EffortArgs, wantEffortArgs[index]) {
+			t.Errorf("template %q effort args = %#v, want %#v", template.ID, template.Harness.EffortArgs, wantEffortArgs[index])
 		}
 		if err := ValidateHarness(template.Harness); err != nil {
 			t.Fatalf("template %q failed validation: %v", template.ID, err)

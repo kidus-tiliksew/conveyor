@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Activity, Blocks, FolderGit2, Kanban, MessageSquare, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
 import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
+import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { ThemeProvider, useTheme } from './theme-provider'
@@ -145,7 +146,11 @@ function NavSidebar() {
 	const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
 	const { data: workspace } = useWorkspace()
   const { data: activity } = useActivity()
-  const attention = (activity ?? []).filter((item) => item.needs_attention).length
+  // This badge counts what the Board will actually show, so it applies the
+  // board's own predicate (spec §21.49): an anchor lives on the Blueprints
+  // surface, and counting one here would send the operator to a board with
+  // nothing on it to resolve.
+  const attention = (activity ?? []).filter((item) => !isBlueprintAnchor(item.task) && item.needs_attention).length
 
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
 

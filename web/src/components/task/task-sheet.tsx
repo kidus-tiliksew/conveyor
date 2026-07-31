@@ -1,9 +1,7 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
-import { findBlueprint, isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
-import { useBlueprints } from '../app-shell'
-import { BlueprintDetail, BlueprintDetailFallback } from '../blueprint/blueprint-detail'
+import { useCanonicalBlueprintRedirect } from '../blueprint/use-blueprint-route'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
@@ -22,6 +20,8 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const { previousId, nextId } = useTaskOrder(taskId)
   const close = () => void navigate({ to: '/' })
+  // A blueprint anchor has one home, and it is not this sheet (spec §21.49).
+  const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
   return (
     <Sheet onClose={close} label="Task detail">
@@ -39,7 +39,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
         </Button>
       </header>
       <div className="task-sheet-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-8 pt-4">
-        {isLoading && (
+        {(isLoading || redirecting) && (
           <div className="space-y-3">
             <Skeleton className="h-16" />
             <Skeleton className="h-40" />
@@ -47,7 +47,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
           </div>
         )}
         {error != null && <p className="text-sm text-failure">{String(error)}</p>}
-        {item && <SheetBody item={item} />}
+        {item && !redirecting && <SheetBody item={item} />}
       </div>
     </Sheet>
   )
@@ -71,13 +71,6 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 }
 
 function SheetBody({ item }: { item: ActivityItem }) {
-  // The anchor's own URL keeps working (spec §21.49); only its presentation
-  // changes, so the blueprint detail renders in place of the task detail.
-  const { data: blueprints } = useBlueprints()
-  if (isBlueprintAnchor(item.task)) {
-    const view = findBlueprint(blueprints, item.task.id)
-    return view ? <BlueprintDetail view={view} item={item} variant="sheet" /> : <BlueprintDetailFallback />
-  }
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
