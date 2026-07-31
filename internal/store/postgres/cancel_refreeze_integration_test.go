@@ -181,9 +181,12 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: cancelJob.ID, TaskID: cancelTask.ID, JobID: cancelJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	claimedCancel, err := storetest.For(st).ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
 		t.Fatal(err)
 	}
+	cancelAttemptID := claimedCancel.AttemptID
+	cancelAttemptIDs := map[string]string{cancelJob.ID: cancelAttemptID}
 	orderIDs := []string{cancelJob.ID}
 	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderSubmitted, core.WorkOrderTimedOut, core.WorkOrderStale} {
 		job := core.Job{ID: cancelTask.ID + "-" + string(state), TaskID: cancelTask.ID, Stage: core.StageReview, State: core.JobPending}
@@ -204,6 +207,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 				t.Fatal(err)
 			}
+			cancelAttemptIDs[job.ID] = claimed.AttemptID
 		case core.WorkOrderTimedOut:
 			order.State = core.WorkOrderTimedOut
 			if err = storetest.For(st).UpdateWorkOrder(ctx, order, core.WorkOrderCmdTimeout); err != nil {
@@ -226,8 +230,20 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 		if getErr != nil || cancelled.State != core.WorkOrderCancelled {
 			t.Fatalf("cancelled order %s=%+v err=%v", orderID, cancelled, getErr)
 		}
-		if orderID == cancelJob.ID && cancelled.SessionID != "session" {
-			t.Fatalf("claimed cancellation lost session identity: %+v", cancelled)
+		if attemptID := cancelAttemptIDs[orderID]; attemptID != "" && (cancelled.AttemptID != "" || cancelled.LastAttemptID != attemptID) {
+			t.Fatalf("cancellation identity was not closed for %s: %+v", orderID, cancelled)
+		}
+		if attemptID := cancelAttemptIDs[orderID]; attemptID != "" && (cancelled.SessionID != "" || cancelled.WorkerID != "") {
+			t.Fatalf("cancelled attempt owner fields were not cleared for %s: %+v", orderID, cancelled)
+		}
+	}
+	cancelledEvents, eventErr := st.ListEvents(ctx, cancelTask.ID)
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	for orderID, attemptID := range cancelAttemptIDs {
+		if got := integrationEventAttemptID(t, cancelledEvents, "work_order.cancelled", orderID); got != attemptID {
+			t.Fatalf("cancelled event identity for %s=%q want=%q", orderID, got, attemptID)
 		}
 	}
 	interventions, err := st.ListInterventions(ctx, cancelTask.ID)

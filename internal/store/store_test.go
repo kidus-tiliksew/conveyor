@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,24 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
+
+func eventAttemptID(t *testing.T, events []core.Event, kind, jobID string) string {
+	t.Helper()
+	for _, event := range events {
+		if event.Kind != kind || event.JobID != jobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", kind, err)
+		}
+		return payload.AttemptID
+	}
+	t.Fatalf("%s event for job %s not found", kind, jobID)
+	return ""
+}
 
 func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	t.Parallel()
@@ -428,6 +447,7 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attemptID := stale.AttemptID
 	expired := stale
 	deadline := time.Now().Add(-time.Second)
 	expired.ExecutionDeadline = deadline
@@ -444,6 +464,13 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	current, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || current.State != core.WorkOrderTimedOut {
 		t.Fatalf("current = %+v, err = %v", current, err)
+	}
+	if attemptID == "" || current.AttemptID != "" || current.LastAttemptID != attemptID || current.SessionID != "" {
+		t.Fatalf("timed-out attempt identity current=%+v want last_attempt_id=%q", current, attemptID)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil || eventAttemptID(t, events, "work_order.timed_out", job.ID) != attemptID {
+		t.Fatalf("timed-out event identity err=%v want=%q", err, attemptID)
 	}
 	jobs, err := st.ListJobs(ctx, task.ID)
 	if err != nil || len(jobs) != 1 || !jobs[0].EndedAt.Equal(deadline) {
@@ -950,14 +977,19 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attemptID := claimed.AttemptID
 	cancelled, err := storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
 	if err != nil || cancelled.State != core.TaskClosed || cancelled.NextStage != "" {
 		t.Fatalf("cancelled=%+v err=%v", cancelled, err)
 	}
 	order, _ := st.GetWorkOrder(ctx, job.ID)
 	completed, _ := st.GetWorkOrder(ctx, completedJob.ID)
-	if order.State != core.WorkOrderCancelled || order.SessionID != claimed.SessionID || order.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || completed.State != core.WorkOrderCompleted {
+	if order.State != core.WorkOrderCancelled || order.SessionID != "" || order.WorkerID != "" || order.AttemptID != "" || order.LastAttemptID != attemptID || order.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || completed.State != core.WorkOrderCompleted {
 		t.Fatalf("orders cancelled=%+v completed=%+v", order, completed)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil || eventAttemptID(t, events, "work_order.cancelled", job.ID) != attemptID {
+		t.Fatalf("cancelled event identity err=%v want=%q", err, attemptID)
 	}
 	if _, err = storetestFor(st).RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)

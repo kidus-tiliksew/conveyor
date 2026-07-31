@@ -840,11 +840,11 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
+	if ok && order.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, ErrWorkOrderCancelled
+	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
-	}
-	if order.State == core.WorkOrderCancelled {
-		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
 	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
 		return order, nil
@@ -877,10 +877,10 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
+	if ok && order.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, ErrWorkOrderCancelled
+	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
-		if ok && order.State == core.WorkOrderCancelled && order.WorkerID == workerID && order.SessionID == release.SessionID {
-			return core.WorkOrder{}, ErrWorkOrderCancelled
-		}
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	queueTimeout := order.QueueDeadline.Sub(order.QueueEnteredAt)
@@ -966,10 +966,14 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 }
 
 func clearActiveAttempt(order *core.WorkOrder) {
+	clearClaimOwnership(order)
+	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
+}
+
+func clearClaimOwnership(order *core.WorkOrder) {
 	order.ClaimantID, order.SessionID, order.AttemptID, order.ClientTokenHash = "", "", "", ""
 	order.Agent, order.Model, order.WorkerID, order.ModelEnforcement = "", "", "", ""
 	order.LeaseExpiresAt = time.Time{}
-	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
 }
 
 func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration {
@@ -1751,6 +1755,10 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
+		if order.State == core.WorkOrderClaimed {
+			order.LastAttemptID = order.AttemptID
+			clearClaimOwnership(&order)
+		}
 		order.State = core.WorkOrderTimedOut
 		order.Claimable = false
 		order.LeaseExpiresAt = time.Time{}
@@ -2152,6 +2160,12 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		if err != nil {
 			return order
 		}
+		attemptID := ""
+		if order.State == core.WorkOrderClaimed {
+			attemptID = order.AttemptID
+			order.LastAttemptID = attemptID
+			clearClaimOwnership(&order)
+		}
 		order.State, order.Claimable = next, false
 		order.LeaseExpiresAt = time.Time{}
 		order.UpdatedAt = now
@@ -2160,7 +2174,9 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 			job.State, job.EndedAt = core.JobFailed, order.ExecutionDeadline
 			m.jobs[job.TaskID][index] = job
 		}
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(order), At: now})
+		eventOrder := order
+		eventOrder.AttemptID = attemptID
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(eventOrder), At: now})
 		return order
 	}
 	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
@@ -3572,6 +3588,11 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 		if order.TaskID != task.ID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
 			continue
 		}
+		attemptID := order.AttemptID
+		if attemptID != "" {
+			order.LastAttemptID = attemptID
+			clearActiveAttempt(&order)
+		}
 		if order.State == core.WorkOrderClaimed {
 			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
 		}
@@ -3581,7 +3602,9 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 		}
 		order.State, order.Claimable, order.UpdatedAt = orderState, false, intervention.At
 		m.workOrders[id] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(order), At: intervention.At})
+		eventOrder := order
+		eventOrder.AttemptID = attemptID
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(eventOrder), At: intervention.At})
 		cancelled = append(cancelled, id)
 		if jobs := m.jobs[task.ID]; len(jobs) != 0 {
 			for i := range jobs {

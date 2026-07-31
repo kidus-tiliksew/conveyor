@@ -147,7 +147,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
-		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && current.State == core.WorkOrderCancelled {
+		if getErr == nil && current.State == core.WorkOrderCancelled {
 			return core.WorkOrder{}, store.ErrWorkOrderCancelled
 		}
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
@@ -179,10 +179,10 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	if !taskLease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdRelease)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order release requires a valid taskops lease")
 	}
+	if current.State == core.WorkOrderCancelled {
+		return core.WorkOrder{}, store.ErrWorkOrderCancelled
+	}
 	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
-		if current.WorkerID == workerID && current.SessionID == release.SessionID && current.State == core.WorkOrderCancelled {
-			return core.WorkOrder{}, store.ErrWorkOrderCancelled
-		}
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if _, transitionErr := core.TransitionWorkOrder(current.State, core.WorkOrderCmdRelease); transitionErr != nil {

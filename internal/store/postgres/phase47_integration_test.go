@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
@@ -14,6 +15,24 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"gopkg.in/yaml.v3"
 )
+
+func integrationEventAttemptID(t *testing.T, events []core.Event, kind, jobID string) string {
+	t.Helper()
+	for _, event := range events {
+		if event.Kind != kind || event.JobID != jobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", kind, err)
+		}
+		return payload.AttemptID
+	}
+	t.Fatalf("%s event for job %s not found", kind, jobID)
+	return ""
+}
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
@@ -187,6 +206,7 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || clockClaim.ExecutionStartedAt.IsZero() || clockClaim.ExecutionDeadline.Sub(clockClaim.ExecutionStartedAt) != time.Hour {
 		t.Fatalf("clock claim=%+v err=%v", clockClaim, err)
 	}
+	attemptID := clockClaim.AttemptID
 	deadline := time.Now().Add(-time.Second)
 	clockClaim.ExecutionDeadline = deadline
 	if err = storetest.For(st).UpdateWorkOrder(ctx, clockClaim); err != nil {
@@ -195,8 +215,12 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if count, clockErr := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); clockErr != nil || count != 1 {
 		t.Fatalf("order clock count=%d err=%v", count, clockErr)
 	}
-	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable {
+	if timedOut, getErr := st.GetWorkOrder(ctx, clockJob.ID); getErr != nil || timedOut.State != core.WorkOrderTimedOut || timedOut.Claimable || timedOut.AttemptID != "" || timedOut.LastAttemptID != attemptID || timedOut.SessionID != "" {
 		t.Fatalf("timed out=%+v err=%v", timedOut, getErr)
+	}
+	timeoutEvents, eventErr := st.ListEvents(ctx, clockTaskID)
+	if eventErr != nil || integrationEventAttemptID(t, timeoutEvents, "work_order.timed_out", clockJob.ID) != attemptID {
+		t.Fatalf("timed-out event identity err=%v want=%q", eventErr, attemptID)
 	}
 	clockJobs, listErr := st.ListJobs(ctx, clockTaskID)
 	if listErr != nil || len(clockJobs) != 1 || clockJobs[0].EndedAt.Sub(deadline).Abs() > time.Millisecond {

@@ -1945,18 +1945,18 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 		return core.Task{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,job_id,state FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled') FOR UPDATE`, workspace(ctx), intervention.TaskID)
+	rows, err := tx.Query(ctx, `SELECT id,job_id,state,attempt_id FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled') FOR UPDATE`, workspace(ctx), intervention.TaskID)
 	if err != nil {
 		return core.Task{}, err
 	}
 	type cancelledOrder struct {
-		id, jobID string
-		state     core.WorkOrderState
+		id, jobID, attemptID string
+		state                core.WorkOrderState
 	}
 	var orders []cancelledOrder
 	for rows.Next() {
 		var order cancelledOrder
-		if err = rows.Scan(&order.id, &order.jobID, &order.state); err != nil {
+		if err = rows.Scan(&order.id, &order.jobID, &order.state, &order.attemptID); err != nil {
 			rows.Close()
 			return core.Task{}, err
 		}
@@ -1973,11 +1973,25 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	rows.Close()
 	var cancelled, jobIDs []string
 	for _, order := range orders {
-		if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, intervention.At, workspace(ctx), order.id, order.state); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',
+			last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,
+			last_attempt_id=CASE WHEN attempt_id<>'' THEN attempt_id ELSE last_attempt_id END,
+			attempt_id='',
+			claimant_id=CASE WHEN attempt_id<>'' THEN '' ELSE claimant_id END,
+			session_id=CASE WHEN attempt_id<>'' THEN '' ELSE session_id END,
+			client_token_hash=CASE WHEN attempt_id<>'' THEN '' ELSE client_token_hash END,
+			agent=CASE WHEN attempt_id<>'' THEN '' ELSE agent END,
+			model=CASE WHEN attempt_id<>'' THEN '' ELSE model END,
+			worker_id=CASE WHEN attempt_id<>'' THEN '' ELSE worker_id END,
+			model_enforcement=CASE WHEN attempt_id<>'' THEN '' ELSE model_enforcement END,
+			lease_expires_at=CASE WHEN attempt_id<>'' THEN NULL ELSE lease_expires_at END,
+			execution_started_at=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_started_at END,
+			execution_deadline=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_deadline END,
+			updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, intervention.At, workspace(ctx), order.id, order.state); err != nil {
 			return core.Task{}, err
 		}
 		cancelled, jobIDs = append(cancelled, order.id), append(jobIDs, order.jobID)
-		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"id": order.id, "state": core.WorkOrderCancelled, "from": order.state, "command": core.WorkOrderCmdCancel}), At: intervention.At}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"id": order.id, "attempt_id": order.attemptID, "state": core.WorkOrderCancelled, "from": order.state, "command": core.WorkOrderCmdCancel}), At: intervention.At}); err != nil {
 			return core.Task{}, err
 		}
 	}
@@ -3251,9 +3265,19 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 	if transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	row := tx.QueryRow(ctx, `UPDATE work_orders SET state=$1, lease_expires_at=NULL,
-		updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
-		state, now, workspace(ctx), order.ID)
+	attemptID := ""
+	var row pgx.Row
+	if state == core.WorkOrderTimedOut && order.State == core.WorkOrderClaimed {
+		attemptID = order.AttemptID
+		row = tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,
+			client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',
+			updated_at=$3 WHERE workspace_id=$4 AND id=$5 RETURNING `+workOrderColumns,
+			state, attemptID, now, workspace(ctx), order.ID)
+	} else {
+		row = tx.QueryRow(ctx, `UPDATE work_orders SET state=$1, lease_expires_at=NULL,
+			updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
+			state, now, workspace(ctx), order.ID)
+	}
 	updated, err := scanWorkOrder(row)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -3269,7 +3293,9 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 		}
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: kind, Payload: core.JSONPayload(updated), At: now}); err != nil {
+	eventOrder := updated
+	eventOrder.AttemptID = attemptID
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: kind, Payload: core.JSONPayload(eventOrder), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return updated, nil
