@@ -273,8 +273,8 @@ func changeTaskSetupCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use: "setup <id>", Short: "Change a task's frozen setup for future work only", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
-				return fmt.Errorf("--reason and --request-id are required")
+			if strings.TrimSpace(requestID) == "" {
+				return fmt.Errorf("--request-id is required")
 			}
 			if applyLatest == (strings.TrimSpace(setup) != "") {
 				return fmt.Errorf("exactly one of --setup or --apply-latest is required")
@@ -289,7 +289,7 @@ func changeTaskSetupCmd() *cobra.Command {
 	}
 	command.Flags().StringVar(&setup, "setup", "", "currently defined named workspace setup")
 	command.Flags().BoolVar(&applyLatest, "apply-latest", false, "re-freeze the latest definition of the task's current setup")
-	command.Flags().StringVarP(&reason, "reason", "r", "", "operator reason")
+	command.Flags().StringVarP(&reason, "reason", "r", "", "optional operator reason")
 	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
 	return command
 }
