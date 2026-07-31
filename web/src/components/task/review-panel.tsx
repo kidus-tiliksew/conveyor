@@ -83,8 +83,8 @@ function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merg
       return {
         tone: 'alarm',
         icon: TriangleAlert,
-        headline: 'Job timed out',
-        detail: 'The last job hit its wall-clock timeout before finishing.',
+        headline: 'The last stage timed out',
+        detail: 'It ran past its time limit and was stopped before finishing.',
         primaryLabel: 'Approve',
         primaryAction: 'approve',
       }

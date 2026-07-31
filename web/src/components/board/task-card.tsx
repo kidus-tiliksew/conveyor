@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { gateBadge, parseProvenance, reviewDiagnosticBadge } from '../../lib/activity'
+import { gateBadge, reviewDiagnosticBadge } from '../../lib/activity'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -13,10 +13,12 @@ function repoColor(seed: string) {
   return repoHues[Math.abs(hash) % repoHues.length]
 }
 
-// One board card (spec §13.3, amended by §21.31): ID, title, hold chip,
-// provenance chip, recency — "Needs attention" is the only alarm on the page.
+// One board card (spec §13.3, amended by §21.31): title, a single quiet meta
+// line, and chips only for state that changes what the operator does next.
+// Class and provenance are metadata, not signal — they live in the task
+// header, so a healthy card carries no chips at all and an exception stands
+// out on an otherwise calm board.
 export function TaskCard({ item, selected }: { item: ActivitySummary; selected: boolean }) {
-  const provenance = parseProvenance(item.task.source)
   const lastAt = item.last_event_at || item.task.created_at
   const gate = gateBadge(item)
   const reviewDiagnostic = reviewDiagnosticBadge(item)
@@ -26,6 +28,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const dependencyExplanation = unsatisfiable
     ? `Needs attention: ${blockingTitles.join(', ')} closed without merging`
     : `Waiting for ${blockingTitles.join(', ')}`
+  const chips = Boolean(gate || reviewDiagnostic || item.task.hold || blockingIDs.length > 0)
   return (
     <Link
       to="/tasks/$taskId"
@@ -37,41 +40,43 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
     >
       <p className="line-clamp-2 text-sm font-medium leading-snug">{item.task.title}</p>
       <div className="mt-1.5 flex items-baseline gap-2 font-mono text-[11px] text-faint">
+        {item.task.repo && (
+          <span
+            aria-hidden
+            title={item.task.repo}
+            className="size-2 shrink-0 self-center rounded-full"
+            style={{ backgroundColor: repoColor(item.task.repo) }}
+          />
+        )}
         <span className="truncate">{item.task.id}</span>
         <span className="ml-auto shrink-0 whitespace-nowrap">{relativeTime(lastAt)}</span>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
-        {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
-        {item.task.hold && <Badge variant="mono">Held</Badge>}
-        {blockingIDs.length > 0 && (
-          <span className="group/dependency relative inline-flex" aria-label={dependencyExplanation}>
-            <Badge variant={unsatisfiable ? 'attention' : 'mono'}>
-              {unsatisfiable ? 'Dependency needs attention' : 'Waiting on dependencies'}
-            </Badge>
-            <span
-              role="tooltip"
-              className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-60 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/dependency:opacity-100 group-focus-visible/card:opacity-100"
-            >
-              {dependencyExplanation}
+      {chips && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
+          {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
+          {item.task.hold && <Badge variant="mono">Held</Badge>}
+          {blockingIDs.length > 0 && (
+            <span className="group/dependency relative inline-flex" aria-label={dependencyExplanation}>
+              <Badge variant={unsatisfiable ? 'attention' : 'mono'}>
+                {unsatisfiable ? 'Dependency needs attention' : 'Waiting on dependencies'}
+              </Badge>
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-60 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/dependency:opacity-100 group-focus-visible/card:opacity-100"
+              >
+                {dependencyExplanation}
+              </span>
             </span>
-          </span>
-        )}
-        {item.task.class && <Badge>{item.task.class}</Badge>}
-        <Badge variant="accent" className="max-w-36 truncate">{provenance.label}</Badge>
-      </div>
+          )}
+        </div>
+      )}
       {item.stalled?.last_failure && <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">{item.stalled.last_failure}</p>}
       {item.forge_failure && (
         <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">
           {item.forge_failure.category && <><span className="font-mono">{item.forge_failure.category}</span>{' · '}</>}
           {item.forge_failure.surface}: {item.forge_failure.detail}
         </p>
-      )}
-      {item.task.repo && (
-        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-faint">
-          <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: repoColor(item.task.repo) }} />
-          <span className="truncate">{item.task.repo}</span>
-        </div>
       )}
     </Link>
   )

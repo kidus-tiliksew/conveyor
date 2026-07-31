@@ -1,5 +1,5 @@
 import type { GroupKey } from './contracts'
-import type { ActivityItem, ActivitySummary, Intervention, Job, Task, TaskEvent, WorkOrder } from './types'
+import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, WorkOrder } from './types'
 
 // Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, and parked tasks collect under
@@ -67,22 +67,6 @@ export function reviewDiagnosticBadge(item: ActivitySummary): { label: string; v
 		return { label: 'Awaiting verdict submission', variant: 'accent' }
 	}
 	return undefined
-}
-
-// Why a task is at a human gate — the detail the "Needs attention" badge
-// alone doesn't carry.
-export function attentionReason(task: Task, events: TaskEvent[]): string {
-  if (task.state === 'parked') return 'Parked by triage — needs a human route'
-  // Walk back to the most recent incident, but stop at any human decision or
-  // fresh dispatch — those supersede older incidents.
-  for (let i = events.length - 1; i >= 0; i--) {
-    const kind = events[i].kind
-    if (kind === 'pipeline.bounce_limit') return 'Review check-in — the loop paused for a human look'
-    if (kind === 'job.timeout') return 'Job hit its wall-clock timeout'
-    if (kind === 'job.created' || kind.startsWith('intervention.')) break
-  }
-  if (task.state === 'approved') return 'Approved — awaiting merge'
-  return 'At a human gate — review the work below'
 }
 
 function forgeFailureDetail(payload: Record<string, unknown>, detailKey: 'last_error' | 'error'): string | undefined {
@@ -331,23 +315,23 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
   switch (event.kind) {
     case 'work_order.child_failed':
       return {
-        title: payload.retry_suppressed === true ? 'Worker child failed — automatic retry suppressed' : 'Worker child failed — retry scheduled',
+        title: payload.retry_suppressed === true ? 'The agent’s run failed — not retried automatically' : 'The agent’s run failed — retrying',
         detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
         failureDetail: typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined,
         alarm: true,
       }
     case 'work_order.stalled':
       return {
-        title: payload.retry_suppressed === true ? 'Worker child stalled — automatic retry suppressed' : 'Worker child stalled — retry scheduled',
+        title: payload.retry_suppressed === true ? 'The agent stopped responding — not retried automatically' : 'The agent stopped responding — retrying',
         detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
         alarm: true,
       }
     case 'work_order.expired':
-      return { title: 'Worker claim expired — operator recovery required', alarm: true }
+      return { title: 'The agent’s claim expired — needs your recovery', alarm: true }
     case 'work_order.released':
-      return { title: 'Worker attempt released', detail: typeof payload.reason === 'string' ? payload.reason : undefined, alarm: true }
+      return { title: 'The agent released the work', detail: typeof payload.reason === 'string' ? payload.reason : undefined, alarm: true }
     case 'work_order.recovered':
-      return { title: 'Work order recovered by operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
+      return { title: 'Recovered by an operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
     case 'pull_request.opened':
       return {
         title: 'Pull request opened',
@@ -374,8 +358,8 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     }
     case 'job.timeout':
       return {
-        title: 'Wall-clock timeout',
-        detail: typeof payload.timeout === 'string' ? `Killed after ${payload.timeout}` : undefined,
+        title: 'Timed out before finishing',
+        detail: typeof payload.timeout === 'string' ? `Stopped after ${payload.timeout}` : undefined,
         alarm: true,
       }
     case 'spec.version_created':
@@ -415,7 +399,7 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'review.publication_failed':
       return { title: 'GitHub review publication failed', detail: forgeFailureDetail(payload, 'last_error'), alarm: true }
     case 'github.review_redirected':
-      return { title: 'GitHub review comments redirected the task (spec §9)' }
+      return { title: 'Review comments on GitHub sent the task back for changes' }
     case 'review.round_completed':
       // The panel card's resolution banner is this event, rendered richer.
       if (isPanelReviewEvent(payload, panels)) return undefined
@@ -453,7 +437,7 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
         alarm: true,
       }
     case 'job.log_stream_degraded':
-      return { title: 'Log stream degraded — falling back to artifacts' }
+      return { title: 'Live logs unavailable — the full transcript is still archived' }
     default:
       return undefined
   }

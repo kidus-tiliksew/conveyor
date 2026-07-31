@@ -67,10 +67,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
 
   return (
     <section ref={timelineRef} aria-label="Execution event timeline">
-      <div className="mb-4 flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold tracking-tight">Event timeline</h2>
-        <span className="font-mono text-[11px] text-faint">{item.events.length} audit events</span>
-      </div>
+      <h2 className="mb-4 text-sm font-semibold tracking-tight">Activity</h2>
       <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
         {entries.map((entry) => (
           <TimelineRow key={keyFor(entry)} entry={entry} />
@@ -275,7 +272,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
                 {entry.round > 0 ? `Round ${entry.round} — ` : ''}the panel’s notes
               </span>
               {resolution?.verdict === 'changes_requested' && seats.length > 1 && (
-                <span className="text-[11px] text-faint">counts once against the bounce cap</span>
+                <span className="text-[11px] text-faint">counts as one round, however many seats dissented</span>
               )}
             </div>
             {notes.map((seat) => (
@@ -300,7 +297,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
             <span className="text-xs font-normal opacity-80">
               {resolution.verdict === 'approve'
                 ? spendUSD > 0 ? `${usd(spendUSD)} across the panel` : ''
-                : `feedback sent back as one round${resolution.bounce ? ` (bounce ${resolution.bounce})` : ''}`}
+                : `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`}
             </span>
           </div>
         ) : (
@@ -309,7 +306,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
             {seats.length > 1 && (
               <>
                 <span className="text-faint">·</span>
-                <span>any “changes requested” bounces the task</span>
+                <span>any “changes requested” sends the task back</span>
               </>
             )}
             {spendUSD > 0 && <span className="ml-auto">{usd(spendUSD)} so far</span>}
@@ -476,32 +473,54 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
   )
 }
 
+// A stage that produced no narration of its own ("Completed.", "Queued.") has
+// nothing to read: it collapses to one line so the stages that did say
+// something keep the reader's attention.
+const placeholderSummaries = new Set(['Queued.', 'Queued for an operator-owned agent over MCP.', 'In progress.', 'Completed.'])
+
 // The job footer keeps the operator-facing facts — duration and model — and
-// tucks the audit numbers (tokens, cost) behind a hover on the model chip.
-// Harness, auth mode, confinement, and actor plumbing stay in the API.
+// tucks the dispatch details (effort, enforcement) and audit numbers (tokens,
+// cost) behind a hover on the model chip. Harness, auth mode, confinement,
+// and actor plumbing stay in the API.
 function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: string; model: string; tone: Extract<TimelineEntry, { type: 'job' }>['tone']; order?: WorkOrder }) {
 	if (!job.started_at) return null
 	const running = job.state === 'running'
 	const warning = tone === 'warning'
+  const stage = stageLabels[job.stage] ?? job.stage
+  const note = [
+    order?.required_effort ? `effort ${order.required_effort}` : undefined,
+    order?.model_enforcement === 'worker-pinned' ? 'model pinned by your worker' : order?.model_enforcement === 'self-reported' ? 'model self-reported by the agent' : undefined,
+  ].filter(Boolean).join(' · ')
+  const dot = (
+    <TimelineDot
+      className={cn(
+        'bg-edge',
+        job.state === 'done' && !warning && 'bg-positive',
+        warning && 'bg-attention-dot',
+        job.state === 'failed' && 'bg-failure',
+        running && 'animate-pulse bg-primary',
+      )}
+    />
+  )
+  if (job.state === 'done' && !warning && placeholderSummaries.has(summary)) {
+    return (
+      <li className="relative pl-7">
+        {dot}
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm">
+          <span className="text-foreground/90">{stage} completed</span>
+          <span className="font-mono text-[11px] tabular-nums text-faint">{duration(job.started_at, job.ended_at)}</span>
+          <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
+        </div>
+      </li>
+    )
+  }
   return (
     <li className="relative pl-7">
-      <TimelineDot
-        className={cn(
-          'bg-edge',
-          job.state === 'done' && !warning && 'bg-positive',
-          warning && 'bg-attention-dot',
-          job.state === 'failed' && 'bg-failure',
-          running && 'animate-pulse bg-primary',
-        )}
-      />
+      {dot}
       <article className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
-            {stageLabels[job.stage] ?? job.stage}
-          </span>
-          {order?.review_seat && <Badge variant="mono">Seat {order.review_seat}</Badge>}
-          {order?.required_effort && <Badge variant="accent">Effort {order.required_effort}</Badge>}
-          {order?.model_enforcement && <Badge variant={order.model_enforcement === 'worker-pinned' ? 'positive' : 'default'}>{order.model_enforcement}</Badge>}
+          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">{stage}</span>
+          {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
@@ -509,7 +528,7 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
         <p className="whitespace-pre-line px-4 py-3 text-sm leading-6 text-foreground/85">{summary}</p>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <ModelChip model={model} costUSD={displayedCostUSD(job)} tokensIn={job.tokens_in} tokensOut={job.tokens_out} />
+          <ModelChip model={model} costUSD={displayedCostUSD(job)} tokensIn={job.tokens_in} tokensOut={job.tokens_out} note={note || undefined} />
         </div>
       </article>
     </li>

@@ -8,6 +8,7 @@ import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 import { AttachmentsCard } from './attachments-card'
+import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
@@ -81,7 +82,9 @@ function SheetBody({ item }: { item: ActivityItem }) {
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
       {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable routeVariant="sheet" />}
-      <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+      {/* While a gate is open the evidence belongs with the decision, and the
+          gate card renders it there — showing it twice on one page does not. */}
+      {!isReviewable(item.task) && <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />}
       <AttachmentsCard attachments={item.attachments ?? []} />
       <Timeline item={item} />
     </div>
