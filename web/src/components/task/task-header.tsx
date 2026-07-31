@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
 import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
@@ -17,12 +17,14 @@ import { Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 
 // The task-header facts (spec §13.3, amended by §§21.6–21.7): state badges,
-// the verification chip fed by the §4.1 acceptance block, the PR deep link,
-// provenance, and the dedicated-worktree checkout command (§21.8).
+// the facts a reviewer actually references — where the work lives, where it
+// came from, where to read it — and the dedicated-worktree checkout command
+// (§21.8). Anything the specification card or the timeline already states is
+// deliberately absent: the header introduces the task, it does not summarize
+// the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
   const provenance = parseProvenance(item.task.source)
   const prURL = pullRequestURL(item.events)
-  const spec = item.spec
   const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
   const { data: activity } = useActivity()
@@ -30,6 +32,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
   const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? item.stalled.blocking_task_ids ?? [] : [])
   const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
+  const issueLabel = item.task.github?.issue_number ? `${item.task.github.repository}#${item.task.github.issue_number}` : ''
   const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
   const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
   const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
@@ -67,14 +70,17 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             {item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
           </span>
         </span>
-        <HoldControl item={item} />
+        {item.task.hold && <Badge variant="mono">Held</Badge>}
         {unsatisfiableIDs.size > 0
           ? <Badge variant="attention">Dependency needs attention</Badge>
           : blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>}
-        <CancelControl item={item} />
-        {item.task.setup && <Badge variant="mono">setup: {item.task.setup}</Badge>}
         {item.task.class && <Badge>{item.task.class}</Badge>}
-        <Badge variant="accent">{provenance.label}</Badge>
+        {/* Controls sit apart from the status chips: a destructive action
+            never belongs in the row the eye reads for state. */}
+        <span className="ml-auto flex items-center gap-1">
+          <HoldControl item={item} />
+          <CancelControl item={item} />
+        </span>
       </div>
       <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}>
         {item.task.title}
@@ -84,29 +90,17 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       <dl className={cn('mt-4 grid gap-x-8 gap-y-2.5 text-xs', variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2')}>
         <Fact label="Repo" value={item.task.repo} />
         <Fact
-          label="Assigned branch"
+          label="Branch"
           value={
-            <span className="inline-flex max-w-full items-center gap-1 font-mono">
-              <GitBranch className="size-3 shrink-0 text-faint" />
+            <span className="inline-flex max-w-full items-baseline gap-1 font-mono">
+              <GitBranch className="size-3 shrink-0 translate-y-0.5 text-faint" />
               <span className="truncate">{item.task.branch}</span>
+              <span className="shrink-0 text-faint">← {item.task.base_branch}</span>
             </span>
           }
         />
-        <Fact label="Base" value={<span className="font-mono">{item.task.base_branch}</span>} />
-        <Fact
-          label="Source"
-          value={
-            provenance.href ? (
-              <a href={provenance.href} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                {provenance.label}
-              </a>
-            ) : (
-              provenance.label
-            )
-          }
-        />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
-        <Fact label="Gates" value={`spec ${item.task.spec_approval ? 'human' : 'auto'} · merge ${item.task.merge_approval ? 'human' : 'auto'}`} />
+        <Fact label="Human approval" value={approvalLabel(item.task.spec_approval, item.task.merge_approval)} />
         {item.task.parent_task_id && (
           <Fact
             label="Parent blueprint"
@@ -132,18 +126,26 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             )}
           />
         )}
-        {item.task.setup_contract?.name && <Fact label="Frozen setup" value={<details><summary className="cursor-pointer font-mono">{item.task.setup_contract.name}</summary><span className="block font-mono text-[11px]">Implement: {item.task.setup_contract.execution_settings.implementation.harness} · {item.task.setup_contract.execution_settings.implementation.model || 'harness default'}</span><span className="block font-mono text-[11px]">Review: {item.task.setup_contract.review.seats.map((seat) => `${seat.harness || item.task.setup_contract.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</span></details>} />}
-        <Fact
-          label="Verification"
-          value={
-            spec
-              ? `${spec.acceptance_count} criteria · v${spec.version} ${spec.approved ? 'approved' : 'draft'}`
-              : 'No spec yet'
-          }
-        />
+        {item.task.setup_contract?.name && <Fact label="Setup" value={<span className="font-mono">{item.task.setup_contract.name}</span>} />}
+        {/* Suppressed when the task was raised from the very issue Conveyor
+            went on to adopt — the Issue fact below already links it. */}
+        {provenance.label !== issueLabel && (
+          <Fact
+            label="Raised by"
+            value={
+              provenance.href ? (
+                <a href={provenance.href} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                  {provenance.label}
+                </a>
+              ) : (
+                provenance.label
+              )
+            }
+          />
+        )}
         {item.task.github && (
           <Fact
-            label="GitHub issue"
+            label="Issue"
             value={item.task.github.issue_url ? (
               <a href={item.task.github.issue_url} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-primary hover:underline">
                 <span className="truncate">{item.task.github.repository}#{item.task.github.issue_number}</span>
@@ -193,11 +195,24 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         </section>
       )}
 
-      <SetupChangeControl item={item} variant={variant} />
-
-      <Checkout item={item} variant={variant} />
+      {/* Two disclosures, one row: the local-checkout helper and the rarely
+          used setup change. Both stay collapsed so the page opens on the work
+          rather than on configuration. */}
+      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+        <Checkout item={item} />
+        <SetupChangeControl item={item} />
+      </div>
     </div>
   )
+}
+
+// Human approval stated as what a reviewer will be asked to do, not as the
+// pair of policy flags behind it.
+function approvalLabel(specApproval: boolean, mergeApproval: boolean) {
+  if (specApproval && mergeApproval) return 'Spec and merge'
+  if (specApproval) return 'Spec only'
+  if (mergeApproval) return 'Merge only'
+  return 'None — runs to merge'
 }
 
 function dependencyRelationLabel(state: string, blocking: boolean, unsatisfiable: boolean) {
@@ -303,7 +318,7 @@ function CancelControl({ item }: { item: ActivityItem }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1 rounded-md border border-failure/30 bg-failure-soft px-2 py-0.5 text-[11px] font-medium leading-4 text-failure transition-colors hover:bg-failure/15 [&_svg]:size-3"
+        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-failure-soft hover:text-failure [&_svg]:size-3.5"
       >
         <Trash2 /> Cancel task
       </button>
@@ -378,7 +393,7 @@ function TaskBody({ body }: { body: string }) {
   )
 }
 
-function SetupChangeControl({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+function SetupChangeControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
   const config = useQuery({ queryKey: ['workspace-config', item.task.workspace, token], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token) })
@@ -416,8 +431,8 @@ function SetupChangeControl({ item, variant }: { item: ActivityItem; variant: 's
       ? 'Interrupted review: panel size changes, so a whole new round will run.'
       : 'Interrupted review: identical seat assignments are retained; changed seats re-run.'
     : ''
-  const body = (
-    <>
+  return (
+    <Disclosure summary="Change execution setup" note="affects future work only">
       <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
         <select aria-label="Named execution setup" value={selected} onChange={(event) => setSelected(event.target.value)} disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs">
           {(config.data?.document.setups ?? []).map((setup) => <option key={setup.name} value={setup.name}>{setup.name}</option>)}
@@ -434,26 +449,22 @@ function SetupChangeControl({ item, variant }: { item: ActivityItem; variant: 's
       {(disabledReason || interruptedOutcome) && <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>}
       {mutation.error != null && <p className="mt-2 text-xs text-failure">{String(mutation.error)}</p>}
       {mutation.data && <p className="mt-2 text-xs text-positive">Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.</p>}
-    </>
+    </Disclosure>
   )
-  if (variant === 'full') {
-    return (
-      <section className="mt-4 rounded-lg border border-border bg-surface p-3" aria-label="Change execution setup">
-        <div className="flex flex-wrap items-center gap-2">
-          <strong className="text-xs font-semibold">Change execution setup</strong>
-          <span className="text-xs text-attention">affects future work only</span>
-        </div>
-        {body}
-      </section>
-    )
-  }
+}
+
+// A quiet inline disclosure: secondary controls stay one click away instead
+// of occupying the space above the work they configure.
+function Disclosure({ summary, note, children }: { summary: string; note?: string; children: React.ReactNode }) {
   return (
-    <details className="mt-3 rounded-lg border border-border bg-surface p-3">
-      <summary className="cursor-pointer text-xs font-medium text-muted hover:text-foreground">
-        Change execution setup <span className="ml-1 font-normal text-attention">affects future work only</span>
+    <details className="group/disclosure min-w-0 basis-full sm:basis-auto">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted hover:text-foreground">
+        <ChevronRight className="size-3 shrink-0 transition-transform group-open/disclosure:rotate-90" />
+        {summary}
+        {note && <span className="text-faint">{note}</span>}
       </summary>
-	  {body}
-	</details>
+      <div className="mt-2 rounded-lg border border-border bg-surface p-3">{children}</div>
+    </details>
   )
 }
 
@@ -467,20 +478,18 @@ function HoldControl({ item }: { item: ActivityItem }) {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['activity'] }),
   })
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  if (!token || terminal) return item.task.hold ? <Badge variant="mono">Held</Badge> : null
+  if (!token || terminal) return null
+  // The badge row already says "Held"; this control says what pressing it does.
   return (
     <button
       type="button"
       disabled={toggle.isPending}
       onClick={() => toggle.mutate()}
-      title={item.task.hold ? 'Held — your worker won’t claim this task. Click to release it back to the queue.' : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium leading-4 transition-colors disabled:opacity-40 [&_svg]:size-3',
-        item.task.hold ? 'border-primary/40 bg-primary-soft text-primary' : 'border-border bg-surface text-muted hover:text-foreground',
-      )}
+      title={item.task.hold ? 'Held — your worker won’t claim this task. Release it back to the queue.' : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'}
+      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40 [&_svg]:size-3.5"
     >
       <Hand />
-      {item.task.hold ? 'Held' : 'Hold'}
+      {item.task.hold ? 'Release' : 'Hold'}
     </button>
   )
 }
@@ -494,23 +503,17 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-function Checkout({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
-  const block =
-    item.checkout_available && item.checkout_command ? (
-      <div className="flex max-w-xl items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1">
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
-        <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
-      </div>
-    ) : (
-      <p className="max-w-xl rounded-md border border-border bg-surface px-2.5 py-2 text-[11px] leading-5 text-muted">
-        {item.checkout_guidance}
-      </p>
-    )
-  if (variant === 'full') return <div className="mt-3">{block}</div>
+function Checkout({ item }: { item: ActivityItem }) {
   return (
-    <details className="mt-3">
-      <summary className="cursor-pointer text-xs font-medium text-muted hover:text-foreground">Checkout</summary>
-      <div className="mt-2">{block}</div>
-    </details>
+    <Disclosure summary="Work on this locally">
+      {item.checkout_available && item.checkout_command ? (
+        <div className="flex max-w-xl items-center gap-1">
+          <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
+          <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
+        </div>
+      ) : (
+        <p className="max-w-xl text-[11px] leading-5 text-muted">{item.checkout_guidance}</p>
+      )}
+    </Disclosure>
   )
 }

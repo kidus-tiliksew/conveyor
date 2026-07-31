@@ -4,13 +4,16 @@ import type { InterventionAction } from './types'
 // and closed work stays reachable without cluttering the factory's WIP view.
 export type GroupKey = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'human' | 'done'
 
+// "Needs operator" is not a pipeline stage — it collects tasks holding at a
+// human gate from every stage. It leads the board so the work waiting on you
+// is the first thing read, and never the column that scrolled off the edge.
 export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
+  { key: 'human', label: 'Needs operator' },
   { key: 'triage', label: 'Triage' },
   { key: 'spec', label: 'Spec' },
   { key: 'implement', label: 'Implementing' },
   { key: 'review', label: 'Reviewing' },
   { key: 'verify', label: 'Verifying' },
-  { key: 'human', label: 'Needs operator' },
   { key: 'done', label: 'Completed' },
 ]
 

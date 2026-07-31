@@ -478,6 +478,9 @@ test('task detail previews and submits a named future-only setup change', async 
 	})
 	await page.goto('/tasks/setup-change/full')
 	await expect(page.getByText('affects future work only')).toBeVisible()
+	// Both route variants keep the control collapsed: the page opens on the
+	// work, not on configuration.
+	await page.locator('summary', { hasText: 'Change execution setup' }).click()
 	await page.getByLabel('Named execution setup').selectOption('next')
 	await expect(page.getByText(/After: implement claude \/ explicit \/ high \/ 3h/)).toBeVisible()
 	await page.getByLabel('Setup change reason').fill('repair routing')
@@ -488,7 +491,7 @@ test('task detail previews and submits a named future-only setup change', async 
 	expect(String(submitted?.request_id)).not.toBe('')
 })
 
-test('task sheet exposes the setup change control behind an expandable section', async ({ page }) => {
+test('task detail exposes the setup change control behind an expandable section', async ({ page }) => {
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-submitted', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
 	await page.goto('/tasks/setup-submitted')
@@ -507,6 +510,7 @@ test('a claimed attempt disables the setup change control with the specific bloc
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-claimed', false).task.setup_contract], default_setup: 'old', execution: {} } } }))
 	await page.goto('/tasks/setup-claimed/full')
+	await page.locator('summary', { hasText: 'Change execution setup' }).click()
 	await expect(page.getByText('An attempt is claimed and executing.')).toBeVisible()
 	await expect(page.getByLabel('Named execution setup')).toBeDisabled()
 })
@@ -905,10 +909,12 @@ test('output-validation rejections show job-specific errors with warning tone an
 		await expect(card.locator('xpath=..').locator('.bg-attention-dot')).toHaveCount(1)
 	}
 
-	const acceptedSpec = timeline.locator('article').filter({ hasText: 'Completed.' }).filter({ has: page.getByText('Spec', { exact: true }) })
+	// A stage that produced no narration of its own collapses to one line —
+	// it carries no warning tone and never leaks the rejected payload.
+	const acceptedSpec = timeline.locator('li').filter({ hasText: 'Spec completed' })
 	await expect(acceptedSpec).toHaveCount(1)
-	await expect(acceptedSpec).toHaveClass(/bg-card/)
-	await expect(acceptedSpec).not.toHaveClass(/bg-attention-soft/)
+	await expect(acceptedSpec.locator('article')).toHaveCount(0)
+	await expect(acceptedSpec.locator('.bg-attention-dot')).toHaveCount(0)
 	await expect(page.getByText('PRIVATE REJECTED OUTPUT')).toHaveCount(0)
 
 	await expect(timeline.getByText('Harness narration wins.', { exact: true })).toBeVisible()
@@ -947,7 +953,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
 test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
 	await page.goto('/tasks/gate/full')
 
-	await expect(page.getByRole('heading', { name: 'Event timeline' })).toBeVisible()
+	await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
 	const gate = page.getByRole('region', { name: 'Human gate' })
 	await expect(gate).toHaveCount(1)
 	await expect(gate.getByText('Your review, please')).toBeVisible()

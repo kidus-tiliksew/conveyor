@@ -2,6 +2,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ActivityItem } from '../lib/types'
 import { AttachmentsCard } from '../components/task/attachments-card'
+import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
@@ -76,7 +77,9 @@ function FullBody({ item }: { item: ActivityItem }) {
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">No spec yet — the spec stage has not produced a version.</p>
           )}
-          <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+          {/* While a gate is open the evidence belongs with the decision, and
+              the gate card renders it there — not twice on one page. */}
+          {!isReviewable(item.task) && <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />}
           <AttachmentsCard attachments={item.attachments ?? []} />
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
