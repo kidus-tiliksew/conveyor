@@ -45,15 +45,18 @@ export function BoardColumn({
   const attention = items.filter((item) => item.needs_attention).length
   const visible = groupKey === 'done' ? items.slice(0, DONE_CAP) : items
   // An idle stage narrows rather than reserving a full lane. Seven stages
-  // never fit a desktop at full width, so the columns that hold work earn the
-  // space — and the ones that need a decision stay on screen more often.
+  // never fit a desktop at their full width, so the columns that hold work
+  // earn the space — and the ones that need a decision stay on screen more
+  // often. Every column also grows to share whatever is left over, three
+  // parts to one, so the row always reaches the right edge instead of
+  // trailing off into dead space; past that point the board scrolls.
   const idle = items.length === 0
   return (
     <section
       aria-label={label}
       className={cn(
-        'flex h-full shrink-0 flex-col rounded-lg border border-border transition-[width]',
-        idle ? 'w-44 bg-surface/50' : 'w-72 bg-surface',
+        'flex h-full flex-col rounded-lg border border-border',
+        idle ? 'min-w-44 flex-[1_1_11rem] bg-surface/50' : 'min-w-72 flex-[3_1_18rem] bg-surface',
       )}
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5">
