@@ -271,6 +271,12 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByPlaceholder('Search tasks').fill('blueprint')
     await page.waitForTimeout(300)
     await page.screenshot({ path: `${shots}/board-idle-${theme}.png` })
+    // Wide desktop: the row must reach the right edge rather than trailing
+    // off into dead space once the narrowed idle lanes let everything fit.
+    await page.setViewportSize({ width: 2240, height: 1120 })
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${shots}/board-idle-wide-${theme}.png` })
+    await page.setViewportSize({ width: 1680, height: 1050 })
     await page.getByPlaceholder('Search tasks').fill('')
 
     await page.goto('/tasks/task-260731-gate01')
