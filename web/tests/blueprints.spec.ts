@@ -93,6 +93,17 @@ function blueprintView() {
       content_type: 'application/json', size_bytes: 2048, role: 'generated_audit',
       task_id: anchorId, download_url: '/v1/artifacts/artifact-transcript', created_at: createdAt,
     }],
+    planning_session: {
+      id: 'session-blueprint', title: 'Plan the delivery', status: 'finalized',
+      model: 'gpt-plan', effort: 'high', exploration_output_tokens: 12000,
+      primary_repo: 'conveyor',
+      pinned_revisions: {
+        conveyor: '0123456789abcdef',
+        companion: 'fedcba9876543210',
+      },
+      produced_task_id: anchorId, workspace: 'demo',
+      created_at: createdAt, updated_at: createdAt, finalized_at: createdAt,
+    },
   }
 }
 
@@ -219,6 +230,10 @@ test('the blueprints list reports delivery, governing version, and served requir
   await expect(entry.getByText('Blueprint v3')).toBeVisible()
   await expect(entry.getByText('1 merged · 1 closed without merging · 2 in progress')).toBeVisible()
   await expect(entry.getByText('In-product planning')).toBeVisible()
+  await expect(entry.getByText('gpt-plan · high')).toBeVisible()
+  await expect(entry.getByText('12,000 tokens/call')).toBeVisible()
+  await expect(entry.getByText('conveyor@0123456789ab')).toBeVisible()
+  await expect(entry.getByText('companion@fedcba987654')).toBeVisible()
   // Pipeline vocabulary never reaches this surface.
   await expect(page.getByText('Queued', { exact: true })).toHaveCount(0)
   await expect(page.getByText('in_delivery')).toHaveCount(0)

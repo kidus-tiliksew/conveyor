@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -56,6 +61,156 @@ func TestServiceStreamsAndPersistsTextParts(t *testing.T) {
 		messages[1].Content != "Which repository should this target?" ||
 		!strings.Contains(string(messages[1].Parts), `"text-delta"`) {
 		t.Fatalf("messages = %+v", messages)
+	}
+}
+
+func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	tmp := t.TempDir()
+	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
+	secondary := createPlanningRepo(t, filepath.Join(tmp, "secondary"), "internal/eligibility.go",
+		"package internal\n\nfunc eligible() bool { return true }\n")
+	cfg := &config.Config{
+		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Repos: []config.Repo{
+			{Name: "primary", URL: "file://" + primary, Base: "main"},
+			{Name: "secondary", URL: "file://" + secondary, Base: "main"},
+		},
+		PlanningModels: []string{"planner", "planner-alt"},
+		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
+			Planning: config.PlanningSettings{
+				Model: "planner", Effort: "high", TimeoutText: "10m", ExplorationOutputTokens: 100,
+			},
+		}},
+	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	service := &Service{
+		Store: st, Git: gitx.NewManager(cfg.CacheDir, ""),
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	if _, err := service.CreateSession(ctx, "Rejected", "", "outside"); err == nil ||
+		!strings.Contains(err.Error(), "configured models: planner, planner-alt") {
+		t.Fatalf("off-allowlist model error=%v", err)
+	}
+	session, err := service.CreateSession(ctx, "Explore eligibility", "", "planner-alt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Model != "planner-alt" || session.Effort != "high" ||
+		session.PinnedRevisions["primary"] == "" || session.PinnedRevisions["secondary"] != "" {
+		t.Fatalf("created session=%+v", session)
+	}
+
+	listed, err := service.explorationTool(ctx, session, toolCall{
+		Name: "list_files", ArgumentsJSON: `{"repo":"secondary","path":"internal","glob":"*.go","depth":0}`,
+	})
+	if err != nil || !strings.Contains(listed.Output.(string), "internal/eligibility.go") {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	pinned, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || pinned.PinnedRevisions["secondary"] == "" {
+		t.Fatalf("secondary was not pinned: %+v err=%v", pinned, err)
+	}
+	secondaryRevision := pinned.PinnedRevisions["secondary"]
+
+	if err := os.WriteFile(filepath.Join(secondary, "internal", "eligibility.go"),
+		[]byte("package internal\n\nfunc eligible() bool { return false }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPlanningGit(t, secondary, "add", ".")
+	runPlanningGit(t, secondary, "commit", "-m", "advance secondary")
+	read, err := service.explorationTool(ctx, pinned, toolCall{
+		Name: "read_file", ArgumentsJSON: `{"repo":"secondary","path":"internal/eligibility.go","offset":1,"limit":10}`,
+	})
+	if err != nil || !strings.Contains(read.Output.(string), "return true") ||
+		strings.Contains(read.Output.(string), "return false") {
+		t.Fatalf("read=%+v err=%v", read, err)
+	}
+	if !strings.Contains(read.Output.(string), "internal/eligibility.go (lines 1–3 of 3)") ||
+		!strings.Contains(read.Output.(string), "     3\tfunc eligible") {
+		t.Fatalf("read_file contract=%q", read.Output)
+	}
+	grepResult, err := service.explorationTool(ctx, pinned, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"eligible","context":0,"mode":"content"}`,
+	})
+	if err != nil || !strings.Contains(grepResult.Output.(string), "internal/eligibility.go:3:") ||
+		strings.Contains(grepResult.Output.(string), secondaryRevision) {
+		t.Fatalf("grep=%+v err=%v", grepResult, err)
+	}
+	historyResult, err := service.explorationTool(ctx, pinned, toolCall{
+		Name: "history", ArgumentsJSON: `{"repo":"secondary","path":"internal/eligibility.go","n":20}`,
+	})
+	if err != nil || !strings.Contains(historyResult.Output.(string), "initial") ||
+		!strings.Contains(historyResult.Output.(string), "Latest commit context") {
+		t.Fatalf("history=%+v err=%v", historyResult, err)
+	}
+	after, _ := st.GetPlanningSession(ctx, session.ID)
+	if after.PinnedRevisions["secondary"] != secondaryRevision {
+		t.Fatalf("secondary revision changed: %s -> %s", secondaryRevision, after.PinnedRevisions["secondary"])
+	}
+	if _, err = service.explorationTool(ctx, after, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"outside","pattern":"eligible","context":0,"mode":"content"}`,
+	}); err == nil || !strings.Contains(err.Error(), "configured repositories: primary, secondary") {
+		t.Fatalf("unknown repo error=%v", err)
+	}
+
+	if _, err = st.RecordPlanningExplorationTokens(ctx, session.ID, 1500); err != nil {
+		t.Fatal(err)
+	}
+	low, err := service.explorationTool(ctx, after, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"eligible","context":0,"mode":"content"}`,
+	})
+	if err != nil || !strings.Contains(low.Output.(string), "session exploration budget low; prefer targeted reads") {
+		t.Fatalf("low-budget output=%+v err=%v", low, err)
+	}
+}
+
+func TestExplorationToolSchemasAreStrictAndExposeNoRevision(t *testing.T) {
+	schemas := explorationToolSchemas()
+	if len(schemas) != 4 {
+		t.Fatalf("schema count=%d", len(schemas))
+	}
+	for _, schema := range schemas {
+		parameters := schema["parameters"].(map[string]any)
+		properties := parameters["properties"].(map[string]any)
+		if parameters["additionalProperties"] != false {
+			t.Fatalf("%s accepts additional properties", schema["name"])
+		}
+		if _, exists := properties["ref"]; exists {
+			t.Fatalf("%s exposes a caller-controlled revision", schema["name"])
+		}
+		if _, exists := properties["repo"]; !exists {
+			t.Fatalf("%s omits repo selection", schema["name"])
+		}
+	}
+}
+
+func createPlanningRepo(t *testing.T, directory, file, content string) string {
+	t.Helper()
+	runPlanningGit(t, "", "init", "-b", "main", directory)
+	runPlanningGit(t, directory, "config", "user.email", "planning@example.com")
+	runPlanningGit(t, directory, "config", "user.name", "Planning Test")
+	target := filepath.Join(directory, file)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPlanningGit(t, directory, "add", ".")
+	runPlanningGit(t, directory, "commit", "-m", "initial")
+	return directory
+}
+
+func runPlanningGit(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
 }
 

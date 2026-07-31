@@ -37,6 +37,7 @@ type createWorkspaceDocument struct {
 	DefaultSetup              *string                             `json:"default_setup,omitempty"`
 	Execution                 *config.ExecutionPolicy             `json:"execution,omitempty"`
 	Monitor                   *config.MonitorConfig               `json:"monitor,omitempty"`
+	PlanningModels            *[]string                           `json:"planning_models,omitempty"`
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +160,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.Monitor != nil {
 			document.Monitor = *partial.Monitor
+		}
+		if partial.PlanningModels != nil {
+			document.PlanningModels = *partial.PlanningModels
 		}
 		data, marshalErr := yaml.Marshal(document)
 		if marshalErr != nil {

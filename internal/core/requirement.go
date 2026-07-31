@@ -100,6 +100,15 @@ type PlanningSession struct {
 	ID     string                `json:"id"`
 	Title  string                `json:"title,omitempty"`
 	Status PlanningSessionStatus `json:"status"`
+	// Model, Effort, ExplorationOutputTokens, and PinnedRevisions are the
+	// immutable serving provenance selected when the session starts. Existing
+	// pre-provenance rows remain readable with zero values (spec §21.50-§21.52).
+	Model                   string            `json:"model,omitempty"`
+	Effort                  string            `json:"effort,omitempty"`
+	ExplorationOutputTokens int               `json:"exploration_output_tokens,omitempty"`
+	ExplorationTokensUsed   int               `json:"exploration_tokens_used,omitempty"`
+	PrimaryRepo             string            `json:"primary_repo,omitempty"`
+	PinnedRevisions         map[string]string `json:"pinned_revisions,omitempty"`
 	// RequirementContextID is set when the session was opened from a
 	// requirement ("Plan work"), which is what auto-proposes a serves link.
 	RequirementContextID string `json:"requirement_context_id,omitempty"`

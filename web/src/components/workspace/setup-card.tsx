@@ -24,6 +24,12 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
 }) {
   const isDefault = document.default_setup === setup.name
   const settings = setup.execution_settings
+  const planning = settings.control_plane.planning ?? {
+    model: settings.control_plane.triage.model,
+    effort: settings.control_plane.triage.effort,
+    timeout: settings.control_plane.triage.timeout,
+    exploration_output_tokens: 10_000,
+  }
   const seats = setup.review.seats
 
   const updateSetup = (change: Partial<ExecutionSetup>) => {
@@ -39,6 +45,8 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
   }
   const updateTriage = (change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['triage']>) =>
     updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, triage: { ...settings.control_plane.triage, ...change } } } })
+  const updatePlanning = (change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['planning']>) =>
+    updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, planning: { ...planning, ...change } } } })
   const updateSpec = (change: Partial<typeof settings.spec>) =>
     updateSetup({ execution_settings: { ...settings, spec: { ...settings.spec, ...change } } })
   const updateImplementation = (change: Partial<typeof settings.implementation>) =>
@@ -80,6 +88,7 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
 
       <div className="flex items-stretch gap-4 overflow-x-auto px-4 pb-3">
         <Stage name="Triage" model={settings.control_plane.triage.model} meta={`${settings.control_plane.triage.timeout} limit${settings.control_plane.triage.effort ? ` · ${settings.control_plane.triage.effort} effort` : ''}`} />
+        <Stage name="Planning" model={planning.model} meta={`${planning.exploration_output_tokens.toLocaleString()} tokens/call`} connected />
 		<Stage name="Spec" model={`${settings.spec.harness || 'no harness'} · ${settings.spec.model_policy === 'explicit' ? settings.spec.model || 'no model' : 'harness default'}`} meta={`${settings.spec.timeout} limit`} connected />
         <Stage name="Implement" model={implementSummary} meta={`${settings.implementation.timeout} limit`} connected />
         <Stage name="Review" model={`${seats.length} ${seats.length === 1 ? 'seat' : 'seats'}`} meta={`all must approve · ${settings.review.timeout}`} connected />
@@ -101,6 +110,20 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
                     </Select>
                   </Field>
                   <Field label="Time limit"><Input aria-label="triage timeout" value={settings.control_plane.triage.timeout} onChange={(event) => updateTriage({ timeout: event.target.value })} /></Field>
+            </div>
+          </div>
+
+          <div className="border-b border-border px-4 py-4">
+            <GroupTitle title="Planning" note="runs inside Conveyor over immutable repository snapshots" />
+            <div className="grid gap-3 md:grid-cols-4">
+              <Field label="Default model"><Input aria-label="planning model" className="font-mono" value={planning.model} onChange={(event) => updatePlanning({ model: event.target.value })} /></Field>
+              <Field label="Reasoning effort">
+                <Select aria-label="planning reasoning effort" value={planning.effort ?? ''} onChange={(event) => updatePlanning({ effort: (event.target.value || undefined) as typeof planning.effort })}>
+                  <option value="">Provider default</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+                </Select>
+              </Field>
+              <Field label="Time limit"><Input aria-label="planning timeout" value={planning.timeout} onChange={(event) => updatePlanning({ timeout: event.target.value })} /></Field>
+              <Field label="Exploration output tokens"><Input aria-label="planning exploration output tokens" type="number" min={1} value={planning.exploration_output_tokens} onChange={(event) => updatePlanning({ exploration_output_tokens: Number(event.target.value) })} /></Field>
             </div>
           </div>
 

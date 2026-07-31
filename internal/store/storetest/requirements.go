@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -487,6 +488,8 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		sessionID := "session-" + core.NewTaskID()
 		session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 			ID: sessionID, Title: "Plan the queue rewrite", RequirementContextID: opened.ID,
+			Model: "planner", Effort: "high", ExplorationOutputTokens: 10_000,
+			PrimaryRepo: "api", PinnedRevisions: map[string]string{"api": strings.Repeat("a", 40)},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -495,10 +498,25 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			session.Status != core.PlanningSessionActive || session.Title != "Plan the queue rewrite" ||
 			session.RequirementContextID != opened.ID || session.ProducedRequirementID != "" ||
 			session.ProducedTaskID != "" || session.TranscriptArtifactID != "" ||
+			session.Model != "planner" || session.Effort != "high" ||
+			session.ExplorationOutputTokens != 10_000 ||
+			session.PinnedRevisions["api"] != strings.Repeat("a", 40) ||
 			!session.FinalizedAt.IsZero() || session.CreatedAt.IsZero() || session.UpdatedAt.IsZero() {
 			t.Fatalf("created session=%+v", session)
 		}
 		assertPlanningSessionRoundTrip(t, ctx, st, session)
+		pinned, err := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("b", 40))
+		if err != nil || pinned.PinnedRevisions["web"] != strings.Repeat("b", 40) {
+			t.Fatalf("pinned session=%+v err=%v", pinned, err)
+		}
+		pinnedAgain, err := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40))
+		if err != nil || pinnedAgain.PinnedRevisions["web"] != strings.Repeat("b", 40) {
+			t.Fatalf("immutable pin changed: %+v err=%v", pinnedAgain, err)
+		}
+		accounted, err := st.RecordPlanningExplorationTokens(ctx, sessionID, 42)
+		if err != nil || accounted.ExplorationTokensUsed != 42 {
+			t.Fatalf("exploration accounting=%+v err=%v", accounted, err)
+		}
 
 		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{ID: sessionID}); err == nil {
 			t.Fatal("duplicate planning session id was accepted")

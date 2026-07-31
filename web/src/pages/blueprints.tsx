@@ -80,6 +80,17 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
           {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
         </div>
         <p className="mt-1.5 text-xs text-muted">{childRollup(view.delivery)}</p>
+        {view.planning_session?.model && (
+          <p className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-faint">
+            <Badge variant="mono">{view.planning_session.model}{view.planning_session.effort ? ` · ${view.planning_session.effort}` : ''}</Badge>
+            {view.planning_session.exploration_output_tokens
+              ? <Badge variant="mono">{view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
+              : null}
+            {Object.entries(view.planning_session.pinned_revisions ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([repo, revision]) => (
+              <Badge key={repo} variant="mono">{repo}@{revision.slice(0, 12)}</Badge>
+            ))}
+          </p>
+        )}
         {view.serves.length > 0 && (
           <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
             <FileText className="size-3 shrink-0" aria-hidden="true" />
