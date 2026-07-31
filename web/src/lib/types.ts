@@ -82,7 +82,6 @@ export interface Task {
   dependencies?: TaskRelation[]
   blocking_task_ids?: string[]
   children?: TaskRelation[]
-  feature_id?: string
   github?: GitHubLifecycle
   created_at: string
 }
@@ -504,8 +503,7 @@ export interface WorkOrder {
   last_agent_activity_label?: string
 }
 
-export interface Feature { id: string; workspace: string; parent_id?: string; name: string; description?: string; created_at: string }
-export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; feature_id?: string; requirement_id?: string; download_url?: string; created_at: string }
+export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; requirement_id?: string; download_url?: string; created_at: string }
 
 export interface RequirementStatement {
   id: string

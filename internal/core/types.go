@@ -154,9 +154,11 @@ type Task struct {
 	Dependencies       []TaskRelation        `json:"dependencies,omitempty"`
 	BlockingTaskIDs    []string              `json:"blocking_task_ids,omitempty"`
 	Children           []TaskRelation        `json:"children,omitempty"`
-	FeatureID          string                `json:"feature_id,omitempty"` // requirements-tree assignment (spec §21.4)
-	GitHub             *GitHubLifecycle      `json:"github,omitempty"`     // durable forge projection (spec §21.12 change 5)
-	CreatedAt          time.Time             `json:"created_at"`
+	// FeatureID is deprecated migration history. Live task context and child
+	// materialization use requirement/lineage records instead (spec §21.46).
+	FeatureID string           `json:"feature_id,omitempty"`
+	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection (spec §21.12 change 5)
+	CreatedAt time.Time        `json:"created_at"`
 }
 
 // TaskRelation is the compact live reference used by dependency and blueprint
@@ -821,9 +823,11 @@ type Artifact struct {
 	Name        string       `json:"name"`
 	ContentType string       `json:"content_type"`
 	SizeBytes   int64        `json:"size_bytes"`
-	Role      ArtifactRole `json:"role"`
-	TaskID    string       `json:"task_id,omitempty"`
-	FeatureID string       `json:"feature_id,omitempty"`
+	Role        ArtifactRole `json:"role"`
+	TaskID      string       `json:"task_id,omitempty"`
+	// FeatureID remains readable only for pre-retirement persistence
+	// compatibility; live attachment creation targets tasks or requirements.
+	FeatureID string `json:"feature_id,omitempty"`
 	// RequirementID is the attachment target that replaces FeatureID as the
 	// feature tree retires (spec §21.46 change 5). It is how a finalized
 	// planning transcript attaches to the requirement it produced (§9), and

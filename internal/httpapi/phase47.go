@@ -163,8 +163,9 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		ID: fmt.Sprintf("%x", sum), Workspace: workspace, Name: safeFilename(header),
 		ContentType: contentType, SizeBytes: int64(len(content)), Role: role,
 		TaskID: strings.TrimSpace(r.FormValue("task_id")),
-		// Requirement attachments replace feature attachments on the live API
-		// while FeatureID remains readable for migrated history (spec §21.46).
+		// Requirement attachments replace feature attachments on the live API;
+		// the store retains legacy fields only for migration compatibility
+		// (spec §21.46).
 		RequirementID: strings.TrimSpace(r.FormValue("requirement_id")),
 		CreatedAt:     time.Now().UTC(),
 	}

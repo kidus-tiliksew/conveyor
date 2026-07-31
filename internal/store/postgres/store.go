@@ -1221,7 +1221,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
 				State: core.TaskQueued, NextStage: core.StageImplement,
 				ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
-				FeatureID: parent.FeatureID, CreatedAt: createdAt,
+				CreatedAt: createdAt,
 			}
 			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
@@ -4089,7 +4089,7 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 	return artifact, content, nil
 }
 
-func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
+func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
 	// A requirement-attached link is in this task's context when migration 046
@@ -4102,7 +4102,6 @@ func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID
 		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
 		WHERE a.workspace_id=$1 AND a.id=$2
 		  AND (($3 <> '' AND l.task_id=$3)
-		       OR ($4 <> '' AND l.feature_id=$4)
 		       OR ($3 <> '' AND l.requirement_id IS NOT NULL AND EXISTS (
 		           SELECT 1 FROM links edge
 		           WHERE edge.workspace_id=a.workspace_id
@@ -4110,7 +4109,7 @@ func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID, featureID
 		             AND edge.src_type='requirement' AND edge.src_id=l.requirement_id
 		             AND edge.dst_type='task' AND edge.dst_id=$3)))
 		ORDER BY l.role
-		LIMIT 1`, workspace(ctx), id, taskID, featureID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID)
+		LIMIT 1`, workspace(ctx), id, taskID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}

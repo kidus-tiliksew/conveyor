@@ -250,18 +250,21 @@ func (st *artifactContextFailureStore) ListArtifacts(ctx context.Context) ([]cor
 	return st.Store.ListArtifacts(ctx)
 }
 
-func (st *artifactContextFailureStore) GetArtifactForContext(ctx context.Context, id, taskID, featureID string) (core.Artifact, []byte, error) {
+func (st *artifactContextFailureStore) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
 	if st.readErr {
 		return core.Artifact{}, nil, errors.New("artifact read unavailable")
 	}
-	return st.Store.GetArtifactForContext(ctx, id, taskID, featureID)
+	return st.Store.GetArtifactForContext(ctx, id, taskID)
 }
 
 func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateFeature(ctx, core.Feature{ID: "retired-feature", Workspace: "demo", Name: "Retired"}); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", FeatureID: "retired-feature", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -278,6 +281,11 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: item.name, ContentType: item.contentType, TaskID: task.ID}, item.content); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "retired-feature.txt", ContentType: "text/plain", FeatureID: "retired-feature",
+	}, []byte("must not enter live model context")); err != nil {
+		t.Fatal(err)
 	}
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
@@ -297,6 +305,9 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	foundLargeText := false
 	for _, attachment := range agent.input.Attachments {
 		kinds[attachment.Kind]++
+		if attachment.Name == "retired-feature.txt" {
+			t.Fatal("retired feature-scoped artifact entered live model context")
+		}
 		if attachment.Name == "large.txt" {
 			foundLargeText = len(attachment.Content) == len(largeText)
 		}

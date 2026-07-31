@@ -46,7 +46,7 @@ type Observation struct {
 	CommitSHA         string            `json:"commit_sha,omitempty"`
 	PullRequestNumber int               `json:"pull_request_number,omitempty"`
 	CheckRunID        string            `json:"check_run_id,omitempty"`
-	FeatureID         string            `json:"feature_id,omitempty"`
+	RequirementID     string            `json:"requirement_id,omitempty"`
 	ObservedAt        time.Time         `json:"observed_at"`
 	Context           map[string]string `json:"context,omitempty"`
 	Hints             *HintContext      `json:"hints,omitempty"`
@@ -59,7 +59,7 @@ func (o *Observation) Normalize(workspace string, now time.Time) error {
 	o.SourceURL = strings.TrimSpace(o.SourceURL)
 	o.CommitSHA = strings.TrimSpace(o.CommitSHA)
 	o.CheckRunID = strings.TrimSpace(o.CheckRunID)
-	o.FeatureID = strings.TrimSpace(o.FeatureID)
+	o.RequirementID = strings.TrimSpace(o.RequirementID)
 	if o.WorkspaceID == "" {
 		o.WorkspaceID = workspace
 	}
@@ -116,17 +116,17 @@ type ObservationRecord struct {
 }
 
 type Drift struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspace_id"`
-	Repository  string     `json:"repository"`
-	Kind        SignalKind `json:"kind"`
-	SourceURL   string     `json:"source_url"`
-	CommitSHA   string     `json:"commit_sha,omitempty"`
-	FeatureID   string     `json:"feature_id,omitempty"`
-	TaskID      string     `json:"task_id"`
-	DetectedAt  time.Time  `json:"detected_at"`
-	ResolvedAt  time.Time  `json:"resolved_at,omitempty"`
-	Outcome     string     `json:"outcome,omitempty"`
+	ID            string     `json:"id"`
+	WorkspaceID   string     `json:"workspace_id"`
+	Repository    string     `json:"repository"`
+	Kind          SignalKind `json:"kind"`
+	SourceURL     string     `json:"source_url"`
+	CommitSHA     string     `json:"commit_sha,omitempty"`
+	RequirementID string     `json:"requirement_id,omitempty"`
+	TaskID        string     `json:"task_id"`
+	DetectedAt    time.Time  `json:"detected_at"`
+	ResolvedAt    time.Time  `json:"resolved_at,omitempty"`
+	Outcome       string     `json:"outcome,omitempty"`
 }
 
 type Status struct {
@@ -294,7 +294,7 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			ID: observation.Identity(), WorkspaceID: observation.WorkspaceID,
 			Repository: observation.Repository, Kind: observation.Kind,
 			SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA,
-			FeatureID: observation.FeatureID, TaskID: result.Task.ID,
+			RequirementID: observation.RequirementID, TaskID: result.Task.ID,
 			DetectedAt: observation.ObservedAt,
 		})
 		if err != nil {
@@ -306,7 +306,7 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		})
 		_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.drift_detected", map[string]any{
 			"drift_id": observation.Identity(), "commit_sha": observation.CommitSHA,
-			"feature_id": observation.FeatureID,
+			"requirement_id": observation.RequirementID,
 		})
 	}
 	_ = s.Store.RecordMonitorSuccess(ctx, now)
