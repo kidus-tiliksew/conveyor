@@ -1,10 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { Blocks, ExternalLink, FileText } from 'lucide-react'
+import { Blocks, ChevronRight, ExternalLink, FileText } from 'lucide-react'
 import { parseProvenance } from '../../lib/activity'
 import { childRollup, childStateLabel, deliveryLabel, deliveryTone } from '../../lib/blueprint'
-import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, BlueprintChild, BlueprintView } from '../../lib/types'
-import { absoluteTime, cn } from '../../lib/utils'
+import { absoluteTime } from '../../lib/utils'
 import { AttachmentsCard } from '../task/attachments-card'
 import { SpecCard } from '../task/spec-card'
 import { CancelControl } from '../task/task-header'
@@ -13,62 +12,36 @@ import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
 
-// The blueprint anchor detail (spec §21.49). An anchor is an intent artifact:
-// no order will ever be claimed for it, nothing will land on its branch, and
-// it will never move through a stage column. So it leads with the approved
-// blueprint, reports delivery in blueprint vocabulary, and shows none of the
-// checkout, assigned-branch, or hold affordances that would imply otherwise.
-// Cancel stays — that is lifecycle, and it behaves exactly as it does today.
-export function BlueprintDetail({
-  view,
-  item,
-  variant,
-}: {
-  view: BlueprintView
-  item: ActivityItem
-  variant: TaskRouteVariant
-}) {
-  if (variant === 'full') {
-    return (
-      <>
-        <div className="shrink-0 border-b border-border px-6 py-4">
-          <BlueprintHeader view={view} item={item} variant="full" />
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2">
-          <section aria-label="Blueprint" className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
-            <BlueprintSpec view={view} variant="full" />
-            <BlueprintChildren view={view} variant="full" />
-          </section>
-          <section aria-label="Delivery activity" className="space-y-4 px-6 py-4">
-            <AttachmentsCard attachments={view.artifacts} title="Lineage and artifacts" />
-            <Timeline item={item} executionActions={false} />
-          </section>
-        </div>
-      </>
-    )
-  }
+// The blueprint anchor detail (spec §21.49), rendered only at its canonical
+// route. An anchor is an intent artifact: no order will ever be claimed for it,
+// nothing will land on its branch, and it will never move through a stage
+// column. So it leads with the approved blueprint, reports delivery in
+// blueprint vocabulary, and shows none of the checkout, assigned-branch, or
+// hold affordances that would imply otherwise. Cancel stays — that is
+// lifecycle, and it behaves exactly as it does today.
+export function BlueprintDetail({ view, item }: { view: BlueprintView; item: ActivityItem }) {
   return (
-    <div className="space-y-4">
-      <BlueprintHeader view={view} item={item} variant="sheet" />
-      <BlueprintSpec view={view} variant="sheet" />
-      <BlueprintChildren view={view} variant="sheet" />
-      <AttachmentsCard attachments={view.artifacts} title="Lineage and artifacts" />
-      <Timeline item={item} executionActions={false} />
-    </div>
+    <>
+      <div className="shrink-0 border-b border-border px-6 py-4">
+        <BlueprintHeader view={view} item={item} />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2">
+        <section aria-label="Blueprint" className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
+          <BlueprintSpec view={view} />
+          <BlueprintChildren view={view} />
+          <OriginalRequest body={view.task.body} />
+        </section>
+        <section aria-label="Delivery activity" className="space-y-4 px-6 py-4">
+          <AttachmentsCard attachments={view.artifacts} title="Lineage and artifacts" />
+          <Timeline item={item} executionActions={false} />
+        </section>
+      </div>
+    </>
   )
 }
 
-function BlueprintHeader({
-  view,
-  item,
-  variant,
-}: {
-  view: BlueprintView
-  item: ActivityItem
-  variant: TaskRouteVariant
-}) {
+function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityItem }) {
   const provenance = parseProvenance(view.task.source)
-  const Heading = variant === 'full' ? 'h1' : 'h2'
   const specVersion = view.governing_version || view.spec?.version
 
   return (
@@ -76,22 +49,15 @@ function BlueprintHeader({
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         <Badge variant="accent" className="gap-1"><Blocks aria-hidden="true" /> Blueprint</Badge>
         <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
+        {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
         <CancelControl item={item} />
         {view.task.class && <Badge>{view.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
       </div>
-      <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}>
-        {view.task.title}
-      </Heading>
-      {view.task.body && (
-        <div className="mt-2 max-w-3xl">
-          <MarkdownProse className="text-sm text-muted">{view.task.body}</MarkdownProse>
-        </div>
-      )}
+      <h1 className="text-xl font-semibold leading-snug tracking-tight">{view.task.title}</h1>
 
-      <dl className={cn('mt-4 grid gap-x-8 gap-y-2.5 text-xs', variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2')}>
+      <dl className="mt-4 grid grid-cols-2 gap-x-8 gap-y-2.5 text-xs lg:grid-cols-4">
         <Fact label="Repo" value={view.task.repo} />
-        {specVersion ? <Fact label="Governing blueprint" value={`v${specVersion}`} /> : null}
         <Fact label="Delivery" value={childRollup(view.delivery)} />
         <Fact label="Planned" value={absoluteTime(view.task.created_at)} />
         <Fact
@@ -128,7 +94,7 @@ function BlueprintHeader({
 
 // The approved blueprint leads: it is what the anchor *is*, and the child
 // list below is only its delivery.
-function BlueprintSpec({ view, variant }: { view: BlueprintView; variant: TaskRouteVariant }) {
+function BlueprintSpec({ view }: { view: BlueprintView }) {
   if (!view.spec) {
     return (
       <Card>
@@ -141,17 +107,16 @@ function BlueprintSpec({ view, variant }: { view: BlueprintView; variant: TaskRo
     <SpecCard
       key={`${view.spec.task_id}-${view.spec.version}`}
       spec={view.spec}
-      collapsible={variant === 'sheet'}
-      overflowExpandable={variant === 'sheet'}
-      routeVariant={variant}
+      collapsible={false}
+      routeVariant="full"
     />
   )
 }
 
 // Children in dependency order, so a task never renders above something it
 // waits on. Every state renders through taskStateLabels — never a raw state.
-function BlueprintChildren({ view, variant }: { view: BlueprintView; variant: TaskRouteVariant }) {
-  const relatedRoute = relatedTaskRoute(variant)
+// A child *is* work, so its link stays on the ordinary task route.
+function BlueprintChildren({ view }: { view: BlueprintView }) {
   return (
     <Card>
       <CardHeader>
@@ -165,7 +130,7 @@ function BlueprintChildren({ view, variant }: { view: BlueprintView; variant: Ta
             <li key={child.id} className="flex items-center gap-2 text-xs">
               {child.origin_sub_id && <Badge variant="mono">{child.origin_sub_id}</Badge>}
               <Link
-                to={relatedRoute}
+                to="/tasks/$taskId/full"
                 params={{ taskId: child.id }}
                 className="min-w-0 flex-1 truncate text-primary hover:underline"
               >
@@ -178,6 +143,24 @@ function BlueprintChildren({ view, variant }: { view: BlueprintView; variant: Ta
         </ol>
       </CardContent>
     </Card>
+  )
+}
+
+// The intake body is provenance, not the headline (spec §21.49). What the
+// anchor promises is the approved blueprint above; the request that started it
+// stays one disclosure away instead of leading with a wall of markdown.
+function OriginalRequest({ body }: { body?: string }) {
+  if (!body?.trim()) return null
+  return (
+    <details className="group/request rounded-lg border border-border bg-card">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-4 py-3 text-sm font-medium">
+        <ChevronRight className="size-3.5 shrink-0 text-faint transition-transform group-open/request:rotate-90" />
+        Original request
+      </summary>
+      <div className="border-t border-border px-4 py-3">
+        <MarkdownProse className="text-sm text-muted">{body}</MarkdownProse>
+      </div>
+    </details>
   )
 }
 
@@ -206,8 +189,8 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-// Rendered when a child's parent reference resolves to an anchor the
-// blueprint projection has not returned yet.
+// Rendered while the blueprint projection has not yet returned the anchor the
+// canonical route was opened for.
 export function BlueprintDetailFallback() {
   return (
     <p className="rounded-md border border-border bg-surface p-3 text-sm text-muted">

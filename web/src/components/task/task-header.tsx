@@ -108,7 +108,10 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           <Fact
             label="Parent blueprint"
             value={(
-              <Link to={relatedRoute} params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">
+              // The parent is an intent artifact, not work, so this reference
+              // leaves the task routes for the blueprint's canonical home
+              // (spec §21.49) — unlike dependencies below, which are tasks.
+              <Link to="/blueprints/$taskId" params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">
                 {parent?.title ?? item.task.parent_task_id}
                 {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
               </Link>
