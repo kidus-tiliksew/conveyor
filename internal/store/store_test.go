@@ -991,6 +991,15 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err != nil || eventAttemptID(t, events, "work_order.cancelled", job.ID) != attemptID {
 		t.Fatalf("cancelled event identity err=%v want=%q", err, attemptID)
 	}
+	if _, err = storetestFor(st).RenewWorkerClaim(ctx, job.ID, "worker", "wrong-session", time.Minute); !errors.Is(err, ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session renew error=%v", err)
+	}
+	if _, err = storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "wrong-session"}); !errors.Is(err, ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session release error=%v", err)
+	}
+	if _, err = storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "session"}); !errors.Is(err, ErrWorkOrderCancelled) {
+		t.Fatalf("release error=%v", err)
+	}
 	if _, err = storetestFor(st).RenewWorkerClaim(ctx, job.ID, "worker", "session", time.Minute); !errors.Is(err, ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)
 	}

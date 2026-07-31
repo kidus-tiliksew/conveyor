@@ -265,6 +265,15 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 			t.Fatalf("cancelled job not cleaned up: %+v", job)
 		}
 	}
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "wrong-session", time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session renew error=%v", err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, cancelJob.ID, "worker", core.WorkOrderRelease{SessionID: "wrong-session"}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session release error=%v", err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, cancelJob.ID, "worker", core.WorkOrderRelease{SessionID: "session"}); !errors.Is(err, store.ErrWorkOrderCancelled) {
+		t.Fatalf("release error=%v", err)
+	}
 	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "session", time.Minute); !errors.Is(err, store.ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)
 	}

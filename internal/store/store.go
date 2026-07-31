@@ -840,7 +840,9 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
-	if ok && order.State == core.WorkOrderCancelled {
+	if ok && order.State == core.WorkOrderCancelled &&
+		((order.LastAttemptID != "" && order.LastAttemptID == sessionID) ||
+			(order.WorkerID == workerID && order.SessionID == sessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
@@ -877,7 +879,9 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
-	if ok && order.State == core.WorkOrderCancelled {
+	if ok && order.State == core.WorkOrderCancelled &&
+		((order.LastAttemptID != "" && order.LastAttemptID == release.SessionID) ||
+			(order.WorkerID == workerID && order.SessionID == release.SessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
