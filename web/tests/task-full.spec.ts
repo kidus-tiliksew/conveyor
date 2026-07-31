@@ -1188,10 +1188,11 @@ test('spec diagrams render best-effort and malformed Mermaid falls back to sourc
 	await expect(page.getByRole('heading', { name: 'Specification' }).first()).toBeVisible()
 })
 
-// The anchor's own URL is unchanged; §21.49 moved only its presentation, so
-// this now asserts the blueprint detail rather than the task detail.
+// The anchor lives at its own canonical route (§21.49), and the legacy task
+// URL is a redirect into it rather than a second door.
 test('blueprint and dependency details remain linked and read only', async ({ page }) => {
 	await page.goto('/tasks/blueprint-parent/full')
+	await expect(page).toHaveURL(/\/blueprints\/blueprint-parent$/)
 	await expect(page.getByRole('heading', { name: 'Delivery' })).toBeVisible()
 	await expect(page.getByText('Completed').first()).toBeVisible()
 	await expect(page.getByText('2 merged · 1 closed without merging').first()).toBeVisible()
@@ -1206,7 +1207,7 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
 
 	await page.goto('/tasks/blueprint-child/full')
 	await expect(page.getByText('Waiting on dependencies')).toBeVisible()
-	await expect(page.getByRole('link', { name: 'Phase 6 blueprint · spec v1' })).toHaveAttribute('href', '/tasks/blueprint-parent/full')
+	await expect(page.getByRole('link', { name: 'Phase 6 blueprint · spec v1' })).toHaveAttribute('href', '/blueprints/blueprint-parent')
 	await expect(page.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
 	await expect(page.getByRole('link', { name: 'Persistence · Satisfied' })).toHaveAttribute('href', '/tasks/blueprint-sub-1/full')
   await expect(page.getByText('awaiting_human')).toHaveCount(0)
