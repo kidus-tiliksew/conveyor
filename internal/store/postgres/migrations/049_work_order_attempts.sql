@@ -1,3 +1,6 @@
+-- Migration 049: durable execution-attempt identity and failure category
+-- (spec §21.53).
+
 ALTER TABLE work_orders
     ADD COLUMN attempt_id text NOT NULL DEFAULT '',
     ADD COLUMN last_attempt_id text NOT NULL DEFAULT '',

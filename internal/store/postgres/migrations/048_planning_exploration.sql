@@ -1,4 +1,4 @@
--- Migration 049: immutable planning model and repository-snapshot provenance
+-- Migration 048: immutable planning model and repository-snapshot provenance
 -- plus durable exploration-output accounting (spec §§21.50-21.52).
 
 ALTER TABLE planning_sessions

@@ -154,17 +154,25 @@ func TestWorkOrderAttemptMigrationUpgradeKeepsVersion48LedgerIntegration(t *test
 	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&beforeName, &beforeChecksum); err != nil {
 		t.Fatal(err)
 	}
-	if beforeName != "048_work_order_attempts.sql" || beforeChecksum == "" {
+	if beforeName != "048_planning_exploration.sql" || beforeChecksum == "" {
 		t.Fatalf("version 48 ledger=(%q,%q)", beforeName, beforeChecksum)
 	}
-	var attemptColumns int
+	var attemptColumns, planningColumns int
 	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
 WHERE table_schema=current_schema() AND table_name='work_orders'
   AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
 		t.Fatal(err)
 	}
-	if attemptColumns != 3 {
+	if attemptColumns != 0 {
 		t.Fatalf("version 48 attempt columns=%d", attemptColumns)
+	}
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+WHERE table_schema=current_schema() AND table_name='planning_sessions'
+  AND column_name IN ('model','effort','exploration_output_tokens','exploration_tokens_used','primary_repo','pinned_revisions')`).Scan(&planningColumns); err != nil {
+		t.Fatal(err)
+	}
+	if planningColumns != 6 {
+		t.Fatalf("version 48 planning columns=%d", planningColumns)
 	}
 
 	if err = migrateControlPlane(t.Context(), pool); err != nil {
@@ -177,20 +185,27 @@ WHERE table_schema=current_schema() AND table_name='work_orders'
 	if afterName != beforeName || afterChecksum != beforeChecksum {
 		t.Fatalf("version 48 migration changed: before=(%q,%q) after=(%q,%q)", beforeName, beforeChecksum, afterName, afterChecksum)
 	}
-	var afterVersion, planningColumns int
+	var afterVersion int
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
 	if afterVersion != 49 {
 		t.Fatalf("post-upgrade migration version=%d", afterVersion)
 	}
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
-WHERE table_schema=current_schema() AND table_name='planning_sessions'
-  AND column_name IN ('model','effort','exploration_output_tokens','exploration_tokens_used','primary_repo','pinned_revisions')`).Scan(&planningColumns); err != nil {
+	var attemptMigrationName string
+	if err = pool.QueryRow(t.Context(), "SELECT name FROM conveyor_schema_migrations WHERE version=49").Scan(&attemptMigrationName); err != nil {
 		t.Fatal(err)
 	}
-	if planningColumns != 6 {
-		t.Fatalf("version 49 planning columns=%d", planningColumns)
+	if attemptMigrationName != "049_work_order_attempts.sql" {
+		t.Fatalf("version 49 migration=%q", attemptMigrationName)
+	}
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+WHERE table_schema=current_schema() AND table_name='work_orders'
+  AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
+		t.Fatal(err)
+	}
+	if attemptColumns != 3 {
+		t.Fatalf("version 49 attempt columns=%d", attemptColumns)
 	}
 }
 
