@@ -1,6 +1,9 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
+import { findBlueprint, isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
+import { useBlueprints } from '../app-shell'
+import { BlueprintDetail, BlueprintDetailFallback } from '../blueprint/blueprint-detail'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
@@ -67,6 +70,13 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 }
 
 function SheetBody({ item }: { item: ActivityItem }) {
+  // The anchor's own URL keeps working (spec §21.49); only its presentation
+  // changes, so the blueprint detail renders in place of the task detail.
+  const { data: blueprints } = useBlueprints()
+  if (isBlueprintAnchor(item.task)) {
+    const view = findBlueprint(blueprints, item.task.id)
+    return view ? <BlueprintDetail view={view} item={item} variant="sheet" /> : <BlueprintDetailFallback />
+  }
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />

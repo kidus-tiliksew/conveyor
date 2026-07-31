@@ -1,6 +1,7 @@
 import type {
   ActivityItem,
   ActivitySummary,
+  BlueprintView,
   InterventionAction,
   Task,
   VersionedWorkspaceConfig,
@@ -65,6 +66,7 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
   return response.json() as Promise<WorkspaceRecord>
 }
 
+export function fetchBlueprints() { return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints')) }
 export function fetchRequirements() { return getJSON<RequirementView[]>(workspaceURL('/v1/requirements')) }
 export function fetchRequirement(requirementId: string) { return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`)) }
 export function fetchRequirementVersions(requirementId: string) { return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`)) }

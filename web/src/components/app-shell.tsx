@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Activity, FolderGit2, Kanban, MessageSquare, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
-import { fetchActivity, fetchWorkspace, fetchWorkspaces } from '../lib/api'
+import { Activity, Blocks, FolderGit2, Kanban, MessageSquare, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
+import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { ThemeProvider, useTheme } from './theme-provider'
@@ -29,6 +29,14 @@ export function useTokenState() {
 export function useActivity() {
 	const { workspace } = useWorkspaceSelection()
 	return useQuery({ queryKey: ['activity', workspace], queryFn: fetchActivity, enabled: !!workspace, refetchInterval: 15_000 })
+}
+
+// Blueprint anchors left the activity feed (spec §21.49), so this projection
+// is the only place the dashboard can resolve one — the Blueprints surface,
+// the anchor's own detail, and a child's parent reference all read it.
+export function useBlueprints() {
+	const { workspace } = useWorkspaceSelection()
+	return useQuery({ queryKey: ['blueprints', workspace], queryFn: fetchBlueprints, enabled: !!workspace, refetchInterval: 15_000 })
 }
 
 export function useWorkspace() {
@@ -153,6 +161,7 @@ function NavSidebar() {
         </NavItem>
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
+        <NavItem to="/blueprints" icon={Blocks} label="Blueprints" />
         <NavItem to="/planning" icon={MessageSquare} label="Planning" />
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />

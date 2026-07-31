@@ -579,6 +579,42 @@ export interface BlueprintLineage {
   events: TaskEvent[]
 }
 
+// The blueprint presentation surface (spec §21.49). An anchor is an intent
+// artifact derived from existing parent/child relations, never a stored
+// entity, so this projection is read-only by construction.
+export type BlueprintDeliveryState = 'in_delivery' | 'completed' | 'cancelled'
+
+export interface BlueprintDelivery {
+  state: BlueprintDeliveryState
+  total: number
+  merged: number
+  closed: number
+  open: number
+}
+
+export interface BlueprintChild extends TaskRelation {
+  repo?: string
+  summary?: string
+  depends_on?: string[]
+}
+
+export interface BlueprintRequirementRef {
+  id: string
+  slug: string
+  title: string
+}
+
+export interface BlueprintView {
+  task: Task
+  spec?: SpecVersion
+  governing_version: number
+  children: BlueprintChild[]
+  delivery: BlueprintDelivery
+  serves: BlueprintRequirementRef[]
+  events: TaskEvent[]
+  artifacts: Artifact[]
+}
+
 export interface RequirementView {
   requirement: Requirement
   current_version?: RequirementVersion
