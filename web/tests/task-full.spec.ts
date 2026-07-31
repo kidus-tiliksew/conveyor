@@ -516,6 +516,46 @@ test('task detail previews and submits a named future-only setup change', async 
 	expect(String(submitted?.request_id)).not.toBe('')
 })
 
+test('task detail submits change and apply-latest setup actions without a reason', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	const nextSetup = {
+		name: 'next',
+		execution_settings: {
+			control_plane: { triage: { model: 'control', timeout: '20m' } },
+			spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
+			implementation: { harness: 'claude', model: 'claude-next', model_policy: 'explicit', effort: 'high', timeout: '3h' },
+			review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
+		},
+		review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
+		refresh_review: 'delta',
+	}
+	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-change', false).task.setup_contract, nextSetup], default_setup: 'old', execution: {} } } }))
+	const submitted: Record<string, unknown>[] = []
+	await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
+		submitted.push(route.request().postDataJSON())
+		await route.fulfill({ json: { task: activity('setup-change', false).task, review_transition: 'none' } })
+	})
+	await page.goto('/tasks/setup-change/full')
+	await page.locator('summary', { hasText: 'Change execution setup' }).click()
+	const reason = page.getByLabel('Setup change reason')
+	await expect(reason).toHaveAttribute('placeholder', 'Reason (optional)')
+
+	const applyLatest = page.getByRole('button', { name: 'Apply latest setup' })
+	await expect(applyLatest).toBeEnabled()
+	await applyLatest.click()
+	await expect.poll(() => submitted.length).toBe(1)
+	expect(submitted[0]?.apply_latest).toBe(true)
+	expect(submitted[0]?.reason).toBe('')
+
+	await page.getByLabel('Named execution setup').selectOption('next')
+	const changeSetup = page.getByRole('button', { name: 'Change setup' })
+	await expect(changeSetup).toBeEnabled()
+	await changeSetup.click()
+	await expect.poll(() => submitted.length).toBe(2)
+	expect(submitted[1]?.setup).toBe('next')
+	expect(submitted[1]?.reason).toBe('')
+})
+
 test('task detail exposes the setup change control behind an expandable section', async ({ page }) => {
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	await page.route('**/v1/workspace/config*', (route) => route.fulfill({ json: { version: 1, document: { workspace: 'demo', routing: { stages: { review: {} } }, review: { seats: [] }, harnesses: [], repos: [], setups: [activity('setup-submitted', false).task.setup_contract], default_setup: 'old', execution: {} } } }))

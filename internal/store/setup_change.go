@@ -62,13 +62,20 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 }
 
 func validateSetupChangeRequest(request SetupChangeRequest) error {
-	if request.TaskID == "" || request.RequestID == "" || request.Reason == "" || request.Setup.Name == "" {
-		return fmt.Errorf("task, setup, non-empty reason, and request_id are required")
+	if request.TaskID == "" || request.RequestID == "" || request.Setup.Name == "" {
+		return fmt.Errorf("task, setup, and request_id are required")
 	}
 	if len(request.NewJobs) != len(request.NewWorkOrders) {
 		return fmt.Errorf("setup change requires one job per new work order")
 	}
 	return nil
+}
+
+// PrepareSetupChangeRequest normalizes optional audit text and validates the
+// required command identity shared by both persistence implementations.
+func PrepareSetupChangeRequest(request SetupChangeRequest) (SetupChangeRequest, error) {
+	request = normalizeSetupChangeRequest(request)
+	return request, validateSetupChangeRequest(request)
 }
 
 func SameSetupChange(left, right SetupChangeRequest) bool {
@@ -103,11 +110,11 @@ func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSet
 }
 
 func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
-	request := normalizeSetupChangeRequest(raw)
+	request, err := PrepareSetupChangeRequest(raw)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
 		return SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
 	}
-	if err := validateSetupChangeRequest(request); err != nil {
+	if err != nil {
 		return SetupChangeResult{}, err
 	}
 	m.mu.Lock()

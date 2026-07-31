@@ -3,7 +3,7 @@ package workorder
 import (
 	"context"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func setupChangeFixture(t *testing.T, nextSeats []config.ReviewSeat) (*Service, store.Store, context.Context, core.Task, config.ExecutionSetup, config.ExecutionSetup) {
@@ -120,6 +121,32 @@ func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) 
 	}
 	if changes != 1 || completed != 1 {
 		t.Fatalf("task.setup.changed=%d review.round_completed=%d", changes, completed)
+	}
+}
+
+func TestChangeTaskSetupAcceptsOptionalReasonAndRequiresSetupAndRequestID(t *testing.T) {
+	t.Run("whitespace reason is normalized and accepted", func(t *testing.T) {
+		service, _, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
+		result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, " \t ", "reasonless-request")
+		if err != nil || result.Task.SetupName != next.Name {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		setup     string
+		requestID string
+	}{
+		{name: "blank setup", setup: " \t ", requestID: "valid-request"},
+		{name: "blank request id", setup: "next", requestID: " \t "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _, ctx, task, _, _ := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
+			if _, err := service.ChangeTaskSetup(ctx, task.ID, tc.setup, "", tc.requestID); err == nil || !strings.Contains(err.Error(), "setup and request_id are required") {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 

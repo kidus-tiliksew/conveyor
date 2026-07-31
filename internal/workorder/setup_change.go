@@ -18,8 +18,8 @@ import (
 // future-only transition submitted atomically to persistence (spec §21.35).
 func (s *Service) ChangeTaskSetup(ctx context.Context, taskID, setupName, reason, requestID string) (store.SetupChangeResult, error) {
 	setupName, reason, requestID = strings.TrimSpace(setupName), strings.TrimSpace(reason), strings.TrimSpace(requestID)
-	if setupName == "" || reason == "" || requestID == "" {
-		return store.SetupChangeResult{}, fmt.Errorf("setup, non-empty reason, and request_id are required")
+	if setupName == "" || requestID == "" {
+		return store.SetupChangeResult{}, fmt.Errorf("setup and request_id are required")
 	}
 	task, err := s.Store.GetTask(ctx, taskID)
 	if err != nil {

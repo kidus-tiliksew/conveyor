@@ -37,3 +37,25 @@ func TestTaskSetupCommandSendsExplicitFutureOnlyChange(t *testing.T) {
 		t.Fatalf("body=%v output=%q", body, output.String())
 	}
 }
+
+func TestTaskSetupCommandAllowsOmittedReason(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(store.SetupChangeResult{Task: core.Task{ID: "task-1", SetupName: "next"}, ReviewTransition: "none"})
+	}))
+	defer server.Close()
+	t.Setenv("CONVEYOR_ADDR", server.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "token")
+	workspaceFlag = "demo"
+	command := changeTaskSetupCmd()
+	command.SetArgs([]string{"task-1", "--setup", "next", "--request-id", "request-blank-reason"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if body["reason"] != "" || body["request_id"] != "request-blank-reason" {
+		t.Fatalf("body=%v", body)
+	}
+}

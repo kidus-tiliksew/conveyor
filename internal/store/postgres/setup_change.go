@@ -18,12 +18,12 @@ import (
 )
 
 func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
-	request := raw
+	request, validationErr := store.PrepareSetupChangeRequest(raw)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
 		return store.SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
 	}
-	if request.TaskID == "" || request.RequestID == "" || request.Reason == "" || request.Setup.Name == "" || len(request.NewJobs) != len(request.NewWorkOrders) {
-		return store.SetupChangeResult{}, fmt.Errorf("task, setup, non-empty reason, request_id, and matched new review members are required")
+	if validationErr != nil {
+		return store.SetupChangeResult{}, validationErr
 	}
 	workspaceID := workspace(ctx)
 	tx, err := s.pool.Begin(ctx)
