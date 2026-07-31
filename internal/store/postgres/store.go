@@ -1107,6 +1107,32 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 	return specFromDB(row), true, nil
 }
 
+// GetApprovedSpecVersion returns the newest approved spec version, which is
+// the one that governs (spec §4.1): approval only ever lands on the newest
+// version, so a later unapproved draft is a proposal that has materialized
+// nothing and must not displace the blueprint currently in delivery. The
+// query is hand-written rather than generated because sqlc cannot parse this
+// schema's migration set.
+func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	var row db.TaskSpec
+	err := s.pool.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
+	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model
+FROM task_specs s
+JOIN tasks t ON t.id = s.task_id
+WHERE s.task_id = $1 AND t.workspace_id = $2 AND s.approved
+ORDER BY s.version DESC
+LIMIT 1`, taskID, workspace(ctx)).Scan(&row.TaskID, &row.Version, &row.Content,
+		&row.AcceptanceCount, &row.Acceptance, &row.Decomposition, &row.Approved,
+		&row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.SpecVersion{}, false, nil
+	}
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
+	return specFromDB(row), true, nil
+}
+
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
 	_, err := s.ApproveSpecVersionAndMaterialize(ctx, taskID, version)
 	return err

@@ -4,11 +4,12 @@ import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
 import { parseProvenance, pullRequestURL } from '../../lib/activity'
 import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
+import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import { useActivity, useOperatorToken } from '../app-shell'
+import { useBlueprints, useOperatorToken } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -25,8 +26,10 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const spec = item.spec
   const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
-  const { data: activity } = useActivity()
-  const parent = activity?.find((entry) => entry.task.id === item.task.parent_task_id)?.task
+  // The parent is a blueprint anchor, which no longer rides the activity feed
+  // (spec §21.49) — the blueprint projection is where its title now lives.
+  const { data: blueprints } = useBlueprints()
+  const parent = findBlueprint(blueprints, item.task.parent_task_id ?? '')?.task
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
   const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? item.stalled.blocking_task_ids ?? [] : [])
   const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
@@ -282,7 +285,10 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
   )
 }
 
-function CancelControl({ item }: { item: ActivityItem }) {
+// Cancel is lifecycle, not an execution affordance, so the blueprint detail
+// keeps it while suppressing checkout, branch, and hold (spec §21.49). Its
+// consequences for children are whatever the backend does today.
+export function CancelControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)

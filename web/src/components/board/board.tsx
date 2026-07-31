@@ -4,6 +4,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { Plus, Search } from 'lucide-react'
 import { groupForSummary } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
+import { isBlueprintAnchor } from '../../lib/blueprint'
 import { stageGroups, type GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
@@ -26,6 +27,12 @@ export function Board() {
     const needle = query.trim().toLowerCase()
     const byGroup = new Map<GroupKey, ActivitySummary[]>()
     for (const item of data ?? []) {
+      // The board represents claimable, executable work. A blueprint anchor
+      // takes no orders and moves through no stage, so it lives on the
+      // Blueprints surface instead (spec §21.49). The feed already excludes
+      // anchors; applying the same predicate here keeps the column counts
+      // honest for any caller that hands the board a wider list.
+      if (isBlueprintAnchor(item.task)) continue
       if (
         needle &&
         !item.task.title.toLowerCase().includes(needle) &&

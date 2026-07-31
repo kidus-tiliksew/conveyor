@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/work-orders", s.listWorkOrders)
 			r.Get("/monitor", s.getMonitorStatus)
 			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
+			r.Get("/blueprints", s.listBlueprints)
 			r.Get("/requirements", s.listRequirements)
 			r.Get("/requirements/{id}", s.getRequirement)
 			r.Get("/requirements/{id}/versions", s.listRequirementVersions)
@@ -803,6 +804,14 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 	}
 	items := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
+		// Blueprint anchors are intent artifacts, not claimable work, so they
+		// leave the stage-grouped board and its counts for the Blueprints
+		// surface (spec §21.49). The review inbox projection keeps them: an
+		// anchor at its spec gate has not materialized children yet, so it is
+		// not classified here and its approval card is untouched.
+		if !reviewsOnly && core.BlueprintAnchor(task) {
+			continue
+		}
 		marker := markerByTask[task.ID]
 		if task.State == core.TaskMerged || task.State == core.TaskClosed {
 			marker.Stalled = nil

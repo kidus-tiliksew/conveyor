@@ -18,6 +18,48 @@ type BlueprintDecompositionItem struct {
 	DependsOn []string `yaml:"depends_on" json:"depends_on"`
 }
 
+// BlueprintAnchor reports whether a task is a blueprint anchor (spec §21.49):
+// an intent artifact rather than work. Children are created only by blueprint
+// materialization, which requires an approved spec carrying a non-empty §4.1
+// decomposition, so the parent/child relation is that decomposition made
+// durable. Classifying from it keeps the anchor a derived predicate over
+// existing relations — no stored flag, no epic entity (§21.46 change 10).
+func BlueprintAnchor(task Task) bool { return len(task.Children) > 0 }
+
+// OrderDecompositionByDependency returns the decomposition in dependency
+// order: an item never precedes anything it depends on, and independent items
+// keep their stored order. The graph is validated acyclic at materialization
+// (ValidateBlueprintDecomposition), so this is a total order; any item left
+// unreachable by a malformed graph is appended rather than dropped.
+func OrderDecompositionByDependency(items []BlueprintDecompositionItem) []BlueprintDecompositionItem {
+	byID := make(map[string]BlueprintDecompositionItem, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	ordered := make([]BlueprintDecompositionItem, 0, len(items))
+	placed := make(map[string]bool, len(items))
+	visiting := make(map[string]bool, len(items))
+	var visit func(BlueprintDecompositionItem)
+	visit = func(item BlueprintDecompositionItem) {
+		if placed[item.ID] || visiting[item.ID] {
+			return
+		}
+		visiting[item.ID] = true
+		for _, dependency := range item.DependsOn {
+			if next, exists := byID[dependency]; exists {
+				visit(next)
+			}
+		}
+		delete(visiting, item.ID)
+		placed[item.ID] = true
+		ordered = append(ordered, item)
+	}
+	for _, item := range items {
+		visit(item)
+	}
+	return ordered
+}
+
 // ValidateBlueprintDecomposition enforces the canonical decomposition schema
 // and rejects duplicate, dangling, or cyclic dependency graphs (spec §4.1).
 func ValidateBlueprintDecomposition(items []BlueprintDecompositionItem) error {

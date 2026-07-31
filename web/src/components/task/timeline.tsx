@@ -31,7 +31,11 @@ const gateDots: Record<GateTone, string> = {
 // alerts, recovery actions, and the human gate itself — renders as the live
 // tail: cause sits directly above prompt, and a recorded decision resolves
 // in place into its intervention entry.
-export function Timeline({ item }: { item: ActivityItem }) {
+// `executionActions` is false for a blueprint anchor (spec §21.49): it takes
+// no work orders, so redispatch, worker serviceability, and review recovery
+// are affordances for execution that will never happen. The story it does
+// have — materialization, child progress, close — still renders in full.
+export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
   const entries = buildTimeline(item)
   const showGate = isReviewable(item.task)
   const timelineRef = useRef<HTMLElement>(null)
@@ -53,13 +57,13 @@ export function Timeline({ item }: { item: ActivityItem }) {
     if (showGate) gateRef.current?.scrollIntoView({ block: 'end' })
   }, [item.task.id, showGate])
 
-  const tail = [
+  const tail = (executionActions ? [
     hasWorkerAlert(item) && { key: 'worker-alert', dot: 'bg-attention-dot', card: <WorkerStatusCard item={item} /> },
     hasInterruptedReviewRecovery(item) && { key: 'interrupted-review', dot: 'bg-attention-dot', card: <InterruptedReviewRecoveryCard item={item} /> },
     hasReviewRoundRetry(item) && { key: 'review-retry', dot: 'bg-attention-dot', card: <ReviewRoundRetryCard item={item} /> },
     hasWorkerRecovery(item) && { key: 'order-recovery', dot: 'bg-attention-dot', card: <WorkOrderRecoveryCard item={item} /> },
     canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
-  ].filter((entry) => entry !== false)
+  ] : []).filter((entry) => entry !== false)
 
   return (
     <section ref={timelineRef} aria-label="Execution event timeline">

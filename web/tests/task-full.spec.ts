@@ -373,6 +373,27 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
   }
 }
 
+// The blueprint projection (spec §21.49): anchors left the activity feed, so
+// this is where the anchor's delivery, ordered children, and title now come
+// from — including the title a child's parent reference renders.
+function blueprintProjection() {
+  const parent = activity('blueprint-parent', false)
+  return [{
+    task: parent.task,
+    spec: parent.spec,
+    governing_version: 1,
+    children: [
+      { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1', repo: 'conveyor', summary: 'Persistence', depends_on: [] },
+      { id: 'blueprint-sub-2', title: 'Runtime', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-2', repo: 'conveyor', summary: 'Runtime', depends_on: ['SUB-1'] },
+      { id: 'blueprint-child', title: 'Dashboard', state: 'closed', origin_spec_version: 1, origin_sub_id: 'SUB-3', repo: 'conveyor', summary: 'Dashboard', depends_on: ['SUB-2'] },
+    ],
+    delivery: { state: 'completed', total: 3, merged: 2, closed: 1, open: 0 },
+    serves: [],
+    events: parent.events,
+    artifacts: [],
+  }]
+}
+
 async function mockTaskAPIs(page: Page) {
   detailRequestCounts.clear()
   let liveActivityRequests = 0
@@ -394,6 +415,10 @@ async function mockTaskAPIs(page: Page) {
         item.task.dependencies = [{ id: 'refresh-dependency', title: 'Backend contract', state: 'merged' }]
       }
 	    await route.fulfill({ json: item })
+      return
+    }
+    if (url.pathname === '/v1/blueprints') {
+      await route.fulfill({ json: blueprintProjection() })
       return
     }
 		if (url.pathname === '/v1/activity') {
@@ -1157,10 +1182,13 @@ test('spec diagrams render best-effort and malformed Mermaid falls back to sourc
 	await expect(page.getByRole('heading', { name: 'Specification' }).first()).toBeVisible()
 })
 
+// The anchor's own URL is unchanged; §21.49 moved only its presentation, so
+// this now asserts the blueprint detail rather than the task detail.
 test('blueprint and dependency details remain linked and read only', async ({ page }) => {
 	await page.goto('/tasks/blueprint-parent/full')
-	await expect(page.getByRole('heading', { name: 'Blueprint tasks' })).toBeVisible()
-	await expect(page.getByText('2 merged · 1 closed')).toBeVisible()
+	await expect(page.getByRole('heading', { name: 'Delivery' })).toBeVisible()
+	await expect(page.getByText('Completed').first()).toBeVisible()
+	await expect(page.getByText('2 merged · 1 closed without merging').first()).toBeVisible()
   const dashboardLinks = page.getByRole('link', { name: 'Dashboard' })
   await expect(dashboardLinks).toHaveCount(2)
   for (let index = 0; index < await dashboardLinks.count(); index++) {

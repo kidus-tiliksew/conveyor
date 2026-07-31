@@ -109,6 +109,20 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		assertTaskCount(t, ctx, st, 5)
 		assertMaterializedEvent(t, ctx, st, parent.ID, 2, v3.Version, 1, 4)
 
+		// The governing blueprint is the newest *approved* version, which the
+		// children cannot report: reuse means every child here still records
+		// v1 except SUB-4. A later draft has materialized nothing, so it never
+		// displaces the version delivery answers to (spec §21.49).
+		assertApprovedSpecVersion(t, ctx, st, parent.ID, v3.Version)
+		draft := createBlueprintSpec(t, ctx, st, parent.ID, append(v3Items, blueprintItem{
+			ID: "SUB-5", Repo: "primary", Summary: "Proposed but unapproved",
+		}))
+		if draft.Version <= v3.Version || draft.Approved {
+			t.Fatalf("draft=%+v, want an unapproved version above %d", draft, v3.Version)
+		}
+		assertApprovedSpecVersion(t, ctx, st, parent.ID, v3.Version)
+		assertTaskCount(t, ctx, st, 5)
+
 		for _, subID := range []string{"SUB-2", "SUB-3", "SUB-4"} {
 			if _, err := taskops.New(st).Perform(ctx, expandedBySub[subID].ID, taskops.Command{Kind: core.TaskCancel}); err != nil {
 				t.Fatalf("cancel %s: %v", subID, err)
@@ -255,6 +269,17 @@ func assertReturnedDependency(t *testing.T, task core.Task, dependencyID string,
 		(blocking && task.BlockingTaskIDs[0] != dependencyID) {
 		t.Fatalf("returned blocking IDs for %s=%v, blocking=%v dependency=%s",
 			task.ID, task.BlockingTaskIDs, blocking, dependencyID)
+	}
+}
+
+func assertApprovedSpecVersion(t *testing.T, ctx context.Context, st store.Store, taskID string, want int) {
+	t.Helper()
+	spec, ok, err := st.GetApprovedSpecVersion(ctx, taskID)
+	if err != nil || !ok {
+		t.Fatalf("approved spec for %s: ok=%v err=%v", taskID, ok, err)
+	}
+	if spec.Version != want || !spec.Approved || spec.Content == "" || len(spec.Decomposition) == 0 {
+		t.Fatalf("approved spec=%+v, want fully populated version %d", spec, want)
 	}
 }
 
