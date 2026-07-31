@@ -93,6 +93,62 @@ func TestWorktreeLifecycle(t *testing.T) {
 	}
 }
 
+func TestPlanningSnapshotPlumbingStaysPinnedAndReadOnly(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	mustRun(t, "", "git", "init", "-b", "main", origin)
+	mustRun(t, origin, "git", "config", "user.email", "test@example.com")
+	mustRun(t, origin, "git", "config", "user.name", "test")
+	if err := os.MkdirAll(filepath.Join(origin, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "internal", "eligibility.go"), []byte("package internal\n\nfunc eligible() bool { return true }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "initial eligibility")
+
+	manager := NewManager(filepath.Join(tmp, "cache"), "")
+	snapshot, err := manager.PinSnapshot(ctx, "file://"+origin, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := manager.ListSnapshotTree(ctx, snapshot)
+	if err != nil || len(entries) != 1 || entries[0].Path != "internal/eligibility.go" {
+		t.Fatalf("entries=%+v err=%v", entries, err)
+	}
+	content, err := manager.ReadSnapshotBlob(ctx, snapshot, "internal/eligibility.go")
+	if err != nil || !strings.Contains(string(content), "return true") {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	matches, err := manager.GrepSnapshot(ctx, snapshot, "eligible", "internal", 0, false, false)
+	if err != nil || !strings.Contains(matches, "eligibility.go:3:") {
+		t.Fatalf("matches=%q err=%v", matches, err)
+	}
+	history, err := manager.SnapshotHistory(ctx, snapshot, "internal/eligibility.go", 20)
+	if err != nil || !strings.Contains(history, "initial eligibility") || !strings.Contains(history, "Latest commit context") {
+		t.Fatalf("history=%q err=%v", history, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(origin, "internal", "eligibility.go"), []byte("package internal\n\nfunc eligible() bool { return false }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "advance main")
+	reopened, err := manager.OpenSnapshot(ctx, "file://"+origin, snapshot.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err = manager.ReadSnapshotBlob(ctx, reopened, "internal/eligibility.go")
+	if err != nil || !strings.Contains(string(content), "return true") || strings.Contains(string(content), "return false") {
+		t.Fatalf("pinned content changed: %q err=%v", content, err)
+	}
+}
+
 func TestExistingTaskCheckoutFastForwardsHumanPush(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")

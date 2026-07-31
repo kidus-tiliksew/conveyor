@@ -212,6 +212,28 @@ function RequirementDetail({
         </CardContent>
       </Card>
 
+      {item.planning_sessions.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Planning provenance</CardTitle><Badge variant="mono">{item.planning_sessions.length}</Badge></CardHeader>
+          <CardContent className="space-y-2">
+            {item.planning_sessions.map((session) => (
+              <div key={session.id} className="rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <strong className="text-sm">{session.title || session.id}</strong>
+                  {session.model && <Badge variant="mono">{session.model}{session.effort ? ` · ${session.effort}` : ''}</Badge>}
+                  {session.exploration_output_tokens && <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {Object.entries(session.pinned_revisions ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([repo, revision]) => (
+                    <Badge key={repo} variant="mono">{repo}@{revision.slice(0, 12)}</Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Context artifacts</CardTitle><Badge variant="mono">{item.artifacts.length}</Badge></CardHeader>

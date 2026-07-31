@@ -24,11 +24,12 @@ type blueprintView struct {
 	// materialized nothing and never displaces it.
 	GoverningVersion int `json:"governing_version"`
 	// Children are the materialized child tasks in dependency order.
-	Children  []blueprintChild          `json:"children"`
-	Delivery  blueprintDelivery         `json:"delivery"`
-	Serves    []blueprintRequirementRef `json:"serves"`
-	Events    []core.Event              `json:"events"`
-	Artifacts []core.Artifact           `json:"artifacts"`
+	Children        []blueprintChild          `json:"children"`
+	Delivery        blueprintDelivery         `json:"delivery"`
+	Serves          []blueprintRequirementRef `json:"serves"`
+	Events          []core.Event              `json:"events"`
+	Artifacts       []core.Artifact           `json:"artifacts"`
+	PlanningSession *core.PlanningSession     `json:"planning_session,omitempty"`
 }
 
 // blueprintChild pairs a materialized child with the decomposition item that
@@ -106,6 +107,16 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 	if err != nil {
 		return nil, err
 	}
+	sessions, err := s.Store.ListPlanningSessions(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	sessionByTask := make(map[string]core.PlanningSession, len(sessions))
+	for _, session := range sessions {
+		if session.ProducedTaskID != "" {
+			sessionByTask[session.ProducedTaskID] = session
+		}
+	}
 	views := make([]blueprintView, 0, len(anchors))
 	for _, task := range anchors {
 		view := blueprintView{
@@ -117,6 +128,10 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 		}
 		if view.Serves == nil {
 			view.Serves = []blueprintRequirementRef{}
+		}
+		if session, exists := sessionByTask[task.ID]; exists {
+			session := session
+			view.PlanningSession = &session
 		}
 		events, eventsErr := s.Store.ListEvents(r.Context(), task.ID)
 		if eventsErr != nil {

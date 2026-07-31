@@ -5,13 +5,14 @@ import { ArrowRight, Bot, CheckCircle2, FileUp, MessageSquarePlus, Paperclip, Se
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Input } from '../components/ui/input'
+import { Input, Select } from '../components/ui/input'
 import {
   abandonPlanningSession,
   createPlanningSession,
   fetchPlanningMessages,
   fetchPlanningSessions,
   fetchRequirements,
+  fetchWorkspaceConfig,
   streamPlanningMessage,
   uploadArtifact,
 } from '../lib/api'
@@ -24,8 +25,14 @@ export function PlanningPage() {
   const storageKey = `conveyor-planning-session:${workspace}`
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem(storageKey) ?? '')
   const [title, setTitle] = useState('')
+  const [model, setModel] = useState('')
   const requirementContext = sessionStorage.getItem('conveyor-planning-requirement') ?? ''
   const { data: requirements } = useQuery({ queryKey: ['requirements', workspace], queryFn: fetchRequirements, enabled: Boolean(workspace) })
+  const { data: workspaceConfig } = useQuery({
+    queryKey: ['workspace-config', token, workspace],
+    queryFn: () => fetchWorkspaceConfig(token),
+    enabled: Boolean(token && workspace),
+  })
   const { data: sessions, isLoading } = useQuery({
     queryKey: ['planning-sessions', workspace], queryFn: fetchPlanningSessions, enabled: Boolean(workspace),
   })
@@ -36,11 +43,21 @@ export function PlanningPage() {
   useEffect(() => {
     if (selectedId) localStorage.setItem(storageKey, selectedId)
   }, [selectedId, storageKey])
+  useEffect(() => {
+    const document = workspaceConfig?.document
+    if (!document) return
+    const defaultModel = document.execution_settings.control_plane.planning?.model ?? document.execution_settings.control_plane.triage.model
+    const allowlist = document.planning_models ?? [defaultModel]
+    if (!model || !allowlist.includes(model)) {
+      setModel(defaultModel)
+    }
+  }, [workspaceConfig, model])
 
   const create = useMutation({
     mutationFn: () => createPlanningSession(token, {
       title: title.trim() || (requirementContext ? 'Plan work' : 'New requirement'),
       requirement_context_id: requirementContext || undefined,
+      model: model || undefined,
     }),
     onSuccess: (session) => {
       sessionStorage.removeItem('conveyor-planning-requirement')
@@ -67,6 +84,17 @@ export function PlanningPage() {
             value={title}
             onChange={(event) => setTitle(event.target.value)}
           />
+          <Select
+            aria-label="Planning model"
+            className="w-52 font-mono"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            disabled={!workspaceConfig}
+          >
+            {(workspaceConfig?.document.planning_models ?? []).map((candidate) => (
+              <option key={candidate} value={candidate}>{candidate}</option>
+            ))}
+          </Select>
           <Button type="submit" disabled={!token || create.isPending}>
             <MessageSquarePlus /> {create.isPending ? 'Starting…' : 'New session'}
           </Button>
@@ -167,6 +195,8 @@ function PlanningChat({ session, token, workspace }: { session: PlanningSession;
           <p className="mt-0.5 truncate font-mono text-[10px] text-faint">{session.id}</p>
         </div>
         {session.requirement_context_id && <Badge variant="accent">Requirement context</Badge>}
+        {session.model && <Badge variant="mono">{session.model}{session.effort ? ` · ${session.effort}` : ''}</Badge>}
+        {session.exploration_output_tokens && <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>}
         <Badge variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}>{session.status}</Badge>
         {session.status === 'active' && (
           <Button variant="ghost" size="sm" disabled={!token || abandon.isPending} onClick={() => abandon.mutate()}>
@@ -174,6 +204,13 @@ function PlanningChat({ session, token, workspace }: { session: PlanningSession;
           </Button>
         )}
       </div>
+      {session.pinned_revisions && Object.keys(session.pinned_revisions).length > 0 && (
+        <div className="flex shrink-0 flex-wrap gap-2 border-b border-border bg-surface/50 px-5 py-2">
+          {Object.entries(session.pinned_revisions).sort(([left], [right]) => left.localeCompare(right)).map(([repo, revision]) => (
+            <Badge key={repo} variant="mono">{repo}@{revision.slice(0, 12)}</Badge>
+          ))}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <div className="mx-auto max-w-3xl space-y-4">

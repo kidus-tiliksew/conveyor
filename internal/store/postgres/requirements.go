@@ -300,17 +300,31 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 		session.CreatedAt = now
 	}
 	session.UpdatedAt = now
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	if session.PinnedRevisions == nil {
+		session.PinnedRevisions = map[string]string{}
+	}
+	pins, err := json.Marshal(session.PinnedRevisions)
+	if err != nil {
+		return core.PlanningSession{}, fmt.Errorf("encode planning revisions: %w", err)
+	}
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO planning_sessions
-			(workspace_id,id,title,status,requirement_context_id,created_at,updated_at)
-			VALUES ($1,$2,$3,'active',NULLIF($4,''),$5,$6)`,
+			(workspace_id,id,title,status,requirement_context_id,model,effort,
+			 exploration_output_tokens,exploration_tokens_used,primary_repo,pinned_revisions,
+			 created_at,updated_at)
+			VALUES ($1,$2,$3,'active',NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12)`,
 			session.Workspace, session.ID, session.Title, session.RequirementContextID,
+			session.Model, session.Effort, session.ExplorationOutputTokens,
+			session.ExplorationTokensUsed, session.PrimaryRepo, pins,
 			session.CreatedAt, session.UpdatedAt); err != nil {
 			return err
 		}
 		return insertRequirementEvent(ctx, q, "planning_session.created", map[string]any{
 			"workspace_id": session.Workspace, "session_id": session.ID, "title": session.Title,
 			"requirement_context_id": session.RequirementContextID,
+			"model":                  session.Model, "effort": session.Effort,
+			"exploration_output_tokens": session.ExplorationOutputTokens,
+			"primary_repo":              session.PrimaryRepo, "pinned_revisions": session.PinnedRevisions,
 		})
 	})
 	if err != nil {
@@ -340,6 +354,52 @@ func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessio
 		out = append(out, session)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
+	var session core.PlanningSession
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		existing, err := scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
+			` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), sessionID), sessionID)
+		if err != nil {
+			return err
+		}
+		if existing.Status != core.PlanningSessionActive {
+			return fmt.Errorf("planning session %s is %s and cannot pin repositories", sessionID, existing.Status)
+		}
+		if pinned := existing.PinnedRevisions[repo]; pinned != "" {
+			session = existing
+			return nil
+		}
+		if _, err = tx.Exec(ctx, `UPDATE planning_sessions
+			SET pinned_revisions=jsonb_set(pinned_revisions, ARRAY[$3], to_jsonb($4::text), true),
+			    updated_at=now()
+			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID, repo, revision); err != nil {
+			return err
+		}
+		if err = insertRequirementEvent(ctx, q, "planning_session.repo_pinned", map[string]any{
+			"workspace_id": workspace(ctx), "session_id": sessionID,
+			"repo": repo, "revision": revision,
+		}); err != nil {
+			return err
+		}
+		session, err = scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
+			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID), sessionID)
+		return err
+	})
+	return session, err
+}
+
+func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error) {
+	if tokens < 0 {
+		return core.PlanningSession{}, fmt.Errorf("planning exploration tokens must not be negative")
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE planning_sessions
+		SET exploration_tokens_used=exploration_tokens_used+$3, updated_at=now()
+		WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID, tokens); err != nil {
+		return core.PlanningSession{}, err
+	}
+	return s.GetPlanningSession(ctx, sessionID)
 }
 
 func (s *Store) AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error) {
@@ -521,7 +581,11 @@ const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,sta
 
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at FROM requirement_versions`
 
-const planningSessionSelect = `SELECT workspace_id,id,title,status,COALESCE(requirement_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(transcript_artifact_id,''),created_at,updated_at,finalized_at FROM planning_sessions`
+const planningSessionSelect = `SELECT workspace_id,id,title,status,COALESCE(requirement_context_id,''),
+	COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),
+	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
+	exploration_tokens_used,primary_repo,pinned_revisions,created_at,updated_at,finalized_at
+	FROM planning_sessions`
 
 func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	var requirement core.Requirement
@@ -583,10 +647,16 @@ func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 	var session core.PlanningSession
 	var status string
 	var finalizedAt *time.Time
+	var pins []byte
 	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status,
 		&session.RequirementContextID, &session.ProducedRequirementID, &session.ProducedTaskID,
-		&session.TranscriptArtifactID, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
+		&session.TranscriptArtifactID, &session.Model, &session.Effort,
+		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
+		&session.PrimaryRepo, &pins, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
 		return core.PlanningSession{}, err
+	}
+	if err := json.Unmarshal(pins, &session.PinnedRevisions); err != nil {
+		return core.PlanningSession{}, fmt.Errorf("decode planning revisions: %w", err)
 	}
 	session.Status = core.PlanningSessionStatus(status)
 	if finalizedAt != nil {

@@ -112,6 +112,7 @@ export function WorkspacePage() {
 
 function GeneralTab({ draft, setDraft }: { draft: WorkspaceConfigDocument; setDraft: (value: WorkspaceConfigDocument) => void }) {
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
+  const planningModels = draft.planning_models ?? [draft.execution_settings.control_plane.planning?.model ?? draft.execution_settings.control_plane.triage.model]
   const updateRepo = (index: number, change: Partial<WorkspaceConfigRepo>) => { const repos = [...draft.repos]; repos[index] = { ...repos[index], ...change }; update({ repos }) }
   return <div className="space-y-4">
     <Card>
@@ -123,6 +124,27 @@ function GeneralTab({ draft, setDraft }: { draft: WorkspaceConfigDocument; setDr
         <Field label="Work-order queue timeout" hint="How long a task may wait for a worker before it is marked stalled.">
           <Input value={draft.work_order_queue_timeout} onChange={(event) => update({ work_order_queue_timeout: event.target.value })} placeholder="24h" />
         </Field>
+      </CardContent>
+    </Card>
+    <Card>
+      <CardHeader><CardTitle>Planning model allowlist</CardTitle><Button size="sm" variant="secondary" onClick={() => update({ planning_models: [...planningModels, ''] })}><Plus />Add model</Button></CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-xs leading-5 text-muted">Planning sessions may select only these operator-curated provider model IDs. The default setup's planning model must remain in the list.</p>
+        {planningModels.map((model, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <Input
+              aria-label={`Planning model ${index + 1}`}
+              className="font-mono"
+              value={model}
+              onChange={(event) => {
+                const next = [...planningModels]
+                next[index] = event.target.value
+                update({ planning_models: next })
+              }}
+            />
+            <Button size="icon" variant="ghost" aria-label={`Remove planning model ${index + 1}`} onClick={() => update({ planning_models: planningModels.filter((_, i) => i !== index) })}><Trash2 /></Button>
+          </div>
+        ))}
       </CardContent>
     </Card>
     <Card>
