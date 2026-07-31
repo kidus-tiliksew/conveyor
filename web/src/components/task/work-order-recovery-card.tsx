@@ -1,37 +1,42 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { RotateCcw, TriangleAlert } from 'lucide-react'
+import { Clock3, RotateCcw, TriangleAlert } from 'lucide-react'
 import { recoverWorkOrder } from '../../lib/api'
-import type { ActivityItem, WorkOrder } from '../../lib/types'
+import { deriveCurrentExecutionState, type CurrentExecutionState } from '../../lib/activity'
+import type { ActivityItem } from '../../lib/types'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 
-function recoveryOrder(item: ActivityItem) {
-  return [...(item.work_orders ?? [])]
-    .reverse()
-    .find((order) => ['queued', 'stale', 'timed_out'].includes(order.state) && !(order.stage === 'review' && (order.review_round ?? 0) > 0) && (order.state !== 'queued' || order.last_attempt_outcome || order.retry_suppressed || order.next_retry_at))
-}
-
-function isDirtyPrimaryCheckout(order: WorkOrder) {
-  if (!order.retry_suppressed || order.stage === 'review') return false
-  return [order.last_failure_message, order.last_failure_detail]
-    .some((value) => value?.includes('checkout_blocked_dirty_primary'))
-}
-
 export function hasWorkerRecovery(item: ActivityItem) {
-  return recoveryOrder(item) != null
+  const state = deriveCurrentExecutionState(item)
+  return state != null && state.kind !== 'running'
 }
 
-export function WorkOrderRecoveryCard({ item }: { item: ActivityItem }) {
-  const order = recoveryOrder(item)
-  if (!order) return null
-  return <RecoveryState item={item} order={order} />
+export function WorkOrderRecoveryCard({ item, state = deriveCurrentExecutionState(item) }: { item: ActivityItem; state?: CurrentExecutionState }) {
+  if (!state || state.kind === 'running') return null
+  return <RecoveryState item={item} state={state} />
 }
 
-function RecoveryState({ item, order }: { item: ActivityItem; order: WorkOrder }) {
+function retryCountdown(at: string, now: number) {
+  const seconds = Math.max(0, Math.ceil((new Date(at).getTime() - now) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.ceil(minutes / 60)}h`
+}
+
+function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
+  const { order } = state
   const token = useOperatorToken()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
+  const [checkoutResolved, setCheckoutResolved] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (state.kind !== 'retry_pending') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [state.kind])
   const mutation = useMutation({
     mutationFn: () => recoverWorkOrder(order.id, token, requestId.current),
     onSuccess: () => {
@@ -39,33 +44,51 @@ function RecoveryState({ item, order }: { item: ActivityItem; order: WorkOrder }
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
-  const retry = order.next_retry_at ? `Next automatic retry ${new Date(order.next_retry_at).toLocaleString()}.` : ''
-  const failureTime = order.last_failure_at ? ` at ${new Date(order.last_failure_at).toLocaleString()}` : ''
-  const exitStatus = order.last_failure_exit_status != null ? ` (exit ${order.last_failure_exit_status})` : ''
-  const failure = order.last_failure_message ? ` Last child failure${failureTime}${exitStatus}: ${order.last_failure_message}.` : ''
-  const dirtyPrimaryCheckout = isDirtyPrimaryCheckout(order)
-  return (
-    <div className="space-y-2 rounded-lg border border-attention/40 bg-attention-soft px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" />
-        <p className="min-w-0 text-xs text-muted">
-          Attempt {order.last_attempt_outcome ?? 'released'} · {order.automatic_retry_count ?? 0} automatic retries used. {retry}{failure}
-          {order.retry_suppressed && ` Automatic retry is suppressed${order.retry_suppression_reason ? `: ${order.retry_suppression_reason}` : ''} until an operator recovers this order.`}
+
+  if (state.kind === 'retry_pending') {
+    return (
+      <div className="space-y-1 rounded-lg border border-primary/25 bg-primary-soft/40 px-3 py-2.5 text-xs text-muted">
+        <p className="flex items-center gap-2 font-medium text-foreground">
+          <Clock3 className="size-4 text-primary" aria-hidden />
+          {order.next_retry_at ? `Retrying in ${retryCountdown(order.next_retry_at, now)}` : 'Retrying automatically'}
         </p>
+        <p>Conveyor will start the next attempt automatically. No recovery action is available while this retry is pending.</p>
       </div>
-      {order.last_failure_detail && <details className="text-xs text-muted"><summary className="cursor-pointer">Last captured child error</summary><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">{order.last_failure_detail}</pre></details>}
-      {dirtyPrimaryCheckout && (
-        <div className="space-y-1 text-xs leading-5 text-muted">
-          <p><strong className="font-medium text-attention">Resolve the primary checkout changes first.</strong> Review the affected files in the failure above, then handle those changes according to your intended workflow—for example, commit or stash them—before selecting <strong className="font-medium text-foreground">Recover work order</strong>.</p>
-          <p><strong className="font-medium text-foreground">Recover work order</strong> requeues the order for another attempt and preserves your checkout changes. It does not clean, commit, stash, or discard them.</p>
+    )
+  }
+
+  const checkoutBlocked = state.kind === 'checkout_blocked'
+  const actionLabel = state.action === 'retry_implementation' || checkoutBlocked ? 'Retry implementation' : 'Recover work order'
+  const canRecover = Boolean(token) && !mutation.isPending && (!checkoutBlocked || checkoutResolved)
+  return (
+    <div className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3">
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+        <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
+          <p className="font-medium text-attention">{state.title}</p>
+          <p>{state.nextAction}</p>
+        </div>
+      </div>
+      {order.last_failure_detail && (
+        <details className="text-xs text-muted">
+          <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical details</summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">{order.last_failure_detail}</pre>
+        </details>
+      )}
+      {checkoutBlocked && (
+        <div className="space-y-2 text-xs leading-5 text-muted">
+          <p>Review the affected files, then commit, stash, or otherwise resolve those changes in the primary checkout. Conveyor will not clean, commit, stash, or discard them.</p>
+          <label className="flex cursor-pointer items-start gap-2 rounded border border-attention/30 bg-surface/60 p-2 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
+            <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={checkoutResolved} onChange={(event) => setCheckoutResolved(event.target.checked)} />
+            <span>I resolved the primary checkout changes.</span>
+          </label>
         </div>
       )}
-      {(order.retry_suppressed || order.next_retry_at || order.state === 'stale' || order.state === 'timed_out') && (
-        <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
-          <RotateCcw />
-          {mutation.isPending ? 'Recovering…' : 'Recover work order'}
-        </Button>
-      )}
+      <Button variant="secondary" size="sm" disabled={!canRecover} onClick={() => mutation.mutate()}>
+        <RotateCcw aria-hidden />
+        {mutation.isPending ? 'Retrying…' : actionLabel}
+      </Button>
+      {!token && <p className="text-xs text-muted">Operator authorization is required to retry.</p>}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
     </div>
   )

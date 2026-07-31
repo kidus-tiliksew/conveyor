@@ -88,7 +88,7 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 48 {
+	if afterVersion != 49 {
 		t.Fatalf("post-upgrade migration version=%d", afterVersion)
 	}
 	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {
@@ -117,6 +117,95 @@ INSERT INTO interventions (task_id, actor_id, actor_role, action, reason_code)
 VALUES ($1, 'unknown', 'human', 'not_canonical', 'post-upgrade')`,
 		task.ID); err == nil {
 		t.Fatal("upgraded constraint accepted a non-canonical action")
+	}
+}
+
+func TestWorkOrderAttemptMigrationUpgradeKeepsVersion48LedgerIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	if err = admin.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	schema := "migration_v48_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = pool.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrateControlPlaneToVersion(t.Context(), pool, 48); err != nil {
+		t.Fatalf("migrate isolated schema to version 48: %v", err)
+	}
+	var beforeName, beforeChecksum string
+	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&beforeName, &beforeChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if beforeName != "048_planning_exploration.sql" || beforeChecksum == "" {
+		t.Fatalf("version 48 ledger=(%q,%q)", beforeName, beforeChecksum)
+	}
+	var attemptColumns, planningColumns int
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+WHERE table_schema=current_schema() AND table_name='work_orders'
+  AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
+		t.Fatal(err)
+	}
+	if attemptColumns != 0 {
+		t.Fatalf("version 48 attempt columns=%d", attemptColumns)
+	}
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+WHERE table_schema=current_schema() AND table_name='planning_sessions'
+  AND column_name IN ('model','effort','exploration_output_tokens','exploration_tokens_used','primary_repo','pinned_revisions')`).Scan(&planningColumns); err != nil {
+		t.Fatal(err)
+	}
+	if planningColumns != 6 {
+		t.Fatalf("version 48 planning columns=%d", planningColumns)
+	}
+
+	if err = migrateControlPlane(t.Context(), pool); err != nil {
+		t.Fatalf("upgrade isolated version-48 schema: %v", err)
+	}
+	var afterName, afterChecksum string
+	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&afterName, &afterChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if afterName != beforeName || afterChecksum != beforeChecksum {
+		t.Fatalf("version 48 migration changed: before=(%q,%q) after=(%q,%q)", beforeName, beforeChecksum, afterName, afterChecksum)
+	}
+	var afterVersion int
+	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
+		t.Fatal(err)
+	}
+	if afterVersion != 49 {
+		t.Fatalf("post-upgrade migration version=%d", afterVersion)
+	}
+	var attemptMigrationName string
+	if err = pool.QueryRow(t.Context(), "SELECT name FROM conveyor_schema_migrations WHERE version=49").Scan(&attemptMigrationName); err != nil {
+		t.Fatal(err)
+	}
+	if attemptMigrationName != "049_work_order_attempts.sql" {
+		t.Fatalf("version 49 migration=%q", attemptMigrationName)
+	}
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+WHERE table_schema=current_schema() AND table_name='work_orders'
+  AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
+		t.Fatal(err)
+	}
+	if attemptColumns != 3 {
+		t.Fatalf("version 49 attempt columns=%d", attemptColumns)
 	}
 }
 
@@ -181,9 +270,12 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: cancelJob.ID, TaskID: cancelTask.ID, JobID: cancelJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	claimedCancel, err := storetest.For(st).ClaimWorkOrder(ctx, cancelJob.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
 		t.Fatal(err)
 	}
+	cancelAttemptID := claimedCancel.AttemptID
+	cancelAttemptIDs := map[string]string{cancelJob.ID: cancelAttemptID}
 	orderIDs := []string{cancelJob.ID}
 	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderSubmitted, core.WorkOrderTimedOut, core.WorkOrderStale} {
 		job := core.Job{ID: cancelTask.ID + "-" + string(state), TaskID: cancelTask.ID, Stage: core.StageReview, State: core.JobPending}
@@ -204,6 +296,7 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 				t.Fatal(err)
 			}
+			cancelAttemptIDs[job.ID] = claimed.AttemptID
 		case core.WorkOrderTimedOut:
 			order.State = core.WorkOrderTimedOut
 			if err = storetest.For(st).UpdateWorkOrder(ctx, order, core.WorkOrderCmdTimeout); err != nil {
@@ -226,8 +319,20 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 		if getErr != nil || cancelled.State != core.WorkOrderCancelled {
 			t.Fatalf("cancelled order %s=%+v err=%v", orderID, cancelled, getErr)
 		}
-		if orderID == cancelJob.ID && cancelled.SessionID != "session" {
-			t.Fatalf("claimed cancellation lost session identity: %+v", cancelled)
+		if attemptID := cancelAttemptIDs[orderID]; attemptID != "" && (cancelled.AttemptID != "" || cancelled.LastAttemptID != attemptID) {
+			t.Fatalf("cancellation identity was not closed for %s: %+v", orderID, cancelled)
+		}
+		if attemptID := cancelAttemptIDs[orderID]; attemptID != "" && (cancelled.SessionID != "" || cancelled.WorkerID != "") {
+			t.Fatalf("cancelled attempt owner fields were not cleared for %s: %+v", orderID, cancelled)
+		}
+	}
+	cancelledEvents, eventErr := st.ListEvents(ctx, cancelTask.ID)
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	for orderID, attemptID := range cancelAttemptIDs {
+		if got := integrationEventAttemptID(t, cancelledEvents, "work_order.cancelled", orderID); got != attemptID {
+			t.Fatalf("cancelled event identity for %s=%q want=%q", orderID, got, attemptID)
 		}
 	}
 	interventions, err := st.ListInterventions(ctx, cancelTask.ID)
@@ -248,6 +353,15 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 		if job.State != core.JobFailed || job.EndedAt.IsZero() {
 			t.Fatalf("cancelled job not cleaned up: %+v", job)
 		}
+	}
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "wrong-session", time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session renew error=%v", err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, cancelJob.ID, "worker", core.WorkOrderRelease{SessionID: "wrong-session"}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session release error=%v", err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, cancelJob.ID, "worker", core.WorkOrderRelease{SessionID: "session"}); !errors.Is(err, store.ErrWorkOrderCancelled) {
+		t.Fatalf("release error=%v", err)
 	}
 	if _, err = storetest.For(st).RenewWorkerClaim(ctx, cancelJob.ID, "worker", "session", time.Minute); !errors.Is(err, store.ErrWorkOrderCancelled) {
 		t.Fatalf("renew error=%v", err)

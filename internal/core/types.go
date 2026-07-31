@@ -236,6 +236,15 @@ func NewTaskID() string {
 	return time.Now().UTC().Format("060102") + "-" + hex.EncodeToString(b)
 }
 
+// NewWorkOrderAttemptID returns an opaque identity for one successful claim.
+// It is deliberately independent of the worker session, which may remain warm
+// across several attempts (spec §21.53).
+func NewWorkOrderAttemptID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return "attempt-" + hex.EncodeToString(b)
+}
+
 // Job is one execution of one pipeline stage.
 type Job struct {
 	ID          string    `json:"id"`
@@ -490,6 +499,7 @@ type WorkOrder struct {
 	UnsatisfiableTaskIDs   []string         `json:"unsatisfiable_task_ids,omitempty"`
 	ClaimantID             string           `json:"claimed_by,omitempty"`
 	SessionID              string           `json:"session_id,omitempty"`
+	AttemptID              string           `json:"attempt_id,omitempty"`
 	ClientTokenHash        string           `json:"-"`
 	Agent                  string           `json:"agent,omitempty"`
 	Model                  string           `json:"model,omitempty"`
@@ -513,7 +523,9 @@ type WorkOrder struct {
 	QueueBlockedAt         time.Time        `json:"queue_blocked_at,omitempty"`
 	ExecutionStartedAt     time.Time        `json:"execution_started_at,omitempty"`
 	ExecutionDeadline      time.Time        `json:"execution_deadline,omitempty"`
+	LastAttemptID          string           `json:"last_attempt_id,omitempty"`
 	LastAttemptOutcome     string           `json:"last_attempt_outcome,omitempty"`
+	LastFailureCategory    string           `json:"last_failure_category,omitempty"`
 	LastFailureMessage     string           `json:"last_failure_message,omitempty"`
 	LastFailureDetail      string           `json:"last_failure_detail,omitempty"`
 	LastFailureExitStatus  *int             `json:"last_failure_exit_status,omitempty"`
@@ -596,12 +608,13 @@ type WorkOrderClaim struct {
 }
 
 const (
-	WorkOrderOutcomeChildFailure      = "child_failure"
-	WorkOrderOutcomeStalled           = "stalled"
-	WorkOrderOutcomeReleased          = "released"
-	WorkOrderOutcomeCancelled         = "cancelled"
-	WorkOrderOutcomeExpired           = "expired"
-	IdenticalFailureSuppressionReason = "identical failure output on consecutive attempts"
+	WorkOrderOutcomeChildFailure       = "child_failure"
+	WorkOrderOutcomeStalled            = "stalled"
+	WorkOrderOutcomeReleased           = "released"
+	WorkOrderOutcomeCancelled          = "cancelled"
+	WorkOrderOutcomeExpired            = "expired"
+	IdenticalFailureSuppressionReason  = "identical failure output on consecutive attempts"
+	WorkOrderFailureProviderUsageLimit = "provider_usage_limit"
 )
 
 func WorkOrderOutcomeConsumesRetry(outcome string) bool {
@@ -612,6 +625,7 @@ type WorkOrderRelease struct {
 	SessionID           string
 	Reason              string
 	Outcome             string
+	FailureCategory     string
 	ExitStatus          *int
 	FailureDetail       string
 	ModelRejection      bool
