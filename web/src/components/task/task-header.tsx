@@ -446,8 +446,8 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
         <select aria-label="Named execution setup" value={selected} onChange={(event) => setSelected(event.target.value)} disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs">
           {(config.data?.document.setups ?? []).map((setup) => <option key={setup.name} value={setup.name}>{setup.name}</option>)}
         </select>
-        <input aria-label="Setup change reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (required)" disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs" />
-        <Button size="sm" disabled={Boolean(disabledReason) || !next || !reason.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+        <input aria-label="Setup change reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs" />
+        <Button size="sm" disabled={Boolean(disabledReason) || !next || mutation.isPending} onClick={() => mutation.mutate()}>
           {selected === item.task.setup ? 'Apply latest setup' : 'Change setup'}
         </Button>
       </div>

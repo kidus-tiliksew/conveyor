@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	}
 	desired := order
 	desired.RequiredModel, desired.RequiredEffort, desired.QueueEnteredAt, desired.QueueDeadline = "new", "high", now.Add(time.Minute), now.Add(2*time.Hour)
-	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-1", Reason: "repair routing", Setup: next, WorkOrderUpdates: []core.WorkOrder{desired}, ReviewTransition: "none"}
+	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-1", Reason: " \t ", Setup: next, WorkOrderUpdates: []core.WorkOrder{desired}, ReviewTransition: "none"}
 	if _, err = st.ChangeTaskSetupCommand(ctx, taskops.TaskLease{}, request); err == nil {
 		t.Fatal("zero taskops lease authorized setup change")
 	}
@@ -77,13 +78,21 @@ func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
 	}
 	events, _ := st.ListEvents(ctx, task.ID)
 	var changes int
+	var auditReason string
 	for _, event := range events {
 		if event.Kind == "task.setup.changed" {
 			changes++
+			var payload struct {
+				Reason string `json:"reason"`
+			}
+			if err = json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			auditReason = payload.Reason
 		}
 	}
-	if changes != 1 {
-		t.Fatalf("changes=%d", changes)
+	if changes != 1 || auditReason != "" {
+		t.Fatalf("changes=%d reason=%q", changes, auditReason)
 	}
 }
 

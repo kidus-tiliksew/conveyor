@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,8 +32,8 @@ func TestChangeTaskSetupHTTPIsAuthenticatedAndSupportsApplyLatest(t *testing.T) 
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	server.ConfigProvider = provider
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
-	request := func(token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/setup", strings.NewReader(`{"apply_latest":true,"reason":"refresh corrected model","request_id":"latest-1"}`))
+	request := func(token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/setup", strings.NewReader(body))
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -40,25 +41,49 @@ func TestChangeTaskSetupHTTPIsAuthenticatedAndSupportsApplyLatest(t *testing.T) 
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	if response := request(""); response.Code != http.StatusUnauthorized {
+	presentReasonBody := `{"apply_latest":true,"reason":"refresh corrected model","request_id":"latest-1"}`
+	if response := request("", presentReasonBody); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized=%d body=%s", response.Code, response.Body.String())
 	}
-	response := request("token")
+	response := request("token", presentReasonBody)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"setup":"current"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for name, body := range map[string]string{
+		"absent":     `{"apply_latest":true,"request_id":"latest-absent"}`,
+		"empty":      `{"apply_latest":true,"reason":"","request_id":"latest-empty"}`,
+		"whitespace": `{"apply_latest":true,"reason":"  \t ","request_id":"latest-whitespace"}`,
+	} {
+		t.Run(name+" reason", func(t *testing.T) {
+			response := request("token", body)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"setup":"current"`) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 	updated, _ := st.GetTask(ctx, task.ID)
 	if updated.SetupContract.ExecutionSettings.Implementation.Model != "new" {
 		t.Fatalf("updated=%+v", updated.SetupContract)
 	}
 	events, _ := st.ListEvents(ctx, task.ID)
-	var changes int
+	var changes, emptyReasons, presentReasons int
 	for _, event := range events {
 		if event.Kind == "task.setup.changed" {
 			changes++
+			var payload struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Reason == "" {
+				emptyReasons++
+			} else if payload.Reason == "refresh corrected model" {
+				presentReasons++
+			}
 		}
 	}
-	if changes != 1 {
-		t.Fatalf("changes=%d", changes)
+	if changes != 4 || emptyReasons != 3 || presentReasons != 1 {
+		t.Fatalf("changes=%d empty_reasons=%d present_reasons=%d", changes, emptyReasons, presentReasons)
 	}
 }
