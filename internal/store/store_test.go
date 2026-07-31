@@ -729,7 +729,7 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	workerID := "worker-1"
-	policy := core.WorkOrderRelease{Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited: status 1", InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3}
+	policy := core.WorkOrderRelease{Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited: status 1", FailureCategory: core.WorkOrderFailureProviderUsageLimit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3}
 	wantDelays := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 	var priorStart time.Time
 	for attempt := 0; attempt < 4; attempt++ {
@@ -737,6 +737,9 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: fmt.Sprintf("token-%d", attempt), ClaimantID: workerID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if err != nil {
 			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		if claimed.AttemptID != sessionID {
+			t.Fatalf("claim %d attempt id=%q want %q", attempt, claimed.AttemptID, sessionID)
 		}
 		if !priorStart.IsZero() && !claimed.ExecutionStartedAt.After(priorStart) {
 			t.Fatalf("attempt %d reused execution start %v", attempt, claimed.ExecutionStartedAt)
@@ -759,6 +762,9 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 		}
 		if released.WorkerID != "" || !released.ExecutionStartedAt.IsZero() || !released.ExecutionDeadline.IsZero() {
 			t.Fatalf("release %d retained active attempt: %+v", attempt, released)
+		}
+		if released.AttemptID != "" || released.LastAttemptID != sessionID || released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit {
+			t.Fatalf("release %d attempt projection: %+v", attempt, released)
 		}
 		if attempt < len(wantDelays) {
 			if released.RetrySuppressed || released.AutomaticRetryCount != attempt+1 || released.NextRetryAt.Sub(released.LastFailureAt) != wantDelays[attempt] {

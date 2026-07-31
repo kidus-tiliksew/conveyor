@@ -461,6 +461,7 @@ export interface WorkOrder {
   unsatisfiable_task_ids?: string[]
   claimed_by?: string
   session_id?: string
+  attempt_id?: string
   agent?: string
   model?: string
   worker_id?: string
@@ -482,7 +483,9 @@ export interface WorkOrder {
   queue_deadline: string
   execution_started_at?: string
   execution_deadline?: string
+  last_attempt_id?: string
   last_attempt_outcome?: 'child_failure' | 'stalled' | 'released' | 'cancelled' | 'expired'
+  last_failure_category?: 'provider_usage_limit' | string
   last_failure_message?: string
   last_failure_detail?: string
   last_failure_exit_status?: number
@@ -501,6 +504,8 @@ export interface WorkOrder {
   rate_limit_observed_at?: string
   last_agent_activity_at?: string
   last_agent_activity_label?: string
+  created_at?: string
+  updated_at?: string
 }
 
 export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; requirement_id?: string; download_url?: string; created_at: string }

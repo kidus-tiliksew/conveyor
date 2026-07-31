@@ -2064,11 +2064,11 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 }
 
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
-session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
-last_attempt_outcome, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
+last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at`
@@ -2879,7 +2879,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			executionDeadline = now.Add(claim.ExecutionTimeout)
 		}
 	}
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, client_token_hash=$3, agent=$4, model=$5, worker_id=$6, lease_expires_at=$7, execution_started_at=$8, execution_deadline=$9, model_enforcement=$10, updated_at=$11 WHERE workspace_id=$12 AND id=$13 RETURNING "+workOrderColumns,
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$2, client_token_hash=$3, agent=$4, model=$5, worker_id=$6, lease_expires_at=$7, execution_started_at=$8, execution_deadline=$9, model_enforcement=$10, updated_at=$11 WHERE workspace_id=$12 AND id=$13 RETURNING "+workOrderColumns,
 		claim.ClaimantID, claim.SessionID, hash, claim.Agent, claim.Model, claim.WorkerID, expires,
 		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, workspace(ctx), id)
 	order, err = scanWorkOrder(row)
@@ -3058,6 +3058,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
 	prior := order.LastAttemptOutcome
+	priorAttemptID := order.LastAttemptID
 	priorState := order.State
 	lifecycleCommand := core.WorkOrderCmdRecover
 	eventKind := "work_order.recovered"
@@ -3094,7 +3095,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			}
 		}
 	}
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,required_model=$3,required_harness=$4,required_effort=$5,required_harness_config=$6,execution_timeout=$7,updated_at=$1 WHERE workspace_id=$8 AND id=$9 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), order.RequiredModel, order.RequiredHarness, order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, workspace(ctx), id))
+	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,required_model=$3,required_harness=$4,required_effort=$5,required_harness_config=$6,execution_timeout=$7,updated_at=$1 WHERE workspace_id=$8 AND id=$9 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), order.RequiredModel, order.RequiredHarness, order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -3108,7 +3109,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -3230,7 +3231,8 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdExpire); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$1,next_retry_at=NULL,retry_suppressed=true,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state='claimed' RETURNING `+workOrderColumns, core.WorkOrderOutcomeExpired, now, workspace(ctx), order.ID))
+	attemptID := order.AttemptID
+	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=true,updated_at=$3 WHERE workspace_id=$4 AND id=$5 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, now, workspace(ctx), order.ID))
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -3238,7 +3240,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"outcome": updated.LastAttemptOutcome, "retry_suppressed": true}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": updated.LastAttemptOutcome, "retry_suppressed": true}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return updated, nil
@@ -3340,19 +3342,19 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 				return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: string(current.State), Command: string(commands[0]), Allowed: core.WorkOrderTransitionAlternatives(current.State)}
 			}
 		}
-		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3,
-			client_token_hash=$4, agent=$5, model=$6, lease_expires_at=$7,
-			model_enforcement=$8, queue_entered_at=$9, queue_deadline=$10, execution_started_at=$11,
-			execution_deadline=$12, last_attempt_outcome=$13, last_failure_message=$14, last_failure_detail=$15,
-			last_failure_exit_status=$16, last_failure_at=$17, automatic_retry_count=$18,
-			next_retry_at=$19, retry_suppressed=$20, retry_suppression_reason=$21, redispatch_count=$22, progress=$23,
-			cost_usd=$24, tokens_in=$25, tokens_out=$26, self_reported=$27,
-			rate_limit=$28, rate_limit_observed_at=$29, updated_at=now()
-			WHERE workspace_id=$30 AND id=$31`, order.State, order.ClaimantID, order.SessionID,
+		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3, attempt_id=$4,
+			client_token_hash=$5, agent=$6, model=$7, lease_expires_at=$8,
+			model_enforcement=$9, queue_entered_at=$10, queue_deadline=$11, execution_started_at=$12,
+			execution_deadline=$13, last_attempt_id=$14, last_attempt_outcome=$15, last_failure_category=$16, last_failure_message=$17, last_failure_detail=$18,
+			last_failure_exit_status=$19, last_failure_at=$20, automatic_retry_count=$21,
+			next_retry_at=$22, retry_suppressed=$23, retry_suppression_reason=$24, redispatch_count=$25, progress=$26,
+			cost_usd=$27, tokens_in=$28, tokens_out=$29, self_reported=$30,
+			rate_limit=$31, rate_limit_observed_at=$32, updated_at=now()
+			WHERE workspace_id=$33 AND id=$34`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
-			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureDetail,
+			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptID, order.LastAttemptOutcome, order.LastFailureCategory, order.LastFailureMessage, order.LastFailureDetail,
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
 			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported,
@@ -3906,11 +3908,11 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var harnessConfig, rateLimit []byte
 	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
-		&order.SessionID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
+		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
 		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
-		&order.LastAttemptOutcome, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
+		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt)

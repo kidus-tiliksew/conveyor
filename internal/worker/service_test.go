@@ -162,12 +162,15 @@ func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := service.Release(ctx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "release-session", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "test retry"})
+	released, err := service.Release(ctx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "release-session", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "test retry", FailureDetail: "provider usage limit reached"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !released.QueueEnteredAt.After(now.Add(-time.Minute)) {
 		t.Fatalf("released queue entry was not refreshed: %s", released.QueueEnteredAt)
+	}
+	if released.LastFailureCategory != core.WorkOrderFailureProviderUsageLimit || released.LastAttemptID != "release-session" {
+		t.Fatalf("released category/attempt=%+v", released)
 	}
 	listed, err = service.ListClaimable(ctx, worker)
 	if err != nil {
@@ -264,6 +267,24 @@ func TestFailureDetailBoundAndProviderModelRejectionMatcher(t *testing.T) {
 	} {
 		if got := providerModelRejection(fixture.detail); got != fixture.want {
 			t.Fatalf("providerModelRejection(%q)=%v want %v", fixture.detail, got, fixture.want)
+		}
+	}
+}
+
+func TestProviderUsageLimitMatcher(t *testing.T) {
+	for _, fixture := range []struct {
+		detail string
+		want   bool
+	}{
+		{"You have reached your usage limit. Try again later.", true},
+		{"HTTP 429: too many requests", true},
+		{"provider quota has been exceeded", true},
+		{"capacity exhausted for this account", true},
+		{"harness exited before completing work order", false},
+		{"the configured model is unsupported", false},
+	} {
+		if got := providerUsageLimit(fixture.detail); got != fixture.want {
+			t.Fatalf("providerUsageLimit(%q)=%v want %v", fixture.detail, got, fixture.want)
 		}
 	}
 }

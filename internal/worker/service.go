@@ -907,6 +907,9 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeStalled && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
 		return core.WorkOrder{}, fmt.Errorf("invalid worker release outcome %q", release.Outcome)
 	}
+	if release.Outcome == core.WorkOrderOutcomeChildFailure && release.FailureCategory == "" && providerUsageLimit(release.FailureDetail) {
+		release.FailureCategory = core.WorkOrderFailureProviderUsageLimit
+	}
 	release.InitialRetryDelay = s.RetryDelay
 	if release.InitialRetryDelay <= 0 {
 		release.InitialRetryDelay = DefaultRetryDelay
@@ -960,6 +963,22 @@ func providerModelRejection(detail string) bool {
 		"does not support the model",
 		"does not support model",
 		"model not supported",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerUsageLimit maps provider-specific stderr onto a stable category at
+// the worker boundary. The raw detail remains durable for audit and future
+// classifiers; presentation code consumes only this provider-neutral value.
+func providerUsageLimit(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	for _, marker := range []string{
+		"usage limit", "usage cap", "quota exceeded", "quota has been exceeded",
+		"rate limit", "too many requests", "capacity limit", "capacity exhausted",
 	} {
 		if strings.Contains(detail, marker) {
 			return true

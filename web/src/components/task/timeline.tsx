@@ -4,7 +4,7 @@ import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import { buildTimeline, type PanelSeat, type TimelineEntry } from '../../lib/activity'
+import { buildExecutionAttempts, buildTimeline, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type ExecutionAttempt, type PanelSeat, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
@@ -37,10 +37,22 @@ const gateDots: Record<GateTone, string> = {
 // have — materialization, child progress, close — still renders in full.
 export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
   const entries = buildTimeline(item)
+  const currentExecution = deriveCurrentExecutionState(item)
+  const attempts = buildExecutionAttempts(item, currentExecution)
+  const technicalEvents = technicalActivity(item)
   const showGate = isReviewable(item.task)
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
+  const priorExecutionStatus = useRef(currentExecution?.status)
+  const [executionAnnouncement, setExecutionAnnouncement] = useState('')
+
+  useEffect(() => {
+    if (priorExecutionStatus.current === 'progressing' && currentExecution?.status === 'paused') {
+      setExecutionAnnouncement(`${currentExecution.title}. ${currentExecution.nextAction}`)
+    }
+    priorExecutionStatus.current = currentExecution?.status
+  }, [currentExecution?.status, currentExecution?.title, currentExecution?.nextAction])
 
   // A successful human decision explicitly requests one tail scroll after its
   // refreshed activity has rendered. Live event refetches never enter this
@@ -66,8 +78,12 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   ] : []).filter((entry) => entry !== false)
 
   return (
+    <>
     <section ref={timelineRef} aria-label="Execution event timeline">
-      <h2 className="mb-4 text-sm font-semibold tracking-tight">Activity</h2>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{executionAnnouncement}</p>
+      {currentExecution && <CurrentExecutionSummary state={currentExecution} />}
+      {attempts.length > 0 && <AttemptHistory attempts={attempts} />}
+      <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
       <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
         {entries.map((entry) => (
           <TimelineRow key={keyFor(entry)} entry={entry} />
@@ -89,7 +105,99 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
         )}
       </ol>
     </section>
+    {technicalEvents.length > 0 && <TechnicalActivity events={technicalEvents} />}
+    </>
   )
+}
+
+function CurrentExecutionSummary({ state }: { state: CurrentExecutionState }) {
+  const paused = state.status === 'paused'
+  return (
+    <section
+      aria-labelledby="current-execution-title"
+      className={cn(
+        'mb-4 rounded-lg border px-4 py-3',
+        paused ? 'border-attention/55 bg-attention-soft' : 'border-primary/25 bg-primary-soft/35',
+      )}
+    >
+      <div className="flex items-start gap-2">
+        {paused ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden /> : <CircleDashed className="mt-0.5 size-4 shrink-0 animate-pulse text-primary" aria-hidden />}
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Current state · {paused ? 'Paused — needs attention' : 'Progressing'}</p>
+          <h2 id="current-execution-title" className={cn('mt-0.5 text-sm font-semibold', paused ? 'text-attention' : 'text-foreground')}>{state.title}</h2>
+        </div>
+      </div>
+      <dl className="mt-3 grid gap-2 text-xs leading-5 sm:grid-cols-3">
+        <div><dt className="font-medium text-foreground">Current blocker</dt><dd className="text-muted">{state.blocker}</dd></div>
+        <div><dt className="font-medium text-foreground">Retry</dt><dd className="text-muted">{state.retry}</dd></div>
+        <div><dt className="font-medium text-foreground">What to do next</dt><dd className="text-muted">{state.nextAction}</dd></div>
+      </dl>
+    </section>
+  )
+}
+
+function AttemptHistory({ attempts }: { attempts: ExecutionAttempt[] }) {
+  return (
+    <section aria-labelledby="attempt-history-title" className="mb-4">
+      <h2 id="attempt-history-title" className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted">Execution attempts</h2>
+      <ol className="space-y-2">
+        {attempts.map((attempt) => (
+          <li key={attempt.id} className={cn('rounded-lg border px-3 py-2.5', attempt.current ? 'border-attention/45 bg-attention-soft/65' : 'border-border bg-surface/40')}>
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className={cn('text-sm font-medium', attempt.current ? 'text-attention' : 'text-foreground/90')}>
+                {attempt.legacy ? 'Legacy attempt record' : `Attempt ${attempt.number}`} — {attempt.title}
+              </span>
+              {attempt.current && <Badge variant="attention">Current</Badge>}
+              <time className="ml-auto text-[11px] text-faint">{absoluteTime(attempt.endedAt ?? attempt.startedAt)}</time>
+            </div>
+            {attempt.failureDetail && (
+              <details className="mt-2 text-xs text-muted">
+                <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical details</summary>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">{attempt.failureDetail}</pre>
+              </details>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
+function TechnicalActivity({ events }: { events: ActivityItem['events'] }) {
+  return (
+    <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
+      <summary className="cursor-pointer rounded-lg px-3 py-2.5 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical activity</summary>
+      <ol className="divide-y divide-border border-t border-border">
+        {events.map((event) => (
+          <li key={event.id} className="px-3 py-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <code className="text-[11px] text-foreground">{event.kind}</code>
+              <time className="ml-auto text-[11px] text-faint">{absoluteTime(event.at)}</time>
+            </div>
+            {event.payload && Object.keys(event.payload).length > 0 && (
+              <EventPayloadDisclosure event={event} />
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
+  )
+}
+
+function EventPayloadDisclosure({ event }: { event: ActivityItem['events'][number] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <details className="mt-1" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
+      <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Event payload</summary>
+      {open && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono">{JSON.stringify(technicalPayload(event), null, 2)}</pre>}
+    </details>
+  )
+}
+
+function technicalPayload(event: ActivityItem['events'][number]): Record<string, unknown> {
+  if (!event.kind.endsWith('.output_invalid') || !Object.hasOwn(event.payload ?? {}, 'output')) return event.payload ?? {}
+  const { output: _rejectedOutput, ...metadata } = event.payload ?? {}
+  return metadata
 }
 
 function scrollableAncestor(element: HTMLElement | null): HTMLElement | null {

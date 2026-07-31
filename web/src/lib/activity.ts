@@ -75,6 +75,182 @@ function forgeFailureDetail(payload: Record<string, unknown>, detailKey: 'last_e
   return [category, detail].filter(Boolean).join(' · ') || undefined
 }
 
+const attemptEventKinds = new Set([
+  'work_order.claimed',
+  'work_order.lease_renewed',
+  'work_order.child_failed',
+  'work_order.stalled',
+  'work_order.released',
+  'work_order.expired',
+  'work_order.timed_out',
+  'work_order.recovered',
+  'work_order.redispatched',
+])
+
+export type CurrentExecutionKind = 'running' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
+
+export interface CurrentExecutionState {
+  kind: CurrentExecutionKind
+  status: 'progressing' | 'paused'
+  order: WorkOrder
+  attemptId?: string
+  title: string
+  blocker: string
+  retry: string
+  nextAction: string
+  action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
+}
+
+export interface ExecutionAttempt {
+  id: string
+  number: number
+  startedAt: string
+  endedAt?: string
+  title: string
+  current: boolean
+  legacy: boolean
+  failureDetail?: string
+  events: TaskEvent[]
+}
+
+function orderActivityTime(order: WorkOrder): number {
+  return new Date(order.updated_at ?? order.last_failure_at ?? order.execution_started_at ?? order.queue_entered_at).getTime()
+}
+
+export function isDirtyPrimaryCheckout(order: WorkOrder) {
+  if (order.stage === 'review') return false
+  return [order.last_failure_message, order.last_failure_detail]
+    .some((value) => value?.includes('checkout_blocked_dirty_primary'))
+}
+
+export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutionState | undefined {
+  const candidates = [...(item.work_orders ?? [])]
+    .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
+    .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
+    .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))
+  const order = candidates.find((candidate) => candidate.state === 'claimed')
+    ?? candidates.find((candidate) => candidate.state !== 'queued' || Boolean(candidate.last_attempt_outcome || candidate.retry_suppressed || candidate.next_retry_at))
+  if (!order) return undefined
+
+  const stage = order.stage === 'spec' ? 'Specification' : order.stage === 'review' ? 'Review' : 'Implementation'
+  if (order.state === 'claimed') {
+    return {
+      kind: 'running', status: 'progressing', order, attemptId: order.attempt_id,
+      title: `${stage} is in progress`, blocker: 'No current blocker.',
+      retry: 'No retry is needed.', nextAction: 'No operator action is needed.', action: 'none',
+    }
+  }
+  if (order.next_retry_at && !order.retry_suppressed) {
+    const provider = order.last_failure_category === 'provider_usage_limit'
+    return {
+      kind: 'retry_pending', status: 'progressing', order, attemptId: order.last_attempt_id,
+      title: 'Automatic retry scheduled',
+      blocker: provider ? 'The provider usage limit paused the last attempt.' : 'The last attempt ended before completion.',
+      retry: 'Conveyor will retry automatically.', nextAction: 'No operator action is needed.', action: 'none',
+    }
+  }
+  if (isDirtyPrimaryCheckout(order)) {
+    return {
+      kind: 'checkout_blocked', status: 'paused', order, attemptId: order.last_attempt_id,
+      title: `${stage} paused — checkout needs attention`,
+      blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
+      retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
+      nextAction: 'Resolve the primary checkout changes, then retry the implementation.', action: 'resolve_checkout',
+    }
+  }
+  if (order.last_failure_category === 'provider_usage_limit') {
+    return {
+      kind: 'provider_usage_limit', status: 'paused', order, attemptId: order.last_attempt_id,
+      title: `${stage} paused — provider limit reached`,
+      blocker: 'The provider usage or capacity limit stopped the last attempt.',
+      retry: 'No automatic retry is pending.', nextAction: 'Retry the implementation after the provider limit has cleared.',
+      action: 'retry_implementation',
+    }
+  }
+  if (order.state === 'stale' || order.state === 'timed_out' || order.last_attempt_outcome === 'expired') {
+    return {
+      kind: 'expired', status: 'paused', order, attemptId: order.last_attempt_id,
+      title: `${stage} paused — recovery needed`,
+      blocker: order.state === 'stale' ? 'The order was not claimed before its queue deadline.' : 'The claim or execution window ended before completion.',
+      retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
+    }
+  }
+  return {
+    kind: 'released', status: 'paused', order, attemptId: order.last_attempt_id,
+    title: `${stage} paused — recovery needed`,
+    blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
+    retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
+  }
+}
+
+function attemptHeading(events: TaskEvent[], current: CurrentExecutionState | undefined): { title: string; failureDetail?: string } {
+  const closing = [...events].reverse().find((event) => event.kind !== 'work_order.claimed' && event.kind !== 'work_order.lease_renewed')
+  if (!closing) {
+    switch (current?.kind) {
+      case 'running': return { title: 'In progress' }
+      case 'retry_pending': return { title: 'Usage limit reached · retry scheduled' }
+      case 'provider_usage_limit': return { title: 'Usage limit reached · needs your action' }
+      case 'checkout_blocked': return { title: 'Checkout blocked · needs your action' }
+      case 'expired': return { title: 'Claim expired · needs your action' }
+      case 'released': return { title: 'Work released · needs your action' }
+      default: return { title: 'Claimed' }
+    }
+  }
+  const payload = closing.payload ?? {}
+  const failureDetail = typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined
+  switch (closing.kind) {
+    case 'work_order.child_failed':
+      if (payload.failure_category === 'provider_usage_limit') {
+        return { title: payload.retry_suppressed === true ? 'Usage limit reached · needs your action' : 'Usage limit reached · retried automatically', failureDetail }
+      }
+      return { title: payload.retry_suppressed === true ? 'Agent run failed · needs your action' : 'Agent run failed · retried automatically', failureDetail }
+    case 'work_order.stalled':
+      return { title: payload.retry_suppressed === true ? 'Agent stopped responding · needs your action' : 'Agent stopped responding · retried automatically', failureDetail }
+    case 'work_order.released':
+      return { title: typeof payload.reason === 'string' && payload.reason.includes('checkout_blocked_dirty_primary') ? 'Checkout blocked · needs your action' : 'Work released · needs your action', failureDetail }
+    case 'work_order.expired': return { title: 'Claim expired · needs your action' }
+    case 'work_order.timed_out': return { title: 'Execution timed out · needs your action' }
+    case 'work_order.recovered':
+    case 'work_order.redispatched': return { title: 'Recovered by an operator' }
+    default: return { title: closing.kind.replaceAll('_', ' ').replaceAll('.', ' · ') }
+  }
+}
+
+export function buildExecutionAttempts(item: ActivityItem, current = deriveCurrentExecutionState(item)): ExecutionAttempt[] {
+  const groups = new Map<string, { id: string; legacy: boolean; events: TaskEvent[] }>()
+  for (const event of item.events) {
+    if (!attemptEventKinds.has(event.kind) || event.kind === 'work_order.lease_renewed') continue
+    const payloadID = typeof event.payload?.attempt_id === 'string' && event.payload.attempt_id.trim() ? event.payload.attempt_id : undefined
+    const id = payloadID ?? `legacy-${event.id}`
+    const group = groups.get(id) ?? { id, legacy: payloadID == null, events: [] }
+    group.events.push(event)
+    groups.set(id, group)
+  }
+  if (current?.attemptId && !groups.has(current.attemptId)) {
+    groups.set(current.attemptId, { id: current.attemptId, legacy: false, events: [] })
+  }
+  return [...groups.values()]
+    .sort((a, b) => new Date(a.events[0]?.at ?? current?.order.queue_entered_at ?? 0).getTime() - new Date(b.events[0]?.at ?? current?.order.queue_entered_at ?? 0).getTime())
+    .map((group, index) => {
+      const heading = attemptHeading(group.events, current?.attemptId === group.id ? current : undefined)
+      return {
+        id: group.id,
+        number: index + 1,
+        startedAt: group.events[0]?.at ?? current?.order.execution_started_at ?? current?.order.queue_entered_at ?? item.task.created_at,
+        endedAt: group.events.at(-1)?.at,
+        title: heading.title,
+        current: current?.attemptId === group.id,
+        legacy: group.legacy,
+        failureDetail: heading.failureDetail,
+        events: group.events,
+      }
+    })
+}
+
+export function technicalActivity(item: ActivityItem): TaskEvent[] {
+  return [...item.events].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+}
+
 export type TimelineEntry =
   | { type: 'job'; at: string; job: Job; summary: string; model: string; tone: 'default' | 'warning'; order?: WorkOrder }
   | { type: 'note'; at: string; key: string; title: string; detail?: string; failureDetail?: string; href?: string; alarm?: boolean }
@@ -531,6 +707,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
+    if (attemptEventKinds.has(event.kind)) continue
     const note = noteFor(event, panels)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }

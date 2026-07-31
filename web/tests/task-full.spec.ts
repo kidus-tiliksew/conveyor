@@ -14,7 +14,25 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		: taskId === 'long-spec'
 		? ['## Specification', '', ...Array.from({ length: 60 }, (_, index) => `Long specification paragraph ${index + 1}.`), '', 'Long spec ending marker.'].join('\n\n')
 		: '## Specification\n\nRegression marker at the bottom of the task content.'
-	const reviewActivity = taskId === 'stage-aware' ? {
+	const reviewActivity = taskId === 'attempt-recovery' ? {
+		jobs: [],
+		events: [
+			{ id: 1, task_id: taskId, job_id: 'attempt-recovery-implement-1', kind: 'work_order.claimed', actor_id: 'worker-1', actor_role: 'runner' as const, payload: { id: 'attempt-recovery-implement-1', attempt_id: 'attempt-1', stage: 'implement', session_id: 'worker-1' }, at: '2026-07-15T12:00:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'attempt-recovery-implement-1', kind: 'work_order.lease_renewed', actor_id: 'worker-1', actor_role: 'runner' as const, payload: { attempt_id: 'attempt-1', lease_expires_at: '2026-07-15T12:06:00Z' }, at: '2026-07-15T12:01:00Z' },
+			{ id: 3, task_id: taskId, job_id: 'attempt-recovery-implement-1', kind: 'work_order.child_failed', actor_id: 'worker-1', actor_role: 'runner' as const, payload: { attempt_id: 'attempt-1', reason: 'harness exited before completing work order', detail: 'You have reached the provider usage limit. Try again later.', failure_category: 'provider_usage_limit', retry_suppressed: false, next_retry_at: '2026-07-15T12:03:00Z' }, at: '2026-07-15T12:02:00Z' },
+			{ id: 4, task_id: taskId, job_id: 'attempt-recovery-implement-1', kind: 'work_order.claimed', actor_id: 'worker-2', actor_role: 'runner' as const, payload: { id: 'attempt-recovery-implement-1', attempt_id: 'attempt-2', stage: 'implement', session_id: 'worker-2' }, at: '2026-07-15T12:03:00Z' },
+			{ id: 5, task_id: taskId, job_id: 'attempt-recovery-implement-1', kind: 'work_order.released', actor_id: 'worker-2', actor_role: 'runner' as const, payload: { attempt_id: 'attempt-2', reason: 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes', outcome: 'released', retry_suppressed: true }, at: '2026-07-15T12:04:00Z' },
+		],
+		work_orders: [{ id: 'attempt-recovery-implement-1', task_id: taskId, job_id: 'attempt-recovery-implement-1', stage: 'implement', state: 'queued', claimable: false, last_attempt_id: 'attempt-2', last_attempt_outcome: 'released', last_failure_message: 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes', last_failure_at: '2026-07-15T12:04:00Z', automatic_retry_count: 1, retry_suppressed: true, queue_entered_at: '2026-07-15T12:04:00Z', queue_deadline: '2026-07-16T12:04:00Z', updated_at: '2026-07-15T12:04:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'usage-retry-pending' ? {
+		jobs: [],
+		events: [{ id: 1, task_id: taskId, job_id: 'usage-retry-pending-implement-1', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { attempt_id: 'usage-attempt-1', reason: 'harness exited before completing work order', detail: 'usage limit reached', failure_category: 'provider_usage_limit', retry_suppressed: false, next_retry_at: '2099-07-15T12:05:00Z' }, at: createdAt }],
+		work_orders: [{ id: 'usage-retry-pending-implement-1', task_id: taskId, job_id: 'usage-retry-pending-implement-1', stage: 'implement', state: 'queued', claimable: false, last_attempt_id: 'usage-attempt-1', last_attempt_outcome: 'child_failure', last_failure_category: 'provider_usage_limit', last_failure_message: 'harness exited before completing work order', last_failure_detail: 'usage limit reached', last_failure_at: createdAt, automatic_retry_count: 1, next_retry_at: '2099-07-15T12:05:00Z', retry_suppressed: false, queue_entered_at: createdAt, queue_deadline: '2099-07-16T12:00:00Z', updated_at: createdAt, redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'usage-suppressed' ? {
+		jobs: [],
+		events: [{ id: 1, task_id: taskId, job_id: 'usage-suppressed-implement-1', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { attempt_id: 'usage-attempt-2', reason: 'harness exited before completing work order', detail: 'usage limit reached', failure_category: 'provider_usage_limit', retry_suppressed: true }, at: createdAt }],
+		work_orders: [{ id: 'usage-suppressed-implement-1', task_id: taskId, job_id: 'usage-suppressed-implement-1', stage: 'implement', state: 'queued', claimable: false, last_attempt_id: 'usage-attempt-2', last_attempt_outcome: 'child_failure', last_failure_category: 'provider_usage_limit', last_failure_message: 'harness exited before completing work order', last_failure_detail: 'usage limit reached', last_failure_at: createdAt, automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', updated_at: createdAt, redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'stage-aware' ? {
 		jobs: [],
 		events: [{ id: 1, task_id: taskId, job_id: 'stage-aware-spec', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { reason: 'harness exited: status 1', detail: 'provider rejected the configured model', retry_suppressed: true, suppression_reason: 'identical failure output on consecutive attempts' }, at: createdAt }],
 		work_orders: [
@@ -556,7 +574,7 @@ test('suppressed worker order exposes failure state and audited recovery action'
 	})
 	await page.goto('/tasks/recovery/full')
 	await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
-	await expect(page.getByText(/Automatic retry is suppressed/)).toBeVisible()
+	await expect(page.getByText('No automatic retry is pending.')).toBeVisible()
 	await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
 	await page.getByRole('button', { name: 'Recover work order' }).click()
 	await expect.poll(() => recoveryRequest).toContain('request_id')
@@ -628,23 +646,94 @@ test('checkout-blocked recovery explains the safe operator sequence before recov
 	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
 	await page.goto('/tasks/checkout-blocked-recovery/full')
 
-	const failure = page.getByText(/checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE\.md and conveyor-spec\.md/)
-	const resolveFirst = page.locator('p').filter({ hasText: 'Resolve the primary checkout changes first.' })
-	const recoveryEffect = page.locator('p').filter({ hasText: 'requeues the order for another attempt and preserves your checkout changes' })
-	const action = page.getByRole('button', { name: 'Recover work order' })
+	const failure = page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')
+	const resolveFirst = page.getByRole('region', { name: 'Implementation paused — checkout needs attention' }).getByText('Resolve the primary checkout changes, then retry the implementation.')
+	const recoveryEffect = page.getByText(/Conveyor will not clean, commit, stash, or discard them/)
+	const action = page.getByRole('button', { name: 'Retry implementation' })
 
 	await expect(failure).toBeVisible()
 	await expect(resolveFirst).toBeVisible()
-	await expect(resolveFirst).toContainText('commit or stash them')
 	await expect(recoveryEffect).toBeVisible()
-	await expect(recoveryEffect).toContainText('does not clean, commit, stash, or discard them')
 	await expect(action).toBeVisible()
-	for (const guidance of [resolveFirst, recoveryEffect]) {
-		await expect.poll(() => guidance.evaluate((node) => {
-			const action = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Recover work order'))
-			return action != null && Boolean(node.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING)
-		})).toBe(true)
-	}
+	await expect(action).toBeDisabled()
+	await page.getByLabel('I resolved the primary checkout changes.').check()
+	await expect(action).toBeEnabled()
+})
+
+test('two attempts keep the historical provider limit neutral and make the later checkout blocker authoritative', async ({ page }) => {
+	await page.goto('/tasks/attempt-recovery/full')
+
+	await expect(page.getByRole('heading', { name: 'Implementation paused — checkout needs attention' })).toBeVisible()
+	await expect(page.getByText('Attempt 1 — Usage limit reached · retried automatically')).toBeVisible()
+	await expect(page.getByText('Attempt 2 — Checkout blocked · needs your action')).toBeVisible()
+	await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toHaveCount(0)
+	await expect(page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')).toBeVisible()
+	await expect.poll(() => page.getByRole('heading', { name: 'Implementation paused — checkout needs attention' }).evaluate((summary) => {
+		const attempts = document.querySelector('#attempt-history-title')
+		const activity = [...document.querySelectorAll('h2')].find((heading) => heading.textContent === 'Activity')
+		return attempts != null && activity != null
+			&& Boolean(summary.compareDocumentPosition(attempts) & Node.DOCUMENT_POSITION_FOLLOWING)
+			&& Boolean(attempts.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING)
+	})).toBe(true)
+	const technical = page.getByText('Show technical activity')
+	await technical.focus()
+	await expect(technical).toBeFocused()
+	await technical.press('Enter')
+	await expect(page.getByText('work_order.lease_renewed')).toBeVisible()
+	await expect(page.getByText('harness exited before completing work order')).not.toBeVisible()
+	await page.getByText('Show technical details').first().click()
+	await expect(page.getByRole('region', { name: 'Execution attempts' }).getByText('You have reached the provider usage limit. Try again later.', { exact: true })).toBeVisible()
+})
+
+test('provider-limit retry states expose only the correct action', async ({ page }) => {
+	await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+	await page.goto('/tasks/usage-retry-pending/full')
+	await expect(page.getByText(/Retrying in/)).toBeVisible()
+	await expect(page.getByRole('button', { name: /Retry implementation|Recover work order/ })).toHaveCount(0)
+	await expect(page.getByText('The provider usage limit paused the last attempt.')).toBeVisible()
+
+	await page.goto('/tasks/usage-suppressed/full')
+	await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toBeVisible()
+	await expect(page.getByRole('button', { name: 'Retry implementation' })).toBeVisible()
+	await expect(page.getByText('harness exited before completing work order')).not.toBeVisible()
+	await page.getByText('Show technical details').first().click()
+	await expect(page.getByRole('region', { name: 'Execution attempts' }).getByText('usage limit reached', { exact: true })).toBeVisible()
+})
+
+test('a running attempt becoming paused is announced through the live region', async ({ page }) => {
+	let activityRequests = 0
+	let releaseStream = () => {}
+	const streamReady = new Promise<void>((resolve) => { releaseStream = resolve })
+	await page.route('**/v1/tasks/live-pause/activity*', async (route) => {
+		activityRequests++
+		const item = activity('usage-suppressed', false)
+		item.task.id = 'live-pause'
+		item.work_orders[0].task_id = 'live-pause'
+		item.events = activityRequests === 1 ? [{ id: 1, task_id: 'live-pause', job_id: item.work_orders[0].job_id, kind: 'work_order.claimed', actor_id: 'worker', actor_role: 'runner', payload: { attempt_id: 'live-attempt' }, at: createdAt }] : item.events
+		item.work_orders[0] = activityRequests === 1 ? {
+			...item.work_orders[0],
+			state: 'claimed',
+			claimable: false,
+			attempt_id: 'live-attempt',
+			last_attempt_id: undefined,
+			last_attempt_outcome: undefined,
+			last_failure_category: undefined,
+			last_failure_message: undefined,
+			last_failure_detail: undefined,
+			retry_suppressed: false,
+		} : item.work_orders[0]
+		await route.fulfill({ json: item })
+	})
+	await page.route('**/v1/tasks/live-pause/events/stream*', async (route) => {
+		await streamReady
+		await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+	})
+
+	await page.goto('/tasks/live-pause/full')
+	await expect(page.getByRole('heading', { name: 'Implementation is in progress' })).toBeVisible()
+	releaseStream()
+	await expect(page.getByRole('status')).toContainText('Implementation paused — provider limit reached')
+	await expect(page.getByRole('status')).toContainText('Retry the implementation after the provider limit has cleared.')
 })
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
@@ -712,8 +801,8 @@ test('work-order cards use their actual stage and expose captured failure detail
 	await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
 	await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
 	await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
-	await expect(timeline.getByText(/identical failure output on consecutive attempts/)).toBeVisible()
-	const captured = timeline.getByText('Captured child error')
+	await expect(timeline.getByText('Legacy attempt record — Agent run failed · needs your action')).toBeVisible()
+	const captured = timeline.getByText('Show technical details')
 	await expect(captured).toBeVisible()
 	await captured.click()
 	await expect(timeline.getByText('provider rejected the configured model', { exact: true })).toBeVisible()
