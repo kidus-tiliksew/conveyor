@@ -1725,28 +1725,65 @@ func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	}
 }
 
-func TestTaskActivityNormalizesWorkerHarnessesAndOmitsTerminalStatus(t *testing.T) {
+func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	for _, task := range []core.Task{
 		{ID: "queued-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskQueued},
+		{ID: "awaiting-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskAwaiting},
+		{ID: "approved-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskApproved},
 		{ID: "merged-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskMerged},
 	} {
 		if err := st.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for _, job := range []core.Job{
+		{ID: "queued-auto-implement-1", TaskID: "queued-auto", Stage: core.StageImplement, State: core.JobPending},
+		{ID: "awaiting-auto-review-1-seat-1", TaskID: "awaiting-auto", Stage: core.StageReview, State: core.JobRunning},
+	} {
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createMemoryWorkOrderInState(t, st, ctx, core.WorkOrder{
+		ID: "queued-auto-implement-1", TaskID: "queued-auto", JobID: "queued-auto-implement-1",
+		Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredHarness: "codex",
+	})
+	createMemoryWorkOrderInState(t, st, ctx, core.WorkOrder{
+		ID: "awaiting-auto-review-1-seat-1", TaskID: "awaiting-auto", JobID: "awaiting-auto-review-1-seat-1",
+		Stage: core.StageReview, State: core.WorkOrderCompleted, RequiredHarness: "codex", ReviewRound: 1, ReviewSeat: 1,
+	})
+	if err := st.AppendEvent(ctx, core.Event{
+		TaskID: "awaiting-auto", JobID: "awaiting-auto-review-1-seat-1", Kind: "review.publication_retry",
+		Payload: core.JSONPayload(map[string]any{"review_work_order_id": "awaiting-auto-review-1-seat-1", "last_error": "GitHub unavailable"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace = "demo"
 	server.Workers = &workerservice.Service{Store: st}
 	server.ConfigProvider = func(context.Context) (*config.Config, error) {
-		return &config.Config{Workspace: "demo"}, nil
+		return &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}, nil
 	}
 
 	queued := httptest.NewRecorder()
 	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
-	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) {
+	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":["codex"]`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) {
 		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
+	}
+
+	for _, taskID := range []string{"awaiting-auto", "approved-auto"} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?workspace_id=demo", nil))
+		if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte(`"worker_status"`)) {
+			t.Fatalf("%s activity status=%d body=%s", taskID, response.Code, response.Body.String())
+		}
+		if taskID == "awaiting-auto" && !bytes.Contains(response.Body.Bytes(), []byte(`"kind":"review.publication_retry"`)) {
+			t.Fatalf("awaiting activity lost publication retry: %s", response.Body.String())
+		}
 	}
 
 	merged := httptest.NewRecorder()

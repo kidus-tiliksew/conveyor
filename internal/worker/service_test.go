@@ -321,10 +321,22 @@ func TestTaskAvailabilityReturnsEmptyRequiredHarnessesAsArray(t *testing.T) {
 		store.WithWorkspace(t.Context(), "demo"),
 		&config.Config{Workspace: "demo"},
 		core.Task{ID: "unrouted-task", Workspace: "demo"},
-		nil,
+		[]core.WorkOrder{{ID: "unrouted-order", TaskID: "unrouted-task", State: core.WorkOrderQueued}},
 	)
-	if status.RequiredHarnesses == nil || len(status.RequiredHarnesses) != 0 {
-		t.Fatalf("required harnesses = %#v, want non-nil empty slice", status.RequiredHarnesses)
+	if status == nil || status.RequiredHarnesses == nil || len(status.RequiredHarnesses) != 0 {
+		t.Fatalf("status=%+v, want non-nil status with an empty required harness list", status)
+	}
+}
+
+func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
+	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
+		store.WithWorkspace(t.Context(), "demo"),
+		&config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}},
+		core.Task{ID: "reviewed-task", Workspace: "demo", State: core.TaskAwaiting},
+		[]core.WorkOrder{{ID: "completed-review", TaskID: "reviewed-task", Stage: core.StageReview, State: core.WorkOrderCompleted, RequiredHarness: "codex"}},
+	)
+	if status != nil {
+		t.Fatalf("status=%+v, want nil without queued or claimed task-owned work", status)
 	}
 }
 
