@@ -1,34 +1,53 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, MessageSquarePlus, Sparkles } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
-import { confirmRequirementVersion, downloadArtifact, fetchRequirements, uploadArtifact } from '../lib/api'
-import type { RequirementView } from '../lib/types'
+import {
+  confirmRequirementVersion,
+  downloadArtifact,
+  fetchRequirement,
+  fetchRequirements,
+  fetchRequirementVersions,
+  uploadArtifact,
+} from '../lib/api'
+import { taskStateLabels } from '../lib/contracts'
+import { errorMessage } from '../lib/errors'
+import type { RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
+
+const originLabels: Record<RequirementVersion['origin'], string> = {
+  chat: 'Planning conversation',
+  drift_amendment: 'Delivery drift',
+  feature_migration: 'Migrated feature',
+}
 
 export function RequirementsPage() {
   const token = useOperatorToken()
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
-  const client = useQueryClient()
+  const search = useSearch({ from: '/requirements' })
   const { data: requirements, isLoading, error } = useQuery({
     queryKey: ['requirements', workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
   })
-  const [selectedId, setSelectedId] = useState('')
+  const selectedId = search.requirement ?? ''
+
   useEffect(() => {
     if (!requirements?.length) return
     if (!requirements.some((item) => item.requirement.id === selectedId)) {
-      setSelectedId(requirements[0].requirement.id)
+      void navigate({ to: '/requirements', search: { requirement: requirements[0].requirement.id }, replace: true })
     }
-  }, [requirements, selectedId])
+  }, [navigate, requirements, selectedId])
   const selected = requirements?.find((item) => item.requirement.id === selectedId)
 
+  const selectRequirement = (requirement: string) => {
+    void navigate({ to: '/requirements', search: { requirement }, replace: true })
+  }
   const startPlanning = (requirementId?: string) => {
     if (requirementId) sessionStorage.setItem('conveyor-planning-requirement', requirementId)
     else sessionStorage.removeItem('conveyor-planning-requirement')
@@ -44,26 +63,20 @@ export function RequirementsPage() {
               <h1 className="text-xl font-semibold tracking-tight">Requirements</h1>
               <Badge variant="mono">{requirements?.length ?? 0}</Badge>
             </div>
-            <p className="mt-1 max-w-2xl text-sm text-muted">
-              Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.
-            </p>
+            <p className="mt-1 max-w-2xl text-sm text-muted">Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.</p>
           </div>
-          <Button onClick={() => startPlanning()}>
-            <MessageSquarePlus /> New planning session
-          </Button>
+          <Button onClick={() => startPlanning()}><MessageSquarePlus /> New planning session</Button>
         </header>
 
         {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
         {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
-        {error && <EmptyMessage tone="failure">{String(error)}</EmptyMessage>}
+        {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
         {requirements?.length === 0 && (
           <Card className="mt-8 border-dashed">
             <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
               <Sparkles className="size-7 text-primary" />
               <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                Describe what the system should do. Planning turns the conversation into a structured requirement for you to confirm.
-              </p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-muted">Describe what the system should do. Planning turns the conversation into a structured requirement for you to confirm.</p>
               <Button className="mt-5" onClick={() => startPlanning()}>Plan a requirement <ArrowRight /></Button>
             </CardContent>
           </Card>
@@ -72,19 +85,15 @@ export function RequirementsPage() {
         {requirements && requirements.length > 0 && (
           <div className="mt-7 grid min-h-[620px] gap-4 lg:grid-cols-[330px_minmax(0,1fr)]">
             <Card className="self-start overflow-hidden">
-              <CardHeader>
-                <CardTitle>Living documents</CardTitle>
-                <span className="text-[11px] text-faint">Flat corpus</span>
-              </CardHeader>
+              <CardHeader><CardTitle>Living documents</CardTitle><span className="text-[11px] text-faint">Flat corpus</span></CardHeader>
               <div className="divide-y divide-border">
                 {requirements.map((item) => (
                   <button
                     key={item.requirement.id}
                     type="button"
-                    onClick={() => setSelectedId(item.requirement.id)}
-                    className={`block w-full px-4 py-3.5 text-left transition-colors ${
-                      selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'
-                    }`}
+                    aria-current={selectedId === item.requirement.id ? 'true' : undefined}
+                    onClick={() => selectRequirement(item.requirement.id)}
+                    className={`block w-full px-4 py-3.5 text-left transition-colors ${selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
                   >
                     <span className="flex items-start gap-3">
                       <FileText className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`} />
@@ -94,7 +103,7 @@ export function RequirementsPage() {
                           {item.current_version
                             ? <Badge variant="positive"><Check /> Confirmed v{item.current_version.version}</Badge>
                             : <Badge variant="attention">Needs confirmation</Badge>}
-                          {item.stale && item.current_version && <Badge variant="attention">Stale</Badge>}
+                          <RequirementStateBadges item={item} compact />
                           {item.serving_blueprints.length > 0 && <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>}
                         </span>
                       </span>
@@ -103,14 +112,7 @@ export function RequirementsPage() {
                 ))}
               </div>
             </Card>
-            {selected && (
-              <RequirementDetail
-                item={selected}
-                token={token}
-                onPlan={() => startPlanning(selected.requirement.id)}
-                onChanged={() => void client.invalidateQueries({ queryKey: ['requirements', workspace] })}
-              />
-            )}
+            {selected && <RequirementDetail seed={selected} token={token} onPlan={() => startPlanning(selected.requirement.id)} />}
           </div>
         )}
       </div>
@@ -118,32 +120,55 @@ export function RequirementsPage() {
   )
 }
 
-function RequirementDetail({
-  item,
-  token,
-  onPlan,
-  onChanged,
-}: {
-  item: RequirementView
-  token: string
-  onPlan: () => void
-  onChanged: () => void
-}) {
+function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; token: string; onPlan: () => void }) {
+  const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
-  const latestPending = item.pending_versions.at(-1)
+  const { data: item = seed, error: detailError } = useQuery({
+    queryKey: ['requirement', workspace, seed.requirement.id],
+    queryFn: () => fetchRequirement(seed.requirement.id),
+    initialData: seed,
+  })
+  const { data: versions = [], error: versionsError } = useQuery({
+    queryKey: ['requirement-versions', workspace, item.requirement.id],
+    queryFn: () => fetchRequirementVersions(item.requirement.id),
+  })
+  const orderedVersions = useMemo(() => [...versions].sort((left, right) => right.version - left.version), [versions])
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  useEffect(() => {
+    if (!orderedVersions.length) return
+    if (!orderedVersions.some((version) => version.version === selectedVersion)) {
+      setSelectedVersion(orderedVersions[0].version)
+    }
+  }, [orderedVersions, selectedVersion])
+  const displayed = orderedVersions.find((version) => version.version === selectedVersion)
+    ?? item.pending_versions.at(-1)
+    ?? item.current_version
+  const currentVersion = item.current_version?.version ?? 0
   const confirm = useMutation({
-    mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version),
-    onSuccess: onChanged,
+    mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+        client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+      ])
+    },
+    onError: () => {
+      void client.invalidateQueries({ queryKey: ['requirements', workspace] })
+      void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
+      void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] })
+    },
   })
   const upload = useMutation({
     mutationFn: (file: File) => uploadArtifact(token, file, undefined, item.requirement.id),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['requirements'] })
-      void client.invalidateQueries({ queryKey: ['artifacts'] })
+      void client.invalidateQueries({ queryKey: ['requirements', workspace] })
+      void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
+      void client.invalidateQueries({ queryKey: ['artifacts', workspace] })
     },
   })
-  const displayed = latestPending ?? item.current_version
 
+  if (detailError) return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
   return (
     <div className="min-w-0 space-y-4">
       <Card>
@@ -154,36 +179,53 @@ function RequirementDetail({
           </div>
           <Button variant="secondary" size="sm" onClick={onPlan}><MessageSquarePlus /> Plan work</Button>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <RequirementStateNotices item={item} />
+          {versionsError && <p className="rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">{errorMessage(versionsError, 'Could not load version history.')}</p>}
+          {orderedVersions.length > 0 && (
+            <div>
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Version history</p>
+              <div className="flex flex-wrap gap-2" aria-label="Requirement versions">
+                {orderedVersions.map((version) => (
+                  <button
+                    key={version.version}
+                    type="button"
+                    aria-pressed={displayed?.version === version.version}
+                    onClick={() => setSelectedVersion(version.version)}
+                    className={`rounded-md border px-2.5 py-2 text-left text-xs ${displayed?.version === version.version ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface'}`}
+                  >
+                    <span className="font-medium">Version {version.version}</span>
+                    <span className="mt-1 flex gap-1">
+                      <Badge variant={version.confirmed ? 'positive' : 'attention'}>{version.confirmed ? 'Confirmed' : 'Pending'}</Badge>
+                      <Badge variant="mono">{originLabels[version.origin]}</Badge>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {displayed ? (
             <>
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>
-                  {displayed.confirmed ? `Confirmed v${displayed.version}` : `Proposed v${displayed.version}`}
-                </Badge>
-                <Badge variant="mono">{displayed.origin.replaceAll('_', ' ')}</Badge>
+              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>{displayed.confirmed ? `Confirmed v${displayed.version}` : `Pending v${displayed.version}`}</Badge>
+                <Badge variant="mono">{originLabels[displayed.origin]}</Badge>
                 <time className="ml-auto text-[11px] text-faint">{formatDate(displayed.created_at)}</time>
               </div>
-              <MarkdownProse>{displayed.content}</MarkdownProse>
+              <RequirementDocument version={displayed} />
+              {!displayed.confirmed && item.current_version && <RequirementDiff current={item.current_version} pending={displayed} />}
               {!displayed.confirmed && (
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
-                  <p className="text-xs leading-5 text-attention">
-                    This revision is not current intent until an operator confirms it.
-                  </p>
-                  <Button
-                    size="sm"
-                    disabled={!token || confirm.isPending}
-                    onClick={() => confirm.mutate(displayed.version)}
-                  >
-                    <Check /> {confirm.isPending ? 'Confirming…' : `Confirm version ${displayed.version}`}
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
+                  <p className="text-xs leading-5 text-attention">This revision is not current intent until an operator confirms it.</p>
+                  <Button size="sm" disabled={!token || confirm.isPending} onClick={() => confirm.mutate(displayed.version)}>
+                    <Check /> {confirm.isPending && confirm.variables === displayed.version ? 'Confirming…' : `Confirm version ${displayed.version}`}
                   </Button>
-                  {confirm.error && <p className="basis-full text-xs text-failure">{String(confirm.error)}</p>}
+                  {confirm.error && confirm.variables === displayed.version && (
+                    <p className="basis-full text-xs text-failure">{errorMessage(confirm.error, 'Could not confirm this version.')}</p>
+                  )}
                 </div>
               )}
             </>
-          ) : (
-            <p className="text-sm text-muted">No requirement version has been proposed yet.</p>
-          )}
+          ) : <p className="text-sm text-muted">No requirement version has been proposed yet.</p>}
         </CardContent>
       </Card>
 
@@ -192,17 +234,12 @@ function RequirementDetail({
         <CardContent className="space-y-2">
           {item.serving_blueprints.length === 0 && <p className="text-sm text-muted">No blueprint has been planned in this requirement’s context yet.</p>}
           {item.serving_blueprints.map(({ task, spec }) => (
-            <Link
-              key={task.id}
-              to="/tasks/$taskId"
-              params={{ taskId: task.id }}
-              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
-            >
+            <Link key={task.id} to="/blueprints/$taskId" params={{ taskId: task.id }} className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface">
               <GitBranch className="size-4 shrink-0 text-primary" />
               <span className="min-w-0 flex-1">
                 <strong className="block truncate text-sm">{task.title}</strong>
                 <span className="mt-1 flex gap-1.5">
-                  <Badge variant="mono">{task.state.replaceAll('_', ' ')}</Badge>
+                  <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
                   {spec && <Badge variant={spec.approved ? 'positive' : 'attention'}>Spec v{spec.version} {spec.approved ? 'approved' : 'at gate'}</Badge>}
                 </span>
               </span>
@@ -252,29 +289,123 @@ function RequirementDetail({
                 event.currentTarget.value = ''
               }} />
             </label>
-            {upload.error && <p className="text-xs text-failure">{String(upload.error)}</p>}
+            {upload.error && <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>}
           </CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle>Lineage</CardTitle><Badge variant="mono">{item.lineage.length}</Badge></CardHeader>
           <CardContent>
             {item.lineage.length === 0 && <p className="text-sm text-muted">Lineage appears as planning and delivery advance.</p>}
-            <ol className="space-y-3">
-              {item.lineage.slice(-8).reverse().map((event) => (
-                <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
-                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
-                  <span className="min-w-0 flex-1">
-                    <strong className="font-medium">{event.kind.replaceAll('.', ' · ')}</strong>
-                    <time className="mt-0.5 block text-[10px] text-faint">{formatDate(event.at)}</time>
-                  </span>
-                </li>
-              ))}
-            </ol>
+            {item.lineage.length > 0 && (
+              <details>
+                <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
+                <ol className="mt-3 space-y-3">
+                  {item.lineage.slice(-8).reverse().map((event) => (
+                    <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                      <span className="min-w-0 flex-1">
+                        <strong className="font-medium">{eventLabel(event)}</strong>
+                        <time className="mt-0.5 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
   )
+}
+
+function RequirementDocument({ version }: { version: RequirementVersion }) {
+  return (
+    <div className="space-y-5">
+      {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
+      {version.statements.length > 0 && (
+        <section aria-label="Requirement statements">
+          <h3 className="text-sm font-semibold">Requirement statements</h3>
+          <ol className="mt-2 space-y-2">
+            {version.statements.map((statement) => (
+              <li key={statement.id} className="flex gap-3 rounded-md border border-border bg-surface px-3 py-2.5 text-sm">
+                <Badge variant="mono">{statement.id}</Badge><span>{statement.statement}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function RequirementDiff({ current, pending }: { current: RequirementVersion; pending: RequirementVersion }) {
+  return (
+    <details className="rounded-lg border border-border bg-surface/40" open>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Compared with confirmed v{current.version}</summary>
+      <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
+        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">{documentText(current)}</pre></div>
+        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-positive">Pending revision</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5">{documentText(pending)}</pre></div>
+      </div>
+    </details>
+  )
+}
+
+function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
+  const shipped = shippedPastIntent(item)
+  return <>
+    {shipped && <Badge variant="attention"><span title={shipped}>Code ahead of intent</span></Badge>}
+    {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
+    {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
+    {!compact && item.pending_versions.length === 0 && !shipped && !item.migrated_seed && <Badge variant="positive">Intent aligned</Badge>}
+  </>
+}
+
+function RequirementStateNotices({ item }: { item: RequirementView }) {
+  const shipped = shippedPastIntent(item)
+  return (
+    <div className="space-y-2" aria-label="Requirement alignment">
+      {shipped && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span></p>}
+      {item.pending_versions.length > 0 && !item.migrated_seed && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">A revision is pending operator confirmation.</p>}
+      {item.migrated_seed && <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">This migrated seed is awaiting its first deliberate revision.</p>}
+    </div>
+  )
+}
+
+function shippedPastIntent(item: RequirementView) {
+  const confirmedAt = item.current_version?.confirmed_at
+  if (!confirmedAt) return ''
+  const merge = [...item.lineage].reverse().find((event) =>
+    (event.kind === 'merge.confirmed' || event.kind === 'merge.reconciled') && new Date(event.at) > new Date(confirmedAt),
+  )
+  if (!merge) return ''
+  return String(merge.payload?.title ?? merge.payload?.task_title ?? merge.task_id ?? 'a serving blueprint merge')
+}
+
+function stripStatementsFence(content: string) {
+  return content.replace(/\n?```conveyor:requirements[\s\S]*?```\n?/g, '\n').trim()
+}
+
+function documentText(version: RequirementVersion) {
+  const prose = stripStatementsFence(version.content)
+  const statements = version.statements.map((statement) => `${statement.id}: ${statement.statement}`).join('\n')
+  return [prose, statements].filter(Boolean).join('\n\n')
+}
+
+function eventLabel(event: TaskEvent) {
+  const labels: Record<string, string> = {
+    'requirement.created': 'Requirement created',
+    'requirement.version_proposed': 'Revision proposed',
+    'requirement.version_confirmed': 'Revision confirmed',
+    'merge.confirmed': 'Delivery merged',
+    'merge.reconciled': 'Merged delivery reconciled',
+  }
+  return labels[event.kind] ?? humanize(event.kind.replaceAll('.', ' '))
+}
+
+function humanize(value: string) {
+  const text = value.replaceAll('_', ' ').trim()
+  return text ? text[0].toUpperCase() + text.slice(1) : 'Unknown'
 }
 
 function EmptyMessage({ children, tone = 'muted' }: { children: string; tone?: 'muted' | 'failure' }) {

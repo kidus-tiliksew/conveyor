@@ -414,3 +414,21 @@ test('the blueprint route explains itself for a task that is not a blueprint', a
   await expect(page.getByText('This task is not a blueprint')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Open the task' })).toHaveAttribute('href', '/tasks/child-sub-2/full')
 })
+
+test('the blueprint detail route renders a projection fetch failure', async ({ page }) => {
+  await initShell(page)
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/activity') return route.fulfill({ json: [] })
+    if (path === '/v1/blueprints') return route.fulfill({ status: 500, body: 'Blueprint projection is unavailable.' })
+    if (path === `/v1/tasks/${anchorTask().id}/activity`) return route.fulfill({ json: taskActivity(anchorTask().id) })
+    if (path.endsWith('/events/stream')) return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto(`/blueprints/${anchorTask().id}`)
+  await expect(page.getByText('Blueprint projection is unavailable.')).toBeVisible()
+  await expect(page.getByText('Loading this blueprint…')).toHaveCount(0)
+})

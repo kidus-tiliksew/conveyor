@@ -328,7 +328,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 					return fmt.Errorf("planning tool %s: %w", call.Name, marshalErr)
 				}
 				chunk = map[string]any{
-					"type": "tool-output-available", "toolCallId": call.ID, "output": output,
+					"type": "tool-output-available", "toolCallId": call.ID, "toolName": call.Name, "output": output,
 				}
 				if _, appendErr := s.Store.AppendPlanningMessage(lockedCtx, core.PlanningMessage{
 					SessionID: sessionID, Role: core.PlanningMessageTool,
@@ -384,7 +384,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 				}
 			}
 			chunk := map[string]any{
-				"type": "tool-output-available", "toolCallId": call.ID, "output": output,
+				"type": "tool-output-available", "toolCallId": call.ID, "toolName": call.Name, "output": output,
 			}
 			if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
 				SessionID: sessionID, Role: core.PlanningMessageTool,
@@ -422,7 +422,7 @@ func (s *Service) appendSyntheticToolResults(
 	parts := make([]map[string]any, 0, len(callIDs))
 	for _, callID := range callIDs {
 		parts = append(parts, map[string]any{
-			"type": "tool-output-error", "toolCallId": callID,
+			"type": "tool-output-error", "toolCallId": callID, "toolName": pending[callID].Name,
 			"output": map[string]any{
 				"ok": false, "status": status, "tool": pending[callID].Name,
 				"error": "planning tool execution did not complete; retry the request",

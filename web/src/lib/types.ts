@@ -643,4 +643,6 @@ export interface RequirementView {
   artifacts: Artifact[]
   lineage: TaskEvent[]
   stale: boolean
+  migrated_seed: boolean
+  confirmation_eligible: boolean
 }

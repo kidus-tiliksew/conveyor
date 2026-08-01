@@ -771,7 +771,8 @@ func TestServiceEmitsStepBoundariesAroundToolLoop(t *testing.T) {
 	)
 	messages, err := st.ListPlanningMessages(ctx, session.ID)
 	if err != nil || len(messages) != 4 || messages[2].Role != core.PlanningMessageTool ||
-		messages[2].Content != "" || !strings.Contains(string(messages[2].Parts), `"tool-output-available"`) {
+		messages[2].Content != "" || !strings.Contains(string(messages[2].Parts), `"tool-output-available"`) ||
+		!strings.Contains(string(messages[2].Parts), `"toolName":"list_requirements"`) {
 		t.Fatalf("structured tool result was duplicated or missing: messages=%+v err=%v", messages, err)
 	}
 }

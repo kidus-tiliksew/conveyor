@@ -68,7 +68,7 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
             ) : (
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {view.serves.map((requirement) => (
-                  <Link key={requirement.id} to="/requirements" className="text-primary hover:underline">
+                  <Link key={requirement.id} to="/requirements" search={{ requirement: requirement.id }} className="text-primary hover:underline">
                     {requirement.title}
                   </Link>
                 ))}
