@@ -5,7 +5,7 @@ import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import { buildExecutionAttempts, buildTimeline, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type ExecutionAttempt, type PanelSeat, type TimelineEntry } from '../../lib/activity'
+import { buildTimeline, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type PanelSeat, type TimelineEntry } from '../../lib/activity'
 import { defaultReasonCode, stageLabels, taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
@@ -40,7 +40,6 @@ const gateDots: Record<GateTone, string> = {
 export function Timeline({ item, executionActions = true, routeVariant = 'full' }: { item: ActivityItem; executionActions?: boolean; routeVariant?: TaskRouteVariant }) {
   const entries = buildTimeline(item)
   const currentExecution = deriveCurrentExecutionState(item)
-  const attempts = buildExecutionAttempts(item, currentExecution)
   const technicalEvents = technicalActivity(item)
   const showGate = isReviewable(item.task)
   const timelineRef = useRef<HTMLElement>(null)
@@ -84,7 +83,6 @@ export function Timeline({ item, executionActions = true, routeVariant = 'full' 
     <section ref={timelineRef} aria-label="Execution event timeline">
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{executionAnnouncement}</p>
       {currentExecution && <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} />}
-      {attempts.length > 0 && <AttemptHistory attempts={attempts} />}
       <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
       <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
         {entries.map((entry) => (
@@ -148,33 +146,6 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
         <div><dt className="font-medium text-foreground">Retry</dt><dd className="text-muted">{state.retry}</dd></div>
         <div><dt className="font-medium text-foreground">What to do next</dt><dd className="text-muted">{state.nextAction}</dd></div>
       </dl>
-    </section>
-  )
-}
-
-function AttemptHistory({ attempts }: { attempts: ExecutionAttempt[] }) {
-  return (
-    <section aria-labelledby="attempt-history-title" className="mb-4">
-      <h2 id="attempt-history-title" className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted">Execution attempts</h2>
-      <ol className="space-y-2">
-        {attempts.map((attempt) => (
-          <li key={attempt.id} className={cn('rounded-lg border px-3 py-2.5', attempt.current ? 'border-attention/45 bg-attention-soft/65' : 'border-border bg-surface/40')}>
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className={cn('text-sm font-medium', attempt.current ? 'text-attention' : 'text-foreground/90')}>
-                {attempt.legacy ? 'Legacy attempt record' : `Attempt ${attempt.number}`} — {attempt.title}
-              </span>
-              {attempt.current && <Badge variant="attention">Current</Badge>}
-              <time className="ml-auto text-[11px] text-faint">{absoluteTime(attempt.endedAt ?? attempt.startedAt)}</time>
-            </div>
-            {attempt.failureDetail && (
-              <details className="mt-2 text-xs text-muted">
-                <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical details</summary>
-                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">{attempt.failureDetail}</pre>
-              </details>
-            )}
-          </li>
-        ))}
-      </ol>
     </section>
   )
 }
