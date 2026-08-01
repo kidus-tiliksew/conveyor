@@ -45,7 +45,7 @@ func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (m
 INSERT INTO monitor_observations (
  workspace_id,identity,repository,kind,occurrence_id,source_url,commit_sha,
  pull_request_number,check_run_id,requirement_id,observed_at,context_json,hint_context_json,created_at,updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$11,$11)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12::jsonb,$13::jsonb,$11,$11)
 ON CONFLICT (workspace_id,identity) DO NOTHING`,
 		workspace(ctx), identity, observation.Repository, observation.Kind, observation.OccurrenceID,
 		observation.SourceURL, observation.CommitSHA, observation.PullRequestNumber, observation.CheckRunID,
@@ -74,7 +74,7 @@ func (s *Store) getObservation(ctx context.Context, identity string) (monitor.Ob
 	var taskID *string
 	err := s.pool.QueryRow(ctx, `
 SELECT repository,kind,occurrence_id,source_url,commit_sha,pull_request_number,check_run_id,
-	 requirement_id,observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
+	 COALESCE(requirement_id,''),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
  deduplicated_count,forge_error_category,last_error,created_at,updated_at
 FROM monitor_observations WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity).
 		Scan(&record.Repository, &kind, &record.OccurrenceID, &record.SourceURL, &record.CommitSHA,
@@ -114,7 +114,7 @@ func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.D
 	tag, err := s.pool.Exec(ctx, `
 INSERT INTO repository_drift (
  workspace_id,id,repository,kind,source_url,commit_sha,requirement_id,task_id,detected_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9)
 ON CONFLICT (workspace_id,id) DO NOTHING`,
 		workspace(ctx), drift.ID, drift.Repository, drift.Kind, drift.SourceURL,
 		drift.CommitSHA, drift.RequirementID, drift.TaskID, drift.DetectedAt)
@@ -130,7 +130,7 @@ func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) 
 	var kind string
 	var resolvedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id,repository,kind,source_url,commit_sha,requirement_id,task_id,detected_at,resolved_at,outcome
+SELECT id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),task_id,detected_at,resolved_at,outcome
 FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
 		Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
 			&drift.RequirementID, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)

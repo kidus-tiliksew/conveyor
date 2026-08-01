@@ -155,10 +155,57 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 49 {
 		t.Fatalf("work-order attempt version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/050_phase62_migration_repairs.sql")
+	if err != nil || version != 50 {
+		t.Fatalf("phase 6.2 repair version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
 		}
+	}
+}
+
+func TestPendingPhase62RepairPreservesDeployedMigrationBytes(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{
+		"migrations/046_planning_and_requirements.sql": "3824782d447b5128661e770239b3517dde302f3f18a0f889a1e82e1e448d80e7",
+		"migrations/047_retire_feature_consumers.sql":  "55dc28a45c393b4c9782454155e6fcfe558169a63fffe93c133f4b069ef90c60",
+	} {
+		raw, err := migrationFiles.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := migrationChecksum(raw); got != want {
+			t.Fatalf("%s checksum=%s want immutable %s", name, got, want)
+		}
+	}
+
+	raw, err := migrationFiles.ReadFile("migrations/046_planning_and_requirements.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := repairPendingMigration(46, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(repaired)
+	for _, marker := range []string{
+		"Pending-046 safety overlay: allocate against the full workspace slug set",
+		"Pending-046 safety overlay: the requirement owner must participate",
+		"conveyor_migration_046_dropped_features",
+	} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("pending repair missing %q", marker)
+		}
+	}
+	indexSwap := strings.Index(text, "Pending-046 safety overlay: the requirement owner")
+	rehome := strings.Index(text, "UPDATE artifact_links link")
+	if indexSwap < 0 || rehome < 0 || indexSwap > rehome {
+		t.Fatalf("artifact index swap does not precede re-home: swap=%d update=%d", indexSwap, rehome)
+	}
+	if migrationChecksum(repaired) == migrationChecksum(raw) {
+		t.Fatal("pending execution overlay unexpectedly equals immutable ledger bytes")
 	}
 }
 

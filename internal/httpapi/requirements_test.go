@@ -110,6 +110,37 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 }
 
+func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	seed, _, err := st.CreateRequirement(ctx, core.Requirement{
+		ID: "req-migrated", Title: "Migrated feature",
+	}, core.RequirementVersion{
+		Content: "Legacy feature prose.", Statements: []core.RequirementStatement{},
+		Origin: core.RequirementOriginFeatureMigration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet, "/v1/requirements/"+seed.ID, nil,
+	))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.MigratedSeed || view.ConfirmationEligible || view.Stale ||
+		len(view.PendingVersions) != 1 || len(view.Lineage) != 2 {
+		t.Fatalf("migrated seed view=%+v", view)
+	}
+}
+
 func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutations(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

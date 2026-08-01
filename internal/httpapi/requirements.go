@@ -15,14 +15,16 @@ import (
 // together so the UI never has to reconstruct authority from feature-tree
 // assignments (spec §4.2, §13.3).
 type requirementView struct {
-	Requirement       core.Requirement          `json:"requirement"`
-	CurrentVersion    *core.RequirementVersion  `json:"current_version,omitempty"`
-	PendingVersions   []core.RequirementVersion `json:"pending_versions"`
-	ServingBlueprints []blueprintLineage        `json:"serving_blueprints"`
-	PlanningSessions  []core.PlanningSession    `json:"planning_sessions"`
-	Artifacts         []core.Artifact           `json:"artifacts"`
-	Lineage           []core.Event              `json:"lineage"`
-	Stale             bool                      `json:"stale"`
+	Requirement          core.Requirement          `json:"requirement"`
+	CurrentVersion       *core.RequirementVersion  `json:"current_version,omitempty"`
+	PendingVersions      []core.RequirementVersion `json:"pending_versions"`
+	ServingBlueprints    []blueprintLineage        `json:"serving_blueprints"`
+	PlanningSessions     []core.PlanningSession    `json:"planning_sessions"`
+	Artifacts            []core.Artifact           `json:"artifacts"`
+	Lineage              []core.Event              `json:"lineage"`
+	Stale                bool                      `json:"stale"`
+	MigratedSeed         bool                      `json:"migrated_seed"`
+	ConfirmationEligible bool                      `json:"confirmation_eligible"`
 }
 
 type blueprintLineage struct {
@@ -138,6 +140,12 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.PendingVersions = append(view.PendingVersions, version)
 			}
 		}
+		if len(view.PendingVersions) > 0 {
+			latest := view.PendingVersions[len(view.PendingVersions)-1]
+			view.ConfirmationEligible = core.ConfirmableRequirementVersion(latest) == nil
+			view.MigratedSeed = requirement.CurrentVersion == 0 && len(versions) == 1 &&
+				latest.Origin == core.RequirementOriginFeatureMigration
+		}
 		for _, artifact := range artifacts {
 			if artifact.RequirementID == requirement.ID {
 				view.Artifacts = append(view.Artifacts, artifact)
@@ -178,7 +186,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		// An unconfirmed revision is itself visible alignment debt.
-		view.Stale = view.Stale || len(view.PendingVersions) > 0
+		view.Stale = view.Stale || (len(view.PendingVersions) > 0 && !view.MigratedSeed)
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID

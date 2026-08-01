@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -127,6 +128,11 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				chatVersion("Must not commit.", requirementStatement("REQ-1", "Rejected."))); err == nil {
 				t.Fatalf("%s was accepted", name)
 			}
+		}
+		if _, _, err = st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Slug: "custom-handle", Title: "Typed Slug Conflict"},
+			chatVersion("Must not commit.", requirementStatement("REQ-1", "Rejected."))); !errors.Is(err, store.ErrRequirementSlugConflict) {
+			t.Fatalf("slug conflict error=%v, want ErrRequirementSlugConflict", err)
 		}
 		// A malformed statement block is refused with the document, so a
 		// requirement never exists without a first version.
