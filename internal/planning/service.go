@@ -27,7 +27,7 @@ import (
 
 const (
 	DefaultMaxSteps        = 8
-	DefaultMaxCallsPerStep = 4
+	DefaultMaxCallsPerStep = 8
 	DefaultMaxContextBytes = 1 << 20
 	DefaultMaxToolBytes    = 256 << 10
 	DefaultMaxDuration     = 20 * time.Minute
@@ -257,9 +257,6 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		if parseErr != nil {
 			return fmt.Errorf("planning model step %d: %w", step, parseErr)
 		}
-		if len(next.ToolCalls) > maxCalls {
-			return fmt.Errorf("planning model step %d requested %d tools; maximum is %d", step, len(next.ToolCalls), maxCalls)
-		}
 		if next.ResponseText == "" && len(next.ToolCalls) == 0 {
 			return fmt.Errorf("planning model step %d returned neither text nor a tool call", step)
 		}
@@ -355,13 +352,14 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			return emit(map[string]any{"type": "finish", "finishReason": "tool-calls"})
 		}
 
-		executions := make([]toolExecution, len(next.ToolCalls))
-		executionErrors := make([]error, len(next.ToolCalls))
+		executionCount := min(len(next.ToolCalls), maxCalls)
+		executions := make([]toolExecution, executionCount)
+		executionErrors := make([]error, executionCount)
 		var executionGroup sync.WaitGroup
 		// Parallel exploration calls intentionally share a best-effort session
 		// budget snapshot. Each complete attempt is charged durably, but calls in
 		// this one step may all observe the same pre-step low-budget threshold.
-		for index, call := range next.ToolCalls {
+		for index, call := range next.ToolCalls[:executionCount] {
 			executionGroup.Add(1)
 			go func() {
 				defer executionGroup.Done()
@@ -370,6 +368,20 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		executionGroup.Wait()
 		for index, call := range next.ToolCalls {
+			if index >= executionCount {
+				chunk := deferredToolCallResult(call, maxCalls)
+				if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
+					SessionID: sessionID, Role: core.PlanningMessageTool,
+					Parts: core.JSONPayload([]map[string]any{chunk}),
+				}); err != nil {
+					return err
+				}
+				delete(pending, call.ID)
+				if err = emit(chunk); err != nil {
+					return err
+				}
+				continue
+			}
 			execution, executeErr := executions[index], executionErrors[index]
 			if executeErr == nil && execution.Produced != nil {
 				return fmt.Errorf("planning tool %s produced terminal lineage outside finalization", call.Name)
@@ -411,6 +423,20 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 	}
 	return fmt.Errorf("planning agent reached the bounded %d-step limit without a final response", maxSteps)
+}
+
+func deferredToolCallResult(call toolCall, maxCalls int) map[string]any {
+	return map[string]any{
+		"type": "tool-output-error", "toolCallId": call.ID, "toolName": call.Name,
+		"output": map[string]any{
+			"ok": false, "status": "deferred", "tool": call.Name,
+			"error": fmt.Sprintf(
+				"planning step tool-call limit of %d reached; call %s was not executed",
+				maxCalls, call.ID,
+			),
+			"message": "Re-issue this tool request in a later planning step.",
+		},
+	}
 }
 
 func recoverableToolError(toolName string, err error) map[string]any {
