@@ -732,29 +732,23 @@ test('checkout-blocked recovery explains the safe operator sequence before recov
 	await expect(action).toBeEnabled()
 })
 
-test('two attempts keep the historical provider limit neutral and make the later checkout blocker authoritative', async ({ page }) => {
+test('attempt recovery keeps the later checkout blocker authoritative without a standalone attempt list', async ({ page }) => {
 	await page.goto('/tasks/attempt-recovery/full')
 
 	await expect(page.getByRole('heading', { name: 'Implementation paused — checkout needs attention' })).toBeVisible()
-	await expect(page.getByText('Attempt 1 — Usage limit reached · retried automatically')).toBeVisible()
-	await expect(page.getByText('Attempt 2 — Checkout blocked · needs your action')).toBeVisible()
+	await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
 	await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toHaveCount(0)
 	await expect(page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')).toBeVisible()
-	await expect.poll(() => page.getByRole('heading', { name: 'Implementation paused — checkout needs attention' }).evaluate((summary) => {
-		const attempts = document.querySelector('#attempt-history-title')
-		const activity = [...document.querySelectorAll('h2')].find((heading) => heading.textContent === 'Activity')
-		return attempts != null && activity != null
-			&& Boolean(summary.compareDocumentPosition(attempts) & Node.DOCUMENT_POSITION_FOLLOWING)
-			&& Boolean(attempts.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING)
-	})).toBe(true)
-	const technical = page.getByText('Show technical activity')
-	await technical.focus()
-	await expect(technical).toBeFocused()
-	await technical.press('Enter')
-	await expect(page.getByText('work_order.lease_renewed')).toBeVisible()
+	const technicalSummary = page.getByText('Show technical activity')
+	const technical = technicalSummary.locator('..')
+	await technicalSummary.focus()
+	await expect(technicalSummary).toBeFocused()
+	await technicalSummary.press('Enter')
+	await expect(technical.getByText('work_order.child_failed')).toBeVisible()
+	await expect(technical.getByText('work_order.lease_renewed')).toBeVisible()
 	await expect(page.getByText('harness exited before completing work order')).not.toBeVisible()
-	await page.getByText('Show technical details').first().click()
-	await expect(page.getByRole('region', { name: 'Execution attempts' }).getByText('You have reached the provider usage limit. Try again later.', { exact: true })).toBeVisible()
+	await technical.getByText('Event payload').nth(2).click()
+	await expect(technical.getByText('You have reached the provider usage limit. Try again later.', { exact: false })).toBeVisible()
 })
 
 test('provider-limit retry states expose only the correct action', async ({ page }) => {
@@ -767,9 +761,12 @@ test('provider-limit retry states expose only the correct action', async ({ page
 	await page.goto('/tasks/usage-suppressed/full')
 	await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toBeVisible()
 	await expect(page.getByRole('button', { name: 'Retry implementation' })).toBeVisible()
+	await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
 	await expect(page.getByText('harness exited before completing work order')).not.toBeVisible()
-	await page.getByText('Show technical details').first().click()
-	await expect(page.getByRole('region', { name: 'Execution attempts' }).getByText('usage limit reached', { exact: true })).toBeVisible()
+	const technical = page.getByText('Show technical activity').locator('..')
+	await technical.getByText('Show technical activity').click()
+	await technical.getByText('Event payload').click()
+	await expect(technical.getByText('usage limit reached', { exact: false })).toBeVisible()
 })
 
 test('a running attempt becoming paused is announced through the live region', async ({ page }) => {
@@ -866,18 +863,18 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
 	await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
 })
 
-test('work-order cards use their actual stage and expose captured failure detail', async ({ page }) => {
+test('work-order cards use their actual stage and technical activity exposes captured failure detail', async ({ page }) => {
 	await page.goto('/tasks/stage-aware/full')
 	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
 	await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
 	await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
 	await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
 	await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
-	await expect(timeline.getByText('Legacy attempt record — Agent run failed · needs your action')).toBeVisible()
-	const captured = timeline.getByText('Show technical details')
-	await expect(captured).toBeVisible()
-	await captured.click()
-	await expect(timeline.getByText('provider rejected the configured model', { exact: true })).toBeVisible()
+	await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
+	const technical = page.getByText('Show technical activity').locator('..')
+	await technical.getByText('Show technical activity').click()
+	await technical.getByText('Event payload').click()
+	await expect(technical.getByText('provider rejected the configured model', { exact: false })).toBeVisible()
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {

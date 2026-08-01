@@ -102,18 +102,6 @@ export interface CurrentExecutionState {
   blockingDependencies?: TaskRelation[]
 }
 
-export interface ExecutionAttempt {
-  id: string
-  number: number
-  startedAt: string
-  endedAt?: string
-  title: string
-  current: boolean
-  legacy: boolean
-  failureDetail?: string
-  events: TaskEvent[]
-}
-
 function orderActivityTime(order: WorkOrder): number {
   return new Date(order.updated_at ?? order.last_failure_at ?? order.execution_started_at ?? order.queue_entered_at).getTime()
 }
@@ -216,70 +204,6 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
     blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
     retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
   }
-}
-
-function attemptHeading(events: TaskEvent[], current: CurrentExecutionState | undefined): { title: string; failureDetail?: string } {
-  const closing = [...events].reverse().find((event) => event.kind !== 'work_order.claimed' && event.kind !== 'work_order.lease_renewed')
-  if (!closing) {
-    switch (current?.kind) {
-      case 'running': return { title: 'In progress' }
-      case 'retry_pending': return { title: 'Usage limit reached · retry scheduled' }
-      case 'provider_usage_limit': return { title: 'Usage limit reached · needs your action' }
-      case 'checkout_blocked': return { title: 'Checkout blocked · needs your action' }
-      case 'expired': return { title: 'Claim expired · needs your action' }
-      case 'released': return { title: 'Work released · needs your action' }
-      default: return { title: 'Claimed' }
-    }
-  }
-  const payload = closing.payload ?? {}
-  const failureDetail = typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined
-  switch (closing.kind) {
-    case 'work_order.child_failed':
-      if (payload.failure_category === 'provider_usage_limit') {
-        return { title: payload.retry_suppressed === true ? 'Usage limit reached · needs your action' : 'Usage limit reached · retried automatically', failureDetail }
-      }
-      return { title: payload.retry_suppressed === true ? 'Agent run failed · needs your action' : 'Agent run failed · retried automatically', failureDetail }
-    case 'work_order.stalled':
-      return { title: payload.retry_suppressed === true ? 'Agent stopped responding · needs your action' : 'Agent stopped responding · retried automatically', failureDetail }
-    case 'work_order.released':
-      return { title: typeof payload.reason === 'string' && payload.reason.includes('checkout_blocked_dirty_primary') ? 'Checkout blocked · needs your action' : 'Work released · needs your action', failureDetail }
-    case 'work_order.expired': return { title: 'Claim expired · needs your action' }
-    case 'work_order.timed_out': return { title: 'Execution timed out · needs your action' }
-    case 'work_order.recovered':
-    case 'work_order.redispatched': return { title: 'Recovered by an operator' }
-    default: return { title: closing.kind.replaceAll('_', ' ').replaceAll('.', ' · ') }
-  }
-}
-
-export function buildExecutionAttempts(item: ActivityItem, current = deriveCurrentExecutionState(item)): ExecutionAttempt[] {
-  const groups = new Map<string, { id: string; legacy: boolean; events: TaskEvent[] }>()
-  for (const event of item.events) {
-    if (!attemptEventKinds.has(event.kind) || event.kind === 'work_order.lease_renewed') continue
-    const payloadID = typeof event.payload?.attempt_id === 'string' && event.payload.attempt_id.trim() ? event.payload.attempt_id : undefined
-    const id = payloadID ?? `legacy-${event.id}`
-    const group = groups.get(id) ?? { id, legacy: payloadID == null, events: [] }
-    group.events.push(event)
-    groups.set(id, group)
-  }
-  if (current?.attemptId && !groups.has(current.attemptId)) {
-    groups.set(current.attemptId, { id: current.attemptId, legacy: false, events: [] })
-  }
-  return [...groups.values()]
-    .sort((a, b) => new Date(a.events[0]?.at ?? current?.order.queue_entered_at ?? 0).getTime() - new Date(b.events[0]?.at ?? current?.order.queue_entered_at ?? 0).getTime())
-    .map((group, index) => {
-      const heading = attemptHeading(group.events, current?.attemptId === group.id ? current : undefined)
-      return {
-        id: group.id,
-        number: index + 1,
-        startedAt: group.events[0]?.at ?? current?.order.execution_started_at ?? current?.order.queue_entered_at ?? item.task.created_at,
-        endedAt: group.events.at(-1)?.at,
-        title: heading.title,
-        current: current?.attemptId === group.id,
-        legacy: group.legacy,
-        failureDetail: heading.failureDetail,
-        events: group.events,
-      }
-    })
 }
 
 export function technicalActivity(item: ActivityItem): TaskEvent[] {
