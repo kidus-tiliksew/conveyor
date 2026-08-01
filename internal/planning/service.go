@@ -1178,13 +1178,13 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 	if args.Limit < 1 || args.Limit > maxLimit {
 		return "", "", fmt.Errorf("limit must be between 1 and %d", maxLimit)
 	}
-	lines, total, err := exploration.manager.ReadSnapshotTextLines(
+	lines, total, complete, err := exploration.manager.ReadSnapshotTextLines(
 		ctx, exploration.snapshot, args.Path, args.Offset, args.Limit,
 	)
 	if err != nil {
 		return "", "", err
 	}
-	if args.Offset > total {
+	if complete && args.Offset > total {
 		return fmt.Sprintf("%s (lines 0–0 of %d)", args.Path, total), "use an offset within the file", nil
 	}
 	end := args.Offset + len(lines) - 1
@@ -1201,10 +1201,17 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 		rendered = rendered[:len(rendered)-1]
 		end--
 	}
-	header := fmt.Sprintf("%s (lines %d–%d of %d)", args.Path, args.Offset, end, total)
+	header := fmt.Sprintf("%s (lines %d–%d; more available)", args.Path, args.Offset, end)
+	if complete {
+		header = fmt.Sprintf("%s (lines %d–%d of %d)", args.Path, args.Offset, end, total)
+	}
 	output := header + "\n" + strings.Join(rendered, "\n")
-	if end < total {
-		output += fmt.Sprintf("\nTotal file lines: %d; call again with offset=%d", total, end+1)
+	if !complete || end < total {
+		if complete {
+			output += fmt.Sprintf("\nTotal file lines: %d; call again with offset=%d", total, end+1)
+		} else {
+			output += fmt.Sprintf("\nMore file lines are available; call again with offset=%d", end+1)
+		}
 	}
 	return output, fmt.Sprintf("call again with offset=%d", end+1), nil
 }

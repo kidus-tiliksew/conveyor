@@ -133,26 +133,26 @@ func (m *Manager) ReadSnapshotTextLines(
 	path string,
 	offset int,
 	limit int,
-) ([]string, int, error) {
+) ([]string, int, bool, error) {
 	if err := safeSnapshotPath(path); err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	object := snapshot.Revision + ":" + path
 	metadata, err := snapshotOutput(ctx, snapshot, 128, "cat-file", "-s", object)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	size, err := strconv.ParseInt(strings.TrimSpace(metadata.text()), 10, 64)
 	if err != nil {
-		return nil, 0, fmt.Errorf("parse git blob size for %s: %w", path, err)
+		return nil, 0, false, fmt.Errorf("parse git blob size for %s: %w", path, err)
 	}
 	if size > 0 {
 		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
 		if prefixErr != nil {
-			return nil, 0, prefixErr
+			return nil, 0, false, prefixErr
 		}
 		if bytes.IndexByte(prefix, 0) >= 0 {
-			return nil, 0, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+			return nil, 0, false, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
 		}
 	}
 
@@ -160,12 +160,12 @@ func (m *Manager) ReadSnapshotTextLines(
 	cmd.Dir = snapshot.Repository
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
 	cmd.Stderr = stderr
 	if err = cmd.Start(); err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), maxPlanningTextLineBytes)
@@ -177,22 +177,29 @@ func (m *Manager) ReadSnapshotTextLines(
 		if !utf8.ValidString(line) || strings.IndexByte(line, 0) >= 0 {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			return nil, 0, fmt.Errorf("blob %s is not valid text; read_file supports text blobs only", path)
+			return nil, 0, false, fmt.Errorf("blob %s is not valid text; read_file supports text blobs only", path)
 		}
-		if total >= offset && len(lines) < limit {
+		if total >= offset && total < offset+limit {
 			lines = append(lines, line)
+		}
+		if total >= offset+limit {
+			// This one-line look-ahead proves that another page exists. Stop the
+			// producer instead of scanning the rest merely to compute a total.
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return lines, total, false, nil
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, 0, fmt.Errorf("blob %s contains a line exceeding the %d-byte read_file ceiling: %w",
+		return nil, 0, false, fmt.Errorf("blob %s contains a line exceeding the %d-byte read_file ceiling: %w",
 			path, maxPlanningTextLineBytes, scanErr)
 	}
 	if err = cmd.Wait(); err != nil {
-		return nil, 0, fmt.Errorf("git cat-file blob %s: %w: %s", path, err, stderr.String())
+		return nil, 0, false, fmt.Errorf("git cat-file blob %s: %w: %s", path, err, stderr.String())
 	}
-	return lines, total, nil
+	return lines, total, true, nil
 }
 
 func (m *Manager) readSnapshotBlob(
