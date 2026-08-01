@@ -27,7 +27,7 @@ import (
 
 const (
 	DefaultMaxSteps        = 8
-	DefaultMaxCallsPerStep = 4
+	DefaultMaxCallsPerStep = 8
 	DefaultMaxContextBytes = 1 << 20
 	DefaultMaxToolBytes    = 256 << 10
 	DefaultMaxDuration     = 20 * time.Minute
@@ -75,6 +75,50 @@ type toolCall struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	ArgumentsJSON string `json:"arguments_json"`
+}
+
+type noPlanningArgs struct{}
+
+type readRequirementArgs struct {
+	RequirementID string `json:"requirement_id"`
+	Version       int    `json:"version"`
+}
+
+type taskIDArgs struct {
+	TaskID string `json:"task_id"`
+}
+
+type artifactIDArgs struct {
+	ArtifactID string `json:"artifact_id"`
+}
+
+type listFilesArgs struct {
+	Repo  string `json:"repo"`
+	Path  string `json:"path"`
+	Glob  string `json:"glob"`
+	Depth int    `json:"depth"`
+}
+
+type readFileArgs struct {
+	Repo   string `json:"repo"`
+	Path   string `json:"path"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+type grepArgs struct {
+	Repo          string `json:"repo"`
+	Pattern       string `json:"pattern"`
+	Path          string `json:"path"`
+	Context       int    `json:"context"`
+	Mode          string `json:"mode"`
+	CaseSensitive *bool  `json:"case_sensitive"`
+}
+
+type historyArgs struct {
+	Repo string `json:"repo"`
+	Path string `json:"path"`
+	N    int    `json:"n"`
 }
 
 type produced struct {
@@ -257,13 +301,11 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		if parseErr != nil {
 			return fmt.Errorf("planning model step %d: %w", step, parseErr)
 		}
-		if len(next.ToolCalls) > maxCalls {
-			return fmt.Errorf("planning model step %d requested %d tools; maximum is %d", step, len(next.ToolCalls), maxCalls)
-		}
 		if next.ResponseText == "" && len(next.ToolCalls) == 0 {
 			return fmt.Errorf("planning model step %d returned neither text nor a tool call", step)
 		}
-		if containsFinalize(next.ToolCalls) && len(next.ToolCalls) != 1 {
+		finalizing := containsFinalize(next.ToolCalls)
+		if finalizing && len(next.ToolCalls) != 1 {
 			return fmt.Errorf("a finalize tool must be the only tool call in its step")
 		}
 
@@ -285,6 +327,11 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 				return fmt.Errorf("planning tool call id %q is duplicated", call.ID)
 			}
 			seenCalls[call.ID] = true
+			if !finalizing {
+				if err = validatePlanningToolArguments(call); err != nil {
+					return fmt.Errorf("planning tool %s arguments: %w", call.Name, err)
+				}
+			}
 			var input any
 			if err = json.Unmarshal([]byte(call.ArgumentsJSON), &input); err != nil {
 				return fmt.Errorf("planning tool %s arguments: %w", call.Name, err)
@@ -355,13 +402,14 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			return emit(map[string]any{"type": "finish", "finishReason": "tool-calls"})
 		}
 
-		executions := make([]toolExecution, len(next.ToolCalls))
-		executionErrors := make([]error, len(next.ToolCalls))
+		executionCount := min(len(next.ToolCalls), maxCalls)
+		executions := make([]toolExecution, executionCount)
+		executionErrors := make([]error, executionCount)
 		var executionGroup sync.WaitGroup
 		// Parallel exploration calls intentionally share a best-effort session
 		// budget snapshot. Each complete attempt is charged durably, but calls in
 		// this one step may all observe the same pre-step low-budget threshold.
-		for index, call := range next.ToolCalls {
+		for index, call := range next.ToolCalls[:executionCount] {
 			executionGroup.Add(1)
 			go func() {
 				defer executionGroup.Done()
@@ -370,6 +418,20 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		executionGroup.Wait()
 		for index, call := range next.ToolCalls {
+			if index >= executionCount {
+				chunk := deferredToolCallResult(call, maxCalls)
+				if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
+					SessionID: sessionID, Role: core.PlanningMessageTool,
+					Parts: core.JSONPayload([]map[string]any{chunk}),
+				}); err != nil {
+					return err
+				}
+				delete(pending, call.ID)
+				if err = emit(chunk); err != nil {
+					return err
+				}
+				continue
+			}
 			execution, executeErr := executions[index], executionErrors[index]
 			if executeErr == nil && execution.Produced != nil {
 				return fmt.Errorf("planning tool %s produced terminal lineage outside finalization", call.Name)
@@ -411,6 +473,20 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 	}
 	return fmt.Errorf("planning agent reached the bounded %d-step limit without a final response", maxSteps)
+}
+
+func deferredToolCallResult(call toolCall, maxCalls int) map[string]any {
+	return map[string]any{
+		"type": "tool-output-error", "toolCallId": call.ID, "toolName": call.Name,
+		"output": map[string]any{
+			"ok": false, "status": "deferred", "tool": call.Name,
+			"error": fmt.Sprintf(
+				"planning step tool-call limit of %d reached; call %s was not executed",
+				maxCalls, call.ID,
+			),
+			"message": "Re-issue this tool request in a later planning step.",
+		},
+	}
 }
 
 func recoverableToolError(toolName string, err error) map[string]any {
@@ -810,10 +886,116 @@ func containsFinalize(calls []toolCall) bool {
 	return false
 }
 
+func validatePlanningToolArguments(call toolCall) error {
+	var target any
+	switch call.Name {
+	case "list_requirements", "list_approved_specs":
+		target = &noPlanningArgs{}
+	case "read_requirement":
+		target = &readRequirementArgs{}
+	case "read_approved_spec", "read_task_lineage":
+		target = &taskIDArgs{}
+	case "read_artifact":
+		target = &artifactIDArgs{}
+	case "list_files":
+		target = &listFilesArgs{}
+	case "read_file":
+		target = &readFileArgs{}
+	case "grep":
+		target = &grepArgs{}
+	case "history":
+		target = &historyArgs{}
+	case "draft_requirement", "revise_requirement", "finalize_requirement":
+		target = &requirementArgs{}
+	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
+		target = &blueprintArgs{}
+	default:
+		return fmt.Errorf("unsupported planning tool %q", call.Name)
+	}
+	if err := decodeArgs(call.ArgumentsJSON, target); err != nil {
+		return err
+	}
+	switch args := target.(type) {
+	case *readRequirementArgs:
+		if strings.TrimSpace(args.RequirementID) == "" {
+			return fmt.Errorf("requirement_id is required")
+		}
+		if args.Version < 0 {
+			return fmt.Errorf("version must not be negative")
+		}
+	case *taskIDArgs:
+		if strings.TrimSpace(args.TaskID) == "" {
+			return fmt.Errorf("task_id is required")
+		}
+	case *artifactIDArgs:
+		if strings.TrimSpace(args.ArtifactID) == "" {
+			return fmt.Errorf("artifact_id is required")
+		}
+	case *listFilesArgs:
+		if args.Depth < 0 {
+			return fmt.Errorf("depth must not be negative")
+		}
+		if args.Glob != "" {
+			if _, err := path.Match(args.Glob, ""); err != nil {
+				return fmt.Errorf("glob: %w", err)
+			}
+		}
+	case *readFileArgs:
+		if strings.TrimSpace(args.Path) == "" {
+			return fmt.Errorf("path is required")
+		}
+		if args.Offset < 0 {
+			return fmt.Errorf("offset must be at least 1 when provided")
+		}
+		if args.Limit < 0 || args.Limit > 1000 {
+			return fmt.Errorf("limit must be between 1 and 1000 when provided")
+		}
+	case *grepArgs:
+		if args.Pattern == "" {
+			return fmt.Errorf("pattern is required")
+		}
+		if args.Context < 0 || args.Context > 5 {
+			return fmt.Errorf("context must be between 0 and 5")
+		}
+		if args.Mode != "" && args.Mode != "content" && args.Mode != "files_with_matches" {
+			return fmt.Errorf("mode must be content or files_with_matches")
+		}
+	case *historyArgs:
+		if strings.TrimSpace(args.Path) == "" {
+			return fmt.Errorf("path is required")
+		}
+		if args.N < 0 || args.N > 50 {
+			return fmt.Errorf("n must be between 1 and 50 when provided")
+		}
+	case *requirementArgs:
+		if _, err := pipeline.RenderRequirementDocument(args.Prose, args.Statements); err != nil {
+			return err
+		}
+		if call.Name == "draft_requirement" && strings.TrimSpace(args.Title) == "" {
+			return fmt.Errorf("title is required")
+		}
+		if call.Name == "revise_requirement" && strings.TrimSpace(args.RequirementID) == "" {
+			return fmt.Errorf("requirement_id is required")
+		}
+	case *blueprintArgs:
+		raw, err := json.Marshal(args.structured())
+		if err != nil {
+			return err
+		}
+		if _, err = pipeline.RenderStructuredSpec(string(raw)); err != nil {
+			return err
+		}
+		if strings.TrimSpace(args.Title) == "" || strings.TrimSpace(args.Repo) == "" {
+			return fmt.Errorf("blueprint title and repo are required")
+		}
+	}
+	return nil
+}
+
 func (s *Service) executeTool(ctx context.Context, session core.PlanningSession, call toolCall, model string) (toolExecution, error) {
 	switch call.Name {
 	case "list_requirements":
-		var args struct{}
+		var args noPlanningArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -823,10 +1005,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		return toolExecution{Output: items}, nil
 	case "read_requirement":
-		var args struct {
-			RequirementID string `json:"requirement_id"`
-			Version       int    `json:"version"`
-		}
+		var args readRequirementArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -841,7 +1020,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		versions, err := s.Store.ListRequirementVersions(ctx, args.RequirementID)
 		return toolExecution{Output: map[string]any{"requirement": requirement, "versions": versions}}, err
 	case "list_approved_specs":
-		var args struct{}
+		var args noPlanningArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -868,9 +1047,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		return toolExecution{Output: items}, nil
 	case "read_approved_spec":
-		var args struct {
-			TaskID string `json:"task_id"`
-		}
+		var args taskIDArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -887,9 +1064,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		return toolExecution{Output: map[string]any{"task": task, "spec": spec}}, nil
 	case "read_artifact":
-		var args struct {
-			ArtifactID string `json:"artifact_id"`
-		}
+		var args artifactIDArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -912,9 +1087,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		return toolExecution{Output: output}, nil
 	case "read_task_lineage":
-		var args struct {
-			TaskID string `json:"task_id"`
-		}
+		var args taskIDArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 			return toolExecution{}, err
 		}
@@ -1091,12 +1264,7 @@ func (s *Service) resolveExploration(
 }
 
 func (s *Service) listFiles(ctx context.Context, exploration explorationContext, raw string) (string, string, error) {
-	var args struct {
-		Repo  string `json:"repo"`
-		Path  string `json:"path"`
-		Glob  string `json:"glob"`
-		Depth int    `json:"depth"`
-	}
+	var args listFilesArgs
 	if err := decodeArgs(raw, &args); err != nil {
 		return "", "", err
 	}
@@ -1153,12 +1321,7 @@ func (s *Service) listFiles(ctx context.Context, exploration explorationContext,
 }
 
 func (s *Service) readFile(ctx context.Context, exploration explorationContext, raw string) (string, string, error) {
-	var args struct {
-		Repo   string `json:"repo"`
-		Path   string `json:"path"`
-		Offset int    `json:"offset"`
-		Limit  int    `json:"limit"`
-	}
+	var args readFileArgs
 	if err := decodeArgs(raw, &args); err != nil {
 		return "", "", err
 	}
@@ -1217,14 +1380,7 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 }
 
 func (s *Service) grepFiles(ctx context.Context, exploration explorationContext, raw string) (string, string, bool, error) {
-	var args struct {
-		Repo          string `json:"repo"`
-		Pattern       string `json:"pattern"`
-		Path          string `json:"path"`
-		Context       int    `json:"context"`
-		Mode          string `json:"mode"`
-		CaseSensitive *bool  `json:"case_sensitive"`
-	}
+	var args grepArgs
 	if err := decodeArgs(raw, &args); err != nil {
 		return "", "", false, err
 	}
@@ -1282,11 +1438,7 @@ func (s *Service) grepFiles(ctx context.Context, exploration explorationContext,
 }
 
 func (s *Service) history(ctx context.Context, exploration explorationContext, raw string) (string, string, error) {
-	var args struct {
-		Repo string `json:"repo"`
-		Path string `json:"path"`
-		N    int    `json:"n"`
-	}
+	var args historyArgs
 	if err := decodeArgs(raw, &args); err != nil {
 		return "", "", err
 	}
@@ -1634,6 +1786,13 @@ func (s *Service) boundedOutput(value any) (any, error) {
 }
 
 func decodeArgs(raw string, target any) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return fmt.Errorf("arguments must be a JSON object")
+	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

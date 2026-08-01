@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +202,178 @@ func TestServiceReturnsRecoverableToolErrorsToModel(t *testing.T) {
 	if err != nil || len(messages) != 4 || !strings.Contains(string(messages[2].Parts), `"type":"tool-output-error"`) {
 		t.Fatalf("recoverable tool result messages=%+v err=%v", messages, err)
 	}
+}
+
+func TestServiceDefersToolCallsBeyondStepCap(t *testing.T) {
+	ctx, underlying, session := planningFixture(t, "session-call-cap")
+	st := &countingPlanningStore{Store: underlying}
+	calls := make([]toolCall, 6)
+	for index := range calls {
+		calls[index] = toolCall{
+			ID: fmt.Sprintf("call-%d", index+1), Name: "list_requirements", ArgumentsJSON: `{}`,
+		}
+	}
+	agent := &scriptedAgent{outputs: []string{
+		decisionJSON(t, "", calls),
+		decisionJSON(t, "I will re-issue the deferred reads if they are still needed.", nil),
+	}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 4}
+	var chunks []map[string]any
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Inspect all six inputs."}, func(part map[string]any) error {
+		chunks = append(chunks, part)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if st.listRequirementsCalls != 4 {
+		t.Fatalf("executed list_requirements calls=%d, want 4", st.listRequirementsCalls)
+	}
+	assertChunkTypes(t, chunks,
+		"start", "start-step",
+		"tool-input-available", "tool-input-available", "tool-input-available",
+		"tool-input-available", "tool-input-available", "tool-input-available",
+		"tool-output-available", "tool-output-available", "tool-output-available", "tool-output-available",
+		"tool-output-error", "tool-output-error", "finish-step",
+		"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish",
+	)
+	for index, callID := range []string{"call-1", "call-2", "call-3", "call-4", "call-5", "call-6"} {
+		chunk := chunks[8+index]
+		if chunk["toolCallId"] != callID {
+			t.Fatalf("result chunk %d call=%v, want %s", index, chunk["toolCallId"], callID)
+		}
+	}
+	for _, chunk := range chunks[12:14] {
+		encoded := string(core.JSONPayload(chunk))
+		if !strings.Contains(encoded, `"status":"deferred"`) ||
+			!strings.Contains(encoded, `tool-call limit of 4 reached`) ||
+			!strings.Contains(encoded, `Re-issue this tool request in a later planning step.`) {
+			t.Fatalf("deferred result=%s", encoded)
+		}
+	}
+	if len(agent.inputs) != 2 ||
+		!strings.Contains(agent.inputs[1].Prompt, "call-5") ||
+		!strings.Contains(agent.inputs[1].Prompt, "call-6") ||
+		!strings.Contains(agent.inputs[1].Prompt, "Re-issue this tool request in a later planning step.") {
+		t.Fatalf("next model input omitted deferred results: inputs=%d", len(agent.inputs))
+	}
+	messages, err := underlying.ListPlanningMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := map[string]int{}
+	inputs := map[string]int{}
+	for _, message := range messages {
+		var parts []map[string]any
+		if err := json.Unmarshal(message.Parts, &parts); err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range parts {
+			callID, _ := part["toolCallId"].(string)
+			switch part["type"] {
+			case "tool-input-available":
+				inputs[callID]++
+			case "tool-output-available", "tool-output-error":
+				results[callID]++
+			}
+		}
+	}
+	for _, call := range calls {
+		if inputs[call.ID] != 1 || results[call.ID] != 1 {
+			t.Fatalf("call %s transcript inputs=%d results=%d", call.ID, inputs[call.ID], results[call.ID])
+		}
+	}
+	if len(messages) != 9 {
+		t.Fatalf("message count=%d, want 9", len(messages))
+	}
+}
+
+func TestServiceRejectsMixedFinalizeBatchBeforeCapDegradation(t *testing.T) {
+	ctx, underlying, session := planningFixture(t, "session-mixed-finalize")
+	st := &countingPlanningStore{Store: underlying}
+	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{
+		{ID: "call-read", Name: "list_requirements", ArgumentsJSON: `{}`},
+		{ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: `{}`},
+	})}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 1}
+	err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize after checking requirements."}, func(map[string]any) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "a finalize tool must be the only tool call in its step") {
+		t.Fatalf("mixed finalize error=%v", err)
+	}
+	if st.listRequirementsCalls != 0 {
+		t.Fatalf("mixed finalize executed %d tools", st.listRequirementsCalls)
+	}
+	messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
+	if listErr != nil || len(messages) != 1 || messages[0].Role != core.PlanningMessageUser {
+		t.Fatalf("mixed finalize persisted decision: messages=%+v err=%v", messages, listErr)
+	}
+}
+
+func TestServiceValidatesEveryCallBeforeCapDegradation(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		invalid toolCall
+		want    string
+	}{
+		{
+			name: "invalid arguments beyond cap",
+			invalid: toolCall{
+				ID: "call-6", Name: "list_requirements", ArgumentsJSON: `{"unexpected":true}`,
+			},
+			want: "unknown field",
+		},
+		{
+			name: "unsupported tool beyond cap",
+			invalid: toolCall{
+				ID: "call-6", Name: "unregistered_read", ArgumentsJSON: `{}`,
+			},
+			want: "unsupported planning tool",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, underlying, session := planningFixture(t, "session-validate-cap-"+strings.ReplaceAll(test.name, " ", "-"))
+			st := &countingPlanningStore{Store: underlying}
+			calls := make([]toolCall, 5, 6)
+			for index := range calls {
+				calls[index] = toolCall{
+					ID: fmt.Sprintf("call-%d", index+1), Name: "list_requirements", ArgumentsJSON: `{}`,
+				}
+			}
+			calls = append(calls, test.invalid)
+			agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", calls)}}
+			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 4}
+			var chunks []map[string]any
+			err := service.Run(ctx, session.ID, UserMessage{Content: "Validate before reading."}, func(part map[string]any) error {
+				chunks = append(chunks, part)
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error=%v, want %q", err, test.want)
+			}
+			if st.listRequirementsCalls != 0 {
+				t.Fatalf("validation failure executed %d tools", st.listRequirementsCalls)
+			}
+			assertChunkTypes(t, chunks, "start", "start-step")
+			messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
+			if listErr != nil || len(messages) != 1 || messages[0].Role != core.PlanningMessageUser {
+				t.Fatalf("validation failure left malformed transcript: messages=%+v err=%v", messages, listErr)
+			}
+		})
+	}
+}
+
+type countingPlanningStore struct {
+	store.Store
+	mu                    sync.Mutex
+	listRequirementsCalls int
+}
+
+func (s *countingPlanningStore) ListRequirements(ctx context.Context) ([]core.Requirement, error) {
+	s.mu.Lock()
+	s.listRequirementsCalls++
+	s.mu.Unlock()
+	return s.Store.ListRequirements(ctx)
 }
 
 func TestServiceStreamsRecoverableOutcomeForIrreducibleContext(t *testing.T) {
@@ -483,6 +656,13 @@ func TestPlanningRoleDocumentsEveryRegisteredTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(content)
+	if DefaultMaxCallsPerStep != 8 {
+		t.Fatalf("default max calls per step=%d, want 8", DefaultMaxCallsPerStep)
+	}
+	normalizedRole := strings.Join(strings.Fields(text), " ")
+	if !strings.Contains(normalizedRole, "Parallelize independent reads and searches, at most 8 tool calls per step.") {
+		t.Fatal("planning role does not disclose the default per-step tool-call cap")
+	}
 	start := strings.Index(text, "Available tools and representative arguments:")
 	end := strings.Index(text, "Finalize a requirement only")
 	if start < 0 || end <= start {
