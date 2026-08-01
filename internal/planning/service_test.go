@@ -310,6 +310,59 @@ func TestServiceRejectsMixedFinalizeBatchBeforeCapDegradation(t *testing.T) {
 	}
 }
 
+func TestServiceValidatesEveryCallBeforeCapDegradation(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		invalid toolCall
+		want    string
+	}{
+		{
+			name: "invalid arguments beyond cap",
+			invalid: toolCall{
+				ID: "call-6", Name: "list_requirements", ArgumentsJSON: `{"unexpected":true}`,
+			},
+			want: "unknown field",
+		},
+		{
+			name: "unsupported tool beyond cap",
+			invalid: toolCall{
+				ID: "call-6", Name: "unregistered_read", ArgumentsJSON: `{}`,
+			},
+			want: "unsupported planning tool",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, underlying, session := planningFixture(t, "session-validate-cap-"+strings.ReplaceAll(test.name, " ", "-"))
+			st := &countingPlanningStore{Store: underlying}
+			calls := make([]toolCall, 5, 6)
+			for index := range calls {
+				calls[index] = toolCall{
+					ID: fmt.Sprintf("call-%d", index+1), Name: "list_requirements", ArgumentsJSON: `{}`,
+				}
+			}
+			calls = append(calls, test.invalid)
+			agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", calls)}}
+			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 4}
+			var chunks []map[string]any
+			err := service.Run(ctx, session.ID, UserMessage{Content: "Validate before reading."}, func(part map[string]any) error {
+				chunks = append(chunks, part)
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error=%v, want %q", err, test.want)
+			}
+			if st.listRequirementsCalls != 0 {
+				t.Fatalf("validation failure executed %d tools", st.listRequirementsCalls)
+			}
+			assertChunkTypes(t, chunks, "start", "start-step")
+			messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
+			if listErr != nil || len(messages) != 1 || messages[0].Role != core.PlanningMessageUser {
+				t.Fatalf("validation failure left malformed transcript: messages=%+v err=%v", messages, listErr)
+			}
+		})
+	}
+}
+
 type countingPlanningStore struct {
 	store.Store
 	mu                    sync.Mutex
