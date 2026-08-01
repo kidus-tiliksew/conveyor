@@ -240,6 +240,10 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		prompt, promptErr := s.prompt(runCtx, session, messages, step, maxSteps)
 		if promptErr != nil {
+			var overflow *planningContextOverflowError
+			if errors.As(promptErr, &overflow) {
+				return s.finishContextOverflow(runCtx, sessionID, emit, overflow)
+			}
 			return promptErr
 		}
 		result, runErr := s.Agent.Run(runCtx, model, inprocess.Input{
@@ -367,24 +371,29 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		executionGroup.Wait()
 		for index, call := range next.ToolCalls {
 			execution, executeErr := executions[index], executionErrors[index]
-			if executeErr != nil {
-				return fmt.Errorf("planning tool %s: %w", call.Name, executeErr)
-			}
-			if execution.Produced != nil {
+			if executeErr == nil && execution.Produced != nil {
 				return fmt.Errorf("planning tool %s produced terminal lineage outside finalization", call.Name)
 			}
 			var output any
-			if execution.Exploration {
+			chunkType := "tool-output-available"
+			if executeErr != nil {
+				if errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) || runCtx.Err() != nil {
+					return fmt.Errorf("planning tool %s: %w", call.Name, executeErr)
+				}
+				chunkType = "tool-output-error"
+				output = recoverableToolError(call.Name, executeErr)
+			} else if execution.Exploration {
 				output = execution.Output
 			} else {
 				var marshalErr error
 				output, marshalErr = s.boundedOutput(execution.Output)
 				if marshalErr != nil {
-					return fmt.Errorf("planning tool %s: %w", call.Name, marshalErr)
+					chunkType = "tool-output-error"
+					output = recoverableToolError(call.Name, marshalErr)
 				}
 			}
 			chunk := map[string]any{
-				"type": "tool-output-available", "toolCallId": call.ID, "toolName": call.Name, "output": output,
+				"type": chunkType, "toolCallId": call.ID, "toolName": call.Name, "output": output,
 			}
 			if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
 				SessionID: sessionID, Role: core.PlanningMessageTool,
@@ -402,6 +411,14 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 	}
 	return fmt.Errorf("planning agent reached the bounded %d-step limit without a final response", maxSteps)
+}
+
+func recoverableToolError(toolName string, err error) map[string]any {
+	return map[string]any{
+		"ok": false, "status": "failed", "tool": toolName,
+		"error":   err.Error(),
+		"message": "The tool request failed; narrow or correct the request and try another planning step.",
+	}
 }
 
 func (s *Service) appendSyntheticToolResults(
@@ -487,13 +504,26 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContextBytes
 	}
-	for _, result := range explorationResultMessages(liveMessages) {
-		if len(contextJSON) <= maxBytes {
+	contextBytes := len(contextJSON)
+	changed := false
+	for _, result := range toolResultMessages(liveMessages) {
+		if contextBytes <= maxBytes {
 			break
 		}
-		liveMessages[result.messageIndex] = elideExplorationResult(
-			liveMessages[result.messageIndex], result.callIDs,
-		)
+		before, marshalErr := json.Marshal(liveMessages[result.messageIndex])
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		elided := elideToolResult(liveMessages[result.messageIndex], result.calls)
+		after, marshalErr := json.Marshal(elided)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		liveMessages[result.messageIndex] = elided
+		contextBytes += len(after) - len(before)
+		changed = true
+	}
+	if changed {
 		contextValue.Messages = liveMessages
 		contextJSON, err = json.Marshal(contextValue)
 		if err != nil {
@@ -501,7 +531,7 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		}
 	}
 	if len(contextJSON) > maxBytes {
-		return "", fmt.Errorf("planning context exceeds the %d-byte limit", maxBytes)
+		return "", &planningContextOverflowError{limit: maxBytes}
 	}
 	repositories := []string{}
 	if s.ConfigProvider != nil {
@@ -535,14 +565,55 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		"\n\nDurable conversation context:\n" + string(contextJSON), nil
 }
 
-type explorationResultRef struct {
-	messageIndex int
-	callIDs      map[string]bool
+type planningContextOverflowError struct {
+	limit int
 }
 
-func explorationResultMessages(messages []core.PlanningMessage) []explorationResultRef {
-	explorationCalls := map[string]bool{}
-	results := make([]explorationResultRef, 0)
+func (e *planningContextOverflowError) Error() string {
+	return fmt.Sprintf("planning context exceeds the %d-byte limit", e.limit)
+}
+
+func (s *Service) finishContextOverflow(
+	ctx context.Context,
+	sessionID string,
+	emit Emitter,
+	overflow *planningContextOverflowError,
+) error {
+	message := fmt.Sprintf(
+		"This planning session's live context exceeds its %d-byte limit even after older tool results were compacted. Start a fresh planning session with a narrower question or smaller artifacts; existing durable transcript rows remain unchanged.",
+		overflow.limit,
+	)
+	textID := "text-" + core.NewTaskID()
+	parts := []map[string]any{
+		{"type": "text-start", "id": textID},
+		{"type": "text-delta", "id": textID, "delta": message},
+		{"type": "text-end", "id": textID},
+	}
+	if _, err := s.Store.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: sessionID, Role: core.PlanningMessageAssistant,
+		Content: message, Parts: core.JSONPayload(parts),
+	}); err != nil {
+		return err
+	}
+	for _, part := range parts {
+		if err := emit(part); err != nil {
+			return err
+		}
+	}
+	if err := emit(map[string]any{"type": "finish-step"}); err != nil {
+		return err
+	}
+	return emit(map[string]any{"type": "finish", "finishReason": "stop"})
+}
+
+type toolResultRef struct {
+	messageIndex int
+	calls        map[string]string
+}
+
+func toolResultMessages(messages []core.PlanningMessage) []toolResultRef {
+	toolCalls := map[string]string{}
+	results := make([]toolResultRef, 0)
 	for index, message := range messages {
 		var parts []map[string]any
 		if json.Unmarshal(message.Parts, &parts) != nil {
@@ -552,8 +623,8 @@ func explorationResultMessages(messages []core.PlanningMessage) []explorationRes
 			for _, part := range parts {
 				name, _ := part["toolName"].(string)
 				callID, _ := part["toolCallId"].(string)
-				if callID != "" && isExplorationTool(name) {
-					explorationCalls[callID] = true
+				if callID != "" && name != "" {
+					toolCalls[callID] = name
 				}
 			}
 			continue
@@ -561,21 +632,21 @@ func explorationResultMessages(messages []core.PlanningMessage) []explorationRes
 		if message.Role != core.PlanningMessageTool {
 			continue
 		}
-		callIDs := map[string]bool{}
+		calls := map[string]string{}
 		for _, part := range parts {
 			callID, _ := part["toolCallId"].(string)
-			if explorationCalls[callID] {
-				callIDs[callID] = true
+			if name := toolCalls[callID]; name != "" {
+				calls[callID] = name
 			}
 		}
-		if len(callIDs) != 0 {
-			results = append(results, explorationResultRef{messageIndex: index, callIDs: callIDs})
+		if len(calls) != 0 {
+			results = append(results, toolResultRef{messageIndex: index, calls: calls})
 		}
 	}
 	return results
 }
 
-func elideExplorationResult(message core.PlanningMessage, explorationCalls map[string]bool) core.PlanningMessage {
+func elideToolResult(message core.PlanningMessage, calls map[string]string) core.PlanningMessage {
 	var parts []map[string]any
 	if json.Unmarshal(message.Parts, &parts) != nil {
 		return message
@@ -583,12 +654,13 @@ func elideExplorationResult(message core.PlanningMessage, explorationCalls map[s
 	elided := 0
 	for _, part := range parts {
 		callID, _ := part["toolCallId"].(string)
-		if !explorationCalls[callID] {
+		toolName := calls[callID]
+		if toolName == "" {
 			continue
 		}
 		part["output"] = map[string]any{
 			"elided":         true,
-			"message":        "Older exploration output was elided from the live prompt; the full result remains in the durable transcript.",
+			"message":        toolElisionMessage(toolName),
 			"transcript_seq": message.Seq,
 		}
 		elided++
@@ -600,13 +672,21 @@ func elideExplorationResult(message core.PlanningMessage, explorationCalls map[s
 	return message
 }
 
-func isExplorationTool(name string) bool {
+func toolElisionMessage(name string) string {
+	family := "tool"
 	switch name {
 	case "list_files", "read_file", "grep", "history":
-		return true
-	default:
-		return false
+		family = "exploration"
+	case "read_artifact":
+		family = "artifact"
+	case "list_requirements", "read_requirement":
+		family = "requirement"
+	case "list_approved_specs", "read_approved_spec":
+		family = "approved-spec"
+	case "read_task_lineage":
+		family = "task-lineage"
 	}
+	return "Older " + family + " output was elided from the live prompt; the full result remains in the durable transcript."
 }
 
 func parseDecision(output string) (decision, error) {
@@ -885,13 +965,14 @@ func (s *Service) explorationTool(ctx context.Context, original core.PlanningSes
 	}
 	var output string
 	var refine string
+	var truncated bool
 	switch call.Name {
 	case "list_files":
 		output, refine, err = s.listFiles(ctx, exploration, call.ArgumentsJSON)
 	case "read_file":
 		output, refine, err = s.readFile(ctx, exploration, call.ArgumentsJSON)
 	case "grep":
-		output, refine, err = s.grepFiles(ctx, exploration, call.ArgumentsJSON)
+		output, refine, truncated, err = s.grepFiles(ctx, exploration, call.ArgumentsJSON)
 	case "history":
 		output, refine, err = s.history(ctx, exploration, call.ArgumentsJSON)
 	default:
@@ -904,10 +985,7 @@ func (s *Service) explorationTool(ctx context.Context, original core.PlanningSes
 		output = strings.TrimRight(output, "\n") +
 			"\nsession exploration budget low; prefer targeted reads"
 	}
-	if strings.Contains(strings.ToLower(output), "truncated") {
-		output = strings.TrimRight(output, "\n") + fmt.Sprintf("\napplied cap: %d tokens", exploration.capTokens)
-	}
-	output = truncateExploration(output, exploration.capTokens, refine, call.Name == "grep")
+	output = truncateExplorationKnown(output, exploration.capTokens, refine, call.Name == "grep", truncated)
 	used := approximateTokens(output)
 	if _, err = s.Store.RecordPlanningExplorationTokens(ctx, original.ID, used); err != nil {
 		return toolExecution{}, err
@@ -981,7 +1059,13 @@ func (s *Service) resolveExploration(
 		}
 		session, err = s.Store.PinPlanningSessionRepo(ctx, session.ID, selected.Name, candidate.Revision)
 		if err != nil {
-			return explorationContext{}, err
+			// A parallel first-touch may have won the immutable pin race. Adopt
+			// that compatible snapshot instead of aborting the whole planning run.
+			winner, getErr := s.Store.GetPlanningSession(ctx, session.ID)
+			if getErr != nil || winner.PinnedRevisions[selected.Name] == "" {
+				return explorationContext{}, errors.Join(err, getErr)
+			}
+			session = winner
 		}
 		revision = session.PinnedRevisions[selected.Name]
 	}
@@ -1094,27 +1178,18 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 	if args.Limit < 1 || args.Limit > maxLimit {
 		return "", "", fmt.Errorf("limit must be between 1 and %d", maxLimit)
 	}
-	content, err := exploration.manager.ReadSnapshotTextBlob(
-		ctx, exploration.snapshot, args.Path, exploration.capTokens*4,
+	lines, total, err := exploration.manager.ReadSnapshotTextLines(
+		ctx, exploration.snapshot, args.Path, args.Offset, args.Limit,
 	)
 	if err != nil {
 		return "", "", err
 	}
-	if !utf8.Valid(content) || strings.IndexByte(string(content), 0) >= 0 {
-		return "", "", fmt.Errorf("read_file supports text blobs only")
-	}
-	lines := strings.Split(string(content), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	total := len(lines)
 	if args.Offset > total {
 		return fmt.Sprintf("%s (lines 0–0 of %d)", args.Path, total), "use an offset within the file", nil
 	}
-	end := min(total, args.Offset+args.Limit-1)
-	selected := lines[args.Offset-1 : end]
-	rendered := make([]string, 0, len(selected))
-	for index, line := range selected {
+	end := args.Offset + len(lines) - 1
+	rendered := make([]string, 0, len(lines))
+	for index, line := range lines {
 		runes := []rune(line)
 		if len(runes) > 1000 {
 			line = string(runes[:1000]) + "… (line truncated)"
@@ -1134,7 +1209,7 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 	return output, fmt.Sprintf("call again with offset=%d", end+1), nil
 }
 
-func (s *Service) grepFiles(ctx context.Context, exploration explorationContext, raw string) (string, string, error) {
+func (s *Service) grepFiles(ctx context.Context, exploration explorationContext, raw string) (string, string, bool, error) {
 	var args struct {
 		Repo          string `json:"repo"`
 		Pattern       string `json:"pattern"`
@@ -1144,19 +1219,19 @@ func (s *Service) grepFiles(ctx context.Context, exploration explorationContext,
 		CaseSensitive *bool  `json:"case_sensitive"`
 	}
 	if err := decodeArgs(raw, &args); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if args.Pattern == "" {
-		return "", "", fmt.Errorf("pattern is required")
+		return "", "", false, fmt.Errorf("pattern is required")
 	}
 	if args.Context < 0 || args.Context > 5 {
-		return "", "", fmt.Errorf("context must be between 0 and 5")
+		return "", "", false, fmt.Errorf("context must be between 0 and 5")
 	}
 	if args.Mode == "" {
 		args.Mode = "content"
 	}
 	if args.Mode != "content" && args.Mode != "files_with_matches" {
-		return "", "", fmt.Errorf("mode must be content or files_with_matches")
+		return "", "", false, fmt.Errorf("mode must be content or files_with_matches")
 	}
 	caseInsensitive := !containsUpper(args.Pattern)
 	if args.CaseSensitive != nil {
@@ -1169,13 +1244,13 @@ func (s *Service) grepFiles(ctx context.Context, exploration explorationContext,
 	if exploration.lowBudget {
 		limit /= 2
 	}
-	output, err := exploration.manager.GrepSnapshot(
+	output, boundaryTruncated, err := exploration.manager.GrepSnapshot(
 		ctx, exploration.snapshot, args.Pattern, args.Path, args.Context,
 		args.Mode == "files_with_matches", caseInsensitive,
 		limit, exploration.capTokens*4,
 	)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	output = strings.ReplaceAll(output, exploration.snapshot.Revision+":", "")
 	output = strings.ReplaceAll(output, exploration.snapshot.Revision+"-", "")
@@ -1194,9 +1269,9 @@ func (s *Service) grepFiles(ctx context.Context, exploration explorationContext,
 		kept = append(kept, fmt.Sprintf("… %d middle lines omitted …", len(lines)-limit))
 		kept = append(kept, lines[len(lines)-(limit-headCount):]...)
 		return prefix + strings.Join(kept, "\n") + suffix,
-			"refine with repo, path, pattern, or mode", nil
+			"refine with repo, path, pattern, or mode", true, nil
 	}
-	return strings.Join(lines, "\n"), "refine with repo, path, pattern, or mode", nil
+	return strings.Join(lines, "\n"), "refine with repo, path, pattern, or mode", boundaryTruncated, nil
 }
 
 func (s *Service) history(ctx context.Context, exploration explorationContext, raw string) (string, string, error) {
@@ -1225,8 +1300,12 @@ func (s *Service) history(ctx context.Context, exploration explorationContext, r
 }
 
 func truncateExploration(output string, capTokens int, refine string, middle bool) string {
+	return truncateExplorationKnown(output, capTokens, refine, middle, false)
+}
+
+func truncateExplorationKnown(output string, capTokens int, refine string, middle, alreadyTruncated bool) string {
 	maxBytes := max(1, capTokens*4)
-	if len(output) <= maxBytes {
+	if len(output) <= maxBytes && !alreadyTruncated {
 		return output
 	}
 	originalTokens := approximateTokens(output)

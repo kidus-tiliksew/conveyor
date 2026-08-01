@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Snapshot is an immutable commit inside Conveyor's fetch-only bare cache.
@@ -27,6 +29,7 @@ type TreeEntry struct {
 const (
 	defaultSnapshotOutputBytes = 1 << 20
 	maxSnapshotStderrBytes     = 32 << 10
+	maxPlanningTextLineBytes   = 1 << 20
 	gitTruncationMarker        = "\n… output truncated at git boundary; refine the query …\n"
 )
 
@@ -120,6 +123,78 @@ func (m *Manager) ReadSnapshotTextBlob(ctx context.Context, snapshot Snapshot, p
 	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, true)
 }
 
+// ReadSnapshotTextLines streams a text blob and retains only the requested
+// line window. The blob itself is intentionally not bounded by the rendered
+// response cap: pagination is the bound. A finite per-line ceiling prevents a
+// pathological blob without newlines from becoming an unbounded allocation.
+func (m *Manager) ReadSnapshotTextLines(
+	ctx context.Context,
+	snapshot Snapshot,
+	path string,
+	offset int,
+	limit int,
+) ([]string, int, error) {
+	if err := safeSnapshotPath(path); err != nil {
+		return nil, 0, err
+	}
+	object := snapshot.Revision + ":" + path
+	metadata, err := snapshotOutput(ctx, snapshot, 128, "cat-file", "-s", object)
+	if err != nil {
+		return nil, 0, err
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(metadata.text()), 10, 64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parse git blob size for %s: %w", path, err)
+	}
+	if size > 0 {
+		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
+		if prefixErr != nil {
+			return nil, 0, prefixErr
+		}
+		if bytes.IndexByte(prefix, 0) >= 0 {
+			return nil, 0, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", object)
+	cmd.Dir = snapshot.Repository
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, 0, err
+	}
+	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
+	cmd.Stderr = stderr
+	if err = cmd.Start(); err != nil {
+		return nil, 0, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64<<10), maxPlanningTextLineBytes)
+	lines := make([]string, 0, limit)
+	total := 0
+	for scanner.Scan() {
+		total++
+		line := scanner.Text()
+		if !utf8.ValidString(line) || strings.IndexByte(line, 0) >= 0 {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil, 0, fmt.Errorf("blob %s is not valid text; read_file supports text blobs only", path)
+		}
+		if total >= offset && len(lines) < limit {
+			lines = append(lines, line)
+		}
+	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, 0, fmt.Errorf("blob %s contains a line exceeding the %d-byte read_file ceiling: %w",
+			path, maxPlanningTextLineBytes, scanErr)
+	}
+	if err = cmd.Wait(); err != nil {
+		return nil, 0, fmt.Errorf("git cat-file blob %s: %w: %s", path, err, stderr.String())
+	}
+	return lines, total, nil
+}
+
 func (m *Manager) readSnapshotBlob(
 	ctx context.Context,
 	snapshot Snapshot,
@@ -207,7 +282,7 @@ func (m *Manager) GrepSnapshot(
 	contextLines int,
 	filesOnly, caseInsensitive bool,
 	maxResults, maxBytes int,
-) (string, error) {
+) (string, bool, error) {
 	args := []string{"grep", "-n", "-I", "--no-color"}
 	if maxResults > 0 {
 		args = append(args, "--max-count", strconv.Itoa(maxResults))
@@ -224,7 +299,7 @@ func (m *Manager) GrepSnapshot(
 	args = append(args, "-e", pattern, snapshot.Revision)
 	if path != "" {
 		if err := safeSnapshotPathspec(path); err != nil {
-			return "", err
+			return "", false, err
 		}
 		args = append(args, "--", path)
 	}
@@ -232,11 +307,11 @@ func (m *Manager) GrepSnapshot(
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return "", nil
+			return "", false, nil
 		}
-		return "", err
+		return "", false, err
 	}
-	return output.text(), nil
+	return output.text(), output.truncated, nil
 }
 
 func (m *Manager) SnapshotHistory(ctx context.Context, snapshot Snapshot, path string, n, maxBytes int) (string, error) {
