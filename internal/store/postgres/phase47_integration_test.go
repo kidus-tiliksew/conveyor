@@ -191,6 +191,20 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil || string(content) != "brief" {
 		t.Fatalf("artifact content=%q err=%v", content, err)
 	}
+	planningSession, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planningArtifact, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "planning.txt", ContentType: "text/plain", PlanningSessionID: planningSession.ID,
+	}, []byte("planning attachment"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredPlanningArtifact, planningContent, err := st.GetArtifactForPlanningSession(ctx, planningArtifact.ID, planningSession.ID)
+	if err != nil || restoredPlanningArtifact.PlanningSessionID != planningSession.ID || string(planningContent) != "planning attachment" {
+		t.Fatalf("planning artifact=%+v content=%q err=%v", restoredPlanningArtifact, planningContent, err)
+	}
 	for _, job := range []core.Job{{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now()}, {ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, StartedAt: time.Now().Add(time.Second)}} {
 		if err = st.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)

@@ -846,10 +846,13 @@ type Artifact struct {
 	// feature tree retires (spec §21.46 change 5). It is how a finalized
 	// planning transcript attaches to the requirement it produced (§9), and
 	// where migration 046 re-homes feature-scoped attachments. Exactly one of
-	// TaskID, FeatureID, and RequirementID may be set.
-	RequirementID string    `json:"requirement_id,omitempty"`
-	DownloadURL   string    `json:"download_url,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	// TaskID, FeatureID, RequirementID, and PlanningSessionID may be set.
+	RequirementID string `json:"requirement_id,omitempty"`
+	// PlanningSessionID owns files uploaded while a planning conversation is
+	// still active, including sessions that do not yet have requirement context.
+	PlanningSessionID string    `json:"planning_session_id,omitempty"`
+	DownloadURL       string    `json:"download_url,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // ValidateAttachmentTarget keeps the attachment owner exclusive, mirroring the
@@ -857,13 +860,13 @@ type Artifact struct {
 // but it never claims two owners (spec §21.46 change 5).
 func (a Artifact) ValidateAttachmentTarget() error {
 	targets := 0
-	for _, id := range []string{a.TaskID, a.FeatureID, a.RequirementID} {
+	for _, id := range []string{a.TaskID, a.FeatureID, a.RequirementID, a.PlanningSessionID} {
 		if id != "" {
 			targets++
 		}
 	}
 	if targets > 1 {
-		return fmt.Errorf("artifact attaches to one of a task, feature, or requirement, not %d of them", targets)
+		return fmt.Errorf("artifact attaches to one of a task, feature, requirement, or planning session, not %d of them", targets)
 	}
 	return nil
 }

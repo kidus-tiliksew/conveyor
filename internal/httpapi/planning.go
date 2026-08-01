@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,6 +117,10 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err = s.validatePlanningAttachments(r.Context(), sessionID, message.Parts); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -155,6 +160,31 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+func (s *Server) validatePlanningAttachments(ctx context.Context, sessionID string, raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var parts []struct {
+		Type       string `json:"type"`
+		ArtifactID string `json:"artifactId"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return fmt.Errorf("message parts: %w", err)
+	}
+	for _, part := range parts {
+		if part.Type != "file" && part.Type != "attachment" {
+			continue
+		}
+		if strings.TrimSpace(part.ArtifactID) == "" {
+			return fmt.Errorf("planning file part requires an artifactId")
+		}
+		if _, _, err := s.Store.GetArtifactForPlanningSession(ctx, part.ArtifactID, sessionID); err != nil {
+			return fmt.Errorf("artifact %s is not owned by planning session %s", part.ArtifactID, sessionID)
+		}
+	}
+	return nil
 }
 
 func clearPlanningStreamHeaders(header http.Header) {

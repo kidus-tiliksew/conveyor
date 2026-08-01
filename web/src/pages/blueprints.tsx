@@ -5,6 +5,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
+import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
 // The Blueprints surface (spec §21.49): approved plans presented as the
@@ -33,7 +34,7 @@ export function BlueprintsPage() {
 
         {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
         {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
-        {error != null && <EmptyMessage tone="failure">{String(error)}</EmptyMessage>}
+        {error != null && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>}
 
         {blueprints?.length === 0 && (
           <Card className="mt-8 border-dashed">
