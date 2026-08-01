@@ -2,7 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
-import { parseProvenance, pullRequestURL } from '../../lib/activity'
+import { dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
 import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
@@ -219,13 +219,6 @@ function approvalLabel(specApproval: boolean, mergeApproval: boolean) {
   if (specApproval) return 'Spec only'
   if (mergeApproval) return 'Merge only'
   return 'None — runs to merge'
-}
-
-function dependencyRelationLabel(state: string, blocking: boolean, unsatisfiable: boolean) {
-  if (unsatisfiable) return 'Needs attention'
-  if (blocking) return 'Waiting'
-  if (state === 'merged') return 'Satisfied'
-  return taskStateLabels[state as keyof typeof taskStateLabels] ?? state.replaceAll('_', ' ')
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {

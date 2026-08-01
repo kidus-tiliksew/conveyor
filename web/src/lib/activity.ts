@@ -1,4 +1,4 @@
-import type { GroupKey } from './contracts'
+import { taskStateLabels, type GroupKey } from './contracts'
 import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
 
 // Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
@@ -87,7 +87,7 @@ const attemptEventKinds = new Set([
   'work_order.redispatched',
 ])
 
-export type CurrentExecutionKind = 'running' | 'dependency_waiting' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
+export type CurrentExecutionKind = 'running' | 'dependency_waiting' | 'dependency_attention' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -127,33 +127,77 @@ export function dependencyBlockedImplementationOrder(item: ActivityItem): WorkOr
     .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))[0]
 }
 
+export function unsatisfiableDependencyOrder(item: ActivityItem): WorkOrder | undefined {
+  const blockingIDs = item.task.blocking_task_ids ?? []
+  if (blockingIDs.length === 0) return undefined
+  const unsatisfiable = item.stalled?.unsatisfiable_edge === true
+  return [...(item.work_orders ?? [])]
+    .filter((order) => order.stage === 'implement' && order.state === 'queued' && !order.claimable)
+    .filter((order) => unsatisfiable || (order.unsatisfiable_task_ids?.length ?? 0) > 0)
+    .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))[0]
+}
+
+export function dependencyRelationLabel(state: string, blocking: boolean, unsatisfiable: boolean) {
+  if (unsatisfiable) return 'Needs attention'
+  if (blocking) return 'Waiting'
+  if (state === 'merged') return 'Satisfied'
+  return taskStateLabels[state as keyof typeof taskStateLabels] ?? state.replaceAll('_', ' ')
+}
+
+function blockingDependencies(item: ActivityItem) {
+  const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
+  return (item.task.dependencies ?? []).filter((dependency) => blockingIDs.has(dependency.id))
+}
+
+function withDependencyContext(state: CurrentExecutionState, item: ActivityItem): CurrentExecutionState {
+  const dependencies = blockingDependencies(item)
+  if (dependencies.length === 0) return state
+  const subject = dependencies.length === 1 ? (dependencies[0].title || dependencies[0].id) : `${dependencies.length} dependencies`
+  return {
+    ...state,
+    blocker: `${state.blocker} ${subject} ${dependencies.length === 1 ? 'is' : 'are'} also unresolved.`,
+    nextAction: `${state.nextAction} The task remains dependency-gated until ${dependencies.length === 1 ? 'that dependency is' : 'those dependencies are'} resolved.`,
+    blockingDependencies: dependencies,
+  }
+}
+
 export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutionState | undefined {
   const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
-  const claimedSpecOrder = (item.work_orders ?? []).find((order) => order.stage === 'spec' && order.state === 'claimed')
-  if (dependencyBlockedOrder && !claimedSpecOrder) {
-    const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
-    const blockingDependencies = (item.task.dependencies ?? []).filter((dependency) => blockingIDs.has(dependency.id))
-    const firstTitle = blockingDependencies[0]?.title || blockingDependencies[0]?.id || 'the blocking dependency'
-    const dependencySubject = blockingDependencies.length > 1
-      ? `${firstTitle} and ${blockingDependencies.length - 1} other ${blockingDependencies.length === 2 ? 'dependency' : 'dependencies'}`
-      : firstTitle
-    return {
-      kind: 'dependency_waiting', status: 'progressing', order: dependencyBlockedOrder,
-      title: 'Waiting on dependencies',
-      blocker: 'Implementation is gated by unresolved task dependencies.',
-      retry: 'Not applicable.',
-      nextAction: `Nothing — implementation starts automatically when ${dependencySubject} ${blockingDependencies.length > 1 ? 'merge' : 'merges'}.`,
-      action: 'none', blockingDependencies,
-    }
-  }
-
   const candidates = [...(item.work_orders ?? [])]
     .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
     .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
     .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))
   const order = candidates.find((candidate) => candidate.state === 'claimed')
     ?? candidates.find((candidate) => candidate.state !== 'queued' || Boolean(candidate.last_attempt_outcome || candidate.retry_suppressed || candidate.next_retry_at))
-  if (!order) return undefined
+
+  if (!order) {
+    const unsatisfiableOrder = unsatisfiableDependencyOrder(item)
+    if (unsatisfiableOrder) {
+      return {
+        kind: 'dependency_attention', status: 'paused', order: unsatisfiableOrder,
+        title: 'Dependency needs attention',
+        blocker: 'A required dependency closed without merging.',
+        retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
+        nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
+        action: 'none', blockingDependencies: blockingDependencies(item),
+      }
+    }
+    if (dependencyBlockedOrder) {
+      const dependencies = blockingDependencies(item)
+      const dependencySubject = dependencies.length > 1
+        ? `${dependencies.length} dependencies`
+        : dependencies[0]?.title || dependencies[0]?.id || 'the blocking dependency'
+      return {
+        kind: 'dependency_waiting', status: 'progressing', order: dependencyBlockedOrder,
+        title: 'Waiting on dependencies',
+        blocker: 'Implementation is gated by unresolved task dependencies.',
+        retry: 'Not applicable.',
+        nextAction: `Nothing — implementation starts automatically when ${dependencySubject} ${dependencies.length > 1 ? 'merge' : 'merges'}.`,
+        action: 'none', blockingDependencies: dependencies,
+      }
+    }
+    return undefined
+  }
 
   const stage = order.stage === 'spec' ? 'Specification' : order.stage === 'review' ? 'Review' : 'Implementation'
   if (order.state === 'claimed') {
@@ -173,37 +217,37 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
     }
   }
   if (isDirtyPrimaryCheckout(order)) {
-    return {
+    return withDependencyContext({
       kind: 'checkout_blocked', status: 'paused', order, attemptId: order.last_attempt_id,
       title: `${stage} paused — checkout needs attention`,
       blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
       retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
       nextAction: 'Resolve the primary checkout changes, then retry the implementation.', action: 'resolve_checkout',
-    }
+    }, item)
   }
   if (order.last_failure_category === 'provider_usage_limit') {
-    return {
+    return withDependencyContext({
       kind: 'provider_usage_limit', status: 'paused', order, attemptId: order.last_attempt_id,
       title: `${stage} paused — provider limit reached`,
       blocker: 'The provider usage or capacity limit stopped the last attempt.',
       retry: 'No automatic retry is pending.', nextAction: 'Retry the implementation after the provider limit has cleared.',
       action: 'retry_implementation',
-    }
+    }, item)
   }
   if (order.state === 'stale' || order.state === 'timed_out' || order.last_attempt_outcome === 'expired') {
-    return {
+    return withDependencyContext({
       kind: 'expired', status: 'paused', order, attemptId: order.last_attempt_id,
       title: `${stage} paused — recovery needed`,
       blocker: order.state === 'stale' ? 'The order was not claimed before its queue deadline.' : 'The claim or execution window ended before completion.',
       retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
-    }
+    }, item)
   }
-  return {
+  return withDependencyContext({
     kind: 'released', status: 'paused', order, attemptId: order.last_attempt_id,
     title: `${stage} paused — recovery needed`,
     blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
     retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
-  }
+  }, item)
 }
 
 export function technicalActivity(item: ActivityItem): TaskEvent[] {

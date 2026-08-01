@@ -28,6 +28,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+// ErrReviewedHeadUnavailable marks an approval conflict that the operator can
+// resolve by publishing and reviewing a concrete task head (spec §13.2).
+var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
+
 type Dispatcher struct {
 	Store           store.Store
 	Cfg             *config.Config
@@ -1028,6 +1032,11 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 }
 
 func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
+	current, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	task = current
 	switch intervention.Action {
 	case core.InterventionCancel:
 		_, err := taskops.New(d.Store).Cancel(ctx, intervention)
@@ -1035,7 +1044,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
 	case core.InterventionApprove:
-		spec, specGate, err := d.pendingSpecGate(ctx, task)
+		spec, specGate, err := d.pendingSpecGate(ctx, task.ID)
 		if err != nil {
 			return err
 		}
@@ -1059,16 +1068,19 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if head == "" {
 			head = d.reviewedHeadFromEvents(ctx, task.ID)
 		}
-		if err := d.Store.BindTaskApproval(ctx, task.ID, head); err != nil {
+		if strings.TrimSpace(head) == "" {
+			return fmt.Errorf("%w for task %s; publish and review a task head before approving", ErrReviewedHeadUnavailable, task.ID)
+		}
+		if err := d.transition(ctx, task.ID, core.TaskInterventionApproveReview, "", ""); err != nil {
 			return err
 		}
-		return d.transition(ctx, task.ID, core.TaskInterventionApproveReview, "", "")
+		return d.Store.BindTaskApproval(ctx, task.ID, head)
 	case core.InterventionRedirect:
 		target := task.RecoveryStage
 		if target == "" {
 			target = latest.Stage
 		}
-		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task)
+		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task.ID)
 		if gateErr != nil {
 			return gateErr
 		}
@@ -1093,8 +1105,12 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 // distinct commands (spec §3.3, §13.1).
 func (d *Dispatcher) pendingSpecGate(
 	ctx context.Context,
-	task core.Task,
+	taskID string,
 ) (core.SpecVersion, bool, error) {
+	task, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
 	if task.State != core.TaskAwaiting {
 		return core.SpecVersion{}, false, nil
 	}

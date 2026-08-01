@@ -1,13 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw } from 'lucide-react'
 import { redispatchTask } from '../../lib/api'
-import { dependencyBlockedImplementationOrder } from '../../lib/activity'
+import { dependencyBlockedImplementationOrder, unsatisfiableDependencyOrder } from '../../lib/activity'
 import type { ActivityItem } from '../../lib/types'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
 
 export function canRedispatch(item: ActivityItem) {
-  if (dependencyBlockedImplementationOrder(item)) return false
+  if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
   return item.task.state === 'queued' || item.task.state === 'closed' || item.task.state === 'parked'
 }
 
