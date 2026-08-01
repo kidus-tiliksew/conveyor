@@ -573,7 +573,7 @@ func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, rev
 		return err
 	})
 	if err == nil && conflict != nil {
-		return core.PlanningSession{}, conflict
+		return session, conflict
 	}
 	return session, err
 }
