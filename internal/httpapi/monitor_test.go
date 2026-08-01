@@ -44,6 +44,27 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	}
 	server.Monitor.Intake = server.CreateMonitorTask
 	handler := server.Handler()
+	if response := func() *httptest.ResponseRecorder {
+		payload, _ := json.Marshal(monitor.Observation{
+			Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "commit:missing",
+			SourceURL: "https://github.com/acme/conveyor/commit/missing", CommitSHA: "missing",
+			RequirementID: "req-does-not-exist",
+		})
+		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/observations", bytes.NewReader(payload))
+		request.Header.Set("Authorization", "Bearer secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}(); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "req-does-not-exist") {
+		t.Fatalf("unknown requirement status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, _, err := st.CreateRequirement(store.WithWorkspace(t.Context(), "demo"), core.Requirement{ID: "req-runtime", Title: "Runtime"}, core.RequirementVersion{
+		Content:    "Runtime requirement.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Runtime references are valid.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Runtime references are valid."}},
+		Origin:     core.RequirementOriginChat, OriginSessionID: "monitor-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	hints, err := monitor.ParseHints([]byte("version: 1\ntriage_areas: [control-plane]\n"), "abc")
 	if err != nil {
 		t.Fatal(err)

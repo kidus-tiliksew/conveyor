@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -630,6 +631,22 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 			return core.PlanningSession{}, fmt.Errorf("artifact %s not found", request.TranscriptArtifactID)
 		}
 	}
+	for artifactKey, stored := range m.artifacts {
+		if artifactKey.workspace != workspace {
+			continue
+		}
+		for index := range stored.links {
+			link := &stored.links[index]
+			if link.PlanningSessionID != session.ID || link.ID == request.TranscriptArtifactID {
+				continue
+			}
+			link.PlanningSessionID = ""
+			link.RequirementID = request.RequirementID
+			link.TaskID = request.TaskID
+			stored.meta = *link
+		}
+		m.artifacts[artifactKey] = stored
+	}
 	now := time.Now().UTC()
 	session.Status = core.PlanningSessionFinalized
 	session.ProducedRequirementID = request.RequirementID
@@ -663,7 +680,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	return clonePlanningSession(session), nil
 }
 
-func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
+func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
 	var abandoned core.PlanningSession
 	err := m.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		m.mu.Lock()
@@ -685,9 +702,11 @@ func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (
 		session.Status = core.PlanningSessionAbandoned
 		session.UpdatedAt = time.Now().UTC()
 		m.planningSessions[key] = session
-		m.appendEventLocked(lockedCtx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspace, "session_id": session.ID,
-		})})
+		payload := map[string]any{"workspace_id": workspace, "session_id": session.ID}
+		if reason := firstTrimmed(reasons); reason != "" {
+			payload["reason"] = reason
+		}
+		m.appendEventLocked(lockedCtx, core.Event{Kind: "planning_session.abandoned", Payload: core.JSONPayload(payload)})
 		abandoned = clonePlanningSession(session)
 		return nil
 	})
@@ -695,4 +714,27 @@ func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string) (
 		return core.PlanningSession{}, err
 	}
 	return clonePlanningSession(abandoned), nil
+}
+
+func firstTrimmed(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func (m *memory) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var out []core.Event
+	for _, events := range m.events {
+		for _, event := range events {
+			var payload map[string]any
+			if json.Unmarshal(event.Payload, &payload) == nil && payload["workspace_id"] == workspace && payload["session_id"] == sessionID {
+				out = append(out, event)
+			}
+		}
+	}
+	return out, nil
 }

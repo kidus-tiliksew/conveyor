@@ -11,6 +11,7 @@ import { Input, Select } from '../components/ui/input'
 import {
   abandonPlanningSession,
   createPlanningSession,
+	  fetchArtifacts,
   fetchPlanningMessages,
   fetchPlanningSession,
   fetchPlanningSessions,
@@ -173,6 +174,16 @@ function PlanningChat({ summary, token, workspace }: { summary: PlanningSession;
     queryKey: ['planning-messages', workspace, session.id],
     queryFn: () => fetchPlanningMessages(session.id),
   })
+	const { data: allArtifacts = [] } = useQuery({
+	  queryKey: ['artifacts', workspace],
+	  queryFn: () => fetchArtifacts(token),
+	  enabled: Boolean(token),
+	})
+	const sessionArtifacts = (Array.isArray(allArtifacts) ? allArtifacts : []).filter((artifact) =>
+	  artifact.planning_session_id === session.id ||
+	  (session.produced_requirement_id && artifact.requirement_id === session.produced_requirement_id) ||
+	  (session.produced_task_id && artifact.task_id === session.produced_task_id),
+	).filter((artifact) => artifact.id !== session.transcript_artifact_id)
   const send = useMutation({
     mutationFn: async (content: string) => {
       controller.current?.abort()
@@ -256,6 +267,12 @@ function PlanningChat({ summary, token, workspace }: { summary: PlanningSession;
           ))}
         </div>
       )}
+	  {sessionArtifacts.length > 0 && (
+		<section className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface/50 px-5 py-2" aria-label="Planning attachments">
+		  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Attachments</span>
+		  {sessionArtifacts.map((artifact) => <Attachment key={`${artifact.id}-${artifact.role}`} name={artifact.name} contentType={artifact.content_type} />)}
+		</section>
+	  )}
 
       <MessageScroller
         ref={scrollRef}
@@ -280,7 +297,7 @@ function PlanningChat({ summary, token, workspace }: { summary: PlanningSession;
           {groups.map((group) => <ConversationMessage key={group.key} group={group} />)}
           {showLiveReply && (
             <Message from="assistant">
-              <Avatar role="assistant" />
+			  <Avatar kind="assistant" />
               <div className="min-w-0 flex-1 space-y-2">
                 <RenderedParts parts={streamed} fallback={send.isPending && streamed.length === 0 ? 'Planning…' : ''} />
                 {send.error && !(send.error instanceof DOMException && send.error.name === 'AbortError') && (
@@ -379,7 +396,7 @@ function groupMessages(messages: PlanningMessage[]) {
 function ConversationMessage({ group }: { group: MessageGroup }) {
   return (
     <Message from={group.role}>
-      {group.role !== 'system' && <Avatar role={group.role} />}
+	  {group.role !== 'system' && <Avatar kind={group.role} />}
       <div className={group.role === 'system' ? 'contents' : 'min-w-0 max-w-[82%] space-y-2'}>
         <RenderedParts parts={group.parts} fallback={group.content} role={group.role} />
       </div>
@@ -387,10 +404,10 @@ function ConversationMessage({ group }: { group: MessageGroup }) {
   )
 }
 
-function Avatar({ role }: { role: 'assistant' | 'user' }) {
+function Avatar({ kind }: { kind: 'assistant' | 'user' }) {
   return (
-    <span className={`grid size-7 shrink-0 place-items-center rounded-full ${role === 'assistant' ? 'bg-primary-soft text-primary' : 'bg-raised text-muted'}`}>
-      {role === 'assistant' ? <Bot className="size-4" /> : <User className="size-4" />}
+	<span className={`grid size-7 shrink-0 place-items-center rounded-full ${kind === 'assistant' ? 'bg-primary-soft text-primary' : 'bg-raised text-muted'}`}>
+	  {kind === 'assistant' ? <Bot className="size-4" /> : <User className="size-4" />}
     </span>
   )
 }
@@ -411,15 +428,15 @@ function normalizeParts(parts: PlanningMessagePart[], fallback: string): Display
   }
   for (const part of parts) {
     if (part.type === 'text' || part.type === 'text-delta') {
-      appendText(String(part.text ?? part.delta ?? ''))
+      appendText(String(part.text || part.delta || ''))
       continue
     }
     if (part.type === 'file' || part.type === 'attachment') {
-      output.push({ kind: 'file', name: String(part.filename ?? part.name ?? 'Attachment'), contentType: String(part.mediaType ?? part.contentType ?? '') || undefined })
+      output.push({ kind: 'file', name: String(part.filename || part.name || 'Attachment'), contentType: String(part.mediaType || part.contentType || '') || undefined })
       continue
     }
     if (!part.type.includes('tool') && part.type !== 'dynamic-tool') continue
-    const id = String(part.toolCallId ?? `tool-${output.length}`)
+    const id = String(part.toolCallId || `tool-${output.length}`)
     const previousIndex = tools.get(id)
     const complete = part.type.includes('output') || part.state === 'output-available'
     const failed = part.type.includes('error') || part.state === 'output-error'
@@ -431,7 +448,7 @@ function normalizeParts(parts: PlanningMessagePart[], fallback: string): Display
       }
     } else {
       tools.set(id, output.length)
-      output.push({ kind: 'tool', id, name: String(part.toolName ?? 'Planning tool'), state: failed ? 'failed' : complete ? 'complete' : 'pending' })
+      output.push({ kind: 'tool', id, name: String(part.toolName || 'Planning tool'), state: failed ? 'failed' : complete ? 'complete' : 'pending' })
     }
   }
   if (!output.some((part) => part.kind === 'text') && fallback) output.unshift({ kind: 'text', text: fallback })

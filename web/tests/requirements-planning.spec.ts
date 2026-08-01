@@ -32,7 +32,9 @@ const requirement = {
     actor_id: 'planner', actor_role: 'system', payload: {},
     at: '2026-07-30T10:05:00Z',
   }],
-  stale: true,
+  shipped_past_intent: 'blueprint-task',
+  migrated_seed: false,
+  confirmation_eligible: true,
 }
 
 const planningConfig = {
@@ -204,7 +206,7 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect(page.getByText('Plan bounded retries.')).toBeVisible()
   await expect(page.getByText('I found the approved queue contract.')).toBeVisible()
   await expect(page.getByText('read_approved_spec')).toBeVisible()
-  await expect(page.getByRole('status', { name: 'read_approved_spec: complete' })).toHaveCount(1)
+  await expect(page.getByLabel('read_approved_spec: complete')).toHaveCount(1)
   await expect(page.getByText(/Queue contract/)).toHaveCount(0)
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
@@ -251,11 +253,44 @@ test('requirements deep-link exact versions, render statements, diff pending int
   await expect(page.getByRole('button', { name: /Version 2/ })).toBeVisible()
   await page.getByRole('button', { name: /Version 2/ }).click()
   await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
+	await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
+	await expect(page.locator('.bg-positive-soft').filter({ hasText: 'Keep retries bounded and observable.' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Requirement statements' }).getByText('REQ-1')).toBeVisible()
   await expect(page.getByText('conveyor:requirements')).toHaveCount(0)
   await page.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmedVersion).toBe(2)
   expect(ifMatch).toBe('"1"')
+})
+
+test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({ page }) => {
+	await initShell(page)
+	const seedVersion = { ...requirement.pending_versions[0], origin: 'feature_migration', origin_session_id: undefined }
+	const migrated = { ...requirement, requirement: { ...requirement.requirement, title: 'Migrated intent' }, pending_versions: [seedVersion], migrated_seed: true, confirmation_eligible: false, shipped_past_intent: undefined }
+	const secondV1 = { ...requirement.pending_versions[0], requirement_id: 'req-second', version: 1, content: 'Earlier second document.' }
+	const secondV2 = { ...secondV1, version: 2, content: 'Latest second document.' }
+	const second = {
+	  ...requirement,
+	  requirement: { ...requirement.requirement, id: 'req-second', slug: 'second-intent', title: 'Second intent' },
+	  pending_versions: [secondV1, secondV2], migrated_seed: false, confirmation_eligible: true, shipped_past_intent: undefined,
+	}
+	await page.route('**/v1/**', async (route) => {
+	  const shell = shellResponse(route)
+	  if (shell) return await shell
+	  const path = new URL(route.request().url()).pathname
+	  if (path === '/v1/requirements') return route.fulfill({ json: [migrated, second] })
+	  if (path === '/v1/requirements/req-retries') return route.fulfill({ json: migrated })
+	  if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [seedVersion] })
+	  if (path === '/v1/requirements/req-second') return route.fulfill({ json: second })
+	  if (path === '/v1/requirements/req-second/versions') return route.fulfill({ json: [secondV1, secondV2] })
+	  return route.fulfill({ json: [] })
+	})
+	await page.goto('/requirements?requirement=req-retries')
+	const disabled = page.getByRole('button', { name: 'Confirm version 1' })
+	await expect(disabled).toBeDisabled()
+	await expect(disabled).toHaveAttribute('title', /Revise this migrated seed/)
+	await expect(page.getByText(/needs its first deliberate revision/)).toBeVisible()
+	await page.getByRole('button', { name: 'Second intent', exact: false }).click()
+	await expect(page.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('planning keeps partial text through malformed and error stream frames and resolves pending markers', async ({ page }) => {
@@ -292,7 +327,7 @@ test('planning keeps partial text through malformed and error stream frames and 
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByText('I found part of the answer.')).toBeVisible()
   await expect(page.getByText('Planning request failed. Please retry.')).toBeVisible()
-  await expect(page.getByRole('status', { name: 'read_requirement: failed' })).toBeVisible()
+  await expect(page.getByLabel('read_requirement: failed')).toBeVisible()
   await expect(page.getByLabel('Planning message')).toBeEnabled()
 })
 

@@ -57,7 +57,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
           {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
           {item.task.hold && <Badge variant="mono">Held</Badge>}
           {blockingIDs.length > 0 && (
-            <span className="group/dependency relative inline-flex" aria-label={dependencyExplanation}>
+            <span role="img" className="group/dependency relative inline-flex" aria-label={dependencyExplanation}>
               <Badge variant={unsatisfiable ? 'attention' : 'mono'}>
                 {unsatisfiable ? 'Dependency needs attention' : 'Waiting on dependencies'}
               </Badge>

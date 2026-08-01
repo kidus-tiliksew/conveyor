@@ -642,7 +642,7 @@ export interface RequirementView {
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
   lineage: TaskEvent[]
-  stale: boolean
+  shipped_past_intent?: string
   migrated_seed: boolean
   confirmation_eligible: boolean
 }

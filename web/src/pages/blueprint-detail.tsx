@@ -36,14 +36,14 @@ export function BlueprintDetailPage() {
         <p className="px-6 py-6 text-sm text-failure">{errorMessage(error ?? blueprintsError, 'Could not load this blueprint.')}</p>
       )}
       {error == null && blueprintsError == null && (
-        <div aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto" role="region" tabIndex={0}>
+		<section aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto">
           <BlueprintBody
             taskId={taskId}
             view={view}
             item={item}
             loading={isLoading || blueprintsLoading}
           />
-        </div>
+		</section>
       )}
     </div>
   )

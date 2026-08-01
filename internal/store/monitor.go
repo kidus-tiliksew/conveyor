@@ -32,6 +32,13 @@ func (m *memory) AuditMonitor(ctx context.Context, kind string, payload map[stri
 
 func monitorKey(workspace, identity string) string { return workspace + "\x00" + identity }
 
+func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, exists := m.requirements[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}]
+	return exists, nil
+}
+
 func (m *memory) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -112,7 +119,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 	now := time.Now().UTC()
 	if outcome == "requirements_amended" {
 		if strings.TrimSpace(drift.RequirementID) == "" {
-			return monitor.Drift{}, fmt.Errorf("drift %s cannot resolve as requirements_amended: requirement_id is missing", id)
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
 		}
 		requirementKey := memoryScopedKey{workspace: workspace, id: drift.RequirementID}
 		requirement, exists := m.requirements[requirementKey]

@@ -197,7 +197,7 @@ type Store interface {
 	FinalizePlanningSession(ctx context.Context, request PlanningFinalizeRequest) (core.PlanningSession, error)
 	// AbandonPlanningSession closes a session that produced nothing. A
 	// finalized session cannot be abandoned; that would strand its lineage.
-	AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error)
+	AbandonPlanningSession(ctx context.Context, sessionID string, reason ...string) (core.PlanningSession, error)
 
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)

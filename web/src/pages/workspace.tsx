@@ -77,7 +77,7 @@ export function WorkspacePage() {
       <div role="tablist" className="mt-6 flex gap-1 border-b border-border">
         {TABS.map((entry) => {
           const dirty = dirtyTabs.includes(entry.id); const errored = errorTabs.includes(entry.id)
-          return <button key={entry.id} role="tab" aria-selected={tab === entry.id} onClick={() => setTab(entry.id)}
+		  return <button type="button" key={entry.id} role="tab" aria-selected={tab === entry.id} onClick={() => setTab(entry.id)}
             className={cn('-mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary', tab === entry.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}>
             {entry.label}
             {entry.id === 'workers' && <span className="rounded-full bg-raised px-1.5 text-[11px] leading-4 text-muted">{workers.data?.workers.length ?? 0}</span>}

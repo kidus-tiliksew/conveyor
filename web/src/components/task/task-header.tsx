@@ -51,8 +51,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {/* Approved reads as good news even while it waits at the gate —
             amber stays reserved for states that are genuinely stuck. */}
         <span
+		  role="img"
           className="group/status relative inline-flex rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          tabIndex={0}
           aria-label={`Task status: ${stateLabel}`}
         >
           <Badge
@@ -272,8 +272,9 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
             </p>
           </div>
           <div className="space-y-4 px-5 py-4">
-            <label className="block text-sm font-medium">Reason
+			<label htmlFor="unlink-dependency-reason" className="block text-sm font-medium">Reason
               <Textarea
+				id="unlink-dependency-reason"
                 autoFocus
                 value={reason}
                 maxLength={200}
@@ -331,8 +332,8 @@ export function CancelControl({ item }: { item: ActivityItem }) {
             <p className="mt-1 text-sm leading-6 text-muted">This closes the pipeline and cancels active work orders. It does not delete the branch, worktree, issue, or pull request.</p>
           </div>
           <div className="space-y-4 px-5 py-4">
-            <label className="block text-sm font-medium">Reason
-              <Textarea autoFocus value={reason} maxLength={64} onChange={(event) => setReason(event.target.value)} placeholder="Why is this task being cancelled?" className="mt-1.5" />
+			<label htmlFor="cancel-task-reason" className="block text-sm font-medium">Reason
+			  <Textarea id="cancel-task-reason" autoFocus value={reason} maxLength={64} onChange={(event) => setReason(event.target.value)} placeholder="Why is this task being cancelled?" className="mt-1.5" />
             </label>
             {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
             <div className="flex justify-end gap-2">

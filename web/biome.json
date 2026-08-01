@@ -8,11 +8,16 @@
     "rules": {
       "recommended": false,
       "correctness": {
+		"recommended": true,
         "noUnusedImports": "error",
         "noUnusedVariables": "error"
       },
       "suspicious": {
+		"recommended": true,
         "noDoubleEquals": "error"
+	  },
+	  "a11y": {
+		"recommended": true
       }
     }
   }

@@ -61,9 +61,10 @@ export function Board() {
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
         <div className="flex items-center gap-2">
-          <label className="relative">
+		  <label className="relative" htmlFor="board-task-search">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
             <Input
+			  id="board-task-search"
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -82,13 +83,13 @@ export function Board() {
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">Activity feed unavailable: {String(error)}</p>
       )}
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
+	  <section aria-label="Task board" className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
         {isLoading
           ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
           : stageGroups.map(({ key, label }) => (
               <BoardColumn key={key} groupKey={key} label={label} items={grouped.get(key) ?? []} selectedId={selectedId} />
             ))}
-      </div>
+	  </section>
     </div>
   )
 }

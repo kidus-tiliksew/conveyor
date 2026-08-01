@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -75,7 +76,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 	if len(views) != 1 || views[0].Requirement.ID != requirement.ID ||
 		views[0].CurrentVersion != nil || len(views[0].PendingVersions) != 1 ||
-		!views[0].Stale || len(views[0].Artifacts) != 1 ||
+		!views[0].ConfirmationEligible || views[0].ShippedPastIntent != "" || len(views[0].Artifacts) != 1 ||
 		views[0].Artifacts[0].ID != artifact.ID ||
 		len(views[0].PlanningSessions) != 1 || len(views[0].Lineage) != 2 {
 		t.Fatalf("requirement view=%+v", views)
@@ -162,7 +163,8 @@ func TestRequirementConfirmationRejectsStaleExpectedAndSupersededVersions(t *tes
 func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	seed, _, err := st.CreateRequirement(ctx, core.Requirement{
+	migrationCtx := store.WithActor(ctx, store.Actor{ID: "migration-050", Role: core.ActorSystem})
+	seed, _, err := st.CreateRequirement(migrationCtx, core.Requirement{
 		ID: "req-migrated", Title: "Migrated feature",
 	}, core.RequirementVersion{
 		Content: "Legacy feature prose.", Statements: []core.RequirementStatement{},
@@ -184,9 +186,34 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.MigratedSeed || view.ConfirmationEligible || view.Stale ||
+	if !view.MigratedSeed || view.ConfirmationEligible || view.ShippedPastIntent != "" ||
 		len(view.PendingVersions) != 1 || len(view.Lineage) != 2 {
 		t.Fatalf("migrated seed view=%+v", view)
+	}
+	var backfilled bool
+	for _, event := range view.Lineage {
+		var payload map[string]any
+		_ = json.Unmarshal(event.Payload, &payload)
+		backfilled = backfilled || payload["backfilled"] == true
+	}
+	if !backfilled {
+		t.Fatalf("migrated seed lineage lacks backfilled annotation: %+v", view.Lineage)
+	}
+	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: seed.ID,
+		Content:       "Deliberately revised intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: The migrated behavior is now explicit.\n```",
+		Statements:    []core.RequirementStatement{{ID: "REQ-1", Statement: "The migrated behavior is now explicit."}},
+		Origin:        core.RequirementOriginChat, OriginSessionID: "session-deliberate-revision",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+seed.ID, nil))
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.MigratedSeed || !view.ConfirmationEligible || len(view.PendingVersions) != 2 {
+		t.Fatalf("revised seed view=%+v", view)
 	}
 }
 
@@ -249,6 +276,12 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 	if _, err = st.ConfirmRequirementServes(ctx, task.ID, requirement.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, Kind: "merge.confirmed", At: time.Now().UTC().Add(time.Minute),
+		Payload: core.JSONPayload(map[string]any{"title": "Blueprint delivery"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
@@ -267,7 +300,8 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		view.ServingBlueprints[0].Task.ID != task.ID ||
 		view.ServingBlueprints[0].Spec == nil ||
 		view.ServingBlueprints[0].Spec.Version != spec.Version ||
-		view.ServingBlueprints[0].Spec.Approved {
+		view.ServingBlueprints[0].Spec.Approved ||
+		view.ShippedPastIntent != "Blueprint delivery" {
 		t.Fatalf("blueprint handoff=%+v", view.ServingBlueprints)
 	}
 

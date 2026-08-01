@@ -56,9 +56,9 @@ export function CreateWorkspaceForm({
 
   return (
     <div className="space-y-4">
-      <label className="block">
+	  <label className="block" htmlFor="workspace-name">
         <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">Name</span>
-        <Input autoFocus value={name} placeholder="Engineering" onChange={(event) => setName(event.target.value)} />
+		<Input id="workspace-name" autoFocus value={name} placeholder="Engineering" onChange={(event) => setName(event.target.value)} />
         <span className="mt-1 block text-xs text-faint">
           {id ? (
             <>
