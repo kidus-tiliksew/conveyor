@@ -409,7 +409,7 @@ func (s *Service) autoAvailableForConfig(ctx context.Context, cfg *config.Config
 	return false, "no live worker reports every routed harness healthy"
 }
 
-func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) TaskWorkerStatus {
+func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) *TaskWorkerStatus {
 	if task.SetupContract.Name != "" {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
@@ -428,6 +428,11 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 			status.QueueContext = "interrupted"
 		}
 	}
+	// Worker serviceability belongs to current task-owned work. Without a queued
+	// or claimed order, setup-wide worker health is not actionable for this task.
+	if len(activeOrders) == 0 {
+		return nil
+	}
 	if len(required) == 0 {
 		if setupHarnesses, setupErr := requiredHarnesses(cfg); setupErr == nil {
 			for name := range setupHarnesses {
@@ -442,7 +447,7 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 	workers, err := s.Store.ListWorkers(ctx)
 	if err != nil {
 		status.Reason = err.Error()
-		return status
+		return &status
 	}
 	now := s.now()
 	for _, worker := range workers {
@@ -458,9 +463,6 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 				healthy = false
 				break
 			}
-		}
-		if healthy && len(activeOrders) == 0 {
-			healthy, _ = workerHealthyForRoutes(worker, cfg, now)
 		}
 		if healthy {
 			status.Available = true
@@ -480,7 +482,7 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 	} else if !status.Available {
 		status.Reason += "; no enrolled worker has heartbeated"
 	}
-	return status
+	return &status
 }
 
 func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Time) (bool, string) {
