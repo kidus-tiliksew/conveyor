@@ -117,19 +117,19 @@ func TestPlanningSnapshotPlumbingStaysPinnedAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := manager.ListSnapshotTree(ctx, snapshot)
-	if err != nil || len(entries) != 1 || entries[0].Path != "internal/eligibility.go" {
+	entries, truncated, err := manager.ListSnapshotTree(ctx, snapshot, "", defaultSnapshotOutputBytes)
+	if err != nil || truncated || len(entries) != 1 || entries[0].Path != "internal/eligibility.go" {
 		t.Fatalf("entries=%+v err=%v", entries, err)
 	}
-	content, err := manager.ReadSnapshotBlob(ctx, snapshot, "internal/eligibility.go")
+	content, err := manager.ReadSnapshotBlob(ctx, snapshot, "internal/eligibility.go", defaultSnapshotOutputBytes)
 	if err != nil || !strings.Contains(string(content), "return true") {
 		t.Fatalf("content=%q err=%v", content, err)
 	}
-	matches, err := manager.GrepSnapshot(ctx, snapshot, "eligible", "internal", 0, false, false)
+	matches, err := manager.GrepSnapshot(ctx, snapshot, "eligible", "internal", 0, false, false, 200, defaultSnapshotOutputBytes)
 	if err != nil || !strings.Contains(matches, "eligibility.go:3:") {
 		t.Fatalf("matches=%q err=%v", matches, err)
 	}
-	history, err := manager.SnapshotHistory(ctx, snapshot, "internal/eligibility.go", 20)
+	history, err := manager.SnapshotHistory(ctx, snapshot, "internal/eligibility.go", 20, defaultSnapshotOutputBytes)
 	if err != nil || !strings.Contains(history, "initial eligibility") || !strings.Contains(history, "Latest commit context") {
 		t.Fatalf("history=%q err=%v", history, err)
 	}
@@ -143,9 +143,54 @@ func TestPlanningSnapshotPlumbingStaysPinnedAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err = manager.ReadSnapshotBlob(ctx, reopened, "internal/eligibility.go")
+	content, err = manager.ReadSnapshotBlob(ctx, reopened, "internal/eligibility.go", defaultSnapshotOutputBytes)
 	if err != nil || !strings.Contains(string(content), "return true") || strings.Contains(string(content), "return false") {
 		t.Fatalf("pinned content changed: %q err=%v", content, err)
+	}
+}
+
+func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	mustRun(t, "", "git", "init", "-b", "main", origin)
+	mustRun(t, origin, "git", "config", "user.email", "test@example.com")
+	mustRun(t, origin, "git", "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(origin, "large.txt"),
+		[]byte(strings.Repeat("match bounded exploration output\n", 20_000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "large.bin"), []byte(strings.Repeat("\x00\xff", 32_768)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, origin, "git", "add", ".")
+	mustRun(t, origin, "git", "commit", "-m", "large planning fixtures")
+	manager := NewManager(filepath.Join(tmp, "cache"), "")
+	snapshot, err := manager.PinSnapshot(ctx, "file://"+origin, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const outputLimit = 512
+	matches, err := manager.GrepSnapshot(ctx, snapshot, ".", "large.txt", 0, false, false, 50, outputLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) > outputLimit || !strings.Contains(matches, "truncated at git boundary") {
+		t.Fatalf("bounded grep returned %d bytes:\n%s", len(matches), matches)
+	}
+	if _, err = manager.ReadSnapshotBlob(ctx, snapshot, "large.bin", outputLimit); err == nil ||
+		!strings.Contains(err.Error(), "read limit") {
+		t.Fatalf("oversized binary read error=%v", err)
+	}
+	if _, err = manager.ReadSnapshotTextBlob(ctx, snapshot, "large.bin", 128<<10); err == nil ||
+		!strings.Contains(err.Error(), "supports text blobs only") {
+		t.Fatalf("bounded binary-prefix read error=%v", err)
+	}
+	if _, err = manager.GrepSnapshot(ctx, snapshot, "[", "large.txt", 0, false, false, 50, outputLimit); err == nil {
+		t.Fatal("invalid git grep pattern unexpectedly succeeded")
 	}
 }
 

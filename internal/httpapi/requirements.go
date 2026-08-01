@@ -1,13 +1,17 @@
 package httpapi
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // requirementView is the dashboard read model for one living requirement.
@@ -15,14 +19,17 @@ import (
 // together so the UI never has to reconstruct authority from feature-tree
 // assignments (spec §4.2, §13.3).
 type requirementView struct {
-	Requirement       core.Requirement          `json:"requirement"`
-	CurrentVersion    *core.RequirementVersion  `json:"current_version,omitempty"`
-	PendingVersions   []core.RequirementVersion `json:"pending_versions"`
-	ServingBlueprints []blueprintLineage        `json:"serving_blueprints"`
-	PlanningSessions  []core.PlanningSession    `json:"planning_sessions"`
-	Artifacts         []core.Artifact           `json:"artifacts"`
-	Lineage           []core.Event              `json:"lineage"`
-	Stale             bool                      `json:"stale"`
+	Requirement          core.Requirement             `json:"requirement"`
+	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
+	PendingVersions      []core.RequirementVersion    `json:"pending_versions"`
+	ServingBlueprints    []blueprintLineage           `json:"serving_blueprints"`
+	RequirementLinks     []core.RequirementServesLink `json:"requirement_links"`
+	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
+	Artifacts            []core.Artifact              `json:"artifacts"`
+	Lineage              []core.Event                 `json:"lineage"`
+	Stale                bool                         `json:"stale"`
+	MigratedSeed         bool                         `json:"migrated_seed"`
+	ConfirmationEligible bool                         `json:"confirmation_eligible"`
 }
 
 type blueprintLineage struct {
@@ -82,10 +89,33 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "requirement version must be a positive integer", http.StatusBadRequest)
 		return
 	}
+	var expected []int
+	if value := r.Header.Get("If-Match"); value != "" {
+		parsed, parseErr := parseRequirementIfMatch(value)
+		if parseErr != nil || parsed > int64(^uint(0)>>1) {
+			http.Error(w, "If-Match must contain a non-negative current requirement version", http.StatusBadRequest)
+			return
+		}
+		expected = append(expected, int(parsed))
+	}
 	requirement, confirmed, err := s.Store.ConfirmRequirementVersion(
-		r.Context(), chi.URLParam(r, "id"), version,
+		r.Context(), chi.URLParam(r, "id"), version, expected...,
 	)
 	if err != nil {
+		var conflict *store.RequirementVersionConflict
+		if errors.As(err, &conflict) {
+			code := "requirement_version_superseded"
+			if conflict.Expected != nil {
+				code = "requirement_current_version_mismatch"
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": code, "message": conflict.Error(),
+				"requirement_id":    conflict.RequirementID,
+				"requested_version": conflict.Requested,
+				"current_version":   conflict.Current,
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -93,6 +123,17 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 		"requirement": requirement,
 		"version":     confirmed,
 	})
+}
+
+func parseRequirementIfMatch(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "W/")
+	value = strings.Trim(value, "\"")
+	version, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || version < 0 {
+		return 0, fmt.Errorf("If-Match must contain a non-negative current requirement version")
+	}
+	return version, nil
 }
 
 func (s *Server) requirementViews(r *http.Request, requirements []core.Requirement) ([]requirementView, error) {
@@ -103,6 +144,14 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	artifacts, err := s.Store.ListArtifacts(r.Context())
 	if err != nil {
 		return nil, err
+	}
+	servesLinks, err := s.Store.ListRequirementServes(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	linksByRequirement := make(map[string][]core.RequirementServesLink)
+	for _, link := range servesLinks {
+		linksByRequirement[link.RequirementID] = append(linksByRequirement[link.RequirementID], link)
 	}
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
@@ -118,9 +167,13 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			Requirement:       requirement,
 			PendingVersions:   []core.RequirementVersion{},
 			ServingBlueprints: []blueprintLineage{},
+			RequirementLinks:  linksByRequirement[requirement.ID],
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
 			Lineage:           []core.Event{},
+		}
+		if view.RequirementLinks == nil {
+			view.RequirementLinks = []core.RequirementServesLink{}
 		}
 		originSessionIDs := map[string]bool{}
 		var confirmedAt time.Time
@@ -138,13 +191,18 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.PendingVersions = append(view.PendingVersions, version)
 			}
 		}
+		if len(view.PendingVersions) > 0 {
+			latest := view.PendingVersions[len(view.PendingVersions)-1]
+			view.ConfirmationEligible = core.ConfirmableRequirementVersion(latest) == nil
+			view.MigratedSeed = requirement.CurrentVersion == 0 && len(versions) == 1 &&
+				latest.Origin == core.RequirementOriginFeatureMigration
+		}
 		for _, artifact := range artifacts {
 			if artifact.RequirementID == requirement.ID {
 				view.Artifacts = append(view.Artifacts, artifact)
 			}
 		}
 		view.Lineage = append(view.Lineage, requirementEvents...)
-		blueprints := map[string]bool{}
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&
 				session.ProducedRequirementID != requirement.ID &&
@@ -152,12 +210,12 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				continue
 			}
 			view.PlanningSessions = append(view.PlanningSessions, session)
-			if session.RequirementContextID != requirement.ID ||
-				session.ProducedTaskID == "" || blueprints[session.ProducedTaskID] {
+		}
+		for _, link := range view.RequirementLinks {
+			if link.State != core.RequirementServesConfirmed {
 				continue
 			}
-			blueprints[session.ProducedTaskID] = true
-			task, getErr := s.Store.GetTask(r.Context(), session.ProducedTaskID)
+			task, getErr := s.Store.GetTask(r.Context(), link.BlueprintTaskID)
 			if getErr != nil {
 				return nil, getErr
 			}
@@ -178,7 +236,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		// An unconfirmed revision is itself visible alignment debt.
-		view.Stale = view.Stale || len(view.PendingVersions) > 0
+		view.Stale = view.Stale || (len(view.PendingVersions) > 0 && !view.MigratedSeed)
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID

@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 )
 
 // Requirement and planning-session persistence for the in-memory store.
@@ -23,6 +25,32 @@ type PlanningFinalizeRequest struct {
 	RequirementID        string
 	TaskID               string
 	TranscriptArtifactID string
+}
+
+// NormalizeRequirementVersionDocument enforces that the denormalized statement
+// JSON is exactly the machine fence stored in Content. Older callers that pass
+// prose plus statements are normalized into the canonical fenced document at
+// this persistence boundary. Historical feature-migration seeds are the sole
+// exception: migration 046 intentionally preserved their prose verbatim.
+func NormalizeRequirementVersionDocument(version *core.RequirementVersion) error {
+	if version.Origin == core.RequirementOriginFeatureMigration && len(version.Statements) == 0 {
+		return nil
+	}
+	document, err := pipeline.ParseRequirementDocument(version.Content)
+	if err != nil {
+		if !strings.Contains(version.Content, "```conveyor:") {
+			document, err = pipeline.RenderRequirementDocument(version.Content, version.Statements)
+			if err == nil {
+				version.Content = document.Markdown
+				return nil
+			}
+		}
+		return fmt.Errorf("requirement content/statement coherence: %w", err)
+	}
+	if !reflect.DeepEqual(document.Statements, version.Statements) {
+		return fmt.Errorf("requirement content/statement coherence: stored statements diverge from the conveyor:requirements fence")
+	}
+	return nil
 }
 
 // Validate keeps the produced-artifact contract exclusive. A session that
@@ -56,13 +84,16 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 	}
 	for existingKey, existing := range m.requirements {
 		if existingKey.workspace == workspace && existing.Slug == requirement.Slug {
-			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement slug %s already exists", requirement.Slug)
+			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", ErrRequirementSlugConflict, requirement.Slug)
 		}
 	}
 	if err := core.ValidateRequirementOrigin(first); err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	if err := core.ValidateRequirementStatements(first.Statements); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	if err := NormalizeRequirementVersionDocument(&first); err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	now := time.Now().UTC()
@@ -141,6 +172,9 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	if err := core.ValidateRequirementOrigin(version); err != nil {
 		return core.RequirementVersion{}, err
 	}
+	if err := NormalizeRequirementVersionDocument(&version); err != nil {
+		return core.RequirementVersion{}, err
+	}
 	existing := m.requirementVersions[key]
 	// Every REQ-n the document has ever issued, so reinstating a statement that
 	// an unconfirmed proposal dropped is not mistaken for identifier reuse.
@@ -177,7 +211,7 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	return version, nil
 }
 
-func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -187,12 +221,21 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement %s not found", requirementID)
 	}
 	versions := m.requirementVersions[key]
+	if len(expectedCurrentVersion) > 1 {
+		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("at most one expected current requirement version may be supplied")
+	}
+	if len(expectedCurrentVersion) == 1 && expectedCurrentVersion[0] != requirement.CurrentVersion {
+		expected := expectedCurrentVersion[0]
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionConflict{
+			RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion, Expected: &expected,
+		}
+	}
 	if version < 1 || version > len(versions) {
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement %s has no version %d", requirementID, version)
 	}
 	index := version - 1
 	confirmed := versions[index]
-	if confirmed.Confirmed {
+	if confirmed.Confirmed && version == requirement.CurrentVersion {
 		return requirement, confirmed, nil
 	}
 	// Confirmation is where a real statement block becomes mandatory, so a
@@ -203,7 +246,9 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	// Confirmation moves forward only. Re-confirming a superseded version would
 	// silently revert intent the operator already advanced past.
 	if version < requirement.CurrentVersion {
-		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement %s already confirmed version %d; cannot confirm earlier version %d", requirementID, requirement.CurrentVersion, version)
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionConflict{
+			RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion,
+		}
 	}
 	actor := ActorFromContext(ctx)
 	now := time.Now().UTC()
@@ -239,6 +284,127 @@ func (m *memory) ListRequirementVersions(ctx context.Context, requirementID stri
 	out := make([]core.RequirementVersion, len(stored))
 	copy(out, stored)
 	return out, nil
+}
+
+func requirementServesKey(workspace, blueprintTaskID, requirementID string) string {
+	return workspace + "\x00" + blueprintTaskID + "\x00" + requirementID
+}
+
+func (m *memory) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	blueprintTaskID, requirementID = strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID)
+	if !source.Valid() {
+		return core.RequirementServesLink{}, fmt.Errorf("invalid requirement serves source %q", source)
+	}
+	task, exists := m.tasks[blueprintTaskID]
+	if !exists || task.Workspace != workspace {
+		return core.RequirementServesLink{}, fmt.Errorf("blueprint task %s not found", blueprintTaskID)
+	}
+	requirement, exists := m.requirements[memoryScopedKey{workspace: workspace, id: requirementID}]
+	if !exists {
+		return core.RequirementServesLink{}, fmt.Errorf("requirement %s not found", requirementID)
+	}
+	key := requirementServesKey(workspace, blueprintTaskID, requirementID)
+	if existing, ok := m.requirementServes[key]; ok {
+		if confirm && existing.State == core.RequirementServesProposed {
+			return m.confirmRequirementServesLocked(ctx, key, existing)
+		}
+		if existing.State == core.RequirementServesDismissed {
+			return core.RequirementServesLink{}, fmt.Errorf("%w: cannot repropose a dismissed link", ErrRequirementServesTransition)
+		}
+		return existing, nil
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	eventKind := "requirement.serves_proposed"
+	if source == core.RequirementServesPlanning || source == core.RequirementServesTriage {
+		eventKind = "task.requirement_suggested"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: blueprintTaskID, Kind: eventKind, At: now, Payload: core.JSONPayload(map[string]any{
+		"requirement_id": requirement.ID, "requirement_slug": requirement.Slug,
+		"requirement_title": requirement.Title, "source": source,
+	})})
+	link := core.RequirementServesLink{
+		BlueprintTaskID: blueprintTaskID, RequirementID: requirementID,
+		State: core.RequirementServesProposed, Source: source,
+		CreatedByEventID: m.nextEventID, ProposedBy: actor.ID,
+		Workspace: workspace, CreatedAt: now, UpdatedAt: now,
+	}
+	m.requirementServes[key] = link
+	if confirm {
+		return m.confirmRequirementServesLocked(ctx, key, link)
+	}
+	return link, nil
+}
+
+func (m *memory) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := requirementServesKey(workspaceOrDefault(ctx, ""), strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID))
+	link, ok := m.requirementServes[key]
+	if !ok {
+		return core.RequirementServesLink{}, fmt.Errorf("requirement serves proposal %s -> %s not found", blueprintTaskID, requirementID)
+	}
+	return m.confirmRequirementServesLocked(ctx, key, link)
+}
+
+func (m *memory) confirmRequirementServesLocked(ctx context.Context, key string, link core.RequirementServesLink) (core.RequirementServesLink, error) {
+	if link.State == core.RequirementServesConfirmed {
+		return link, nil
+	}
+	if link.State != core.RequirementServesProposed {
+		return core.RequirementServesLink{}, fmt.Errorf("%w: cannot confirm %s link", ErrRequirementServesTransition, link.State)
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	m.appendEventLocked(ctx, core.Event{TaskID: link.BlueprintTaskID, Kind: "requirement.serves_confirmed", At: now, Payload: core.JSONPayload(map[string]any{
+		"requirement_id": link.RequirementID, "confirmed_by": actor.ID,
+	})})
+	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = core.RequirementServesConfirmed, m.nextEventID, actor.ID, now
+	m.requirementServes[key] = link
+	return link, nil
+}
+
+func (m *memory) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := requirementServesKey(workspaceOrDefault(ctx, ""), strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID))
+	link, ok := m.requirementServes[key]
+	if !ok {
+		return core.RequirementServesLink{}, fmt.Errorf("requirement serves proposal %s -> %s not found", blueprintTaskID, requirementID)
+	}
+	if link.State == core.RequirementServesDismissed {
+		return link, nil
+	}
+	if link.State != core.RequirementServesProposed {
+		return core.RequirementServesLink{}, fmt.Errorf("%w: cannot dismiss %s link", ErrRequirementServesTransition, link.State)
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	m.appendEventLocked(ctx, core.Event{TaskID: link.BlueprintTaskID, Kind: "requirement.serves_dismissed", At: now, Payload: core.JSONPayload(map[string]any{
+		"requirement_id": link.RequirementID, "dismissed_by": actor.ID,
+	})})
+	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = core.RequirementServesDismissed, m.nextEventID, actor.ID, now
+	m.requirementServes[key] = link
+	return link, nil
+}
+
+func (m *memory) ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	links := []core.RequirementServesLink{}
+	for _, link := range m.requirementServes {
+		if link.Workspace == workspace {
+			links = append(links, link)
+		}
+	}
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].BlueprintTaskID != links[j].BlueprintTaskID {
+			return links[i].BlueprintTaskID < links[j].BlueprintTaskID
+		}
+		return links[i].RequirementID < links[j].RequirementID
+	})
+	return links, nil
 }
 
 func (m *memory) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
@@ -325,7 +491,8 @@ func (m *memory) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, re
 	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
 	if existing := session.PinnedRevisions[repo]; existing != "" {
 		if existing != revision {
-			return clonePlanningSession(session), nil
+			return core.PlanningSession{}, fmt.Errorf(
+				"planning repository %s is already pinned at %s; cannot repin at %s", repo, existing, revision)
 		}
 		return clonePlanningSession(session), nil
 	}
@@ -477,6 +644,22 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		"produced_task_id":        session.ProducedTaskID,
 		"transcript_artifact_id":  session.TranscriptArtifactID,
 	})})
+	if session.RequirementContextID != "" && session.ProducedTaskID != "" {
+		servesKey := requirementServesKey(workspace, session.ProducedTaskID, session.RequirementContextID)
+		if _, exists := m.requirementServes[servesKey]; !exists {
+			requirement := m.requirements[memoryScopedKey{workspace: workspace, id: session.RequirementContextID}]
+			m.appendEventLocked(ctx, core.Event{TaskID: session.ProducedTaskID, Kind: "task.requirement_suggested", At: now, Payload: core.JSONPayload(map[string]any{
+				"requirement_id": requirement.ID, "requirement_slug": requirement.Slug,
+				"requirement_title": requirement.Title, "source": core.RequirementServesPlanning,
+			})})
+			m.requirementServes[servesKey] = core.RequirementServesLink{
+				BlueprintTaskID: session.ProducedTaskID, RequirementID: requirement.ID,
+				State: core.RequirementServesProposed, Source: core.RequirementServesPlanning,
+				CreatedByEventID: m.nextEventID, ProposedBy: ActorFromContext(ctx).ID,
+				Workspace: workspace, CreatedAt: now, UpdatedAt: now,
+			}
+		}
+	}
 	return clonePlanningSession(session), nil
 }
 

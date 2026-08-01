@@ -717,7 +717,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 			return err
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
-		d.recordRequirementSuggestion(ctx, task, result.RequirementID)
+		if err = d.recordRequirementSuggestion(ctx, task, result.RequirementID, core.RequirementServesTriage); err != nil {
+			return err
+		}
 		if task.Level == core.L3 || result.Route == "human" {
 			return d.transition(ctx, task.ID, core.TaskTriageRouteHuman, "", core.StageTriage)
 		}
@@ -807,10 +809,24 @@ func (d *Dispatcher) CreatePlanningBlueprint(
 		if specErr != nil {
 			return core.Task{}, core.SpecVersion{}, specErr
 		}
-		if !exists || version.Content != result.Markdown {
-			return core.Task{}, core.SpecVersion{}, fmt.Errorf("planning blueprint task %s already exists without the identical spec", taskID)
+		if !exists {
+			version, specErr = d.completeSpecVersion(ctx, existing, result, "planning-agent", model)
+			return existing, version, specErr
 		}
-		return existing, version, nil
+		if version.Content == result.Markdown {
+			return existing, version, nil
+		}
+		// A same-session deterministic orphan at the unchanged gate is owned by
+		// this planning session. A revised retry creates the ordinary §4.1 next
+		// version instead of wedging the session. If the first version was already
+		// approved in a gates-off workspace, delivery keeps using that approved
+		// version while this newer proposal remains unapproved.
+		version, specErr = d.Store.CreateSpecVersion(ctx, core.SpecVersion{
+			TaskID: existing.ID, Content: result.Markdown,
+			AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance),
+			Decomposition: core.JSONPayload(result.Decomposition), Agent: "planning-agent", Model: model,
+		})
+		return existing, version, specErr
 	}
 	setup, ok := cfg.Setup("")
 	if !ok {
@@ -841,7 +857,9 @@ func (d *Dispatcher) CreatePlanningBlueprint(
 		// Planning in a requirement's context proposes the same advisory,
 		// human-confirmed relation as triage. The event is the durable source;
 		// the generalized link is a projection (spec §4.2 item 1, §9).
-		d.recordRequirementSuggestion(ctx, current, session.RequirementContextID)
+		if err = d.recordRequirementSuggestion(ctx, current, session.RequirementContextID, core.RequirementServesPlanning); err != nil {
+			return core.Task{}, core.SpecVersion{}, err
+		}
 	}
 	return current, version, nil
 }
@@ -970,20 +988,22 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 // §21.46 change 5). The event is the durable proposal — links are projections
 // of events, and a requirement relation is machinery-suggested and
 // human-confirmed, never volunteered as a standing edge by an agent.
-func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string) {
+func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string, source core.RequirementServesSource) error {
 	requirementID = strings.TrimSpace(requirementID)
 	if requirementID == "" {
-		return
+		return nil
 	}
-	requirements, _ := d.Store.ListRequirements(ctx)
+	requirements, err := d.Store.ListRequirements(ctx)
+	if err != nil {
+		return err
+	}
 	for _, requirement := range requirements {
 		if requirement.ID == requirementID {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.requirement_suggested", Payload: core.JSONPayload(map[string]string{
-				"requirement_id": requirement.ID, "requirement_slug": requirement.Slug, "requirement_title": requirement.Title,
-			})})
-			return
+			_, err = d.Store.ProposeRequirementServes(ctx, task.ID, requirement.ID, source, false)
+			return err
 		}
 	}
+	return nil
 }
 
 func (d *Dispatcher) transition(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage) error {
@@ -1015,7 +1035,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
 	case core.InterventionApprove:
-		spec, specGate, err := d.pendingSpecGate(ctx, task, latest)
+		spec, specGate, err := d.pendingSpecGate(ctx, task)
 		if err != nil {
 			return err
 		}
@@ -1048,7 +1068,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if target == "" {
 			target = latest.Stage
 		}
-		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task, latest)
+		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task)
 		if gateErr != nil {
 			return gateErr
 		}
@@ -1067,18 +1087,39 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	return nil
 }
 
-// pendingSpecGate recognizes both delegated spec jobs and blueprints finalized
-// by the in-product planning agent. Planning persists the exact same spec
-// contract but intentionally creates no synthetic spec-stage job, so the gate
-// must also be identifiable from its awaiting/recovery state (spec §9, §13.1).
+// pendingSpecGate recognizes the exact lifecycle command that parked the task.
+// Spec, merge, and failure-recovery gates share the same awaiting/recovery
+// projection, while the audited task.state_changed event preserves their
+// distinct commands (spec §3.3, §13.1).
 func (d *Dispatcher) pendingSpecGate(
 	ctx context.Context,
 	task core.Task,
-	latest core.Job,
 ) (core.SpecVersion, bool, error) {
-	candidate := latest.Stage == core.StageSpec ||
-		(task.State == core.TaskAwaiting && task.RecoveryStage == core.StageImplement)
-	if !candidate {
+	if task.State != core.TaskAwaiting {
+		return core.SpecVersion{}, false, nil
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
+	specGate := false
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return core.SpecVersion{}, false, fmt.Errorf("decode latest task transition for %s: %w", task.ID, err)
+		}
+		if transition.Command != core.TaskGateSpec {
+			return core.SpecVersion{}, false, nil
+		}
+		specGate = true
+		break
+	}
+	if !specGate {
 		return core.SpecVersion{}, false, nil
 	}
 	spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
@@ -1086,9 +1127,9 @@ func (d *Dispatcher) pendingSpecGate(
 		return core.SpecVersion{}, false, err
 	}
 	if !ok {
-		return core.SpecVersion{}, false, fmt.Errorf("task %s has no spec", task.ID)
+		return core.SpecVersion{}, false, nil
 	}
-	if latest.Stage != core.StageSpec && spec.Approved {
+	if spec.Approved {
 		return core.SpecVersion{}, false, nil
 	}
 	return spec, true, nil

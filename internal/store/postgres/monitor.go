@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
@@ -45,7 +47,7 @@ func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (m
 INSERT INTO monitor_observations (
  workspace_id,identity,repository,kind,occurrence_id,source_url,commit_sha,
  pull_request_number,check_run_id,requirement_id,observed_at,context_json,hint_context_json,created_at,updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$11,$11)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12::jsonb,$13::jsonb,$11,$11)
 ON CONFLICT (workspace_id,identity) DO NOTHING`,
 		workspace(ctx), identity, observation.Repository, observation.Kind, observation.OccurrenceID,
 		observation.SourceURL, observation.CommitSHA, observation.PullRequestNumber, observation.CheckRunID,
@@ -74,7 +76,7 @@ func (s *Store) getObservation(ctx context.Context, identity string) (monitor.Ob
 	var taskID *string
 	err := s.pool.QueryRow(ctx, `
 SELECT repository,kind,occurrence_id,source_url,commit_sha,pull_request_number,check_run_id,
-	 requirement_id,observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
+	 COALESCE(requirement_id,''),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
  deduplicated_count,forge_error_category,last_error,created_at,updated_at
 FROM monitor_observations WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity).
 		Scan(&record.Repository, &kind, &record.OccurrenceID, &record.SourceURL, &record.CommitSHA,
@@ -114,7 +116,7 @@ func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.D
 	tag, err := s.pool.Exec(ctx, `
 INSERT INTO repository_drift (
  workspace_id,id,repository,kind,source_url,commit_sha,requirement_id,task_id,detected_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9)
 ON CONFLICT (workspace_id,id) DO NOTHING`,
 		workspace(ctx), drift.ID, drift.Repository, drift.Kind, drift.SourceURL,
 		drift.CommitSHA, drift.RequirementID, drift.TaskID, drift.DetectedAt)
@@ -130,7 +132,7 @@ func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) 
 	var kind string
 	var resolvedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id,repository,kind,source_url,commit_sha,requirement_id,task_id,detected_at,resolved_at,outcome
+SELECT id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),task_id,detected_at,resolved_at,outcome
 FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
 		Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
 			&drift.RequirementID, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)
@@ -148,17 +150,97 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 	if outcome != "requirements_amended" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
 	}
-	tag, err := s.pool.Exec(ctx, `
-UPDATE repository_drift SET resolved_at=COALESCE(resolved_at,now()),
- outcome=CASE WHEN resolved_at IS NULL THEN $3 ELSE outcome END
-WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, outcome)
-	if err != nil {
-		return monitor.Drift{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return monitor.Drift{}, fmt.Errorf("drift %s not found", id)
-	}
-	return s.getDrift(ctx, id)
+	var drift monitor.Drift
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var kind string
+		var resolvedAt *time.Time
+		if err := tx.QueryRow(ctx, `SELECT id,repository,kind,source_url,commit_sha,
+			COALESCE(requirement_id,''),task_id,detected_at,resolved_at,outcome
+			FROM repository_drift WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).
+			Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
+				&drift.RequirementID, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("drift %s not found", id)
+			}
+			return err
+		}
+		drift.WorkspaceID, drift.Kind = workspace(ctx), monitor.SignalKind(kind)
+		if resolvedAt != nil {
+			drift.ResolvedAt = *resolvedAt
+			return nil
+		}
+		now := time.Now().UTC()
+		if outcome == "requirements_amended" {
+			if drift.RequirementID == "" {
+				return fmt.Errorf("drift %s cannot resolve as requirements_amended: requirement_id is missing", id)
+			}
+			var currentVersion *int32
+			var highWaterMark int
+			if err := tx.QueryRow(ctx, `SELECT current_version,statement_high_water_mark FROM requirements
+				WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), drift.RequirementID).
+				Scan(&currentVersion, &highWaterMark); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("drift %s references missing requirement %s", id, drift.RequirementID)
+				}
+				return err
+			}
+			if currentVersion == nil {
+				return fmt.Errorf("drift %s cannot amend requirement %s without a confirmed current version", id, drift.RequirementID)
+			}
+			current, err := scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
+				` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace(ctx), drift.RequirementID, *currentVersion), drift.RequirementID, int(*currentVersion))
+			if err != nil {
+				return err
+			}
+			proposal, err := store.DriftAmendmentVersion(drift, current)
+			if err != nil {
+				return err
+			}
+			var latestVersion int
+			var issued []string
+			if err = tx.QueryRow(ctx, `SELECT coalesce(max(version),0),
+				coalesce(array_agg(DISTINCT statement.id) FILTER (WHERE statement.id IS NOT NULL),'{}')
+				FROM requirement_versions
+				LEFT JOIN LATERAL jsonb_to_recordset(statements_json) AS statement(id text) ON true
+				WHERE workspace_id=$1 AND requirement_id=$2`, workspace(ctx), drift.RequirementID).
+				Scan(&latestVersion, &issued); err != nil {
+				return err
+			}
+			if err = core.ValidateRequirementRevision(highWaterMark, issued, proposal.Statements); err != nil {
+				return err
+			}
+			statements, err := marshalRequirementStatements(proposal.Statements)
+			if err != nil {
+				return err
+			}
+			proposal.Workspace, proposal.Version, proposal.CreatedAt = workspace(ctx), latestVersion+1, now
+			if _, err = tx.Exec(ctx, `INSERT INTO requirement_versions
+				(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
+				VALUES ($1,$2,$3,$4,$5,$6,'',$7,false,$8)`, workspace(ctx), drift.RequirementID,
+				proposal.Version, proposal.Content, statements, string(proposal.Origin), drift.ID, now); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `UPDATE requirements SET updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), drift.RequirementID, now); err != nil {
+				return err
+			}
+			if err = insertRequirementEvent(ctx, q, "requirement.version_proposed", map[string]any{
+				"workspace_id": workspace(ctx), "requirement_id": drift.RequirementID,
+				"version": proposal.Version, "origin": proposal.Origin,
+				"origin_drift_id": drift.ID, "statement_count": len(proposal.Statements),
+			}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE repository_drift SET resolved_at=$3,outcome=$4
+			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, outcome); err != nil {
+			return err
+		}
+		drift.Outcome, drift.ResolvedAt = outcome, now
+		return insertEvent(ctx, q, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
+			"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
+		})})
+	})
+	return drift, err
 }
 
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {

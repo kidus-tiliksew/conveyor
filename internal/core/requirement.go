@@ -79,6 +79,54 @@ type RequirementVersion struct {
 	CreatedAt       time.Time              `json:"created_at"`
 }
 
+// RequirementServesState is the operator-owned lifecycle of a proposed
+// blueprint-to-requirement relationship (spec §4.2 item 1). Machinery may
+// propose a relation, but only a human confirmation makes it authoritative.
+type RequirementServesState string
+
+const (
+	RequirementServesProposed  RequirementServesState = "proposed"
+	RequirementServesConfirmed RequirementServesState = "confirmed"
+	RequirementServesDismissed RequirementServesState = "dismissed"
+)
+
+func (s RequirementServesState) Valid() bool {
+	return s == RequirementServesProposed || s == RequirementServesConfirmed ||
+		s == RequirementServesDismissed
+}
+
+// RequirementServesSource records which control-plane path proposed a serves
+// relationship. It is provenance, never confirmation authority.
+type RequirementServesSource string
+
+const (
+	RequirementServesPlanning RequirementServesSource = "planning"
+	RequirementServesTriage   RequirementServesSource = "triage"
+	RequirementServesOperator RequirementServesSource = "operator"
+)
+
+func (s RequirementServesSource) Valid() bool {
+	return s == RequirementServesPlanning || s == RequirementServesTriage ||
+		s == RequirementServesOperator
+}
+
+// RequirementServesLink is the auditable, workspace-scoped projection of one
+// blueprint serving one requirement. Event IDs retain exact provenance; actor
+// fields make terminal operator decisions directly renderable.
+type RequirementServesLink struct {
+	BlueprintTaskID  string                  `json:"blueprint_task_id"`
+	RequirementID    string                  `json:"requirement_id"`
+	State            RequirementServesState  `json:"state"`
+	Source           RequirementServesSource `json:"source"`
+	CreatedByEventID int64                   `json:"created_by_event_id"`
+	DecisionEventID  int64                   `json:"decision_event_id,omitempty"`
+	ProposedBy       string                  `json:"proposed_by"`
+	DecidedBy        string                  `json:"decided_by,omitempty"`
+	Workspace        string                  `json:"workspace"`
+	CreatedAt        time.Time               `json:"created_at"`
+	UpdatedAt        time.Time               `json:"updated_at"`
+}
+
 // PlanningSessionStatus is the durable session lifecycle (spec §9).
 type PlanningSessionStatus string
 
@@ -296,4 +344,26 @@ func RequirementSlug(title string) string {
 		slug = requirementSlugTrimPattern.ReplaceAllString(slug[:maxSlugBytes], "")
 	}
 	return slug
+}
+
+// RequirementSlugCandidate returns the deterministic candidate for one
+// workspace-local allocation attempt. Ordinal one keeps the bare slug; later
+// attempts append -n while preserving the 80-byte storage contract.
+func RequirementSlugCandidate(base string, ordinal int) string {
+	base = RequirementSlug(base)
+	if ordinal <= 1 {
+		return base
+	}
+	suffix := "-" + strconv.Itoa(ordinal)
+	limit := 80 - len(suffix)
+	if limit < 1 {
+		return ""
+	}
+	if len(base) > limit {
+		base = strings.TrimRight(base[:limit], "-")
+	}
+	if base == "" {
+		return ""
+	}
+	return base + suffix
 }

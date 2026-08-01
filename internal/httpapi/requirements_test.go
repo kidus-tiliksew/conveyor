@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,6 +111,85 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 }
 
+func TestRequirementConfirmationRejectsStaleExpectedAndSupersededVersions(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-race", Title: "Confirm race"}, core.RequirementVersion{
+		Content: "First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First intent is explicit."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: requirement.ID, Content: "Second intent.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second intent is explicit."}},
+		Origin:     core.RequirementOriginChat, OriginSessionID: "session-second",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	confirm := func(version int, expected string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/requirements/%s/versions/%d/confirm", requirement.ID, version), nil)
+		request.Header.Set("Authorization", "Bearer token")
+		if expected != "" {
+			request.Header.Set("If-Match", expected)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := confirm(1, `"1"`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "requirement_current_version_mismatch") {
+		t.Fatalf("stale initial confirm status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := confirm(1, `"0"`); response.Code != http.StatusOK {
+		t.Fatalf("confirm v1 status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := confirm(2, `W/"0"`); response.Code != http.StatusConflict {
+		t.Fatalf("stale v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := confirm(2, `"1"`); response.Code != http.StatusOK {
+		t.Fatalf("confirm v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := confirm(1, ""); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "requirement_version_superseded") || !strings.Contains(response.Body.String(), `"current_version":2`) {
+		t.Fatalf("superseded v1 status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	seed, _, err := st.CreateRequirement(ctx, core.Requirement{
+		ID: "req-migrated", Title: "Migrated feature",
+	}, core.RequirementVersion{
+		Content: "Legacy feature prose.", Statements: []core.RequirementStatement{},
+		Origin: core.RequirementOriginFeatureMigration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet, "/v1/requirements/"+seed.ID, nil,
+	))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.MigratedSeed || view.ConfirmationEligible || view.Stale ||
+		len(view.PendingVersions) != 1 || len(view.Lineage) != 2 {
+		t.Fatalf("migrated seed view=%+v", view)
+	}
+}
+
 func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutations(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -164,6 +244,9 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		SessionID: blueprintSession.ID, TaskID: task.ID,
 		TranscriptArtifactID: transcript.ID,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(ctx, task.ID, requirement.ID); err != nil {
 		t.Fatal(err)
 	}
 

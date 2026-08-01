@@ -94,6 +94,31 @@ func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID s
 	})
 }
 
+func (s *Store) WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error {
+	key := "conveyor:planning-session-run:" + workspace(ctx) + ":" + sessionID
+	pooled, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	conn := pooled.Hijack()
+	var acquired bool
+	if err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtext($1))", key).Scan(&acquired); err != nil {
+		_ = conn.Close(ctx)
+		return err
+	}
+	if !acquired {
+		_ = conn.Close(ctx)
+		return fmt.Errorf("%w: %s", store.ErrPlanningSessionRunConflict, sessionID)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, "SELECT pg_advisory_unlock(hashtext($1))", key)
+		_ = conn.Close(unlockCtx)
+	}()
+	return fn(ctx)
+}
+
 func (s *Store) withPlanningSessionLock(ctx context.Context, sessionID string, fn func(context.Context) error) error {
 	key := "conveyor:planning-session:" + workspace(ctx) + ":" + sessionID
 	return s.withDetachedAdvisoryLock(ctx, key, fn)

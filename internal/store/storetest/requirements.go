@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -56,6 +57,63 @@ var requirementConformanceRepos = []config.Repo{
 // (spec §4.2 item 1 AC-1, §9 AC-2).
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
+
+	t.Run("content and statement fence divergence is rejected", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		_, _, err := st.CreateRequirement(ctx, core.Requirement{
+			ID: "req-" + core.NewTaskID(), Title: "Divergent requirement",
+		}, core.RequirementVersion{
+			Content:    "Operator prose.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Fence statement.\n```",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Different supplied statement."}},
+			Origin:     core.RequirementOriginChat, OriginSessionID: "session-divergent",
+		})
+		if err == nil || !strings.Contains(err.Error(), "diverge") {
+			t.Fatalf("divergent content/statements error=%v", err)
+		}
+	})
+
+	t.Run("serves links remain proposals until an operator decision", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Served intent"},
+			chatVersion("Blueprints serve confirmed intent.", requirementStatement("REQ-1", "Serves links are operator-confirmed.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskID := core.NewTaskID()
+		task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, Title: "Blueprint", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		proposed, err := st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false)
+		if err != nil || proposed.State != core.RequirementServesProposed || proposed.CreatedByEventID == 0 {
+			t.Fatalf("proposed link=%+v err=%v", proposed, err)
+		}
+		if repeated, repeatErr := st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); repeatErr != nil || repeated.CreatedByEventID != proposed.CreatedByEventID {
+			t.Fatalf("repeated proposal=%+v err=%v", repeated, repeatErr)
+		}
+		confirmed, err := st.ConfirmRequirementServes(ctx, task.ID, requirement.ID)
+		if err != nil || confirmed.State != core.RequirementServesConfirmed || confirmed.DecisionEventID == 0 || confirmed.DecidedBy != requirementConformanceActor {
+			t.Fatalf("confirmed link=%+v err=%v", confirmed, err)
+		}
+		if _, err = st.DismissRequirementServes(ctx, task.ID, requirement.ID); !errors.Is(err, store.ErrRequirementServesTransition) {
+			t.Fatalf("dismiss confirmed error=%v", err)
+		}
+		links, err := st.ListRequirementServes(ctx)
+		if err != nil || len(links) != 1 || links[0].State != core.RequirementServesConfirmed {
+			t.Fatalf("serves links=%+v err=%v", links, err)
+		}
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kinds := map[string]int{}
+		for _, event := range events {
+			kinds[event.Kind]++
+		}
+		if kinds["task.requirement_suggested"] != 1 || kinds["requirement.serves_confirmed"] != 1 {
+			t.Fatalf("serves events=%+v", events)
+		}
+	})
 
 	t.Run("creation commits a pending document and its first version", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
@@ -127,6 +185,11 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				chatVersion("Must not commit.", requirementStatement("REQ-1", "Rejected."))); err == nil {
 				t.Fatalf("%s was accepted", name)
 			}
+		}
+		if _, _, err = st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Slug: "custom-handle", Title: "Typed Slug Conflict"},
+			chatVersion("Must not commit.", requirementStatement("REQ-1", "Rejected."))); !errors.Is(err, store.ErrRequirementSlugConflict) {
+			t.Fatalf("slug conflict error=%v, want ErrRequirementSlugConflict", err)
 		}
 		// A malformed statement block is refused with the document, so a
 		// requirement never exists without a first version.
@@ -509,9 +572,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil || pinned.PinnedRevisions["web"] != strings.Repeat("b", 40) {
 			t.Fatalf("pinned session=%+v err=%v", pinned, err)
 		}
-		pinnedAgain, err := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40))
+		if _, err = st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40)); err == nil {
+			t.Fatal("conflicting immutable pin was silently accepted")
+		}
+		pinnedAgain, err := st.GetPlanningSession(ctx, sessionID)
 		if err != nil || pinnedAgain.PinnedRevisions["web"] != strings.Repeat("b", 40) {
-			t.Fatalf("immutable pin changed: %+v err=%v", pinnedAgain, err)
+			t.Fatalf("immutable pin changed after conflict: %+v err=%v", pinnedAgain, err)
 		}
 		accounted, err := st.RecordPlanningExplorationTokens(ctx, sessionID, 42)
 		if err != nil || accounted.ExplorationTokensUsed != 42 {
@@ -622,6 +688,97 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		// Messages of an unknown session are an empty transcript, not an error.
 		if messages, listErr := st.ListPlanningMessages(ctx, "session-does-not-exist"); listErr != nil || len(messages) != 0 {
 			t.Fatalf("messages of an unknown session=%+v err=%v, want empty", messages, listErr)
+		}
+	})
+
+	t.Run("planning run claims fail fast and release on every terminal path", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("first run did not acquire its claim")
+		}
+		competingRan := false
+		if err := st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+			competingRan = true
+			return nil
+		}); !errors.Is(err, store.ErrPlanningSessionRunConflict) {
+			t.Fatalf("competing run error=%v", err)
+		}
+		if competingRan {
+			t.Fatal("competing run entered the claimed session")
+		}
+		close(release)
+		if err := <-firstDone; err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("run callback panic was swallowed")
+				}
+			}()
+			_ = st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				panic("release claim")
+			})
+		}()
+		if err := st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("run claim remained held after panic: %v", err)
+		}
+	})
+
+	t.Run("planning run claims do not block abandonment", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+			}
+		}()
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("run did not acquire its claim")
+		}
+		abandonDone := make(chan error, 1)
+		go func() {
+			_, err := st.AbandonPlanningSession(ctx, session.ID)
+			abandonDone <- err
+		}()
+		select {
+		case err := <-abandonDone:
+			if err != nil {
+				t.Fatalf("abandon active run: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("abandonment blocked behind the model run claim")
+		}
+		close(release)
+		released = true
+		if err := <-runDone; err != nil {
+			t.Fatal(err)
 		}
 	})
 

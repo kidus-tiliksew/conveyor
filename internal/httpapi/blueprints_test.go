@@ -201,7 +201,8 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	if _, _, err = st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior",
 	}, core.RequirementVersion{
-		Content: "Retries stay bounded.", Origin: core.RequirementOriginChat, OriginSessionID: intent.ID,
+		Content: "Retries stay bounded.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stay bounded."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: intent.ID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +219,9 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	if _, err = st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
 		SessionID: session.ID, TaskID: anchor.ID,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(ctx, anchor.ID, "req-retries"); err != nil {
 		t.Fatal(err)
 	}
 	// One child delivers and one closes without merging, so the rollup has to
@@ -289,6 +293,63 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	}
 	if !materialized {
 		t.Fatalf("blueprint timeline is missing materialization: %+v", view.Events)
+	}
+}
+
+func TestBlueprintServesLifecycleSupportsRetroactiveMultiRequirementLinks(t *testing.T) {
+	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	anchor := materializeBlueprint(t, st, "anchor-serves", []decompositionFixture{{ID: "SUB-1", Repo: "conveyor", Summary: "Deliver"}})
+	createRequirement := func(id string) {
+		t.Helper()
+		if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
+			Content: "Intent for " + id + ".", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The blueprint serves " + id + "."}},
+			Origin: core.RequirementOriginChat, OriginSessionID: "session-" + id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createRequirement("req-one")
+	createRequirement("req-two")
+	createRequirement("req-dismissed")
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	post := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	base := "/v1/blueprints/" + anchor.ID + "/requirements/"
+	for _, requirementID := range []string{"req-one", "req-two"} {
+		response := post(base+requirementID+"/serves", `{"confirm":true}`)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"confirmed"`) {
+			t.Fatalf("retroactive confirm %s status=%d body=%s", requirementID, response.Code, response.Body.String())
+		}
+	}
+	if response := post(base+"req-dismissed/serves", `{}`); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"proposed"`) {
+		t.Fatalf("propose dismissed status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := post(base+"req-dismissed/serves/dismiss", ``); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"dismissed"`) {
+		t.Fatalf("dismiss status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := post(base+"req-dismissed/serves/confirm", ``); response.Code != http.StatusConflict {
+		t.Fatalf("confirm dismissed status=%d body=%s", response.Code, response.Body.String())
+	}
+	views := listBlueprintViews(t, handler)
+	if len(views) != 1 || len(views[0].Serves) != 2 || len(views[0].RequirementLinks) != 3 {
+		t.Fatalf("serves view=%+v", views)
+	}
+	for _, link := range views[0].RequirementLinks {
+		if link.CreatedByEventID == 0 || link.ProposedBy == "" {
+			t.Fatalf("link lacks proposal provenance: %+v", link)
+		}
+		if link.State != core.RequirementServesProposed && (link.DecisionEventID == 0 || link.DecidedBy == "") {
+			t.Fatalf("terminal link lacks decision provenance: %+v", link)
+		}
 	}
 }
 

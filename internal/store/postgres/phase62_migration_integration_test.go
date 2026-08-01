@@ -120,8 +120,13 @@ func (f *phase62Fixture) artifact(t *testing.T, featureID, role string) string {
 
 func (f *phase62Fixture) upgrade(t *testing.T) {
 	t.Helper()
-	if err := migrateControlPlaneToVersion(t.Context(), f.pool, 46); err != nil {
-		t.Fatalf("migrate to version 46: %v", err)
+	f.upgradeTo(t, 46)
+}
+
+func (f *phase62Fixture) upgradeTo(t *testing.T, version int) {
+	t.Helper()
+	if err := migrateControlPlaneToVersion(t.Context(), f.pool, version); err != nil {
+		t.Fatalf("migrate to version %d: %v", version, err)
 	}
 }
 
@@ -518,5 +523,216 @@ func TestPhase62FeatureMigrationIsInertWithoutFeaturesIntegration(t *testing.T) 
 	}
 	if version != 46 {
 		t.Errorf("schema version = %d, want 46", version)
+	}
+}
+
+func TestPhase62RepairMigrationHandlesSharedArtifactsAndGlobalSlugCollisionsIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.feature(t, "feat-auth-1", "Auth", "First auth requirement.", "", 0)
+	f.feature(t, "feat-auth-2", "Auth", "Second auth requirement.", "feat-auth-1", time.Second)
+	f.feature(t, "feat-auth-2-base", "Auth 2", "Independent suffix-shaped base.", "", 2*time.Second)
+	f.feature(t, "feat-empty-audit", "Empty Audit Node", "", "", 3*time.Second)
+
+	artifactID := core.NewTaskID()
+	content := []byte("shared auth context")
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO artifacts (id, workspace_id, name, content_type, size_bytes, content, created_at)
+		 VALUES ($1,$2,'shared.txt','text/plain',$3,$4,$5)`,
+		artifactID, f.workspace, len(content), content, f.seeded); err != nil {
+		t.Fatal(err)
+	}
+	for _, featureID := range []string{"feat-auth-1", "feat-auth-2"} {
+		if _, err := f.pool.Exec(f.ctx,
+			`INSERT INTO artifact_links (workspace_id, artifact_id, feature_id, role)
+			 VALUES ($1,$2,$3,'task_context')`, f.workspace, artifactID, featureID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f.upgradeTo(t, 50)
+
+	wantSlugs := map[string]string{
+		"req-feat-auth-1":      "auth",
+		"req-feat-auth-2":      "auth-2",
+		"req-feat-auth-2-base": "auth-2-2",
+	}
+	rows, err := f.pool.Query(f.ctx,
+		`SELECT id,slug FROM requirements WHERE workspace_id=$1`, f.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, slug string
+		if err := rows.Scan(&id, &slug); err != nil {
+			t.Fatal(err)
+		}
+		if want, exists := wantSlugs[id]; exists {
+			if slug != want {
+				t.Errorf("requirement %s slug=%q want %q", id, slug, want)
+			}
+			delete(wantSlugs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(wantSlugs) != 0 {
+		t.Fatalf("missing migrated slugs: %v", wantSlugs)
+	}
+	var linkCount, distinctRequirements int
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT count(*), count(DISTINCT requirement_id)
+		 FROM artifact_links WHERE workspace_id=$1 AND artifact_id=$2`,
+		f.workspace, artifactID).Scan(&linkCount, &distinctRequirements); err != nil {
+		t.Fatal(err)
+	}
+	if linkCount != 2 || distinctRequirements != 2 {
+		t.Fatalf("shared artifact links=%d distinct requirements=%d", linkCount, distinctRequirements)
+	}
+	for requirementID := range map[string]bool{
+		"req-feat-auth-1": true, "req-feat-auth-2": true, "req-feat-auth-2-base": true,
+	} {
+		events, err := f.store.ListRequirementEvents(f.ctx, requirementID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 2 || events[0].Kind != "requirement.created" ||
+			events[1].Kind != "requirement.version_proposed" {
+			t.Errorf("seed lineage for %s=%+v", requirementID, events)
+		}
+	}
+	var droppedName string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT payload_json->>'name' FROM events
+		 WHERE workspace_id=$1 AND kind='migration.feature_node_dropped'
+		   AND payload_json->>'feature_id'='feat-empty-audit'`, f.workspace).Scan(&droppedName); err != nil {
+		t.Fatal(err)
+	}
+	if droppedName != "Empty Audit Node" {
+		t.Fatalf("dropped-node audit name=%q", droppedName)
+	}
+	var checksum string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT checksum FROM conveyor_schema_migrations WHERE version=46`).Scan(&checksum); err != nil {
+		t.Fatal(err)
+	}
+	if checksum != "3824782d447b5128661e770239b3517dde302f3f18a0f889a1e82e1e448d80e7" {
+		t.Fatalf("migration 046 ledger checksum=%s", checksum)
+	}
+}
+
+func TestPhase62RepairMigrationUpgradesApplied046And047AndNullsDanglingReferencesIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.feature(t, "feat-valid", "Valid", "Valid requirement.", "", 0)
+	driftTask := f.task(t, "", "")
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO monitor_observations
+		 (workspace_id, identity, repository, kind, occurrence_id, source_url, feature_id, observed_at)
+		 VALUES ($1,'identity-dangling','repo','direct_push','occ-dangling',
+		         'https://example.test/dangling','missing-feature',$2)`,
+		f.workspace, f.seeded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO repository_drift
+		 (workspace_id, id, repository, kind, source_url, feature_id, task_id, detected_at)
+		 VALUES ($1,'drift-dangling','repo','direct_push',
+		         'https://example.test/dangling','missing-feature',$2,$3)`,
+		f.workspace, driftTask, f.seeded); err != nil {
+		t.Fatal(err)
+	}
+	f.upgradeTo(t, 47)
+
+	before := map[int]string{}
+	for _, version := range []int{46, 47} {
+		var checksum string
+		if err := f.pool.QueryRow(f.ctx,
+			`SELECT checksum FROM conveyor_schema_migrations WHERE version=$1`, version).Scan(&checksum); err != nil {
+			t.Fatal(err)
+		}
+		before[version] = checksum
+	}
+	f.upgradeTo(t, 50)
+
+	var observationRequirement, driftRequirement *string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT observation.requirement_id, drift.requirement_id
+		 FROM monitor_observations observation
+		 JOIN repository_drift drift ON drift.workspace_id=observation.workspace_id
+		 WHERE observation.workspace_id=$1 AND observation.identity='identity-dangling'
+		   AND drift.id='drift-dangling'`, f.workspace).Scan(&observationRequirement, &driftRequirement); err != nil {
+		t.Fatal(err)
+	}
+	if observationRequirement != nil || driftRequirement != nil {
+		t.Fatalf("dangling references observation=%v drift=%v", observationRequirement, driftRequirement)
+	}
+	var repairEvents, foreignKeys int
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT
+		   (SELECT count(*) FROM events WHERE workspace_id=$1
+		      AND kind='migration.requirement_reference_repaired'),
+		   (SELECT count(*) FROM information_schema.table_constraints
+		      WHERE table_schema=current_schema()
+		        AND constraint_name IN ('monitor_observations_requirement_fk','repository_drift_requirement_fk'))`,
+		f.workspace).Scan(&repairEvents, &foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if repairEvents != 2 || foreignKeys != 2 {
+		t.Fatalf("repair events=%d foreign keys=%d", repairEvents, foreignKeys)
+	}
+	for version, checksum := range before {
+		var after string
+		if err := f.pool.QueryRow(f.ctx,
+			`SELECT checksum FROM conveyor_schema_migrations WHERE version=$1`, version).Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if after != checksum {
+			t.Errorf("migration %d checksum changed from %s to %s", version, checksum, after)
+		}
+	}
+	events, err := f.store.ListRequirementEvents(f.ctx, "req-feat-valid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("backfilled applied-046 lineage=%+v", events)
+	}
+}
+
+func TestRequirementServesMigrationBackfillsSuggestionsAsProposalsIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.feature(t, "feat-serves", "Serves Backfill", "Legacy suggestion target.", "", 0)
+	f.upgradeTo(t, 50)
+
+	blueprintTaskID := f.task(t, "", "")
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE tasks SET source='planning:legacy-session' WHERE workspace_id=$1 AND id=$2`,
+		f.workspace, blueprintTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AppendEvent(f.ctx, core.Event{
+		TaskID: blueprintTaskID, Kind: "task.requirement_suggested",
+		ActorID: "legacy-planner", ActorRole: core.ActorAgent,
+		Payload: []byte(`{"requirement_id":"req-feat-serves","requirement_title":"Serves Backfill"}`),
+		At:      f.seeded.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.upgradeTo(t, 51)
+
+	links, err := f.store.ListRequirementServes(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("backfilled serves links=%+v, want one proposal", links)
+	}
+	link := links[0]
+	if link.BlueprintTaskID != blueprintTaskID || link.RequirementID != "req-feat-serves" ||
+		link.State != core.RequirementServesProposed || link.Source != core.RequirementServesPlanning ||
+		link.ProposedBy != "legacy-planner" || link.CreatedByEventID == 0 || link.DecisionEventID != 0 {
+		t.Fatalf("backfilled serves link=%+v", link)
 	}
 }

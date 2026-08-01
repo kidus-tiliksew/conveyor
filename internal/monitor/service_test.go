@@ -94,7 +94,7 @@ func TestOutOfPipelineKindsCreateDriftUntilAuditedOutcome(t *testing.T) {
 			if _, err = service.Resolve(ctx, status.Drift[0].ID, "operator_said_ok"); err == nil {
 				t.Fatal("unsupported outcome cleared drift")
 			}
-			if _, err = service.Resolve(ctx, status.Drift[0].ID, "requirements_amended"); err != nil {
+			if _, err = service.Resolve(ctx, status.Drift[0].ID, "conflict_resolved"); err != nil {
 				t.Fatal(err)
 			}
 			status, _ = service.Status(ctx)

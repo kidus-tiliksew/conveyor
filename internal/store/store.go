@@ -23,15 +23,17 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired   = errors.New("workspace context is required")
-	ErrWorkspaceConflict   = errors.New("workspace id or name already exists")
-	ErrWorkOrderStale      = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut   = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid      = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized  = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled  = errors.New("work order was cancelled")
-	ErrTaskTerminal        = errors.New("task is already terminal")
+	ErrWorkspaceRequired           = errors.New("workspace context is required")
+	ErrWorkspaceConflict           = errors.New("workspace id or name already exists")
+	ErrRequirementSlugConflict     = errors.New("requirement slug already exists")
+	ErrRequirementServesTransition = errors.New("invalid requirement serves-link transition")
+	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
+	ErrReviewRetryConflict         = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid              = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
+	ErrTaskTerminal                = errors.New("task is already terminal")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
@@ -165,9 +167,13 @@ type Store interface {
 	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
 	ListRequirements(ctx context.Context) ([]core.Requirement, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
-	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error)
+	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
 	GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error)
 	ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error)
+	ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error)
+	ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error)
+	DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error)
+	ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error)
 
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it (spec §9, §13.1).
@@ -178,6 +184,12 @@ type Store interface {
 	RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error)
 	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
 	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
+	// WithPlanningSessionRun claims a dedicated per-session run lock without
+	// waiting. A competing live run returns ErrPlanningSessionRunConflict before
+	// either run can append a user message. Finalize and abandon retain their
+	// separate terminal-outcome lock so abandonment can stop model work between
+	// planning steps.
+	WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error
 	// WithPlanningSessionFinalization serializes the complete produced-artifact
 	// write path against abandonment and invokes fn only while the session is
 	// active. Implementations must release the lock when fn returns.
@@ -192,6 +204,27 @@ type Store interface {
 	GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
+
+// RequirementVersionConflict is returned when an operator confirmation was
+// based on stale intent or targets a version already superseded by current
+// intent. HTTP handlers use its fields for a non-ambiguous 409 response.
+type RequirementVersionConflict struct {
+	RequirementID string
+	Requested     int
+	Current       int
+	Expected      *int
+}
+
+func (e *RequirementVersionConflict) Error() string {
+	if e.Expected != nil {
+		return fmt.Sprintf("requirement %s current version is %d, not expected version %d", e.RequirementID, e.Current, *e.Expected)
+	}
+	return fmt.Sprintf("requirement %s already confirmed version %d; cannot confirm superseded version %d", e.RequirementID, e.Current, e.Requested)
+}
+
+// ErrPlanningSessionRunConflict is stable transport-facing classification for
+// a second message submitted while one planning run still owns the session.
+var ErrPlanningSessionRunConflict = errors.New("planning session run already in progress")
 
 const (
 	ReviewClaimedWithoutVerdict = "claimed_without_verdict"
@@ -616,6 +649,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		features:                    map[string]core.Feature{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
 		requirementVersions:         map[memoryScopedKey][]core.RequirementVersion{},
+		requirementServes:           map[string]core.RequirementServesLink{},
 		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
@@ -672,6 +706,7 @@ type memory struct {
 	features                    map[string]core.Feature
 	requirements                map[memoryScopedKey]core.Requirement
 	requirementVersions         map[memoryScopedKey][]core.RequirementVersion
+	requirementServes           map[string]core.RequirementServesLink
 	planningSessions            map[memoryScopedKey]core.PlanningSession
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
@@ -1043,6 +1078,17 @@ func (m *memory) WithPlanningSessionFinalization(ctx context.Context, sessionID 
 		}
 		return fn(lockedCtx)
 	})
+}
+
+func (m *memory) WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error {
+	workspace, _ := WorkspaceFromContext(ctx)
+	value, _ := m.taskLocks.LoadOrStore("planning-session-run/"+workspace+"/"+sessionID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	if !lock.TryLock() {
+		return fmt.Errorf("%w: %s", ErrPlanningSessionRunConflict, sessionID)
+	}
+	defer lock.Unlock()
+	return fn(ctx)
 }
 
 func (m *memory) withPlanningSessionLock(ctx context.Context, sessionID string, fn func(context.Context) error) error {
