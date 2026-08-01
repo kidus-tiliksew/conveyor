@@ -136,7 +136,7 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
               <span className="flex flex-col items-start">
                 {state.blockingDependencies.map((dependency) => (
                   <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
-                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, true, state.kind === 'dependency_attention')}
+                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, true, state.unsatisfiableDependencyIDs?.includes(dependency.id) === true)}
                   </Link>
                 ))}
               </span>

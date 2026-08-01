@@ -100,6 +100,7 @@ export interface CurrentExecutionState {
   nextAction: string
   action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
   blockingDependencies?: TaskRelation[]
+  unsatisfiableDependencyIDs?: string[]
 }
 
 function orderActivityTime(order: WorkOrder): number {
@@ -173,13 +174,16 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
   if (!order) {
     const unsatisfiableOrder = unsatisfiableDependencyOrder(item)
     if (unsatisfiableOrder) {
+      const unsatisfiableDependencyIDs = (unsatisfiableOrder.unsatisfiable_task_ids?.length ?? 0) > 0
+        ? unsatisfiableOrder.unsatisfiable_task_ids
+        : item.stalled?.blocking_task_ids
       return {
         kind: 'dependency_attention', status: 'paused', order: unsatisfiableOrder,
         title: 'Dependency needs attention',
         blocker: 'A required dependency closed without merging.',
         retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
         nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
-        action: 'none', blockingDependencies: blockingDependencies(item),
+        action: 'none', blockingDependencies: blockingDependencies(item), unsatisfiableDependencyIDs,
       }
     }
     if (dependencyBlockedOrder) {

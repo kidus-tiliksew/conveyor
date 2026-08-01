@@ -274,7 +274,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
         : taskId === 'blocked-refresh' ? ['refresh-dependency']
 		: taskId === 'blocked-suppressed' ? ['blocked-dependency']
 		  : taskId === 'spec-while-blocked' ? ['refresh-dependency']
-          : taskId === 'unsatisfiable' ? ['closed-dependency']
+          : taskId === 'unsatisfiable' ? ['closed-dependency', 'live-dependency']
             : undefined,
       dependencies: taskId === 'blueprint-child' ? [
         { id: 'blueprint-sub-2', title: 'Runtime', state: 'running' },
@@ -282,7 +282,10 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       ] : taskId === 'blocked-refresh' ? [{ id: 'refresh-dependency', title: 'Backend contract', state: 'running' }]
 		: taskId === 'blocked-suppressed' ? [{ id: 'blocked-dependency', title: 'Schema migration', state: 'running' }]
 		: taskId === 'spec-while-blocked' ? [{ id: 'refresh-dependency', title: 'Backend contract', state: 'running' }]
-        : taskId === 'unsatisfiable' ? [{ id: 'closed-dependency', title: 'Retired API plan', state: 'closed' }]
+        : taskId === 'unsatisfiable' ? [
+          { id: 'closed-dependency', title: 'Retired API plan', state: 'closed' },
+          { id: 'live-dependency', title: 'Active schema work', state: 'running' },
+        ]
           : undefined,
       children: taskId === 'blueprint-parent' ? [
         { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
@@ -344,7 +347,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       stage: 'implement',
       state: 'queued',
       claimable: false,
-      blocking_task_ids: ['closed-dependency'],
+      blocking_task_ids: ['closed-dependency', 'live-dependency'],
       unsatisfiable_task_ids: ['closed-dependency'],
       queue_entered_at: createdAt,
       queue_deadline: '2026-07-16T12:00:00Z',
@@ -1504,6 +1507,7 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(page.getByRole('region', { name: 'Dependency needs attention' }).first()).toBeVisible()
 	await expect(currentState.getByRole('heading', { name: 'Dependency needs attention' })).toBeVisible()
 	await expect(currentState.getByText('Retired API plan · Needs attention')).toBeVisible()
+	await expect(currentState.getByText('Active schema work · Waiting')).toBeVisible()
 	await expect(currentState.getByText(/Unlink the dead dependency.*cancel this task/i)).toBeVisible()
 	await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toHaveCount(0)
 	await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
