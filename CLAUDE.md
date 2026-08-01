@@ -1,15 +1,17 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.14,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.54
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.15,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.55
 through Phase 5 closure, the accepted Phase 6, the §21.47 dependency
 semantics, §21.48 worktree containment, the §21.49 blueprint
 presentation surface, §21.50–§21.52 planning repo exploration
 across workspace repos with a configurable planning model and
-configurable exploration caps, §21.53 attempt-aware recovery, and the
+configurable exploration caps, §21.53 attempt-aware recovery, the
 accepted §21.54 Phase 8 — deployment & multi-user (identity/grants,
 solo/server auth, credential-class boundary, embedded worker, delivery
-tiers making GitHub optional, packaging); the body
+tiers making GitHub optional, packaging), and §21.55 rejecting the
+memory store (Phase 7 → demand-triggered recall; Phase 8 follows
+Phase 6 directly); the body
 §§1–20 is normative, §21 is the change record). When code and spec disagree,
 the spec wins; spec changes go by amendment with a version bump (§21), never
 silent edits.
@@ -95,19 +97,23 @@ dependencies are ordering gates — branch stacking stays deferred
 (§8.3).
 
 **Phase 8 — deployment & multi-user is accepted (§21.54)** and follows
-the Phase 7 memory store, in order: 8.1 embedded worker (same §6.4
+Phase 6 directly (§21.55), in order: 8.1 embedded worker (same §6.4
 supervisor loop in-process, no pairing — may land earlier, during late
-Phase 6 or Phase 7), 8.2 identity
+Phase 6), 8.2 identity
 (users, admin-as-grant, solo/server auth with opaque hashed tokens,
 human/agent/worker credential classes per route), 8.3 delivery tiers
 (per-repo `github`/`remote`/`local` — GitHub optional, ancestry-detected
 completion, primary checkout never mutated), 8.4 packaging (`conveyord
 install`, versioned releases, `conveyor init`). Do not start 8.2–8.4
-while Phase 6 or 7 is the active scope.
+while Phase 6 is the active scope.
 
-Do NOT build deferred surfaces beyond that: memory store / pgvector /
-MCP memory tools (Phase 7 — recall over the lineage graph, transport
-decided by §21.12, scope not pulled forward); transcript mining /
+Do NOT build deferred surfaces beyond that: **there is no memory store —
+`store_memory` and memory rows are rejected by §21.55, not deferred**;
+Phase 7 is demand-triggered read-only recall over existing artifacts
+(get-side MCP tools per §21.12, pgvector as secondary index), built
+only on evidence of reachability misses from operating 6.3, and
+knowledge promotes into requirements/hints/pack instead of parking in
+rows; transcript mining /
 self-improvement / eval rig (Phase 9); managed-execution
 reintroduction — independent verification agent, K8sRunner, multi-repo
 worktree sets, aggregate cost dashboard (Phase 10, demand-triggered);

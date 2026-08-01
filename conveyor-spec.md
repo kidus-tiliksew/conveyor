@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.14**
+**Specification — v2.15**
 **Date:** August 1, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. v2.14 (§21.54) accepts **Phase 8 — deployment & multi-user**, sequenced after the Phase 7 memory store: user identity with admin-as-grant and typed actors on events, solo/server authentication with opaque per-user credentials, a human/agent/worker credential-class boundary enforced per route, the embedded worker inside `conveyord`, per-repo delivery tiers (`github` / `remote` / `local`) making GitHub optional, and control-plane packaging with versioned releases and `conveyor init` — renumbering the later deferred phases (memory keeps 7; flywheel → 9, managed execution → 10, enterprise → 11). Subsequent changes proceed by amendment with version bumps.
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. v2.14 (§21.54) accepts **Phase 8 — deployment & multi-user**, sequenced after the Phase 7 memory store: user identity with admin-as-grant and typed actors on events, solo/server authentication with opaque per-user credentials, a human/agent/worker credential-class boundary enforced per route, the embedded worker inside `conveyord`, per-repo delivery tiers (`github` / `remote` / `local`) making GitHub optional, and control-plane packaging with versioned releases and `conveyor init` — renumbering the later deferred phases (memory keeps 7; flywheel → 9, managed execution → 10, enterprise → 11). v2.15 (§21.55) rejects the memory store outright — knowledge promotes into maintained artifacts (requirements, hints, pack), never parks in volunteered rows — rescoping Phase 7 to demand-triggered read-only recall and resequencing Phase 8 to follow Phase 6 directly. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1509,28 +1509,43 @@ Conveyor records what execution cost and never lets cost gate execution
 
 ---
 
-## 15. Memory and self-improvement *(Phases 7 and 9)*
+## 15. Memory and self-improvement *(Phase 7 demand-triggered; Phase 9)*
 
-### 15.1 Memory store *(Phase 7)*
+### 15.1 Recall *(Phase 7, demand-triggered — §21.55)*
 
-Workspace-scoped knowledge — architecture
-decisions, conventions, lessons — with hybrid keyword/vector retrieval
-(Postgres + pgvector) and per-role context budgets. Its transport is
-already decided: control-plane MCP tools (`get_memories`,
-`store_memory`) on the §17.4 server, available to any connected session;
-the worker is deliberately uninvolved. The spec corpus half of the
-original design ships as the requirement corpus (§4.2), and
-Phase 6.3's lineage links are the primary knowledge structure — the
-memory store is **recall over that graph**: retrieval ranks and returns
-linked nodes with their provenance, and vector similarity is the
-secondary index, never the authority (§4.2 item 4, §21.46).
+**There is no memory store.** A store of volunteered knowledge rows is
+the features-tree anti-pattern with embeddings: free-standing claims no
+pipeline stage re-verifies, in a factory whose alignment machinery
+(requirement staleness, drift write-back, citations, lineage) exists
+precisely so knowledge cannot silently rot. Knowledge worth keeping is
+**promoted into a maintained artifact** — a requirement revision
+(§4.2), a `.conveyor/hints.yaml` entry, or a pack-prompt change via the
+Phase 9 flywheel's human-reviewed proposals — never parked in a store.
+Architecture decisions are requirements; conventions are repo-resident
+hints; lessons live in the verdicts, redirect feedback, and transcripts
+the factory already records.
+
+What Phase 7 may add, when operating Phase 6.3 demonstrates the need,
+is **recall**: read-only retrieval over artifacts that already exist —
+the requirement corpus, approved specs, review verdicts and redirect
+feedback, planning transcripts, and lineage links — for questions the
+graph holds but edges don't reach ("have we dealt with this before?").
+Hybrid keyword/vector retrieval (Postgres + pgvector) as a secondary
+index over those artifacts, never a primary structure and never
+writable: `get`-side MCP tools only, on the §17.4 server per the
+§21.12 transport decision; the worker stays uninvolved; there is no
+`store_memory` and no memories table. The trigger is evidence, not the
+calendar: collected instances where an agent lacked knowledge the
+factory held but could not reach through §4.2 item 4's graph-walk
+context assembly.
 
 ### 15.2 Self-improvement engine *(Phase 9)*
 
 Consumes transcripts, reason
 codes, bounce histories, and telemetry; produces human-reviewable
-proposals (never auto-applied): role-prompt and policy edits, memory
-entries, gate-default and hold-usage graduation, and pack versioning
+proposals (never auto-applied): role-prompt and policy edits,
+requirement or hints amendments (the promotion path of §15.1),
+gate-default and hold-usage graduation, and pack versioning
 with the eval rig and shadow runs (§2.2). Deferred until Beta-era
 operation accumulates the corpus it mines. The design intent is a
 measurable flywheel: every human intervention makes the next similar
@@ -1840,8 +1855,8 @@ backup/restore, versioned upgrades (§17.2).
 | **5.6** | Platform agents & policy: monitor agent (CI/post-merge signals → tasks, reverse sync §4.2), repo-resident `.conveyor/` hints (§21.45) | Complete |
 | **—** | Lifecycle state machines & command plane implementation (§3.3–§3.4, accepted §21.37–§21.38): machine module + event-corpus audit, then staged `taskops` migration — lands ahead of further 5.2+ lifecycle growth | In flight (factory-executed) |
 | **6** | Planning & the knowledge graph: **6.1** blueprint materialization + dependency-gated claiming (§4.1, §6.3, §8.3), **6.2** planning sessions — intent → requirement documents, chat → blueprints, features-tree migration (§4.2, §9, §13.3, §17.3), **6.3** lineage links + graph context assembly (§4.2 item 4, §16) | Accepted (§21.46) — next up |
-| **7** | Memory store: recall over lineage links; hybrid keyword/pgvector as secondary index; MCP memory tools (§15.1) | Post-Phase-6 |
-| **8** | Deployment & multi-user (§21.54): **8.1** embedded worker (§6.6), **8.2** identity, grants, and credentials (§10, §16, §17.5), **8.3** delivery tiers — GitHub optional (§11), **8.4** packaging & first-run (§6.5, §17.1–§17.2) | Accepted (§21.54) — follows Phase 7; 8.1 may land earlier |
+| **7** | Recall: read-only retrieval over the requirement/spec corpus, verdicts, transcripts, and links; pgvector as secondary index; get-side MCP tools only — **no memory store, no memory rows** (§15.1, §21.55) | Demand-triggered — evidence from operating 6.3 |
+| **8** | Deployment & multi-user (§21.54): **8.1** embedded worker (§6.6), **8.2** identity, grants, and credentials (§10, §16, §17.5), **8.3** delivery tiers — GitHub optional (§11), **8.4** packaging & first-run (§6.5, §17.1–§17.2) | Accepted (§21.54, resequenced §21.55) — follows Phase 6; 8.1 may land earlier |
 | **9** | Flywheel: transcript mining, self-improvement proposals, gate/hold graduation, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
 | **10** | Managed-execution reintroduction, demand-triggered: verification agent (§12), K8sRunner, multi-repo worktree sets and linked-PR gating (§7.2), aggregate cost dashboard | Demand-triggered |
 | **11** | SSO/OIDC and SAML, SCIM, RBAC beyond two roles, HA/backup hardening (§18.1) | Demand-triggered |
@@ -1851,11 +1866,12 @@ working breakdown in docs/phase5-plan.md). Phase 6 runs 6.1 → 6.2 →
 6.3, with the first lineage links written by 6.1's materialization; the
 working breakdown lives in docs/phase6-plan.md. The state-machine /
 command-plane implementation lands ahead of further lifecycle-surface
-growth. Phase 7 (memory) follows Phase 6 — recall over the lineage
-graph continues the knowledge-graph arc while its context is fresh.
-Phase 8 runs 8.1 → 8.4 after it, except 8.1 (embedded worker), which
+growth. **Phase 8 (deployment & multi-user) follows Phase 6 directly**
+(§21.55): Phase 7 is demand-triggered recall, built only when operating
+6.3 produces evidence of reachability misses — it holds no slot in the
+sequence. Phase 8 runs 8.1 → 8.4, except 8.1 (embedded worker), which
 touches only §6.4 supervision and may land earlier — during late
-Phase 6 or Phase 7 (§21.54). This section is authoritative for scope
+Phase 6 (§21.54). This section is authoritative for scope
 and ordering.
 
 **Beta exit criterion (met July 15, 2026):** five consecutive real tasks
@@ -5350,7 +5366,57 @@ behaves as server mode with the seeded admin.
 
 ---
 
-*End of specification. v2.14 accepted August 1, 2026 — the v2.0
+### 21.55 v2.15 — No memory store: Phase 7 becomes demand-triggered recall (August 1, 2026)
+
+Adopted from operating Phase 6: the factory's alignment machinery makes
+a centralized memory store redundant — and worse, doctrinally wrong. A
+store of volunteered knowledge rows is the features-tree anti-pattern
+with embeddings: free-standing claims with no maintenance loop, in a
+system whose requirement staleness, drift write-back, `REQ-n`
+citations, and lineage exist precisely so knowledge cannot silently
+rot. Everything the memory store was scoped to hold already has a
+maintained home: architecture decisions are requirement documents
+(versioned, confirmed, staleness-surfaced); conventions are
+repo-resident (`.conveyor/hints.yaml`, agent notes); lessons are the
+verdicts, redirect feedback, bounce histories, and transcripts the
+pipeline records as first-class artifacts. Four changes:
+
+1. **The knowledge lifecycle is promotion, not parking (§15.1).**
+   Knowledge worth keeping is promoted into a maintained, verified
+   artifact — a requirement revision, a hints entry, or a pack-prompt
+   change through the Phase 9 flywheel's human-reviewed proposals.
+   `store_memory`, memory rows, and a memories table are **rejected,
+   not deferred** — do not build them under any phase.
+
+2. **Phase 7 rescopes to recall, demand-triggered.** What may still be
+   built is read-only retrieval over artifacts that already exist
+   (requirement corpus, approved specs, verdicts and redirect
+   feedback, planning transcripts, links) for questions edges don't
+   reach. pgvector remains a secondary index over those artifacts,
+   never a primary structure and never writable; `get`-side MCP tools
+   only, on the §17.4 server per the §21.12 transport decision. The
+   trigger is evidence from operating 6.3's graph-walk context
+   assembly — collected reachability misses — not the calendar.
+
+3. **Phase 8 follows Phase 6 directly (§19).** Deployment &
+   multi-user's "follows the Phase 7 memory store" ordering from
+   §21.54 is superseded; Phase 7 holds no slot in the sequence. The
+   8.1 embedded worker's may-land-earlier latitude now reads "during
+   late Phase 6."
+
+4. **§15.2's flywheel outputs drop "memory entries"** in favor of the
+   promotion path: requirement or hints amendments alongside
+   role-prompt and policy edits. Phase 9's scope is otherwise
+   unchanged, and remains the only producer of distilled lessons —
+   with a human reviewing every promotion.
+
+Unchanged: §21.12's MCP transport decision (now governing recall's
+get-side tools), the worker's non-involvement, per-role context
+budgets if recall ships, and every Phase 6/8/9 boundary.
+
+---
+
+*End of specification. v2.15 accepted August 1, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -5373,14 +5439,17 @@ and an operator-configurable planning model recorded per session;
 §21.51 extends exploration across all workspace repos with per-repo
 lazy pinning; §21.52 makes the per-call exploration cap planning
 configuration; §21.53 adds durable attempt-aware recovery data and
-presentation. §21.54 accepts Phase 8 — deployment & multi-user,
-sequenced after the Phase 7 memory store: identity with admin grants
+presentation. §21.54 accepts Phase 8 — deployment & multi-user: identity with admin
+grants
 and typed actors, solo/server authentication with opaque per-user
 credentials, the credential-class boundary, the embedded worker,
 per-repo delivery tiers making GitHub optional, and control-plane
 packaging with `conveyor init` — renumbering the later deferred phases
-(memory keeps 7; flywheel → 9, managed execution → 10,
-enterprise → 11). The
+(flywheel → 9, managed execution → 10,
+enterprise → 11). §21.55 rejects the memory store outright — knowledge
+promotes into maintained artifacts, never parks in volunteered rows —
+rescoping Phase 7 to demand-triggered read-only recall and
+resequencing Phase 8 to follow Phase 6 directly. The
 body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
