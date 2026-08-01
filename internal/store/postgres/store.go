@@ -95,7 +95,7 @@ func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID s
 }
 
 func (s *Store) WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error {
-	key := "conveyor:planning-session:" + workspace(ctx) + ":" + sessionID
+	key := "conveyor:planning-session-run:" + workspace(ctx) + ":" + sessionID
 	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err

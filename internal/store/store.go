@@ -178,9 +178,11 @@ type Store interface {
 	RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error)
 	AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error)
 	ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error)
-	// WithPlanningSessionRun claims the same per-session lock used by finalize
-	// and abandon without waiting. A competing live run returns
-	// ErrPlanningSessionRunConflict before either run can append a user message.
+	// WithPlanningSessionRun claims a dedicated per-session run lock without
+	// waiting. A competing live run returns ErrPlanningSessionRunConflict before
+	// either run can append a user message. Finalize and abandon retain their
+	// separate terminal-outcome lock so abandonment can stop model work between
+	// planning steps.
 	WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error
 	// WithPlanningSessionFinalization serializes the complete produced-artifact
 	// write path against abandonment and invokes fn only while the session is
@@ -1055,7 +1057,7 @@ func (m *memory) WithPlanningSessionFinalization(ctx context.Context, sessionID 
 
 func (m *memory) WithPlanningSessionRun(ctx context.Context, sessionID string, fn func(context.Context) error) error {
 	workspace, _ := WorkspaceFromContext(ctx)
-	value, _ := m.taskLocks.LoadOrStore("planning-session/"+workspace+"/"+sessionID, &sync.Mutex{})
+	value, _ := m.taskLocks.LoadOrStore("planning-session-run/"+workspace+"/"+sessionID, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
 	if !lock.TryLock() {
 		return fmt.Errorf("%w: %s", ErrPlanningSessionRunConflict, sessionID)

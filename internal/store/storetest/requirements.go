@@ -676,6 +676,50 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("planning run claims do not block abandonment", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+			}
+		}()
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("run did not acquire its claim")
+		}
+		abandonDone := make(chan error, 1)
+		go func() {
+			_, err := st.AbandonPlanningSession(ctx, session.ID)
+			abandonDone <- err
+		}()
+		select {
+		case err := <-abandonDone:
+			if err != nil {
+				t.Fatalf("abandon active run: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("abandonment blocked behind the model run claim")
+		}
+		close(release)
+		released = true
+		if err := <-runDone; err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("closed sessions accept no further messages", func(t *testing.T) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		requirement, _ := createRequirement(t, ctx, st, "Closed Session Product",
