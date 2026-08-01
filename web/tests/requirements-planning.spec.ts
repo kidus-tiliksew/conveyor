@@ -296,6 +296,44 @@ test('planning keeps partial text through malformed and error stream frames and 
   await expect(page.getByLabel('Planning message')).toBeEnabled()
 })
 
+test('planning explains run conflicts, uses a disabled default model fallback, and surfaces abandon failures', async ({ page }) => {
+  await initShell(page)
+  const session = {
+    id: 'session-conflict', title: 'Conflict recovery', status: 'active',
+    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+  }
+  await page.route('**/v1/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
+    if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: { ...planningConfig, document: { ...planningConfig.document, planning_models: [] } } })
+    if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (url.pathname === '/v1/activity' || url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session] })
+    if (url.pathname === `/v1/planning-sessions/${session.id}/abandon`) return route.fulfill({ status: 409, body: 'The session was finalized elsewhere.' })
+    if (url.pathname === `/v1/planning-sessions/${session.id}`) return route.fulfill({ json: session })
+    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/messages')) return route.fulfill({ status: 409, body: 'planning session already has a message in progress' })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/planning')
+  await expect(page.getByLabel('Planning model')).toHaveValue('gpt-plan')
+  await expect(page.getByLabel('Planning model')).toBeDisabled()
+  await expect(page.getByLabel('Planning model').locator('option')).toHaveCount(1)
+
+  await page.getByRole('button', { name: 'Abandon' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Abandon planning session' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByLabel('Reason for abandoning').fill('No longer needed')
+  await dialog.getByRole('button', { name: 'Abandon session' }).click()
+  await expect(dialog.getByText('The session was finalized elsewhere.')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Keep session' }).click()
+
+  await page.getByLabel('Planning message').fill('Continue.')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect(page.getByText('A reply is already in progress for this session.')).toBeVisible()
+})
+
 test('planning sends attachments as file parts without smuggling them into message text', async ({ page }) => {
   await initShell(page)
   const session = {
