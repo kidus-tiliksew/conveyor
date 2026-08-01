@@ -358,6 +358,7 @@ func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessio
 
 func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
 	var session core.PlanningSession
+	var conflict error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		existing, err := scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
 			` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), sessionID), sessionID)
@@ -369,6 +370,10 @@ func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, rev
 		}
 		if pinned := existing.PinnedRevisions[repo]; pinned != "" {
 			session = existing
+			if pinned != revision {
+				conflict = fmt.Errorf(
+					"planning repository %s is already pinned at %s; cannot repin at %s", repo, pinned, revision)
+			}
 			return nil
 		}
 		if _, err = tx.Exec(ctx, `UPDATE planning_sessions
@@ -387,6 +392,9 @@ func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, rev
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID), sessionID)
 		return err
 	})
+	if err == nil && conflict != nil {
+		return core.PlanningSession{}, conflict
+	}
 	return session, err
 }
 

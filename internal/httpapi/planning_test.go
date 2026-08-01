@@ -3,11 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -15,6 +18,23 @@ import (
 
 type planningHTTPAgent struct {
 	output string
+}
+
+type blockingPlanningHTTPAgent struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *blockingPlanningHTTPAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
+	close(a.started)
+	<-a.release
+	return inprocess.Result{Output: `{"response_text":"First run complete.","tool_calls":[]}`}, nil
+}
+
+type failingPlanningHTTPAgent struct{}
+
+func (failingPlanningHTTPAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
+	return inprocess.Result{}, errors.New("git cat-file secret-path: private stderr diagnostic")
 }
 
 func (a planningHTTPAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
@@ -116,5 +136,79 @@ func TestPlanningHTTPRequiresMutationAuthAndKeepsWorkspaceScope(t *testing.T) {
 	if conflictResponse.Code != http.StatusBadRequest ||
 		!strings.Contains(conflictResponse.Body.String(), "workspace_conflict") {
 		t.Fatalf("status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
+	}
+}
+
+func TestPlanningHTTPConcurrentRunReturnsConflictBeforeSSECommit(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-run-claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &blockingPlanningHTTPAgent{started: make(chan struct{}), release: make(chan struct{})}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Planning = &planning.Service{Store: st, Agent: agent, Model: "planner"}
+	handler := server.Handler()
+
+	firstRequest := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
+		strings.NewReader(`{"content":"First message"}`))
+	firstRequest.Header.Set("Authorization", "Bearer token")
+	firstResponse := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(firstResponse, firstRequest)
+	}()
+	select {
+	case <-agent.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first planning run did not reach the model")
+	}
+
+	secondRequest := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
+		strings.NewReader(`{"content":"Competing message"}`))
+	secondRequest.Header.Set("Authorization", "Bearer token")
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusConflict ||
+		strings.Contains(secondResponse.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("second response status=%d headers=%v body=%s",
+			secondResponse.Code, secondResponse.Header(), secondResponse.Body.String())
+	}
+	close(agent.release)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first planning run did not finish")
+	}
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil || len(messages) != 2 || messages[0].Content != "First message" {
+		t.Fatalf("serialized messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-redaction"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Planning = &planning.Service{Store: st, Agent: failingPlanningHTTPAgent{}, Model: "planner"}
+	request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
+		strings.NewReader(`{"content":"Trigger internal failure"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Planning request failed") ||
+		strings.Contains(response.Body.String(), "secret-path") || strings.Contains(response.Body.String(), "private stderr") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

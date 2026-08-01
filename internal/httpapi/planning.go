@@ -2,14 +2,17 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 const maxPlanningRequestBytes = 1 << 20
@@ -123,7 +126,7 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Vercel-AI-UI-Message-Stream", "v1")
-	w.WriteHeader(http.StatusOK)
+	started := false
 	emit := func(part map[string]any) error {
 		data, marshalErr := json.Marshal(part)
 		if marshalErr != nil {
@@ -132,14 +135,34 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 		if _, writeErr := fmt.Fprintf(w, "data: %s\n\n", data); writeErr != nil {
 			return writeErr
 		}
+		started = true
 		flusher.Flush()
 		return nil
 	}
 	if err = s.Planning.Run(r.Context(), sessionID, message, emit); err != nil {
-		_ = emit(map[string]any{"type": "error", "errorText": err.Error()})
+		if !started && errors.Is(err, store.ErrPlanningSessionRunConflict) {
+			clearPlanningStreamHeaders(w.Header())
+			http.Error(w, "planning session already has a message in progress", http.StatusConflict)
+			return
+		}
+		log.Printf("planning session %s run failed: %v", sessionID, err)
+		if !started {
+			clearPlanningStreamHeaders(w.Header())
+			http.Error(w, "planning request failed", http.StatusInternalServerError)
+			return
+		}
+		_ = emit(map[string]any{"type": "error", "errorText": "Planning request failed. Please retry."})
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+func clearPlanningStreamHeaders(header http.Header) {
+	for _, name := range []string{
+		"Content-Type", "Cache-Control", "Connection", "X-Accel-Buffering", "X-Vercel-AI-UI-Message-Stream",
+	} {
+		header.Del(name)
+	}
 }
 
 type planningUIMessage struct {

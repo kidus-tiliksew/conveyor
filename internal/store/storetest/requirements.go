@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -509,9 +510,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil || pinned.PinnedRevisions["web"] != strings.Repeat("b", 40) {
 			t.Fatalf("pinned session=%+v err=%v", pinned, err)
 		}
-		pinnedAgain, err := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40))
+		if _, err = st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40)); err == nil {
+			t.Fatal("conflicting immutable pin was silently accepted")
+		}
+		pinnedAgain, err := st.GetPlanningSession(ctx, sessionID)
 		if err != nil || pinnedAgain.PinnedRevisions["web"] != strings.Repeat("b", 40) {
-			t.Fatalf("immutable pin changed: %+v err=%v", pinnedAgain, err)
+			t.Fatalf("immutable pin changed after conflict: %+v err=%v", pinnedAgain, err)
 		}
 		accounted, err := st.RecordPlanningExplorationTokens(ctx, sessionID, 42)
 		if err != nil || accounted.ExplorationTokensUsed != 42 {
@@ -622,6 +626,53 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		// Messages of an unknown session are an empty transcript, not an error.
 		if messages, listErr := st.ListPlanningMessages(ctx, "session-does-not-exist"); listErr != nil || len(messages) != 0 {
 			t.Fatalf("messages of an unknown session=%+v err=%v, want empty", messages, listErr)
+		}
+	})
+
+	t.Run("planning run claims fail fast and release on every terminal path", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		session := createPlanningSession(t, ctx, st)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("first run did not acquire its claim")
+		}
+		competingRan := false
+		if err := st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+			competingRan = true
+			return nil
+		}); !errors.Is(err, store.ErrPlanningSessionRunConflict) {
+			t.Fatalf("competing run error=%v", err)
+		}
+		if competingRan {
+			t.Fatal("competing run entered the claimed session")
+		}
+		close(release)
+		if err := <-firstDone; err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("run callback panic was swallowed")
+				}
+			}()
+			_ = st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error {
+				panic("release claim")
+			})
+		}()
+		if err := st.WithPlanningSessionRun(ctx, session.ID, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("run claim remained held after panic: %v", err)
 		}
 	})
 
