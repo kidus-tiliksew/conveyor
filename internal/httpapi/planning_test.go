@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +18,83 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func TestPlanningHTTPAttachmentWithoutRequirementHasDurableSessionOwner(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Planning = &planning.Service{
+		Store: st, Agent: planningHTTPAgent{output: `{"response_text":"Attachment received.","tool_calls":[]}`},
+		Model: "planner", Prompt: planningHTTPPrompt,
+	}
+	handler := server.Handler()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-no-requirement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	file, err := form.CreateFormFile("file", "brief.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Write([]byte("durable planning context")); err != nil {
+		t.Fatal(err)
+	}
+	if err = form.WriteField("planning_session_id", session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPost, "/v1/artifacts", &body)
+	upload.Header.Set("Authorization", "Bearer token")
+	upload.Header.Set("Content-Type", form.FormDataContentType())
+	uploadResponse := httptest.NewRecorder()
+	handler.ServeHTTP(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusCreated {
+		t.Fatalf("upload status=%d body=%s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	var artifact core.Artifact
+	if err = json.Unmarshal(uploadResponse.Body.Bytes(), &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if artifact.PlanningSessionID != session.ID || artifact.RequirementID != "" || artifact.TaskID != "" {
+		t.Fatalf("artifact owner=%+v", artifact)
+	}
+
+	chatBody := fmt.Sprintf(`{"message":{"role":"user","parts":[{"type":"text","text":"Use this file."},{"type":"file","artifactId":%q,"filename":"brief.txt","mediaType":"text/plain"}]}}`, artifact.ID)
+	chat := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages", strings.NewReader(chatBody))
+	chat.Header.Set("Authorization", "Bearer token")
+	chatResponse := httptest.NewRecorder()
+	handler.ServeHTTP(chatResponse, chat)
+	if chatResponse.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", chatResponse.Code, chatResponse.Body.String())
+	}
+
+	listed, err := st.ListArtifacts(ctx)
+	if err != nil || len(listed) != 1 || listed[0].PlanningSessionID != session.ID {
+		t.Fatalf("listed artifacts=%+v err=%v", listed, err)
+	}
+	restored, content, err := st.GetArtifactForPlanningSession(ctx, artifact.ID, session.ID)
+	if err != nil || restored.PlanningSessionID != session.ID || string(content) != "durable planning context" {
+		t.Fatalf("restored artifact=%+v content=%q err=%v", restored, content, err)
+	}
+
+	other, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignChat := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+other.ID+"/messages", strings.NewReader(chatBody))
+	foreignChat.Header.Set("Authorization", "Bearer token")
+	foreignResponse := httptest.NewRecorder()
+	handler.ServeHTTP(foreignResponse, foreignChat)
+	if foreignResponse.Code != http.StatusBadRequest || !strings.Contains(foreignResponse.Body.String(), "is not owned") {
+		t.Fatalf("foreign attachment status=%d body=%s", foreignResponse.Code, foreignResponse.Body.String())
+	}
+}
 
 const planningHTTPPrompt = "test planning role"
 

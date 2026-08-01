@@ -198,9 +198,7 @@ function PlanningChat({ summary, token, workspace }: { summary: PlanningSession;
     },
   })
   const upload = useMutation({
-    // The durable user-message file part is the session ownership edge. A
-    // requirement context is also attached when one exists.
-    mutationFn: (file: File) => uploadArtifact(token, file, undefined, session.requirement_context_id),
+    mutationFn: (file: File) => uploadArtifact(token, file, undefined, undefined, undefined, session.id),
     onSuccess: (artifact) => setAttachments((current) => [...current, artifact]),
   })
   const abandon = useMutation({

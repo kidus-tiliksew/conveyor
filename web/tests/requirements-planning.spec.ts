@@ -341,12 +341,16 @@ test('planning sends attachments as file parts without smuggling them into messa
     workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
   }
   let posted: { message?: { content?: string; parts?: Array<Record<string, unknown>> } } = {}
+  let uploadBody = ''
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
-    if (url.pathname === '/v1/artifacts') return route.fulfill({ status: 201, json: { id: 'artifact-1', workspace: 'demo', name: 'context.txt', content_type: 'text/plain', size_bytes: 7, role: 'task_context', created_at: '2026-07-30T10:00:00Z' } })
+    if (url.pathname === '/v1/artifacts') {
+      uploadBody = route.request().postData() ?? ''
+      return route.fulfill({ status: 201, json: { id: 'artifact-1', workspace: 'demo', name: 'context.txt', content_type: 'text/plain', size_bytes: 7, role: 'task_context', planning_session_id: session.id, created_at: '2026-07-30T10:00:00Z' } })
+    }
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session] })
     if (url.pathname === `/v1/planning-sessions/${session.id}`) return route.fulfill({ json: session })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
@@ -360,6 +364,8 @@ test('planning sends attachments as file parts without smuggling them into messa
   await page.goto('/planning')
   await page.locator('input[type=file]').setInputFiles({ name: 'context.txt', mimeType: 'text/plain', buffer: Buffer.from('context') })
   await expect(page.getByText('context.txt')).toBeVisible()
+  expect(uploadBody).toContain('planning_session_id')
+  expect(uploadBody).toContain(session.id)
   await page.getByLabel('Planning message').fill('Use this context.')
   await page.getByRole('button', { name: 'Send' }).click()
   await expect.poll(() => posted.message?.parts?.length ?? 0).toBe(2)

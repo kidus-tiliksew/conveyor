@@ -202,6 +202,7 @@ type Store interface {
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
 	GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error)
+	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 }
 
@@ -2535,6 +2536,11 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", artifact.Workspace)
 		}
 	}
+	if artifact.PlanningSessionID != "" {
+		if _, ok := m.planningSessions[memoryScopedKey{workspace: artifact.Workspace, id: artifact.PlanningSessionID}]; !ok {
+			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", artifact.Workspace)
+		}
+	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
 		if artifact.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
@@ -2555,7 +2561,7 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
 	if existing, ok := m.artifacts[key]; ok {
 		for _, link := range existing.links {
-			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.Role == artifact.Role {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.PlanningSessionID == artifact.PlanningSessionID && link.Role == artifact.Role {
 				return link, nil
 			}
 		}
@@ -2606,6 +2612,21 @@ func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID string) (
 	}
 	for _, link := range artifact.links {
 		if taskID != "" && link.TaskID == taskID {
+			return link, append([]byte(nil), artifact.content...), nil
+		}
+	}
+	return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+}
+
+func (m *memory) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	artifact, ok := m.artifactForRead(ctx, id)
+	if !ok {
+		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+	}
+	for _, link := range artifact.links {
+		if sessionID != "" && link.PlanningSessionID == sessionID {
 			return link, append([]byte(nil), artifact.content...), nil
 		}
 	}

@@ -166,8 +166,9 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		// Requirement attachments replace feature attachments on the live API;
 		// the store retains legacy fields only for migration compatibility
 		// (spec §21.46).
-		RequirementID: strings.TrimSpace(r.FormValue("requirement_id")),
-		CreatedAt:     time.Now().UTC(),
+		RequirementID:     strings.TrimSpace(r.FormValue("requirement_id")),
+		PlanningSessionID: strings.TrimSpace(r.FormValue("planning_session_id")),
+		CreatedAt:         time.Now().UTC(),
 	}
 	artifact, err = s.Store.CreateArtifact(r.Context(), artifact, content)
 	if err != nil {
