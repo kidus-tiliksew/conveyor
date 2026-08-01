@@ -1,7 +1,7 @@
 // Visual-capture harness for the board and task detail surfaces: renders a
 // rich mocked activity feed and writes screenshots to test-results/shots/ for
-// design review. Asserts nothing beyond successful navigation.
-import { test, type Page, type Route } from '@playwright/test'
+// design review. The idle-board state also guards uniform lane sizing.
+import { expect, test, type Page, type Route } from '@playwright/test'
 
 const now = Date.now()
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString()
@@ -263,14 +263,19 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByText('Activities surfaces read as one story').first().waitFor()
     await page.screenshot({ path: `${shots}/board-${theme}.png` })
 
-    // Idle stages narrow: filter the feed down so most columns empty out.
+    // Filtering the feed must not change lane widths when most stages empty.
     await page.getByPlaceholder('Search tasks').fill('blueprint')
     await page.waitForTimeout(300)
+    const columns = page.locator('section[aria-label]')
+    await expect(columns).toHaveCount(7)
+    const widths = await columns.evaluateAll((lanes) => lanes.map((lane) => lane.getBoundingClientRect().width))
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1)
     await page.screenshot({ path: `${shots}/board-idle-${theme}.png` })
-    // Wide desktop: the row must reach the right edge rather than trailing
-    // off into dead space once the narrowed idle lanes let everything fit.
+    // Wide desktop: equal lanes still grow together to use spare row width.
     await page.setViewportSize({ width: 2240, height: 1120 })
     await page.waitForTimeout(300)
+    const wideWidths = await columns.evaluateAll((lanes) => lanes.map((lane) => lane.getBoundingClientRect().width))
+    expect(Math.max(...wideWidths) - Math.min(...wideWidths)).toBeLessThan(1)
     await page.screenshot({ path: `${shots}/board-idle-wide-${theme}.png` })
     await page.setViewportSize({ width: 1680, height: 1050 })
     await page.getByPlaceholder('Search tasks').fill('')
