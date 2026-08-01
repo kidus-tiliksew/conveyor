@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // blueprintView is the dashboard read model for one blueprint anchor
@@ -24,12 +27,13 @@ type blueprintView struct {
 	// materialized nothing and never displaces it.
 	GoverningVersion int `json:"governing_version"`
 	// Children are the materialized child tasks in dependency order.
-	Children        []blueprintChild          `json:"children"`
-	Delivery        blueprintDelivery         `json:"delivery"`
-	Serves          []blueprintRequirementRef `json:"serves"`
-	Events          []core.Event              `json:"events"`
-	Artifacts       []core.Artifact           `json:"artifacts"`
-	PlanningSession *core.PlanningSession     `json:"planning_session,omitempty"`
+	Children         []blueprintChild             `json:"children"`
+	Delivery         blueprintDelivery            `json:"delivery"`
+	Serves           []blueprintRequirementRef    `json:"serves"`
+	RequirementLinks []core.RequirementServesLink `json:"requirement_links"`
+	Events           []core.Event                 `json:"events"`
+	Artifacts        []core.Artifact              `json:"artifacts"`
+	PlanningSession  *core.PlanningSession        `json:"planning_session,omitempty"`
 }
 
 // blueprintChild pairs a materialized child with the decomposition item that
@@ -62,10 +66,8 @@ type blueprintDelivery struct {
 	Open   int                    `json:"open"`
 }
 
-// blueprintRequirementRef is a confirmed serves link rendered as a reference.
-// Until the §21.46 6.3 links table exists, the durable evidence that a
-// blueprint serves a requirement is the planning session it was produced in
-// (the same relation requirementView.ServingBlueprints reads forward).
+// blueprintRequirementRef is an operator-confirmed serves link rendered as a
+// compact requirement reference. Proposal history is exposed separately.
 type blueprintRequirementRef struct {
 	ID    string `json:"id"`
 	Slug  string `json:"slug"`
@@ -95,6 +97,71 @@ func (s *Server) listBlueprints(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, views)
 }
 
+func (s *Server) proposeBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Confirm bool `json:"confirm"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if !s.requireBlueprintTask(w, r, chi.URLParam(r, "id")) {
+		return
+	}
+	link, err := s.Store.ProposeRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"), core.RequirementServesOperator, request.Confirm)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, http.StatusOK, link)
+}
+
+func (s *Server) confirmBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
+	s.transitionBlueprintRequirementServes(w, r, core.RequirementServesConfirmed)
+}
+
+func (s *Server) dismissBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
+	s.transitionBlueprintRequirementServes(w, r, core.RequirementServesDismissed)
+}
+
+func (s *Server) transitionBlueprintRequirementServes(w http.ResponseWriter, r *http.Request, target core.RequirementServesState) {
+	var (
+		link core.RequirementServesLink
+		err  error
+	)
+	if target == core.RequirementServesConfirmed {
+		link, err = s.Store.ConfirmRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"))
+	} else {
+		link, err = s.Store.DismissRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"))
+	}
+	if err != nil {
+		status := http.StatusUnprocessableEntity
+		if errors.Is(err, store.ErrRequirementServesTransition) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	writeJSON(w, http.StatusOK, link)
+}
+
+func (s *Server) requireBlueprintTask(w http.ResponseWriter, r *http.Request, taskID string) bool {
+	if _, err := s.Store.GetTask(r.Context(), taskID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return false
+	}
+	if _, exists, err := s.Store.GetLatestSpecVersion(r.Context(), taskID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return false
+	} else if !exists {
+		http.Error(w, "serves relations require an existing blueprint specification", http.StatusUnprocessableEntity)
+		return false
+	}
+	return true
+}
+
 func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]blueprintView, error) {
 	if len(anchors) == 0 {
 		return []blueprintView{}, nil
@@ -111,6 +178,14 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 	if err != nil {
 		return nil, err
 	}
+	links, err := s.Store.ListRequirementServes(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	linksByTask := make(map[string][]core.RequirementServesLink)
+	for _, link := range links {
+		linksByTask[link.BlueprintTaskID] = append(linksByTask[link.BlueprintTaskID], link)
+	}
 	sessionByTask := make(map[string]core.PlanningSession, len(sessions))
 	for _, session := range sessions {
 		if session.ProducedTaskID != "" {
@@ -120,14 +195,18 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 	views := make([]blueprintView, 0, len(anchors))
 	for _, task := range anchors {
 		view := blueprintView{
-			Task:      task,
-			Children:  []blueprintChild{},
-			Serves:    served[task.ID],
-			Events:    []core.Event{},
-			Artifacts: []core.Artifact{},
+			Task:             task,
+			Children:         []blueprintChild{},
+			Serves:           served[task.ID],
+			Events:           []core.Event{},
+			Artifacts:        []core.Artifact{},
+			RequirementLinks: linksByTask[task.ID],
 		}
 		if view.Serves == nil {
 			view.Serves = []blueprintRequirementRef{}
+		}
+		if view.RequirementLinks == nil {
+			view.RequirementLinks = []core.RequirementServesLink{}
 		}
 		if session, exists := sessionByTask[task.ID]; exists {
 			session := session
@@ -261,11 +340,10 @@ func blueprintDeliveryOf(task core.Task, events []core.Event) blueprintDelivery 
 	return delivery
 }
 
-// servedRequirements inverts the requirement → serving-blueprint relation:
-// a session opened in a requirement's context and finalized into a blueprint
-// is that blueprint's confirmed serves link. Absence is a normal empty state.
+// servedRequirements renders only operator-confirmed links as authoritative.
+// Proposed and dismissed links remain available through RequirementLinks.
 func (s *Server) servedRequirements(r *http.Request) (map[string][]blueprintRequirementRef, error) {
-	sessions, err := s.Store.ListPlanningSessions(r.Context())
+	links, err := s.Store.ListRequirementServes(r.Context())
 	if err != nil {
 		return nil, err
 	}
@@ -278,17 +356,15 @@ func (s *Server) servedRequirements(r *http.Request) (map[string][]blueprintRequ
 		byID[requirement.ID] = requirement
 	}
 	served := map[string][]blueprintRequirementRef{}
-	seen := map[string]bool{}
-	for _, session := range sessions {
-		if session.RequirementContextID == "" || session.ProducedTaskID == "" {
+	for _, link := range links {
+		if link.State != core.RequirementServesConfirmed {
 			continue
 		}
-		requirement, exists := byID[session.RequirementContextID]
-		if !exists || seen[session.ProducedTaskID+"/"+requirement.ID] {
+		requirement, exists := byID[link.RequirementID]
+		if !exists {
 			continue
 		}
-		seen[session.ProducedTaskID+"/"+requirement.ID] = true
-		served[session.ProducedTaskID] = append(served[session.ProducedTaskID], blueprintRequirementRef{
+		served[link.BlueprintTaskID] = append(served[link.BlueprintTaskID], blueprintRequirementRef{
 			ID: requirement.ID, Slug: requirement.Slug, Title: requirement.Title,
 		})
 	}

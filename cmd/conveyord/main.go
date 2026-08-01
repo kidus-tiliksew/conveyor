@@ -52,6 +52,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load Phase 3 pack: %v", err)
 	}
+	planningRole, err := packBundle.PlanningRole()
+	if err != nil {
+		log.Fatalf("load planning role: %v", err)
+	}
 	apiToken := os.Getenv("CONVEYOR_API_TOKEN")
 	if apiToken == "" {
 		log.Fatal("CONVEYOR_API_TOKEN is required for authenticated task creation")
@@ -160,7 +164,7 @@ func main() {
 	srv.WorkOrders = workOrders
 	srv.Planning = &planning.Service{
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
-		FinalizeBlueprint: d.CreatePlanningBlueprint,
+		FinalizeBlueprint: d.CreatePlanningBlueprint, Prompt: planningRole,
 	}
 	startDir, err := os.Getwd()
 	if err != nil {

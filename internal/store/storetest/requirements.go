@@ -58,6 +58,63 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
+	t.Run("content and statement fence divergence is rejected", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		_, _, err := st.CreateRequirement(ctx, core.Requirement{
+			ID: "req-" + core.NewTaskID(), Title: "Divergent requirement",
+		}, core.RequirementVersion{
+			Content:    "Operator prose.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Fence statement.\n```",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Different supplied statement."}},
+			Origin:     core.RequirementOriginChat, OriginSessionID: "session-divergent",
+		})
+		if err == nil || !strings.Contains(err.Error(), "diverge") {
+			t.Fatalf("divergent content/statements error=%v", err)
+		}
+	})
+
+	t.Run("serves links remain proposals until an operator decision", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Served intent"},
+			chatVersion("Blueprints serve confirmed intent.", requirementStatement("REQ-1", "Serves links are operator-confirmed.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskID := core.NewTaskID()
+		task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, Title: "Blueprint", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		proposed, err := st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false)
+		if err != nil || proposed.State != core.RequirementServesProposed || proposed.CreatedByEventID == 0 {
+			t.Fatalf("proposed link=%+v err=%v", proposed, err)
+		}
+		if repeated, repeatErr := st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); repeatErr != nil || repeated.CreatedByEventID != proposed.CreatedByEventID {
+			t.Fatalf("repeated proposal=%+v err=%v", repeated, repeatErr)
+		}
+		confirmed, err := st.ConfirmRequirementServes(ctx, task.ID, requirement.ID)
+		if err != nil || confirmed.State != core.RequirementServesConfirmed || confirmed.DecisionEventID == 0 || confirmed.DecidedBy != requirementConformanceActor {
+			t.Fatalf("confirmed link=%+v err=%v", confirmed, err)
+		}
+		if _, err = st.DismissRequirementServes(ctx, task.ID, requirement.ID); !errors.Is(err, store.ErrRequirementServesTransition) {
+			t.Fatalf("dismiss confirmed error=%v", err)
+		}
+		links, err := st.ListRequirementServes(ctx)
+		if err != nil || len(links) != 1 || links[0].State != core.RequirementServesConfirmed {
+			t.Fatalf("serves links=%+v err=%v", links, err)
+		}
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kinds := map[string]int{}
+		for _, event := range events {
+			kinds[event.Kind]++
+		}
+		if kinds["task.requirement_suggested"] != 1 || kinds["requirement.serves_confirmed"] != 1 {
+			t.Fatalf("serves events=%+v", events)
+		}
+	})
+
 	t.Run("creation commits a pending document and its first version", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		id := "req-" + core.NewTaskID()

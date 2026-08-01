@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -96,5 +98,81 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		status.DriftCount != 1 || len(status.Drift) != 1 ||
 		status.Drift[0].RequirementID != "req-runtime" {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
+func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-runtime", Title: "Runtime contract"}, core.RequirementVersion{
+		Content:    "Runtime changes remain aligned.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Out-of-pipeline changes are reconciled."}},
+		Origin:     core.RequirementOriginChat, OriginSessionID: "session-runtime",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "drift-task", Workspace: "demo", Title: "Reconcile runtime", State: core.TaskQueued}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	drift := monitor.Drift{
+		ID: "drift-runtime", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
+		SourceURL: "https://github.com/acme/conveyor/commit/abc", CommitSHA: "abc",
+		RequirementID: requirement.ID, TaskID: task.ID, DetectedAt: time.Now().UTC(),
+	}
+	if _, _, err = st.(monitor.Store).RecordDrift(ctx, drift); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	resolve := func(id string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/drift/"+id+"/resolve", strings.NewReader(`{"outcome":"requirements_amended"}`))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := resolve(drift.ID); response.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+	versions, err := st.ListRequirementVersions(ctx, requirement.ID)
+	if err != nil || len(versions) != 2 || versions[1].Origin != core.RequirementOriginDriftAmendment ||
+		versions[1].OriginDriftID != drift.ID || versions[1].Confirmed || !strings.Contains(versions[1].Content, drift.SourceURL) {
+		t.Fatalf("drift versions=%+v err=%v", versions, err)
+	}
+	if response := resolve(drift.ID); response.Code != http.StatusOK {
+		t.Fatalf("repeat status=%d body=%s", response.Code, response.Body.String())
+	}
+	if versions, err = st.ListRequirementVersions(ctx, requirement.ID); err != nil || len(versions) != 2 {
+		t.Fatalf("retry versions=%+v err=%v", versions, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, event := range events {
+		kinds[event.Kind]++
+	}
+	if kinds["monitor.drift_reconciled"] != 1 {
+		t.Fatalf("drift events=%+v", events)
+	}
+
+	missing := monitor.Drift{ID: "drift-no-requirement", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.Revert,
+		SourceURL: "https://github.com/acme/conveyor/commit/def", TaskID: task.ID, DetectedAt: time.Now().UTC()}
+	if _, _, err = st.(monitor.Store).RecordDrift(ctx, missing); err != nil {
+		t.Fatal(err)
+	}
+	if response := resolve(missing.ID); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "requirement_id is missing") {
+		t.Fatalf("missing requirement status=%d body=%s", response.Code, response.Body.String())
+	}
+	status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != missing.ID {
+		t.Fatalf("unresolved missing-reference drift=%+v err=%v", status.Drift, err)
 	}
 }

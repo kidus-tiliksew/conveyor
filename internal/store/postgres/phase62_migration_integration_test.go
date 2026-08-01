@@ -699,3 +699,40 @@ func TestPhase62RepairMigrationUpgradesApplied046And047AndNullsDanglingReference
 		t.Fatalf("backfilled applied-046 lineage=%+v", events)
 	}
 }
+
+func TestRequirementServesMigrationBackfillsSuggestionsAsProposalsIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.feature(t, "feat-serves", "Serves Backfill", "Legacy suggestion target.", "", 0)
+	f.upgradeTo(t, 50)
+
+	blueprintTaskID := f.task(t, "", "")
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE tasks SET source='planning:legacy-session' WHERE workspace_id=$1 AND id=$2`,
+		f.workspace, blueprintTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AppendEvent(f.ctx, core.Event{
+		TaskID: blueprintTaskID, Kind: "task.requirement_suggested",
+		ActorID: "legacy-planner", ActorRole: core.ActorAgent,
+		Payload: []byte(`{"requirement_id":"req-feat-serves","requirement_title":"Serves Backfill"}`),
+		At:      f.seeded.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.upgradeTo(t, 51)
+
+	links, err := f.store.ListRequirementServes(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("backfilled serves links=%+v, want one proposal", links)
+	}
+	link := links[0]
+	if link.BlueprintTaskID != blueprintTaskID || link.RequirementID != "req-feat-serves" ||
+		link.State != core.RequirementServesProposed || link.Source != core.RequirementServesPlanning ||
+		link.ProposedBy != "legacy-planner" || link.CreatedByEventID == 0 || link.DecisionEventID != 0 {
+		t.Fatalf("backfilled serves link=%+v", link)
+	}
+}

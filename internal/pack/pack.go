@@ -17,7 +17,10 @@ type Loader struct{ Dir string }
 
 var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageReview}
 
-type Bundle struct{ roles map[core.Stage]string }
+type Bundle struct {
+	roles        map[core.Stage]string
+	planningRole string
+}
 
 func Load(dir string) (*Bundle, error) {
 	if dir == "" {
@@ -34,6 +37,14 @@ func Load(dir string) (*Bundle, error) {
 		}
 		bundle.roles[stage] = role
 	}
+	planningRole, err := (Loader{Dir: dir}).PlanningRole()
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace([]byte(planningRole))) == 0 {
+		return nil, fmt.Errorf("load planning role prompt: file is empty")
+	}
+	bundle.planningRole = planningRole
 	return bundle, nil
 }
 
@@ -48,10 +59,28 @@ func (b *Bundle) Role(stage core.Stage) (string, error) {
 	return role, nil
 }
 
+func (b *Bundle) PlanningRole() (string, error) {
+	if b == nil {
+		return "", fmt.Errorf("prompt pack is not loaded")
+	}
+	if strings.TrimSpace(b.planningRole) == "" {
+		return "", fmt.Errorf("pack has no planning role")
+	}
+	return b.planningRole, nil
+}
+
 func (l Loader) Role(stage core.Stage) (string, error) {
 	data, err := os.ReadFile(filepath.Join(l.Dir, "roles", string(stage)+".md"))
 	if err != nil {
 		return "", fmt.Errorf("load %s role prompt: %w", stage, err)
+	}
+	return string(data), nil
+}
+
+func (l Loader) PlanningRole() (string, error) {
+	data, err := os.ReadFile(filepath.Join(l.Dir, "roles", "planning.md"))
+	if err != nil {
+		return "", fmt.Errorf("load planning role prompt: %w", err)
 	}
 	return string(data), nil
 }
