@@ -8,13 +8,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type planningDeliveryAgent struct {
@@ -171,6 +174,75 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		}
 	}
 
+	advanceChildToMergeGate := func(child core.Task) core.Task {
+		t.Helper()
+		if _, transitionErr := taskops.New(st).Perform(ctx, child.ID, taskops.Command{Kind: core.TaskDispatchStart}); transitionErr != nil {
+			t.Fatal(transitionErr)
+		}
+		if _, transitionErr := taskops.New(st).Perform(ctx, child.ID, taskops.Command{
+			Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true,
+		}); transitionErr != nil {
+			t.Fatal(transitionErr)
+		}
+		started, transitionErr := taskops.New(st).Perform(ctx, child.ID, taskops.Command{Kind: core.TaskDispatchStart})
+		if transitionErr != nil {
+			t.Fatal(transitionErr)
+		}
+		if err = st.AppendEvent(ctx, core.Event{TaskID: child.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"head_sha": child.ID + "-head"})}); err != nil {
+			t.Fatal(err)
+		}
+		reviewJob := core.Job{ID: child.ID + "-review", TaskID: child.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer", StartedAt: time.Now()}
+		if err = st.CreateJob(ctx, reviewJob); err != nil {
+			t.Fatal(err)
+		}
+		if err = dispatcher.ApplyExternalReview(ctx, started.Task, reviewJob, pipeline.Review{
+			Verdict: "approve", ReasonCode: "approved", Summary: "child review passed",
+		}, reviewJob.ID, "review-session", "reviewer"); err != nil {
+			t.Fatal(err)
+		}
+		current, getErr := st.GetTask(ctx, child.ID)
+		if getErr != nil || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
+			t.Fatalf("child at merge gate=%+v err=%v", current, getErr)
+		}
+		return current
+	}
+
+	approvedChild := advanceChildToMergeGate(children["SUB-1"])
+	approveChild := authenticatedPlanningRequest(
+		http.MethodPost, "/v1/tasks/"+approvedChild.ID+"/review",
+		`{"action":"approve","reason_code":"approved"}`,
+	)
+	approveChildResponse := httptest.NewRecorder()
+	handler.ServeHTTP(approveChildResponse, approveChild)
+	if approveChildResponse.Code != http.StatusAccepted {
+		t.Fatalf("child approve status=%d body=%s", approveChildResponse.Code, approveChildResponse.Body.String())
+	}
+	approvedChild, err = st.GetTask(ctx, approvedChild.ID)
+	if err != nil || approvedChild.State != core.TaskApproved || approvedChild.ApprovedHeadSHA == "" {
+		t.Fatalf("approved child=%+v err=%v", approvedChild, err)
+	}
+	if count, countErr := st.CountEvents(ctx, approvedChild.ID, "intervention.approve"); countErr != nil || count != 1 {
+		t.Fatalf("child approve events=%d err=%v", count, countErr)
+	}
+
+	redirectedChild := advanceChildToMergeGate(children["SUB-2"])
+	redirectChild := authenticatedPlanningRequest(
+		http.MethodPost, "/v1/tasks/"+redirectedChild.ID+"/review",
+		`{"action":"redirect","reason_code":"changes_requested"}`,
+	)
+	redirectChildResponse := httptest.NewRecorder()
+	handler.ServeHTTP(redirectChildResponse, redirectChild)
+	if redirectChildResponse.Code != http.StatusAccepted {
+		t.Fatalf("child redirect status=%d body=%s", redirectChildResponse.Code, redirectChildResponse.Body.String())
+	}
+	redirectedChild, err = st.GetTask(ctx, redirectedChild.ID)
+	if err != nil || redirectedChild.State != core.TaskQueued || redirectedChild.NextStage != core.StageImplement {
+		t.Fatalf("redirected child=%+v err=%v", redirectedChild, err)
+	}
+	if count, countErr := st.CountEvents(ctx, redirectedChild.ID, "intervention.redirect"); countErr != nil || count != 1 {
+		t.Fatalf("child redirect events=%d err=%v", count, countErr)
+	}
+
 	requirementsResponse := httptest.NewRecorder()
 	handler.ServeHTTP(requirementsResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
 	if requirementsResponse.Code != http.StatusOK {
@@ -183,6 +255,61 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		len(views[0].ServingBlueprints) != 1 ||
 		views[0].ServingBlueprints[0].Task.ID != parent.ID {
 		t.Fatalf("requirement views=%+v err=%v", views, err)
+	}
+}
+
+func TestSpecApprovalBypassMergeGateInterventions(t *testing.T) {
+	for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
+		t.Run(string(action), func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{
+				ID: "spec-bypass-" + string(action), Workspace: "demo", Repo: "conveyor",
+				PolicyVersion: 1, SpecApproval: false, MergeApproval: true,
+				State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now(),
+			}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{
+				Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			task = gate.Task
+			cfg := &config.Config{Workspace: "demo"}
+			dispatcher := dispatch.New(st, cfg, nil)
+			server := NewServer(st)
+			server.Workspace, server.BearerToken = "demo", "token"
+			server.OnIntervention = dispatcher.HandleIntervention
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, authenticatedPlanningRequest(
+				http.MethodPost, "/v1/tasks/"+task.ID+"/review",
+				fmt.Sprintf(`{"action":%q,"reason_code":"operator-action"}`, action),
+			))
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action == core.InterventionApprove {
+				if current.State != core.TaskApproved || current.ApprovedHeadSHA != "reviewed-head" {
+					t.Fatalf("approved task=%+v", current)
+				}
+			} else if current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+				t.Fatalf("redirected task=%+v", current)
+			}
+			if count, countErr := st.CountEvents(ctx, task.ID, "intervention."+string(action)); countErr != nil || count != 1 {
+				t.Fatalf("intervention events=%d err=%v", count, countErr)
+			}
+		})
 	}
 }
 
