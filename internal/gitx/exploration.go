@@ -1,9 +1,11 @@
 package gitx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -21,6 +23,12 @@ type TreeEntry struct {
 	Path string
 	Size int64
 }
+
+const (
+	defaultSnapshotOutputBytes = 1 << 20
+	maxSnapshotStderrBytes     = 32 << 10
+	gitTruncationMarker        = "\n… output truncated at git boundary; refine the query …\n"
+)
 
 // PinSnapshot performs the one allowed repository side effect (the serialized
 // cache fetch) and resolves the configured base to a full commit SHA.
@@ -58,12 +66,24 @@ func (m *Manager) OpenSnapshot(ctx context.Context, repoURL, revision string) (S
 	return Snapshot{Repository: repository, Revision: revision}, nil
 }
 
-func (m *Manager) ListSnapshotTree(ctx context.Context, snapshot Snapshot) ([]TreeEntry, error) {
-	output, err := snapshotOutput(ctx, snapshot, "ls-tree", "-r", "-l", "-z", snapshot.Revision)
-	if err != nil {
-		return nil, err
+func (m *Manager) ListSnapshotTree(
+	ctx context.Context,
+	snapshot Snapshot,
+	pathspec string,
+	maxBytes int,
+) ([]TreeEntry, bool, error) {
+	args := []string{"ls-tree", "-r", "-l", "-z", snapshot.Revision}
+	if pathspec != "" {
+		if err := safeSnapshotPathspec(pathspec); err != nil {
+			return nil, false, err
+		}
+		args = append(args, "--", pathspec)
 	}
-	records := strings.Split(output, "\x00")
+	output, err := snapshotOutput(ctx, snapshot, maxBytes, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	records := output.records(0)
 	entries := make([]TreeEntry, 0, len(records))
 	for _, record := range records {
 		if record == "" {
@@ -71,7 +91,10 @@ func (m *Manager) ListSnapshotTree(ctx context.Context, snapshot Snapshot) ([]Tr
 		}
 		header, path, ok := strings.Cut(record, "\t")
 		if !ok {
-			return nil, fmt.Errorf("unexpected git ls-tree record")
+			if output.truncated {
+				continue
+			}
+			return nil, false, fmt.Errorf("unexpected git ls-tree record")
 		}
 		fields := strings.Fields(header)
 		if len(fields) != 4 || fields[1] != "blob" {
@@ -79,24 +102,102 @@ func (m *Manager) ListSnapshotTree(ctx context.Context, snapshot Snapshot) ([]Tr
 		}
 		size, parseErr := strconv.ParseInt(fields[3], 10, 64)
 		if parseErr != nil {
-			return nil, fmt.Errorf("parse git tree size for %s: %w", path, parseErr)
+			return nil, false, fmt.Errorf("parse git tree size for %s: %w", path, parseErr)
 		}
 		entries = append(entries, TreeEntry{Path: path, Size: size})
 	}
-	return entries, nil
+	return entries, output.truncated, nil
 }
 
-func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path string) ([]byte, error) {
+func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
+	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, false)
+}
+
+// ReadSnapshotTextBlob rejects a Git-binary prefix before loading the complete
+// blob. The size gate still runs first, so a large checked-in binary never
+// reaches cat-file's content path at all.
+func (m *Manager) ReadSnapshotTextBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
+	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, true)
+}
+
+func (m *Manager) readSnapshotBlob(
+	ctx context.Context,
+	snapshot Snapshot,
+	path string,
+	maxBytes int,
+	textOnly bool,
+) ([]byte, error) {
 	if err := safeSnapshotPath(path); err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", snapshot.Revision+":"+path)
-	cmd.Dir = snapshot.Repository
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, commandFailure("git cat-file blob", err)
+	if maxBytes <= 0 {
+		maxBytes = defaultSnapshotOutputBytes
 	}
-	return output, nil
+	object := snapshot.Revision + ":" + path
+	metadata, err := snapshotOutput(ctx, snapshot, 128, "cat-file", "-s", object)
+	if err != nil {
+		return nil, err
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(metadata.text()), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse git blob size for %s: %w", path, err)
+	}
+	if size > int64(maxBytes) {
+		return nil, fmt.Errorf("blob %s is %d bytes; read limit is %d bytes", path, size, maxBytes)
+	}
+	if textOnly && size > 0 {
+		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
+		if prefixErr != nil {
+			return nil, prefixErr
+		}
+		if bytes.IndexByte(prefix, 0) >= 0 {
+			return nil, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+		}
+	}
+	output, err := snapshotOutput(ctx, snapshot, maxBytes, "cat-file", "blob", object)
+	if err != nil {
+		return nil, err
+	}
+	if output.truncated {
+		return nil, fmt.Errorf("blob %s exceeded its declared size while reading", path)
+	}
+	return []byte(output.text()), nil
+}
+
+func snapshotBlobPrefix(
+	ctx context.Context,
+	snapshot Snapshot,
+	object string,
+	size int64,
+	maxBytes int,
+) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", object)
+	cmd.Dir = snapshot.Repository
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
+	cmd.Stderr = stderr
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	limit := min(int64(maxBytes), size)
+	prefix, readErr := io.ReadAll(io.LimitReader(stdout, limit))
+	if size > limit && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, fmt.Errorf("git cat-file blob prefix: %w", readErr)
+	}
+	if size > limit {
+		return prefix, nil
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("git cat-file blob prefix: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return prefix, nil
 }
 
 func (m *Manager) GrepSnapshot(
@@ -105,8 +206,12 @@ func (m *Manager) GrepSnapshot(
 	pattern, path string,
 	contextLines int,
 	filesOnly, caseInsensitive bool,
+	maxResults, maxBytes int,
 ) (string, error) {
 	args := []string{"grep", "-n", "-I", "--no-color"}
+	if maxResults > 0 {
+		args = append(args, "--max-count", strconv.Itoa(maxResults))
+	}
 	if filesOnly {
 		args = append(args, "-l")
 	}
@@ -123,48 +228,151 @@ func (m *Manager) GrepSnapshot(
 		}
 		args = append(args, "--", path)
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = snapshot.Repository
-	output, err := cmd.CombinedOutput()
+	output, err := snapshotOutput(ctx, snapshot, maxBytes, args...)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return "", nil
 		}
-		return "", fmt.Errorf("git grep: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", err
 	}
-	return string(output), nil
+	return output.text(), nil
 }
 
-func (m *Manager) SnapshotHistory(ctx context.Context, snapshot Snapshot, path string, n int) (string, error) {
+func (m *Manager) SnapshotHistory(ctx context.Context, snapshot Snapshot, path string, n, maxBytes int) (string, error) {
 	if err := safeSnapshotPath(path); err != nil {
 		return "", err
 	}
-	logOutput, err := snapshotOutput(ctx, snapshot,
+	logResult, err := snapshotOutput(ctx, snapshot, maxBytes/2,
 		"log", "--oneline", "--no-decorate", "-n", strconv.Itoa(n), snapshot.Revision, "--", path)
+	logOutput := logResult.text()
 	if err != nil || strings.TrimSpace(logOutput) == "" {
 		return logOutput, err
 	}
-	first := strings.Fields(strings.SplitN(logOutput, "\n", 2)[0])[0]
-	stat, err := snapshotOutput(ctx, snapshot,
+	fields := strings.Fields(strings.SplitN(logOutput, "\n", 2)[0])
+	if len(fields) == 0 {
+		return logOutput, nil
+	}
+	first := fields[0]
+	statResult, err := snapshotOutput(ctx, snapshot, maxBytes/2,
 		"show", "--stat", "--oneline", "--no-renames", "--format=fuller", first, "--", path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(logOutput, "\n") + "\n\nLatest commit context:\n" + stat, nil
+	return strings.TrimRight(logOutput, "\n") + "\n\nLatest commit context:\n" + statResult.text(), nil
 }
 
-func snapshotOutput(ctx context.Context, snapshot Snapshot, args ...string) (string, error) {
+type boundedCommandOutput struct {
+	head      []byte
+	tail      []byte
+	truncated bool
+	maxBytes  int
+}
+
+func (o boundedCommandOutput) text() string {
+	if !o.truncated {
+		return string(append(append([]byte(nil), o.head...), o.tail...))
+	}
+	remaining := max(0, o.maxBytes-len(gitTruncationMarker))
+	headBytes := min(len(o.head), remaining/2)
+	tailBytes := min(len(o.tail), remaining-headBytes)
+	return string(o.head[:headBytes]) + gitTruncationMarker + string(o.tail[len(o.tail)-tailBytes:])
+}
+
+func (o boundedCommandOutput) records(separator byte) []string {
+	if !o.truncated {
+		return strings.Split(o.text(), string(separator))
+	}
+	left := strings.Split(string(o.head), string(separator))
+	right := strings.Split(string(o.tail), string(separator))
+	if len(left) > 0 {
+		left = left[:len(left)-1]
+	}
+	if len(right) > 0 {
+		right = right[1:]
+	}
+	return append(left, right...)
+}
+
+type headTailWriter struct {
+	limit   int
+	total   int64
+	head    []byte
+	tail    []byte
+	tailPos int
+	filled  int
+}
+
+func newHeadTailWriter(limit int) *headTailWriter {
+	if limit <= 0 {
+		limit = defaultSnapshotOutputBytes
+	}
+	return &headTailWriter{limit: limit, tail: make([]byte, max(1, limit/2))}
+}
+
+func (w *headTailWriter) Write(p []byte) (int, error) {
+	written := len(p)
+	w.total += int64(written)
+	headLimit := w.limit - len(w.tail)
+	if len(w.head) < headLimit {
+		take := min(len(p), headLimit-len(w.head))
+		w.head = append(w.head, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) == 0 {
+		return written, nil
+	}
+	if len(p) >= len(w.tail) {
+		copy(w.tail, p[len(p)-len(w.tail):])
+		w.tailPos, w.filled = 0, len(w.tail)
+		return written, nil
+	}
+	first := min(len(p), len(w.tail)-w.tailPos)
+	copy(w.tail[w.tailPos:], p[:first])
+	copy(w.tail, p[first:])
+	w.tailPos = (w.tailPos + len(p)) % len(w.tail)
+	w.filled = min(len(w.tail), w.filled+len(p))
+	return written, nil
+}
+
+func (w *headTailWriter) result() boundedCommandOutput {
+	if w.total <= int64(w.limit) {
+		return boundedCommandOutput{head: w.head, tail: append([]byte(nil), w.tail[:w.filled]...), maxBytes: w.limit}
+	}
+	tail := make([]byte, w.filled)
+	first := copy(tail, w.tail[w.tailPos:w.filled])
+	copy(tail[first:], w.tail[:w.tailPos])
+	return boundedCommandOutput{head: w.head, tail: tail, truncated: true, maxBytes: w.limit}
+}
+
+type limitedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (w *limitedBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if remaining := w.limit - w.Len(); remaining > 0 {
+		_, _ = w.Buffer.Write(p[:min(len(p), remaining)])
+	}
+	return written, nil
+}
+
+func snapshotOutput(ctx context.Context, snapshot Snapshot, maxBytes int, args ...string) (boundedCommandOutput, error) {
 	if snapshot.Repository == "" || snapshot.Revision == "" {
-		return "", fmt.Errorf("planning snapshot is incomplete")
+		return boundedCommandOutput{}, fmt.Errorf("planning snapshot is incomplete")
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = snapshot.Repository
-	output, err := cmd.CombinedOutput()
+	stdout := newHeadTailWriter(maxBytes)
+	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return boundedCommandOutput{}, fmt.Errorf(
+			"git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return string(output), nil
+	return stdout.result(), nil
 }
 
 func safeSnapshotPath(path string) error {
@@ -182,12 +390,4 @@ func safeSnapshotPathspec(path string) error {
 		return fmt.Errorf("path must be a repository-relative pathspec")
 	}
 	return nil
-}
-
-func commandFailure(operation string, err error) error {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return fmt.Errorf("%s: %w: %s", operation, err, strings.TrimSpace(string(exitErr.Stderr)))
-	}
-	return fmt.Errorf("%s: %w", operation, err)
 }

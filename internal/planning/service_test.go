@@ -3,6 +3,7 @@ package planning
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,6 +65,101 @@ func TestServiceStreamsAndPersistsTextParts(t *testing.T) {
 	}
 }
 
+func TestServiceElidesOldExplorationOnlyFromLivePromptAndStillFinalizes(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-context-elision")
+	callID := "call-old-grep"
+	if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: session.ID, Role: core.PlanningMessageAssistant,
+		Parts: core.JSONPayload([]map[string]any{{
+			"type": "tool-input-available", "toolCallId": callID,
+			"toolName": "grep", "input": map[string]any{"pattern": "."},
+		}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("durable-exploration-payload-", 500)
+	if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: session.ID, Role: core.PlanningMessageTool, Content: large,
+		Parts: core.JSONPayload([]map[string]any{{
+			"type": "tool-output-available", "toolCallId": callID, "output": large,
+		}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	args := requirementArgs{
+		Title: "Context resilience", Prose: "Planning context remains usable.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Old exploration may be elided from the live prompt only."}},
+	}
+	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+		ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
+	}})}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", MaxContextBytes: 6 << 10}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize despite the old large result."}, func(map[string]any) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.inputs) != 1 || !strings.Contains(agent.inputs[0].Prompt, "elided from the live prompt") ||
+		strings.Contains(agent.inputs[0].Prompt, large) {
+		t.Fatalf("prompt did not elide only the live exploration payload:\n%s", agent.inputs[0].Prompt)
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if messages[1].Content != large || !strings.Contains(string(messages[1].Parts), large) {
+		t.Fatal("durable exploration result was mutated during prompt elision")
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.Status != core.PlanningSessionFinalized {
+		t.Fatalf("session=%+v err=%v", finalized, err)
+	}
+	_, transcript, err := st.GetArtifact(ctx, finalized.TranscriptArtifactID)
+	if err != nil || !strings.Contains(string(transcript), large) {
+		t.Fatalf("transcript lost durable exploration output: err=%v", err)
+	}
+}
+
+func TestServicePersistsSyntheticToolResultAndReleasesRunClaim(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		emitterErr error
+		status     string
+	}{
+		{name: "disconnect", emitterErr: errors.New("stream disconnected"), status: "failed"},
+		{name: "cancel", emitterErr: context.Canceled, status: "cancelled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, session := planningFixture(t, "session-synthetic-"+test.name)
+			agent := &scriptedAgent{outputs: []string{
+				decisionJSON(t, "", []toolCall{{ID: "call-read", Name: "list_requirements", ArgumentsJSON: `{}`}}),
+				decisionJSON(t, "The recovered run is coherent.", nil),
+			}}
+			service := &Service{Store: st, Agent: agent, Model: "planner"}
+			err := service.Run(ctx, session.ID, UserMessage{Content: "Read the corpus."}, func(part map[string]any) error {
+				if part["type"] == "tool-input-available" {
+					return test.emitterErr
+				}
+				return nil
+			})
+			if !errors.Is(err, test.emitterErr) {
+				t.Fatalf("run error=%v, want %v", err, test.emitterErr)
+			}
+			messages, err := st.ListPlanningMessages(ctx, session.ID)
+			if err != nil || len(messages) != 3 || messages[2].Role != core.PlanningMessageTool ||
+				!strings.Contains(string(messages[2].Parts), `"type":"tool-output-error"`) ||
+				!strings.Contains(string(messages[2].Parts), `"status":"`+test.status+`"`) {
+				t.Fatalf("synthetic result messages=%+v err=%v", messages, err)
+			}
+			if err = service.Run(ctx, session.ID, UserMessage{Content: "Continue after recovery."}, func(map[string]any) error {
+				return nil
+			}); err != nil {
+				t.Fatalf("run claim did not release: %v", err)
+			}
+		})
+	}
+}
+
 func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -72,6 +168,12 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
 	secondary := createPlanningRepo(t, filepath.Join(tmp, "secondary"), "internal/eligibility.go",
 		"package internal\n\nfunc eligible() bool { return true }\n")
+	if err := os.WriteFile(filepath.Join(secondary, "internal", "oversized.bin"),
+		[]byte(strings.Repeat("\x00\xff", 1_024)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPlanningGit(t, secondary, "add", ".")
+	runPlanningGit(t, secondary, "commit", "-m", "add binary fixture")
 	cfg := &config.Config{
 		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
 		Repos: []config.Repo{
@@ -109,6 +211,11 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	})
 	if err != nil || !strings.Contains(listed.Output.(string), "internal/eligibility.go") {
 		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	if _, err = service.explorationTool(ctx, session, toolCall{
+		Name: "read_file", ArgumentsJSON: `{"repo":"secondary","path":"internal/oversized.bin","offset":1,"limit":10}`,
+	}); err == nil || !strings.Contains(err.Error(), "read limit is 400 bytes") {
+		t.Fatalf("planning read_file did not enforce configured size gate: %v", err)
 	}
 	pinned, err := st.GetPlanningSession(ctx, session.ID)
 	if err != nil || pinned.PinnedRevisions["secondary"] == "" {
@@ -165,6 +272,36 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	})
 	if err != nil || !strings.Contains(low.Output.(string), "session exploration budget low; prefer targeted reads") {
 		t.Fatalf("low-budget output=%+v err=%v", low, err)
+	}
+	if len(low.Output.(string)) > 50*4 {
+		t.Fatalf("complete degraded output exceeded cap: %d bytes", len(low.Output.(string)))
+	}
+	beforeFailure, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.explorationTool(ctx, after, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"[","context":0,"mode":"content"}`,
+	}); err == nil {
+		t.Fatal("invalid grep unexpectedly succeeded")
+	}
+	afterFailure, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || afterFailure.ExplorationTokensUsed <= beforeFailure.ExplorationTokensUsed {
+		t.Fatalf("failed exploration usage before=%d after=%d err=%v",
+			beforeFailure.ExplorationTokensUsed, afterFailure.ExplorationTokensUsed, err)
+	}
+	if _, err = st.PinPlanningSessionRepo(ctx, session.ID, "secondary", strings.Repeat("f", 40)); err == nil {
+		t.Fatal("conflicting repository pin was silently swallowed")
+	}
+}
+
+func TestTruncateExplorationPreservesAnnotatedSearchEnds(t *testing.T) {
+	output := "HEAD\n" + strings.Repeat("middle-only\n", 200) + "TAIL\n"
+	truncated := truncateExploration(output, 40, "refine search", true)
+	if len(truncated) > 160 || !strings.Contains(truncated, "HEAD") ||
+		!strings.Contains(truncated, "TAIL") || !strings.Contains(truncated, "middle omitted") ||
+		!strings.Contains(truncated, "refine search") {
+		t.Fatalf("middle truncation=%q (%d bytes)", truncated, len(truncated))
 	}
 }
 
@@ -261,6 +398,96 @@ func TestServiceFinalizesUnconfirmedRequirementAndArchivesTranscript(t *testing.
 		t.Fatalf("artifact = %+v content=%s", artifact, content)
 	}
 	assertChunkTypes(t, chunks, "start", "start-step", "tool-input-available", "tool-output-available", "finish-step", "finish")
+}
+
+func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-260801-adopt")
+	service := &Service{Store: st}
+	first := requirementArgs{
+		Title: "Resumable planning", Prose: "The first draft survives a crash.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "A retry adopts its own orphan."}},
+	}
+	orphan, err := service.requirementTool(ctx, session, toolCall{
+		ID: "crashed-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, first),
+	})
+	if err != nil || orphan.Produced == nil || orphan.Produced.RequirementID != "req-260801-adopt" {
+		t.Fatalf("orphan=%+v err=%v", orphan, err)
+	}
+	revised := first
+	revised.Prose = "The revised draft supersedes the same-session orphan."
+	revised.Statements = []core.RequirementStatement{{ID: "REQ-1", Statement: "A revised retry supersedes its own orphan."}}
+	service.Agent = &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+		ID: "retry-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, revised),
+	}})}}
+	service.Model = "planner"
+	if err = service.Run(ctx, session.ID, UserMessage{Content: "Use the revised final requirement."}, func(map[string]any) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := st.ListRequirementVersions(ctx, orphan.Produced.RequirementID)
+	if err != nil || len(versions) != 2 || versions[1].OriginSessionID != session.ID ||
+		versions[1].Content == versions[0].Content {
+		t.Fatalf("adopted versions=%+v err=%v", versions, err)
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.Status != core.PlanningSessionFinalized ||
+		finalized.ProducedRequirementID != orphan.Produced.RequirementID {
+		t.Fatalf("finalized=%+v err=%v", finalized, err)
+	}
+}
+
+type failOnceArtifactStore struct {
+	store.Store
+	failed bool
+}
+
+func (s *failOnceArtifactStore) CreateArtifact(
+	ctx context.Context,
+	artifact core.Artifact,
+	content []byte,
+) (core.Artifact, error) {
+	if !s.failed {
+		s.failed = true
+		return core.Artifact{}, errors.New("simulated crash before transcript archive")
+	}
+	return s.Store.CreateArtifact(ctx, artifact, content)
+}
+
+func TestServiceRetryCompletesAfterProducedWritesAndToolResult(t *testing.T) {
+	ctx, underlying, session := planningFixture(t, "session-260801-crash-window")
+	st := &failOnceArtifactStore{Store: underlying}
+	args := requirementArgs{
+		Title: "Crash recovery", Prose: "Produced lineage resumes.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retry completes missing archival."}},
+	}
+	call := toolCall{ID: "first-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)}
+	agent := &scriptedAgent{outputs: []string{
+		decisionJSON(t, "", []toolCall{call}),
+		decisionJSON(t, "", []toolCall{{ID: "retry-finalize", Name: call.Name, ArgumentsJSON: call.ArgumentsJSON}}),
+	}}
+	service := &Service{Store: st, Agent: agent, Model: "planner"}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize."}, func(map[string]any) error { return nil }); err == nil || !strings.Contains(err.Error(), "simulated crash") {
+		t.Fatalf("first run error=%v", err)
+	}
+	active, err := underlying.GetPlanningSession(ctx, session.ID)
+	if err != nil || active.Status != core.PlanningSessionActive {
+		t.Fatalf("session after crash=%+v err=%v", active, err)
+	}
+	if _, err = underlying.GetRequirement(ctx, "req-260801-crash-window"); err != nil {
+		t.Fatal("produced orphan missing after simulated crash")
+	}
+	if err = service.Run(ctx, session.ID, UserMessage{Content: "Retry finalize."}, func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	finalized, err := underlying.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.Status != core.PlanningSessionFinalized || finalized.TranscriptArtifactID == "" {
+		t.Fatalf("finalized=%+v err=%v", finalized, err)
+	}
+	versions, err := underlying.ListRequirementVersions(ctx, finalized.ProducedRequirementID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("retry duplicated produced requirement versions=%+v err=%v", versions, err)
+	}
 }
 
 func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
@@ -513,6 +740,11 @@ func TestServiceEmitsStepBoundariesAroundToolLoop(t *testing.T) {
 		"tool-input-available", "tool-output-available", "finish-step",
 		"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish",
 	)
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil || len(messages) != 4 || messages[2].Role != core.PlanningMessageTool ||
+		messages[2].Content != "" || !strings.Contains(string(messages[2].Parts), `"tool-output-available"`) {
+		t.Fatalf("structured tool result was duplicated or missing: messages=%+v err=%v", messages, err)
+	}
 }
 
 type blockingArtifactStore struct {

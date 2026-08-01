@@ -807,10 +807,24 @@ func (d *Dispatcher) CreatePlanningBlueprint(
 		if specErr != nil {
 			return core.Task{}, core.SpecVersion{}, specErr
 		}
-		if !exists || version.Content != result.Markdown {
-			return core.Task{}, core.SpecVersion{}, fmt.Errorf("planning blueprint task %s already exists without the identical spec", taskID)
+		if !exists {
+			version, specErr = d.completeSpecVersion(ctx, existing, result, "planning-agent", model)
+			return existing, version, specErr
 		}
-		return existing, version, nil
+		if version.Content == result.Markdown {
+			return existing, version, nil
+		}
+		// A same-session deterministic orphan at the unchanged gate is owned by
+		// this planning session. A revised retry creates the ordinary §4.1 next
+		// version instead of wedging the session. If the first version was already
+		// approved in a gates-off workspace, delivery keeps using that approved
+		// version while this newer proposal remains unapproved.
+		version, specErr = d.Store.CreateSpecVersion(ctx, core.SpecVersion{
+			TaskID: existing.ID, Content: result.Markdown,
+			AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance),
+			Decomposition: core.JSONPayload(result.Decomposition), Agent: "planning-agent", Model: model,
+		})
+		return existing, version, specErr
 	}
 	setup, ok := cfg.Setup("")
 	if !ok {
