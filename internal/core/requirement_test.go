@@ -330,6 +330,19 @@ func TestRequirementSlugDerivesAStableHandle(t *testing.T) {
 	}
 }
 
+func TestRequirementSlugCandidatePreservesBoundWhileDisambiguating(t *testing.T) {
+	if got := RequirementSlugCandidate("Auth", 1); got != "auth" {
+		t.Fatalf("first candidate=%q", got)
+	}
+	if got := RequirementSlugCandidate("Auth", 2); got != "auth-2" {
+		t.Fatalf("second candidate=%q", got)
+	}
+	got := RequirementSlugCandidate(strings.Repeat("x", 80), 123)
+	if len(got) != 80 || !strings.HasSuffix(got, "-123") {
+		t.Fatalf("bounded candidate=%q len=%d", got, len(got))
+	}
+}
+
 func TestArtifactValidateAttachmentTargetKeepsOwnerExclusive(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
