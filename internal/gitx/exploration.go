@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -109,6 +110,23 @@ func (m *Manager) ListSnapshotTree(
 }
 
 func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
+	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, false)
+}
+
+// ReadSnapshotTextBlob rejects a Git-binary prefix before loading the complete
+// blob. The size gate still runs first, so a large checked-in binary never
+// reaches cat-file's content path at all.
+func (m *Manager) ReadSnapshotTextBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
+	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, true)
+}
+
+func (m *Manager) readSnapshotBlob(
+	ctx context.Context,
+	snapshot Snapshot,
+	path string,
+	maxBytes int,
+	textOnly bool,
+) ([]byte, error) {
 	if err := safeSnapshotPath(path); err != nil {
 		return nil, err
 	}
@@ -127,6 +145,15 @@ func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path 
 	if size > int64(maxBytes) {
 		return nil, fmt.Errorf("blob %s is %d bytes; read limit is %d bytes", path, size, maxBytes)
 	}
+	if textOnly && size > 0 {
+		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
+		if prefixErr != nil {
+			return nil, prefixErr
+		}
+		if bytes.IndexByte(prefix, 0) >= 0 {
+			return nil, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+		}
+	}
 	output, err := snapshotOutput(ctx, snapshot, maxBytes, "cat-file", "blob", object)
 	if err != nil {
 		return nil, err
@@ -135,6 +162,42 @@ func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path 
 		return nil, fmt.Errorf("blob %s exceeded its declared size while reading", path)
 	}
 	return []byte(output.text()), nil
+}
+
+func snapshotBlobPrefix(
+	ctx context.Context,
+	snapshot Snapshot,
+	object string,
+	size int64,
+	maxBytes int,
+) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", object)
+	cmd.Dir = snapshot.Repository
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
+	cmd.Stderr = stderr
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	limit := min(int64(maxBytes), size)
+	prefix, readErr := io.ReadAll(io.LimitReader(stdout, limit))
+	if size > limit && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, fmt.Errorf("git cat-file blob prefix: %w", readErr)
+	}
+	if size > limit {
+		return prefix, nil
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("git cat-file blob prefix: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return prefix, nil
 }
 
 func (m *Manager) GrepSnapshot(

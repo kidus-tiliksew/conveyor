@@ -163,7 +163,7 @@ func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *tes
 		[]byte(strings.Repeat("match bounded exploration output\n", 20_000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(origin, "large.bin"), []byte(strings.Repeat("\x00\xff", 4_096)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(origin, "large.bin"), []byte(strings.Repeat("\x00\xff", 32_768)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mustRun(t, origin, "git", "add", ".")
@@ -184,6 +184,10 @@ func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *tes
 	if _, err = manager.ReadSnapshotBlob(ctx, snapshot, "large.bin", outputLimit); err == nil ||
 		!strings.Contains(err.Error(), "read limit") {
 		t.Fatalf("oversized binary read error=%v", err)
+	}
+	if _, err = manager.ReadSnapshotTextBlob(ctx, snapshot, "large.bin", 128<<10); err == nil ||
+		!strings.Contains(err.Error(), "supports text blobs only") {
+		t.Fatalf("bounded binary-prefix read error=%v", err)
 	}
 	if _, err = manager.GrepSnapshot(ctx, snapshot, "[", "large.txt", 0, false, false, 50, outputLimit); err == nil {
 		t.Fatal("invalid git grep pattern unexpectedly succeeded")

@@ -1080,8 +1080,8 @@ func (s *Service) readFile(ctx context.Context, exploration explorationContext, 
 	if args.Limit < 1 || args.Limit > maxLimit {
 		return "", "", fmt.Errorf("limit must be between 1 and %d", maxLimit)
 	}
-	content, err := exploration.manager.ReadSnapshotBlob(
-		ctx, exploration.snapshot, args.Path, max(DefaultMaxToolBytes, exploration.capTokens*4),
+	content, err := exploration.manager.ReadSnapshotTextBlob(
+		ctx, exploration.snapshot, args.Path, exploration.capTokens*4,
 	)
 	if err != nil {
 		return "", "", err

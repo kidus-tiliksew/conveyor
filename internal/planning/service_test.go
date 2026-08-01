@@ -168,6 +168,12 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
 	secondary := createPlanningRepo(t, filepath.Join(tmp, "secondary"), "internal/eligibility.go",
 		"package internal\n\nfunc eligible() bool { return true }\n")
+	if err := os.WriteFile(filepath.Join(secondary, "internal", "oversized.bin"),
+		[]byte(strings.Repeat("\x00\xff", 1_024)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPlanningGit(t, secondary, "add", ".")
+	runPlanningGit(t, secondary, "commit", "-m", "add binary fixture")
 	cfg := &config.Config{
 		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
 		Repos: []config.Repo{
@@ -205,6 +211,11 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	})
 	if err != nil || !strings.Contains(listed.Output.(string), "internal/eligibility.go") {
 		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	if _, err = service.explorationTool(ctx, session, toolCall{
+		Name: "read_file", ArgumentsJSON: `{"repo":"secondary","path":"internal/oversized.bin","offset":1,"limit":10}`,
+	}); err == nil || !strings.Contains(err.Error(), "read limit is 400 bytes") {
+		t.Fatalf("planning read_file did not enforce configured size gate: %v", err)
 	}
 	pinned, err := st.GetPlanningSession(ctx, session.ID)
 	if err != nil || pinned.PinnedRevisions["secondary"] == "" {
