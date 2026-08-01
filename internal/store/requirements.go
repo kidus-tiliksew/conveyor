@@ -56,7 +56,7 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 	}
 	for existingKey, existing := range m.requirements {
 		if existingKey.workspace == workspace && existing.Slug == requirement.Slug {
-			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement slug %s already exists", requirement.Slug)
+			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", ErrRequirementSlugConflict, requirement.Slug)
 		}
 	}
 	if err := core.ValidateRequirementOrigin(first); err != nil {

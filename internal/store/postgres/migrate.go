@@ -103,10 +103,6 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 			return err
 		}
 		checksum := migrationChecksum(rawSQL)
-		sql, err := renderMigration(rawSQL)
-		if err != nil {
-			return fmt.Errorf("render migration %s: %w", name, err)
-		}
 		var appliedName, appliedChecksum string
 		err = tx.QueryRow(ctx,
 			"SELECT name, checksum FROM conveyor_schema_migrations WHERE version = $1",
@@ -141,6 +137,14 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("migration %s blocked by %d non-canonical lifecycle edge(s): %+v", name, len(violations), violations[:limit])
 			}
 		}
+		sql, err := renderMigration(rawSQL)
+		if err != nil {
+			return fmt.Errorf("render migration %s: %w", name, err)
+		}
+		sql, err = repairPendingMigration(version, sql)
+		if err != nil {
+			return fmt.Errorf("prepare pending migration %s: %w", name, err)
+		}
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
@@ -156,6 +160,160 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 	}
 	return nil
 }
+
+// repairPendingMigration overlays safety repairs only while an affected
+// historical migration is still pending. The embedded bytes and the checksum
+// recorded in conveyor_schema_migrations remain unchanged, so databases that
+// already applied the version retain an immutable ledger. Forward migration
+// 050 repairs their projections; this overlay prevents pre-046 databases from
+// failing before they can reach it.
+func repairPendingMigration(version int, sql []byte) ([]byte, error) {
+	if version != 46 {
+		return sql, nil
+	}
+	text := string(sql)
+	var err error
+	text, err = replaceMigrationSection(text,
+		"CREATE TEMPORARY TABLE migration_046_seeded_requirements AS",
+		") collision ON collision.id = source.id;",
+		pending046SlugAllocationSQL)
+	if err != nil {
+		return nil, err
+	}
+	text, err = insertMigrationSQL(text,
+		"-- Feature-scoped artifact attachments re-home onto the seeded requirement.\nUPDATE artifact_links link",
+		pending046ArtifactIndexSQL)
+	if err != nil {
+		return nil, err
+	}
+	text, err = insertMigrationSQL(text,
+		"-- Empty nodes drop only now that every surviving reference is recorded",
+		pending046DroppedFeatureAuditSQL)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(text), nil
+}
+
+func replaceMigrationSection(text, start, end, replacement string) (string, error) {
+	startAt := strings.Index(text, start)
+	if startAt < 0 {
+		return "", fmt.Errorf("repair anchor %q not found", start)
+	}
+	endAt := strings.Index(text[startAt:], end)
+	if endAt < 0 {
+		return "", fmt.Errorf("repair anchor %q not found", end)
+	}
+	endAt += startAt + len(end)
+	return text[:startAt] + replacement + text[endAt:], nil
+}
+
+func insertMigrationSQL(text, anchor, insertion string) (string, error) {
+	at := strings.Index(text, anchor)
+	if at < 0 {
+		return "", fmt.Errorf("repair anchor %q not found", anchor)
+	}
+	return text[:at] + insertion + "\n\n" + text[at:], nil
+}
+
+const pending046SlugAllocationSQL = `-- Pending-046 safety overlay: allocate against the full workspace slug set.
+CREATE TEMPORARY TABLE migration_046_seeded_requirements AS
+WITH RECURSIVE candidates AS (
+    SELECT
+        content.id AS feature_id,
+        content.workspace_id,
+        'req-' || content.id AS requirement_id,
+        content.name AS title,
+        content.description,
+        coalesce(
+            nullif(
+                btrim(
+                    left(
+                        btrim(regexp_replace(lower(content.name), '[^a-z0-9]+', '-', 'g'), '-'),
+                        80
+                    ),
+                    '-'
+                ),
+                ''
+            ),
+            'requirement'
+        ) AS base_slug,
+        row_number() OVER (
+            PARTITION BY content.workspace_id
+            ORDER BY feature.created_at, content.id
+        ) AS allocation_order
+    FROM migration_046_content_features content
+    JOIN features feature
+      ON feature.id = content.id
+     AND feature.workspace_id = content.workspace_id
+), allocated AS (
+    SELECT
+        candidate.feature_id, candidate.workspace_id, candidate.requirement_id,
+        candidate.title, candidate.description, candidate.base_slug,
+        candidate.allocation_order, candidate.base_slug AS slug,
+        ARRAY[candidate.base_slug]::text[] AS used_slugs
+    FROM candidates candidate
+    WHERE candidate.allocation_order = 1
+
+    UNION ALL
+
+    SELECT
+        candidate.feature_id, candidate.workspace_id, candidate.requirement_id,
+        candidate.title, candidate.description, candidate.base_slug,
+        candidate.allocation_order, choice.slug,
+        prior.used_slugs || choice.slug
+    FROM allocated prior
+    JOIN candidates candidate
+      ON candidate.workspace_id = prior.workspace_id
+     AND candidate.allocation_order = prior.allocation_order + 1
+    CROSS JOIN LATERAL (
+        SELECT proposed.slug
+        FROM generate_series(1, candidate.allocation_order::integer + 1) ordinal
+        CROSS JOIN LATERAL (
+            SELECT CASE
+                WHEN ordinal = 1 THEN candidate.base_slug
+                ELSE rtrim(
+                    left(candidate.base_slug, greatest(1, 80 - length('-' || ordinal::text))),
+                    '-'
+                ) || '-' || ordinal::text
+            END AS slug
+        ) proposed
+        WHERE NOT proposed.slug = ANY(prior.used_slugs)
+        ORDER BY ordinal
+        LIMIT 1
+    ) choice
+)
+SELECT feature_id, workspace_id, requirement_id, title, slug, description
+FROM allocated;`
+
+const pending046ArtifactIndexSQL = `-- Pending-046 safety overlay: the requirement owner must participate in the
+-- unattached-link predicate before feature ownership is cleared.
+DROP INDEX artifact_links_workspace_unique;
+CREATE UNIQUE INDEX artifact_links_workspace_unique
+    ON artifact_links (workspace_id, artifact_id, role)
+    WHERE task_id IS NULL AND feature_id IS NULL AND requirement_id IS NULL;`
+
+const pending046DroppedFeatureAuditSQL = `-- Pending-046 safety overlay: retain identifying data until migration 050
+-- can append the workspace audit events allowed by the final event constraint.
+CREATE TABLE conveyor_migration_046_dropped_features (
+    workspace_id text NOT NULL,
+    feature_id text NOT NULL,
+    parent_id text,
+    name text NOT NULL,
+    description text NOT NULL,
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (workspace_id, feature_id)
+);
+INSERT INTO conveyor_migration_046_dropped_features
+    (workspace_id, feature_id, parent_id, name, description, created_at)
+SELECT feature.workspace_id, feature.id, feature.parent_id, feature.name,
+       feature.description, feature.created_at
+FROM features feature
+WHERE NOT EXISTS (
+    SELECT 1 FROM migration_046_content_features content
+    WHERE content.id = feature.id
+      AND content.workspace_id = feature.workspace_id
+);`
 
 func auditPersistedLifecycles(ctx context.Context, tx pgx.Tx) ([]controlstore.LifecycleAuditViolation, error) {
 	// Workspace-scoped events (worker heartbeats, config updates, pairing)

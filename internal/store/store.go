@@ -23,15 +23,16 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired   = errors.New("workspace context is required")
-	ErrWorkspaceConflict   = errors.New("workspace id or name already exists")
-	ErrWorkOrderStale      = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut   = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid      = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized  = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled  = errors.New("work order was cancelled")
-	ErrTaskTerminal        = errors.New("task is already terminal")
+	ErrWorkspaceRequired       = errors.New("workspace context is required")
+	ErrWorkspaceConflict       = errors.New("workspace id or name already exists")
+	ErrRequirementSlugConflict = errors.New("requirement slug already exists")
+	ErrWorkOrderStale          = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut       = errors.New("work order execution deadline exceeded")
+	ErrReviewRetryConflict     = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid          = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized      = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled      = errors.New("work order was cancelled")
+	ErrTaskTerminal            = errors.New("task is already terminal")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and

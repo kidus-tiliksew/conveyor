@@ -1090,7 +1090,7 @@ func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
 func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()
-	task := core.Task{ID: "spec-task", Workspace: "test", Repo: "app", Source: "github:acme/app#19", State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
+	task := core.Task{ID: "spec-task", Workspace: "test", Repo: "app", Source: "github:acme/app#19", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1102,6 +1102,11 @@ func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 	if err = st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = gate.Task
 	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	if err = d.HandleIntervention(ctx, task, job, core.Intervention{Action: core.InterventionApprove}); err != nil {
 		t.Fatal(err)
@@ -1109,6 +1114,129 @@ func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 	lifecycle, ok, err := st.GetGitHubLifecycle(ctx, task.ID)
 	if err != nil || !ok || lifecycle.SpecVersion != spec.Version || lifecycle.SourceIssueNumber != 19 {
 		t.Fatalf("lifecycle=%+v ok=%t err=%v", lifecycle, ok, err)
+	}
+}
+
+func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
+	for _, command := range []core.TaskCommand{core.TaskGateMerge, core.TaskJobFail, core.TaskStageBounceLimit} {
+		for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
+			t.Run(string(command)+"/"+string(action), func(t *testing.T) {
+				ctx := store.WithWorkspace(t.Context(), "demo")
+				st := store.NewMemory()
+				task := core.Task{
+					ID: "no-spec-" + string(command) + "-" + string(action), Workspace: "demo", Repo: "api",
+					PolicyVersion: 1, SpecApproval: false, MergeApproval: true,
+					State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now(),
+				}
+				if err := st.CreateTask(ctx, task); err != nil {
+					t.Fatal(err)
+				}
+				job := core.Job{ID: task.ID + "-job", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}
+				if err := st.CreateJob(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{
+					Kind: command, RecoveryStage: core.StageImplement, ProjectStages: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				task = gate.Task
+				intervention := core.Intervention{TaskID: task.ID, JobID: job.ID, Action: action, ReasonCode: "operator-action"}
+				if err = st.CreateIntervention(ctx, intervention); err != nil {
+					t.Fatal(err)
+				}
+				d := New(st, &config.Config{Workspace: "demo"}, nil)
+				if err = d.HandleIntervention(ctx, task, job, intervention); err != nil {
+					t.Fatal(err)
+				}
+				current, err := st.GetTask(ctx, task.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if action == core.InterventionApprove {
+					if current.State != core.TaskApproved || current.ApprovedHeadSHA != "reviewed-head" {
+						t.Fatalf("approved task=%+v", current)
+					}
+				} else if current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+					t.Fatalf("redirected task=%+v", current)
+				}
+				if _, exists, specErr := st.GetLatestSpecVersion(ctx, task.ID); specErr != nil || exists {
+					t.Fatalf("spec exists=%t err=%v", exists, specErr)
+				}
+				if count, countErr := st.CountEvents(ctx, task.ID, "intervention."+string(action)); countErr != nil || count != 1 {
+					t.Fatalf("intervention events=%d err=%v", count, countErr)
+				}
+				if count, countErr := st.CountEvents(ctx, task.ID, "blueprint.materialized"); countErr != nil || count != 0 {
+					t.Fatalf("materialization events=%d err=%v", count, countErr)
+				}
+			})
+		}
+	}
+}
+
+func TestMergeGateIgnoresUnapprovedNewerSpec(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "merge-with-newer-spec", Workspace: "demo", Repo: "api", PolicyVersion: 1,
+		SpecApproval: true, MergeApproval: true, State: core.TaskRunning, NextStage: core.StageReview,
+		ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = gate.Task
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "new unapproved revision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "demo"}, nil)
+	if err = d.HandleIntervention(ctx, task, job, core.Intervention{Action: core.InterventionApprove, ReasonCode: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved || current.ApprovedHeadSHA != "reviewed-head" {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	latest, exists, err := st.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil || !exists || latest.Version != spec.Version || latest.Approved {
+		t.Fatalf("latest spec=%+v exists=%t err=%v", latest, exists, err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "blueprint.materialized"); countErr != nil || count != 0 {
+		t.Fatalf("materialization events=%d err=%v", count, countErr)
+	}
+}
+
+func TestRecordedSpecGateWithoutSpecFallsThrough(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "spec-gate-without-spec", Workspace: "demo", Repo: "api",
+		State: core.TaskRunning, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "demo"}, nil)
+	if err = d.HandleIntervention(ctx, gate.Task, core.Job{Stage: core.StageSpec}, core.Intervention{Action: core.InterventionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved || current.ApprovedHeadSHA != "reviewed-head" {
+		t.Fatalf("task=%+v err=%v", current, err)
 	}
 }
 
@@ -1587,7 +1715,7 @@ func TestHumanTriageRouteAlwaysAwaitsInput(t *testing.T) {
 func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "spec-revision", Workspace: "demo", Repo: "api", Title: "Revise policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
+	task := core.Task{ID: "spec-revision", Workspace: "demo", Repo: "api", Title: "Revise policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1595,13 +1723,15 @@ func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = st.ApproveSpecVersion(ctx, task.ID, first.Version); err != nil {
-		t.Fatal(err)
-	}
 	firstJob := core.Job{ID: "spec-revision-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
 	if err = st.CreateJob(ctx, firstJob); err != nil {
 		t.Fatal(err)
 	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = gate.Task
 
 	bundle, err := pack.Load("../../pack")
 	if err != nil {

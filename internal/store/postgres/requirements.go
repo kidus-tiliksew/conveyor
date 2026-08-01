@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -85,6 +86,11 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 		})
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "requirements_workspace_id_slug_key" {
+			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", store.ErrRequirementSlugConflict, requirement.Slug)
+		}
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	return requirement, first, nil

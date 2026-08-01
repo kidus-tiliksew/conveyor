@@ -297,3 +297,25 @@ func RequirementSlug(title string) string {
 	}
 	return slug
 }
+
+// RequirementSlugCandidate returns the deterministic candidate for one
+// workspace-local allocation attempt. Ordinal one keeps the bare slug; later
+// attempts append -n while preserving the 80-byte storage contract.
+func RequirementSlugCandidate(base string, ordinal int) string {
+	base = RequirementSlug(base)
+	if ordinal <= 1 {
+		return base
+	}
+	suffix := "-" + strconv.Itoa(ordinal)
+	limit := 80 - len(suffix)
+	if limit < 1 {
+		return ""
+	}
+	if len(base) > limit {
+		base = strings.TrimRight(base[:limit], "-")
+	}
+	if base == "" {
+		return ""
+	}
+	return base + suffix
+}

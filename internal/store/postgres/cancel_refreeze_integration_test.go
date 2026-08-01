@@ -88,7 +88,7 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 49 {
+	if afterVersion != 50 {
 		t.Fatalf("post-upgrade migration version=%d", afterVersion)
 	}
 	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {
@@ -189,7 +189,7 @@ WHERE table_schema=current_schema() AND table_name='planning_sessions'
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 49 {
+	if afterVersion != 50 {
 		t.Fatalf("post-upgrade migration version=%d", afterVersion)
 	}
 	var attemptMigrationName string

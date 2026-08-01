@@ -86,7 +86,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           <AttachmentsCard attachments={item.attachments ?? []} />
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
-          <Timeline item={item} />
+          <Timeline item={item} routeVariant="full" />
         </section>
       </div>
     </div>

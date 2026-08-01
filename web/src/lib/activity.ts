@@ -1,5 +1,5 @@
 import type { GroupKey } from './contracts'
-import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, WorkOrder } from './types'
+import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
 
 // Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, and parked tasks collect under
@@ -87,7 +87,7 @@ const attemptEventKinds = new Set([
   'work_order.redispatched',
 ])
 
-export type CurrentExecutionKind = 'running' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
+export type CurrentExecutionKind = 'running' | 'dependency_waiting' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -99,6 +99,7 @@ export interface CurrentExecutionState {
   retry: string
   nextAction: string
   action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
+  blockingDependencies?: TaskRelation[]
 }
 
 export interface ExecutionAttempt {
@@ -123,7 +124,41 @@ export function isDirtyPrimaryCheckout(order: WorkOrder) {
     .some((value) => value?.includes('checkout_blocked_dirty_primary'))
 }
 
+// Dependency gating suspends the implementation order's queue clock and makes
+// it unclaimable (spec §§6.3, 21.47). Keep this predicate shared by the
+// current-state summary, timeline narration, and queued affordances so they
+// cannot disagree about whether implementation is actually available.
+export function dependencyBlockedImplementationOrder(item: ActivityItem): WorkOrder | undefined {
+  const blockingIDs = item.task.blocking_task_ids ?? []
+  if (blockingIDs.length === 0 || item.stalled?.unsatisfiable_edge) return undefined
+
+  const orders = item.work_orders ?? []
+  return [...orders]
+    .filter((order) => order.stage === 'implement' && order.state === 'queued' && !order.claimable)
+    .filter((order) => (order.unsatisfiable_task_ids?.length ?? 0) === 0)
+    .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))[0]
+}
+
 export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutionState | undefined {
+  const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
+  const claimedSpecOrder = (item.work_orders ?? []).find((order) => order.stage === 'spec' && order.state === 'claimed')
+  if (dependencyBlockedOrder && !claimedSpecOrder) {
+    const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
+    const blockingDependencies = (item.task.dependencies ?? []).filter((dependency) => blockingIDs.has(dependency.id))
+    const firstTitle = blockingDependencies[0]?.title || blockingDependencies[0]?.id || 'the blocking dependency'
+    const dependencySubject = blockingDependencies.length > 1
+      ? `${firstTitle} and ${blockingDependencies.length - 1} other ${blockingDependencies.length === 2 ? 'dependency' : 'dependencies'}`
+      : firstTitle
+    return {
+      kind: 'dependency_waiting', status: 'progressing', order: dependencyBlockedOrder,
+      title: 'Waiting on dependencies',
+      blocker: 'Implementation is gated by unresolved task dependencies.',
+      retry: 'Not applicable.',
+      nextAction: `Nothing — implementation starts automatically when ${dependencySubject} ${blockingDependencies.length > 1 ? 'merge' : 'merges'}.`,
+      action: 'none', blockingDependencies,
+    }
+  }
+
   const candidates = [...(item.work_orders ?? [])]
     .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
     .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
@@ -679,6 +714,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {
 	const entries: TimelineEntry[] = []
 	const panels = buildReviewPanels(item)
+	const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
 	entries.push(...panels.panels)
 	const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
 	const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
@@ -703,7 +739,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
       })
     }
     if (panels.orderIds.has(order.id)) continue
-    const entry = orderEntry(order, startedJobs.has(order.job_id))
+    const entry = order.id === dependencyBlockedOrder?.id ? undefined : orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {

@@ -1029,7 +1029,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
 	case core.InterventionApprove:
-		spec, specGate, err := d.pendingSpecGate(ctx, task, latest)
+		spec, specGate, err := d.pendingSpecGate(ctx, task)
 		if err != nil {
 			return err
 		}
@@ -1062,7 +1062,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if target == "" {
 			target = latest.Stage
 		}
-		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task, latest)
+		_, redirectSpecGate, gateErr := d.pendingSpecGate(ctx, task)
 		if gateErr != nil {
 			return gateErr
 		}
@@ -1081,18 +1081,39 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	return nil
 }
 
-// pendingSpecGate recognizes both delegated spec jobs and blueprints finalized
-// by the in-product planning agent. Planning persists the exact same spec
-// contract but intentionally creates no synthetic spec-stage job, so the gate
-// must also be identifiable from its awaiting/recovery state (spec §9, §13.1).
+// pendingSpecGate recognizes the exact lifecycle command that parked the task.
+// Spec, merge, and failure-recovery gates share the same awaiting/recovery
+// projection, while the audited task.state_changed event preserves their
+// distinct commands (spec §3.3, §13.1).
 func (d *Dispatcher) pendingSpecGate(
 	ctx context.Context,
 	task core.Task,
-	latest core.Job,
 ) (core.SpecVersion, bool, error) {
-	candidate := latest.Stage == core.StageSpec ||
-		(task.State == core.TaskAwaiting && task.RecoveryStage == core.StageImplement)
-	if !candidate {
+	if task.State != core.TaskAwaiting {
+		return core.SpecVersion{}, false, nil
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return core.SpecVersion{}, false, err
+	}
+	specGate := false
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return core.SpecVersion{}, false, fmt.Errorf("decode latest task transition for %s: %w", task.ID, err)
+		}
+		if transition.Command != core.TaskGateSpec {
+			return core.SpecVersion{}, false, nil
+		}
+		specGate = true
+		break
+	}
+	if !specGate {
 		return core.SpecVersion{}, false, nil
 	}
 	spec, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
@@ -1100,9 +1121,9 @@ func (d *Dispatcher) pendingSpecGate(
 		return core.SpecVersion{}, false, err
 	}
 	if !ok {
-		return core.SpecVersion{}, false, fmt.Errorf("task %s has no spec", task.ID)
+		return core.SpecVersion{}, false, nil
 	}
-	if latest.Stage != core.StageSpec && spec.Approved {
+	if spec.Approved {
 		return core.SpecVersion{}, false, nil
 	}
 	return spec, true, nil

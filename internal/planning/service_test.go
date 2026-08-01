@@ -490,6 +490,45 @@ func TestServiceRetryCompletesAfterProducedWritesAndToolResult(t *testing.T) {
 	}
 }
 
+func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	seed := func(id, slug, title string) {
+		t.Helper()
+		if _, _, err := st.CreateRequirement(ctx, core.Requirement{
+			ID: id, Slug: slug, Title: title,
+		}, core.RequirementVersion{
+			Content:    "Seeded prose.",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Seeded."}},
+			Origin:     core.RequirementOriginFeatureMigration,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("req-auth", "auth", "Auth")
+	seed("req-auth-2", "auth-2", "Auth 2")
+	service := &Service{Store: st}
+	version := core.RequirementVersion{
+		Content:    "New prose.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "New."}},
+		Origin:     core.RequirementOriginFeatureMigration,
+	}
+	auth, _, err := service.createRequirementWithAvailableSlug(ctx, "req-auth-new", "Auth", version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Slug != "auth-3" {
+		t.Fatalf("same-title slug=%q want auth-3", auth.Slug)
+	}
+	authTwo, _, err := service.createRequirementWithAvailableSlug(ctx, "req-auth-two-new", "Auth 2", version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authTwo.Slug != "auth-2-2" {
+		t.Fatalf("independent-base collision slug=%q want auth-2-2", authTwo.Slug)
+	}
+}
+
 func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-260730-b4c5d6")
 	args := blueprintArgs{

@@ -9,11 +9,11 @@ import { Button } from '../ui/button'
 
 export function hasWorkerRecovery(item: ActivityItem) {
   const state = deriveCurrentExecutionState(item)
-  return state != null && state.kind !== 'running'
+  return state != null && state.kind !== 'running' && state.kind !== 'dependency_waiting'
 }
 
 export function WorkOrderRecoveryCard({ item, state = deriveCurrentExecutionState(item) }: { item: ActivityItem; state?: CurrentExecutionState }) {
-  if (!state || state.kind === 'running') return null
+  if (!state || state.kind === 'running' || state.kind === 'dependency_waiting') return null
   return <RecoveryState item={item} state={state} />
 }
 

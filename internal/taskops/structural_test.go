@@ -72,24 +72,8 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 			return true
 		})
 	}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "dashboard" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
+	err := walkProductionSources(root, func(path string) error {
 		rel, _ := filepath.Rel(root, path)
-		if strings.HasPrefix(rel, filepath.Join("internal", "store")+string(filepath.Separator)) ||
-			rel == filepath.Join("internal", "store", "store.go") {
-			return nil
-		}
 		source, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return readErr
@@ -124,5 +108,68 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func walkProductionSources(root string, visit func(string) error) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == ".claude" || entry.Name() == "dashboard" {
+				return filepath.SkipDir
+			}
+			if path != root {
+				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+					return filepath.SkipDir
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		if strings.HasPrefix(rel, filepath.Join("internal", "store")+string(filepath.Separator)) ||
+			rel == filepath.Join("internal", "store", "store.go") {
+			return nil
+		}
+		return visit(path)
+	})
+}
+
+func TestStructuralSourceWalkPrunesEmbeddedWorktreesAndNestedRepositories(t *testing.T) {
+	root := t.TempDir()
+	ordinary := filepath.Join(root, "cmd", "ordinary.go")
+	claude := filepath.Join(root, ".claude", "worktrees", "x", "phantom.go")
+	nested := filepath.Join(root, "vendor-src", "nested.go")
+	for path, content := range map[string]string{
+		ordinary: "package ordinary\n",
+		claude:   "package phantom\n",
+		nested:   "package nested\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "vendor-src", ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var visited []string
+	if err := walkProductionSources(root, func(path string) error {
+		rel, _ := filepath.Rel(root, path)
+		visited = append(visited, rel)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(visited) != 1 || visited[0] != filepath.Join("cmd", "ordinary.go") {
+		t.Fatalf("visited production sources=%v", visited)
 	}
 }

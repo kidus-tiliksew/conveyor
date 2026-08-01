@@ -1362,9 +1362,8 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 				}
 			}
 		} else {
-			requirement, version, err = s.Store.CreateRequirement(ctx,
-				core.Requirement{ID: requirementID, Title: title},
-				core.RequirementVersion{
+			requirement, version, err = s.createRequirementWithAvailableSlug(ctx,
+				requirementID, title, core.RequirementVersion{
 					Content: document.Markdown, Statements: document.Statements,
 					Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 				})
@@ -1409,6 +1408,31 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 		Output:   map[string]any{"requirement": requirement, "version": version, "confirmation_required": true},
 		Produced: &produced{RequirementID: requirementID},
 	}, nil
+}
+
+func (s *Service) createRequirementWithAvailableSlug(
+	ctx context.Context,
+	id, title string,
+	first core.RequirementVersion,
+) (core.Requirement, core.RequirementVersion, error) {
+	base := core.RequirementSlug(title)
+	for ordinal := 1; ordinal > 0; ordinal++ {
+		if err := ctx.Err(); err != nil {
+			return core.Requirement{}, core.RequirementVersion{}, err
+		}
+		slug := core.RequirementSlugCandidate(base, ordinal)
+		if slug == "" {
+			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf(
+				"allocate requirement slug for %q: suffix space exhausted", title)
+		}
+		requirement, version, err := s.Store.CreateRequirement(ctx,
+			core.Requirement{ID: id, Slug: slug, Title: title}, first)
+		if !errors.Is(err, store.ErrRequirementSlugConflict) {
+			return requirement, version, err
+		}
+	}
+	return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf(
+		"allocate requirement slug for %q: suffix space exhausted", title)
 }
 
 type blueprintArgs struct {
