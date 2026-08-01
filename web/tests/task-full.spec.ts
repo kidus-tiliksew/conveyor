@@ -169,6 +169,17 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'interrupted-review-review-1-seat-1', task_id: taskId, job_id: 'interrupted-review-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 			{ id: 'interrupted-review-review-1-seat-2', task_id: taskId, job_id: 'interrupted-review-review-1-seat-2', stage: 'review', state: 'queued', claimable: false, review_round: 1, review_seat: 2, last_attempt_outcome: 'expired', retry_suppressed: true, required_harness: 'claude', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
+	} : taskId === 'human-gate-worker-scope' ? {
+		jobs: [{ id: 'human-gate-worker-scope-review-1-seat-1', task_id: taskId, stage: 'review', state: 'done', cost_usd: 0, tokens_in: 0, tokens_out: 0, started_at: createdAt, ended_at: '2026-07-15T12:01:00Z' }],
+		events: [
+			{ id: 1, task_id: taskId, job_id: 'human-gate-worker-scope-review-1-seat-1', kind: 'review.completed', actor_id: 'worker-1', actor_role: 'runner', payload: { verdict: 'approve', summary: 'Review approved', feedback: 'Ready for human review.', review_round: 1, review_seat: 1 }, at: '2026-07-15T12:01:00Z' },
+			{ id: 2, task_id: taskId, job_id: 'human-gate-worker-scope-review-1-seat-1', kind: 'review.publication_retry', actor_id: 'system', actor_role: 'system', payload: { review_work_order_id: 'human-gate-worker-scope-review-1-seat-1', last_error: 'GitHub unavailable' }, at: '2026-07-15T12:02:00Z' },
+		],
+		work_orders: [{ id: 'human-gate-worker-scope-review-1-seat-1', task_id: taskId, job_id: 'human-gate-worker-scope-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_harness: 'codex', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
+	} : taskId === 'queued-worker' ? {
+		jobs: [],
+		events: [],
+		work_orders: [{ id: 'queued-worker-implement-1', task_id: taskId, job_id: 'queued-worker-implement-1', stage: 'implement', state: 'queued', claimable: true, required_harness: 'codex', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true }],
 	} : taskId === 'review-retry' ? {
 		jobs: [
 			{ id: 'review-retry-review-1-seat-1', task_id: taskId, stage: 'review', state: 'done', cost_usd: 0, tokens_in: 0, tokens_out: 0 },
@@ -231,7 +242,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' || taskId === 'evidence' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' || taskId === 'blueprint-child' || taskId === 'blocked-refresh' || taskId === 'spec-while-blocked' || taskId === 'unsatisfiable' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
+		state: taskId === 'gate' || taskId === 'evidence' || taskId === 'human-gate-worker-scope' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' || taskId === 'blueprint-child' || taskId === 'blocked-refresh' || taskId === 'spec-while-blocked' || taskId === 'unsatisfiable' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -397,6 +408,11 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		} : taskId === 'null-worker-status' ? {
 			available: false,
 			required_harnesses: null,
+			reason: 'no healthy worker can serve the task\'s required harnesses',
+			queue_context: 'never_started',
+		} : taskId === 'queued-worker' ? {
+			available: false,
+			required_harnesses: ['codex'],
 			reason: 'no healthy worker can serve the task\'s required harnesses',
 			queue_context: 'never_started',
 		} : undefined,
@@ -1139,6 +1155,19 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
 	await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 	await expect(gate).toBeInViewport()
 	await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
+	await page.goto('/tasks/human-gate-worker-scope/full')
+
+	await expect(page.getByRole('region', { name: 'Human gate' }).getByText('Your review, please')).toBeVisible()
+	await expect(page.getByText('GitHub review publication retrying')).toBeVisible()
+	await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toHaveCount(0)
+	await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
+
+	await page.goto('/tasks/queued-worker/full')
+	await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toBeVisible()
+	await expect(page.getByText('This queued work has never started.')).toBeVisible()
 })
 
 test('parked task offers recovery instead of an invalid approval verdict', async ({ page }) => {

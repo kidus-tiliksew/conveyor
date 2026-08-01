@@ -924,8 +924,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// operator's to claim, so no worker availability is reported for them.
 	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && task.State != core.TaskMerged && task.State != core.TaskClosed {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
-			status := s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
-			workerStatus = &status
+			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 		}
 	}
 	stalled := store.StalledTask(workOrders)
