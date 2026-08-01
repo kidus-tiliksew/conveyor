@@ -161,7 +161,7 @@ func TestPhase62TranscriptRejectsTwoOwnersIntegration(t *testing.T) {
 		TaskID: taskID, RequirementID: requirement.ID,
 	}, []byte("ambiguous")); err == nil {
 		t.Fatal("an artifact claimed both a task and a requirement")
-	} else if !strings.Contains(err.Error(), "one of a task, feature, or requirement") {
+	} else if !strings.Contains(err.Error(), "one of a task, feature, requirement, or planning session") {
 		t.Errorf("unexpected rejection: %v", err)
 	}
 

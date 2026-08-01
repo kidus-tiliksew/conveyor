@@ -6,6 +6,7 @@ import { useTaskDetail } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 import { findBlueprint, isBlueprintAnchor } from '../lib/blueprint'
+import { errorMessage } from '../lib/errors'
 
 // The canonical home of a materialized blueprint (spec §21.49 change 1). The
 // anchor is an approved delivery contract, so it gets its own route rather than
@@ -17,7 +18,7 @@ import { findBlueprint, isBlueprintAnchor } from '../lib/blueprint'
 // events the batch timeline renders.
 export function BlueprintDetailPage() {
   const { taskId } = useParams({ from: '/blueprints/$taskId' })
-  const { data: blueprints, isLoading: blueprintsLoading } = useBlueprints()
+  const { data: blueprints, isLoading: blueprintsLoading, error: blueprintsError } = useBlueprints()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const view = findBlueprint(blueprints, taskId)
 
@@ -31,8 +32,10 @@ export function BlueprintDetailPage() {
         </Link>
         <span className="mr-auto truncate text-sm font-medium text-muted">{view?.task.title ?? item?.task.title}</span>
       </header>
-      {error != null && <p className="px-6 py-6 text-sm text-failure">{String(error)}</p>}
-      {error == null && (
+      {(error != null || blueprintsError != null) && (
+        <p className="px-6 py-6 text-sm text-failure">{errorMessage(error ?? blueprintsError, 'Could not load this blueprint.')}</p>
+      )}
+      {error == null && blueprintsError == null && (
         <div aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto" role="region" tabIndex={0}>
           <BlueprintBody
             taskId={taskId}

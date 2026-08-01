@@ -51,7 +51,14 @@ const activityRedirectRoute = createRoute({
 })
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspacePage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
-const requirementsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requirements', component: RequirementsPage })
+const requirementsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/requirements',
+  validateSearch: (search: Record<string, unknown>) => ({
+    requirement: typeof search.requirement === 'string' ? search.requirement : undefined,
+  }),
+  component: RequirementsPage,
+})
 // The planning-side blueprint surface (spec §21.49): the list, and the
 // canonical detail route an anchor now owns. The task routes no longer render
 // an anchor — they redirect here once the task loads — so a blueprint has one

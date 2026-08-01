@@ -515,7 +515,7 @@ export interface WorkOrder {
   updated_at?: string
 }
 
-export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; requirement_id?: string; download_url?: string; created_at: string }
+export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; requirement_id?: string; planning_session_id?: string; download_url?: string; created_at: string }
 
 export interface RequirementStatement {
   id: string
@@ -643,4 +643,6 @@ export interface RequirementView {
   artifacts: Artifact[]
   lineage: TaskEvent[]
   stale: boolean
+  migrated_seed: boolean
+  confirmation_eligible: boolean
 }

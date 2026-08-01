@@ -70,11 +70,20 @@ export function fetchBlueprints() { return getJSON<BlueprintView[]>(workspaceURL
 export function fetchRequirements() { return getJSON<RequirementView[]>(workspaceURL('/v1/requirements')) }
 export function fetchRequirement(requirementId: string) { return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`)) }
 export function fetchRequirementVersions(requirementId: string) { return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`)) }
-export async function confirmRequirementVersion(token: string, requirementId: string, version: number) {
+export async function confirmRequirementVersion(token: string, requirementId: string, version: number, expectedVersion: number) {
   const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`), {
-    method: 'POST', headers: mutationHeaders(token),
+    method: 'POST', headers: { ...mutationHeaders(token), 'If-Match': `"${expectedVersion}"` },
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) {
+    const body = await response.text()
+    let message = body.trim() || response.statusText
+    try {
+      const parsed = JSON.parse(body) as { message?: string }
+      message = parsed.message ?? message
+    } catch { /* plain-text API error */ }
+    if (response.status === 409) message = 'This requirement changed while you were reviewing it. Refresh and choose the version again.'
+    throw new Error(message)
+  }
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
 export function fetchPlanningSessions() { return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions')) }
@@ -87,9 +96,9 @@ export async function createPlanningSession(token: string, input: { title: strin
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<PlanningSession>
 }
-export async function abandonPlanningSession(token: string, sessionId: string) {
+export async function abandonPlanningSession(token: string, sessionId: string, reason?: string) {
   const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/abandon`), {
-    method: 'POST', headers: mutationHeaders(token),
+    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ reason: reason?.trim() || undefined }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<PlanningSession>
@@ -99,37 +108,64 @@ export async function streamPlanningMessage(
   sessionId: string,
   content: string,
   onPart: (part: PlanningMessagePart) => void,
+  options: { signal?: AbortSignal; attachments?: Artifact[] } = {},
 ) {
   const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`), {
     method: 'POST', headers: mutationHeaders(token),
-    body: JSON.stringify({ message: { role: 'user', content } }),
+    signal: options.signal,
+    body: JSON.stringify({
+      message: {
+        role: 'user',
+        content,
+        parts: [
+          { type: 'text', text: content },
+          ...(options.attachments ?? []).map((artifact) => ({
+            type: 'file', artifactId: artifact.id, filename: artifact.name,
+            mediaType: artifact.content_type, size: artifact.size_bytes,
+          })),
+        ],
+      },
+    }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) {
+    const message = (await response.text()).trim()
+    if (response.status === 409) throw new Error('A reply is already in progress for this session.')
+    throw new Error(message || response.statusText)
+  }
   if (!response.body) throw new Error('Planning response did not include a stream.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  for (;;) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    const frames = buffer.split(/\r?\n\r?\n/)
-    buffer = frames.pop() ?? ''
-    for (const frame of frames) {
-      const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim()).join('\n')
-      if (!data || data === '[DONE]') continue
-      const part = JSON.parse(data) as PlanningMessagePart
-      if (part.type === 'error') throw new Error(part.errorText || 'Planning failed.')
-      onPart(part)
+  const processFrame = (frame: string) => {
+    const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim()).join('\n')
+    if (!data || data === '[DONE]') return
+    let part: PlanningMessagePart
+    try { part = JSON.parse(data) as PlanningMessagePart } catch { return }
+    onPart(part)
+    if (part.type === 'error') throw new Error(part.errorText || 'Planning stopped before the reply finished. You can retry.')
+  }
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) processFrame(frame)
+      if (done) {
+        if (buffer.trim()) processFrame(buffer)
+        break
+      }
     }
-    if (done) break
+  } finally {
+    try { await reader.cancel() } catch { /* the stream may already be closed */ }
   }
 }
 export function fetchLifecycleDiagram() { return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram')) }
 export function fetchMonitorStatus() { return getJSON<MonitorStatus>(workspaceURL('/v1/monitor')) }
 export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
 export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
-export async function uploadArtifact(token: string, file: File, taskId?: string, requirementId?: string, role?: Artifact['role']) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (requirementId) body.set('requirement_id', requirementId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
+export async function uploadArtifact(token: string, file: File, taskId?: string, requirementId?: string, role?: Artifact['role'], planningSessionId?: string) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (requirementId) body.set('requirement_id', requirementId); if (planningSessionId) body.set('planning_session_id', planningSessionId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
 // Fetch an attachment's bytes as an object URL for inline preview. The
 // download route requires the operator token and forces attachment
 // disposition, so an <img src> cannot load it directly — the caller revokes
@@ -153,6 +189,7 @@ export function fetchWorkspaceConfig(token: string) {
 				review: { ...setup.review, seats: setup.review?.seats ?? review.seats },
 				refresh_review: setup.refresh_review || 'delta' as const,
 			}))
+    const planningModels = [...new Set((result.document.planning_models ?? []).map((model) => model.trim()).filter(Boolean))]
     return {
       ...result,
       document: {
@@ -167,6 +204,7 @@ export function fetchWorkspaceConfig(token: string) {
         review,
         setups,
         default_setup: result.document.default_setup || setups[0].name,
+        planning_models: planningModels.length ? planningModels : [],
       },
     }
   })

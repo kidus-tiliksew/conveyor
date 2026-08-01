@@ -10,7 +10,7 @@ TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT
 PLAYWRIGHT_ARGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui test test-ui test-ui-evidence compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui test test-web test-ui test-ui-evidence compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -23,6 +23,10 @@ ui:
 
 test: compose-check
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
+	$(MAKE) test-web
+
+test-web:
+	cd web && npm ci && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui: ui
 	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)

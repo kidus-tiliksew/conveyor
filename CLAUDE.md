@@ -25,7 +25,8 @@ silent edits.
   are the traceability layer between code and design.
 - `TODO(phase1)` was the blocking-gap marker; none may remain on the closed
   Phase 1 baseline. `TODO(phase1-followup)` marks accepted deferred work.
-- Build/test: `make build`, `make test`, `make vet`.
+- Build/test: `make build`, `make test`, `make vet`. `make test` is the
+  aggregate gate: Go tests plus web typecheck, Biome lint, and Playwright.
 
 ## Phase discipline
 
