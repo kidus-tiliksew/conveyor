@@ -66,7 +66,9 @@ func TestRequirementSuggestionRecordsListedRequirement(t *testing.T) {
 	t.Parallel()
 	d, ctx, task, requirement := newRequirementSuggestionFixture(t)
 
-	d.recordRequirementSuggestion(ctx, task, requirement.ID)
+	if err := d.recordRequirementSuggestion(ctx, task, requirement.ID, core.RequirementServesTriage); err != nil {
+		t.Fatal(err)
+	}
 
 	suggested := suggestedRequirementEvents(t, d, ctx, task.ID)
 	if len(suggested) != 1 {
@@ -109,7 +111,9 @@ func TestRequirementSuggestionIgnoresUnlistedAndEmptyProposals(t *testing.T) {
 			t.Parallel()
 			d, ctx, task, _ := newRequirementSuggestionFixture(t)
 
-			d.recordRequirementSuggestion(ctx, task, proposed.value)
+			if err := d.recordRequirementSuggestion(ctx, task, proposed.value, core.RequirementServesTriage); err != nil {
+				t.Fatal(err)
+			}
 
 			if suggested := suggestedRequirementEvents(t, d, ctx, task.ID); len(suggested) != 0 {
 				t.Errorf("proposal %q recorded %d events, want 0", proposed.value, len(suggested))
@@ -132,7 +136,9 @@ func TestRequirementSuggestionAcceptsPendingRequirement(t *testing.T) {
 		t.Fatalf("fixture requirement is already confirmed at version %d", stored.CurrentVersion)
 	}
 
-	d.recordRequirementSuggestion(ctx, task, requirement.ID)
+	if err := d.recordRequirementSuggestion(ctx, task, requirement.ID, core.RequirementServesTriage); err != nil {
+		t.Fatal(err)
+	}
 
 	if suggested := suggestedRequirementEvents(t, d, ctx, task.ID); len(suggested) != 1 {
 		t.Errorf("pending requirement suggestions = %d, want 1", len(suggested))

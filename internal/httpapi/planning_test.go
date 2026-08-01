@@ -16,6 +16,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+const planningHTTPPrompt = "test planning role"
+
 type planningHTTPAgent struct {
 	output string
 }
@@ -49,7 +51,7 @@ func TestPlanningHTTPStreamsAISDKProtocolAndRestoresDurableMessages(t *testing.T
 		Store: st, Agent: planningHTTPAgent{
 			output: `{"response_text":"Tell me the target repository.","tool_calls":[]}`,
 		},
-		Model: "planner",
+		Model: "planner", Prompt: planningHTTPPrompt,
 	}
 	handler := server.Handler()
 
@@ -149,7 +151,7 @@ func TestPlanningHTTPConcurrentRunReturnsConflictBeforeSSECommit(t *testing.T) {
 	agent := &blockingPlanningHTTPAgent{started: make(chan struct{}), release: make(chan struct{})}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	server.Planning = &planning.Service{Store: st, Agent: agent, Model: "planner"}
+	server.Planning = &planning.Service{Store: st, Agent: agent, Model: "planner", Prompt: planningHTTPPrompt}
 	handler := server.Handler()
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
@@ -201,7 +203,7 @@ func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
 	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	server.Planning = &planning.Service{Store: st, Agent: failingPlanningHTTPAgent{}, Model: "planner"}
+	server.Planning = &planning.Service{Store: st, Agent: failingPlanningHTTPAgent{}, Model: "planner", Prompt: planningHTTPPrompt}
 	request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
 		strings.NewReader(`{"content":"Trigger internal failure"}`))
 	request.Header.Set("Authorization", "Bearer token")

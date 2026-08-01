@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -89,14 +90,12 @@ func (s *Server) resolveMonitorDrift(w http.ResponseWriter, r *http.Request) {
 	}
 	drift, err := s.Monitor.Resolve(r.Context(), chi.URLParam(r, "id"), request.Outcome)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "requirement_id is missing") {
+			status = http.StatusUnprocessableEntity
+		}
+		http.Error(w, err.Error(), status)
 		return
-	}
-	if drift.TaskID != "" {
-		_ = s.Store.AppendEvent(r.Context(), core.Event{
-			TaskID: drift.TaskID, Kind: "monitor.drift_reconciled",
-			Payload: core.JSONPayload(map[string]any{"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt}),
-		})
 	}
 	writeJSON(w, http.StatusOK, drift)
 }

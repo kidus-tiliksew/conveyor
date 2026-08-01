@@ -21,6 +21,9 @@ func TestLoadValidatesAndCachesWholePack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(dir, "roles", "planning.md"), []byte("role planning"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	bundle, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +34,18 @@ func TestLoadValidatesAndCachesWholePack(t *testing.T) {
 	role, err := bundle.Role(core.StageSpec)
 	if err != nil || role != "role spec" {
 		t.Fatalf("cached role = %q, err=%v", role, err)
+	}
+}
+
+func TestPackRequiresAndLoadsPlanningRole(t *testing.T) {
+	dir := filepath.Join("..", "..", "pack")
+	bundle, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := bundle.PlanningRole()
+	if err != nil || !strings.Contains(role, "in-product planning agent") {
+		t.Fatalf("planning role=%q err=%v", role, err)
 	}
 }
 

@@ -20,6 +20,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+const testPlanningPrompt = "test planning role"
+
 type scriptedAgent struct {
 	outputs []string
 	inputs  []inprocess.Input
@@ -40,7 +42,7 @@ func (a *scriptedAgent) Run(_ context.Context, model string, input inprocess.Inp
 func TestServiceStreamsAndPersistsTextParts(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-text")
 	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "Which repository should this target?", nil)}}
-	service := &Service{Store: st, Agent: agent, Model: "planner"}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 	var chunks []map[string]any
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Plan a retry policy."}, func(part map[string]any) error {
 		chunks = append(chunks, part)
@@ -51,6 +53,9 @@ func TestServiceStreamsAndPersistsTextParts(t *testing.T) {
 	if agent.models[0] != "planner" || agent.inputs[0].OutputSchema == nil ||
 		agent.inputs[0].OutputSchema.Name != "planning_step" {
 		t.Fatalf("model inputs = %+v / %+v", agent.models, agent.inputs[0])
+	}
+	if !strings.HasPrefix(agent.inputs[0].Prompt, testPlanningPrompt) {
+		t.Fatalf("loaded planning role was not used: %s", agent.inputs[0].Prompt)
 	}
 	assertChunkTypes(t, chunks, "start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish")
 	messages, err := st.ListPlanningMessages(ctx, session.ID)
@@ -93,7 +98,7 @@ func TestServiceElidesOldExplorationOnlyFromLivePromptAndStillFinalizes(t *testi
 	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
 		ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
 	}})}}
-	service := &Service{Store: st, Agent: agent, Model: "planner", MaxContextBytes: 6 << 10}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxContextBytes: 6 << 10}
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize despite the old large result."}, func(map[string]any) error {
 		return nil
 	}); err != nil {
@@ -135,7 +140,7 @@ func TestServicePersistsSyntheticToolResultAndReleasesRunClaim(t *testing.T) {
 				decisionJSON(t, "", []toolCall{{ID: "call-read", Name: "list_requirements", ArgumentsJSON: `{}`}}),
 				decisionJSON(t, "The recovered run is coherent.", nil),
 			}}
-			service := &Service{Store: st, Agent: agent, Model: "planner"}
+			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 			err := service.Run(ctx, session.ID, UserMessage{Content: "Read the corpus."}, func(part map[string]any) error {
 				if part["type"] == "tool-input-available" {
 					return test.emitterErr
@@ -172,6 +177,10 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		[]byte(strings.Repeat("\x00\xff", 1_024)), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(secondary, "internal", "large.txt"),
+		[]byte(strings.Repeat("planning exploration output\n", 200)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	runPlanningGit(t, secondary, "add", ".")
 	runPlanningGit(t, secondary, "commit", "-m", "add binary fixture")
 	cfg := &config.Config{
@@ -205,6 +214,25 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		session.PinnedRevisions["primary"] == "" || session.PinnedRevisions["secondary"] != "" {
 		t.Fatalf("created session=%+v", session)
 	}
+	beforeReload, err := service.explorationTool(ctx, session, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"planning","path":"internal/large.txt","context":0,"mode":"content"}`,
+	})
+	if err != nil || !strings.Contains(beforeReload.Output.(string), "applied cap: 100 tokens") {
+		t.Fatalf("creation-cap exploration=%+v err=%v", beforeReload, err)
+	}
+	cfg.ExecutionSettings.ControlPlane.Planning.ExplorationOutputTokens = 200
+	afterReload, err := service.explorationTool(ctx, session, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"planning","path":"internal/large.txt","context":0,"mode":"content"}`,
+	})
+	if err != nil || !strings.Contains(afterReload.Output.(string), "applied cap: 200 tokens") ||
+		len(afterReload.Output.(string)) <= len(beforeReload.Output.(string)) {
+		t.Fatalf("hot-reloaded exploration=%+v err=%v", afterReload, err)
+	}
+	provenance, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || provenance.ExplorationOutputTokens != 100 {
+		t.Fatalf("session provenance changed after reload: %+v err=%v", provenance, err)
+	}
+	cfg.ExecutionSettings.ControlPlane.Planning.ExplorationOutputTokens = 100
 
 	listed, err := service.explorationTool(ctx, session, toolCall{
 		Name: "list_files", ArgumentsJSON: `{"repo":"secondary","path":"internal","glob":"*.go","depth":0}`,
@@ -360,7 +388,7 @@ func TestServiceFinalizesUnconfirmedRequirementAndArchivesTranscript(t *testing.
 	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
 		ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
 	}})}}
-	service := &Service{Store: st, Agent: agent, Model: "planner"}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 	var chunks []map[string]any
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Capture this requirement."}, func(part map[string]any) error {
 		chunks = append(chunks, part)
@@ -420,6 +448,7 @@ func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
 		ID: "retry-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, revised),
 	}})}}
 	service.Model = "planner"
+	service.Prompt = testPlanningPrompt
 	if err = service.Run(ctx, session.ID, UserMessage{Content: "Use the revised final requirement."}, func(map[string]any) error {
 		return nil
 	}); err != nil {
@@ -466,7 +495,7 @@ func TestServiceRetryCompletesAfterProducedWritesAndToolResult(t *testing.T) {
 		decisionJSON(t, "", []toolCall{call}),
 		decisionJSON(t, "", []toolCall{{ID: "retry-finalize", Name: call.Name, ArgumentsJSON: call.ArgumentsJSON}}),
 	}}
-	service := &Service{Store: st, Agent: agent, Model: "planner"}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize."}, func(map[string]any) error { return nil }); err == nil || !strings.Contains(err.Error(), "simulated crash") {
 		t.Fatalf("first run error=%v", err)
 	}
@@ -543,7 +572,7 @@ func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
 	}})}}
 	var gotModel string
 	service := &Service{
-		Store: st, Agent: agent, Model: "planner",
+		Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt,
 		FinalizeBlueprint: func(
 			ctx context.Context,
 			sessionID, taskID, title, repo string,
@@ -646,7 +675,7 @@ func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing
 			service := &Service{
 				Store: st, Agent: &scriptedAgent{outputs: []string{
 					decisionJSON(t, "", []toolCall{tt.call}),
-				}}, Model: "planner",
+				}}, Model: "planner", Prompt: testPlanningPrompt,
 			}
 			if tt.finalizer != nil {
 				service.FinalizeBlueprint = tt.finalizer(st, &called)
@@ -706,7 +735,7 @@ func TestServiceStopsAtBoundedToolLoop(t *testing.T) {
 		decisionJSON(t, "", call),
 		decisionJSON(t, "", []toolCall{{ID: "call-read-again", Name: "list_requirements", ArgumentsJSON: `{}`}}),
 	}}
-	service := &Service{Store: st, Agent: agent, Model: "planner", MaxSteps: 2}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxSteps: 2}
 	err := service.Run(ctx, session.ID, UserMessage{Content: "Keep reading forever."}, func(map[string]any) error {
 		return nil
 	})
@@ -727,7 +756,7 @@ func TestServiceEmitsStepBoundariesAroundToolLoop(t *testing.T) {
 		}}),
 		decisionJSON(t, "I found no existing requirement; what should the first statement guarantee?", nil),
 	}}
-	service := &Service{Store: st, Agent: agent, Model: "planner"}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 	var chunks []map[string]any
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Check the corpus first."}, func(part map[string]any) error {
 		chunks = append(chunks, part)
@@ -783,7 +812,7 @@ func TestServiceLateAbandonmentCannotSplitProducedWritesFromFinalization(t *test
 		Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
 			ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
 		}})}},
-		Model: "planner",
+		Model: "planner", Prompt: testPlanningPrompt,
 	}
 	runDone := make(chan error, 1)
 	go func() {

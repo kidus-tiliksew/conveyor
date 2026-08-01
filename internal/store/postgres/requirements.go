@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,9 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	if err := core.ValidateRequirementStatements(first.Statements); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	if err := store.NormalizeRequirementVersionDocument(&first); err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
 	now := time.Now().UTC()
@@ -126,6 +130,9 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 	if err := core.ValidateRequirementOrigin(version); err != nil {
 		return core.RequirementVersion{}, err
 	}
+	if err := store.NormalizeRequirementVersionDocument(&version); err != nil {
+		return core.RequirementVersion{}, err
+	}
 	version.Workspace = workspace(ctx)
 	version.Confirmed = false
 	version.ConfirmedBy = ""
@@ -197,12 +204,15 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 	return version, nil
 }
 
-func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error) {
 	var (
 		requirement core.Requirement
 		confirmed   core.RequirementVersion
 	)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if len(expectedCurrentVersion) > 1 {
+			return fmt.Errorf("at most one expected current requirement version may be supplied")
+		}
 		var currentVersion *int32
 		var highWaterMark int
 		if err := tx.QueryRow(ctx,
@@ -214,13 +224,23 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			}
 			return err
 		}
+		current := 0
+		if currentVersion != nil {
+			current = int(*currentVersion)
+		}
+		if len(expectedCurrentVersion) == 1 && expectedCurrentVersion[0] != current {
+			expected := expectedCurrentVersion[0]
+			return &store.RequirementVersionConflict{
+				RequirementID: requirementID, Requested: version, Current: current, Expected: &expected,
+			}
+		}
 		stored, err := scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
 			` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,
 			workspace(ctx), requirementID, version), requirementID, version)
 		if err != nil {
 			return err
 		}
-		if stored.Confirmed {
+		if stored.Confirmed && version == current {
 			confirmed = stored
 			requirement, err = scanRequirement(tx.QueryRow(ctx, requirementSelect+
 				` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID)
@@ -234,7 +254,9 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		// Confirmation moves forward only: re-confirming a superseded version
 		// would silently revert intent the operator already advanced past.
 		if currentVersion != nil && version < int(*currentVersion) {
-			return fmt.Errorf("requirement %s already confirmed version %d; cannot confirm earlier version %d", requirementID, *currentVersion, version)
+			return &store.RequirementVersionConflict{
+				RequirementID: requirementID, Requested: version, Current: int(*currentVersion),
+			}
 		}
 		actor := store.ActorFromContext(ctx)
 		now := time.Now().UTC()
@@ -289,6 +311,158 @@ func (s *Store) ListRequirementVersions(ctx context.Context, requirementID strin
 		out = append(out, version)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
+	blueprintTaskID, requirementID = strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID)
+	if !source.Valid() {
+		return core.RequirementServesLink{}, fmt.Errorf("invalid requirement serves source %q", source)
+	}
+	var link core.RequirementServesLink
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		link, err = getRequirementServesTx(ctx, tx, blueprintTaskID, requirementID, true)
+		if err == nil {
+			if confirm && link.State == core.RequirementServesProposed {
+				link, err = transitionRequirementServesTx(ctx, tx, q, link, core.RequirementServesConfirmed)
+			}
+			if err == nil && link.State == core.RequirementServesDismissed {
+				return fmt.Errorf("%w: cannot repropose a dismissed link", store.ErrRequirementServesTransition)
+			}
+			return err
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		var slug, title string
+		if err = tx.QueryRow(ctx, `SELECT slug,title FROM requirements WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID).Scan(&slug, &title); err != nil {
+			return notFound(err, "requirement %s", requirementID)
+		}
+		var taskWorkspace string
+		if err = tx.QueryRow(ctx, `SELECT workspace_id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), blueprintTaskID).Scan(&taskWorkspace); err != nil {
+			return notFound(err, "blueprint task %s", blueprintTaskID)
+		}
+		eventKind := "requirement.serves_proposed"
+		if source == core.RequirementServesPlanning || source == core.RequirementServesTriage {
+			eventKind = "task.requirement_suggested"
+		}
+		eventID, err := insertEventWithID(ctx, q, core.Event{TaskID: blueprintTaskID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{
+			"requirement_id": requirementID, "requirement_slug": slug,
+			"requirement_title": title, "source": source,
+		})})
+		if err != nil {
+			return err
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = tx.Exec(ctx, `INSERT INTO requirement_serves_links
+			(workspace_id,blueprint_task_id,requirement_id,state,source,created_by_event_id,proposed_by,created_at,updated_at)
+			VALUES ($1,$2,$3,'proposed',$4,$5,$6,$7,$7)`,
+			workspace(ctx), blueprintTaskID, requirementID, string(source), eventID, actor.ID, now); err != nil {
+			return err
+		}
+		link, err = getRequirementServesTx(ctx, tx, blueprintTaskID, requirementID, true)
+		if err == nil && confirm {
+			link, err = transitionRequirementServesTx(ctx, tx, q, link, core.RequirementServesConfirmed)
+		}
+		return err
+	})
+	return link, err
+}
+
+func (s *Store) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	return s.transitionRequirementServes(ctx, blueprintTaskID, requirementID, core.RequirementServesConfirmed)
+}
+
+func (s *Store) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	return s.transitionRequirementServes(ctx, blueprintTaskID, requirementID, core.RequirementServesDismissed)
+}
+
+func (s *Store) transitionRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, target core.RequirementServesState) (core.RequirementServesLink, error) {
+	var link core.RequirementServesLink
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		link, err = getRequirementServesTx(ctx, tx, strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID), true)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("requirement serves proposal %s -> %s not found", blueprintTaskID, requirementID)
+		}
+		if err != nil {
+			return err
+		}
+		link, err = transitionRequirementServesTx(ctx, tx, q, link, target)
+		return err
+	})
+	return link, err
+}
+
+func transitionRequirementServesTx(ctx context.Context, tx pgx.Tx, q *db.Queries, link core.RequirementServesLink, target core.RequirementServesState) (core.RequirementServesLink, error) {
+	if link.State == target {
+		return link, nil
+	}
+	if link.State != core.RequirementServesProposed || (target != core.RequirementServesConfirmed && target != core.RequirementServesDismissed) {
+		return core.RequirementServesLink{}, fmt.Errorf("%w: cannot transition %s link to %s", store.ErrRequirementServesTransition, link.State, target)
+	}
+	actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+	eventKind, actorKey := "requirement.serves_confirmed", "confirmed_by"
+	if target == core.RequirementServesDismissed {
+		eventKind, actorKey = "requirement.serves_dismissed", "dismissed_by"
+	}
+	eventID, err := insertEventWithID(ctx, q, core.Event{TaskID: link.BlueprintTaskID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{
+		"requirement_id": link.RequirementID, actorKey: actor.ID,
+	})})
+	if err != nil {
+		return core.RequirementServesLink{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE requirement_serves_links
+		SET state=$4,decision_event_id=$5,decided_by=$6,updated_at=$7
+		WHERE workspace_id=$1 AND blueprint_task_id=$2 AND requirement_id=$3`,
+		workspace(ctx), link.BlueprintTaskID, link.RequirementID, string(target), eventID, actor.ID, now); err != nil {
+		return core.RequirementServesLink{}, err
+	}
+	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = target, eventID, actor.ID, now
+	return link, nil
+}
+
+func (s *Store) ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error) {
+	rows, err := s.pool.Query(ctx, requirementServesSelect+` WHERE workspace_id=$1 ORDER BY blueprint_task_id,requirement_id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := []core.RequirementServesLink{}
+	for rows.Next() {
+		link, scanErr := scanRequirementServes(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func getRequirementServesTx(ctx context.Context, tx pgx.Tx, blueprintTaskID, requirementID string, lock bool) (core.RequirementServesLink, error) {
+	query := requirementServesSelect + ` WHERE workspace_id=$1 AND blueprint_task_id=$2 AND requirement_id=$3`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	return scanRequirementServes(tx.QueryRow(ctx, query, workspace(ctx), blueprintTaskID, requirementID))
+}
+
+const requirementServesSelect = `SELECT workspace_id,blueprint_task_id,requirement_id,state,source,
+	created_by_event_id,COALESCE(decision_event_id,0),proposed_by,decided_by,created_at,updated_at
+	FROM requirement_serves_links`
+
+type requirementServesScanner interface{ Scan(...any) error }
+
+func scanRequirementServes(row requirementServesScanner) (core.RequirementServesLink, error) {
+	var link core.RequirementServesLink
+	var state, source string
+	if err := row.Scan(&link.Workspace, &link.BlueprintTaskID, &link.RequirementID, &state, &source,
+		&link.CreatedByEventID, &link.DecisionEventID, &link.ProposedBy, &link.DecidedBy,
+		&link.CreatedAt, &link.UpdatedAt); err != nil {
+		return core.RequirementServesLink{}, err
+	}
+	link.State, link.Source = core.RequirementServesState(state), core.RequirementServesSource(source)
+	return link, nil
 }
 
 func (s *Store) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
@@ -540,12 +714,39 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), request.SessionID), request.SessionID); err != nil {
 			return err
 		}
-		return insertRequirementEvent(ctx, q, "planning_session.finalized", map[string]any{
+		if err = insertRequirementEvent(ctx, q, "planning_session.finalized", map[string]any{
 			"workspace_id": workspace(ctx), "session_id": session.ID,
 			"produced_requirement_id": session.ProducedRequirementID,
 			"produced_task_id":        session.ProducedTaskID,
 			"transcript_artifact_id":  session.TranscriptArtifactID,
-		})
+		}); err != nil {
+			return err
+		}
+		if session.RequirementContextID == "" || session.ProducedTaskID == "" {
+			return nil
+		}
+		if _, linkErr := getRequirementServesTx(ctx, tx, session.ProducedTaskID, session.RequirementContextID, true); linkErr == nil {
+			return nil
+		} else if !errors.Is(linkErr, pgx.ErrNoRows) {
+			return linkErr
+		}
+		var slug, title string
+		if err = tx.QueryRow(ctx, `SELECT slug,title FROM requirements WHERE workspace_id=$1 AND id=$2`, workspace(ctx), session.RequirementContextID).Scan(&slug, &title); err != nil {
+			return err
+		}
+		eventID, err := insertEventWithID(ctx, q, core.Event{TaskID: session.ProducedTaskID, Kind: "task.requirement_suggested", Payload: core.JSONPayload(map[string]any{
+			"requirement_id": session.RequirementContextID, "requirement_slug": slug,
+			"requirement_title": title, "source": core.RequirementServesPlanning,
+		})})
+		if err != nil {
+			return err
+		}
+		actor := store.ActorFromContext(ctx)
+		_, err = tx.Exec(ctx, `INSERT INTO requirement_serves_links
+			(workspace_id,blueprint_task_id,requirement_id,state,source,created_by_event_id,proposed_by,created_at,updated_at)
+			VALUES ($1,$2,$3,'proposed','planning',$4,$5,$6,$6)`,
+			workspace(ctx), session.ProducedTaskID, session.RequirementContextID, eventID, actor.ID, now)
+		return err
 	})
 	if err != nil {
 		return core.PlanningSession{}, err

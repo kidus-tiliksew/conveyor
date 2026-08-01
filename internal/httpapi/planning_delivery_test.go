@@ -67,7 +67,7 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		}),
 	}}
 	planningService := &planning.Service{
-		Store: st, Agent: agent, Model: "planner",
+		Store: st, Agent: agent, Model: "planner", Prompt: "test planning role",
 		FinalizeBlueprint: dispatcher.CreatePlanningBlueprint,
 	}
 	server := NewServer(st)
@@ -122,6 +122,24 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 	}
 	if !requirementSuggested {
 		t.Fatalf("blueprint events=%+v, want requirement-link proposal", blueprintEvents)
+	}
+	proposedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(proposedResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	var proposedViews []requirementView
+	if proposedResponse.Code != http.StatusOK || json.Unmarshal(proposedResponse.Body.Bytes(), &proposedViews) != nil ||
+		len(proposedViews) != 1 || len(proposedViews[0].ServingBlueprints) != 0 ||
+		len(proposedViews[0].RequirementLinks) != 1 || proposedViews[0].RequirementLinks[0].State != core.RequirementServesProposed {
+		t.Fatalf("proposed requirement relation status=%d views=%+v body=%s", proposedResponse.Code, proposedViews, proposedResponse.Body.String())
+	}
+	confirmServes := authenticatedPlanningRequest(
+		http.MethodPost,
+		"/v1/blueprints/"+blueprintSession.ProducedTaskID+"/requirements/"+requirementSession.ProducedRequirementID+"/serves/confirm",
+		"",
+	)
+	confirmServesResponse := httptest.NewRecorder()
+	handler.ServeHTTP(confirmServesResponse, confirmServes)
+	if confirmServesResponse.Code != http.StatusOK {
+		t.Fatalf("confirm serves status=%d body=%s", confirmServesResponse.Code, confirmServesResponse.Body.String())
 	}
 
 	approve := authenticatedPlanningRequest(

@@ -717,7 +717,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 			return err
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "triage.completed", Payload: core.JSONPayload(result)})
-		d.recordRequirementSuggestion(ctx, task, result.RequirementID)
+		if err = d.recordRequirementSuggestion(ctx, task, result.RequirementID, core.RequirementServesTriage); err != nil {
+			return err
+		}
 		if task.Level == core.L3 || result.Route == "human" {
 			return d.transition(ctx, task.ID, core.TaskTriageRouteHuman, "", core.StageTriage)
 		}
@@ -855,7 +857,9 @@ func (d *Dispatcher) CreatePlanningBlueprint(
 		// Planning in a requirement's context proposes the same advisory,
 		// human-confirmed relation as triage. The event is the durable source;
 		// the generalized link is a projection (spec §4.2 item 1, §9).
-		d.recordRequirementSuggestion(ctx, current, session.RequirementContextID)
+		if err = d.recordRequirementSuggestion(ctx, current, session.RequirementContextID, core.RequirementServesPlanning); err != nil {
+			return core.Task{}, core.SpecVersion{}, err
+		}
 	}
 	return current, version, nil
 }
@@ -984,20 +988,22 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 // §21.46 change 5). The event is the durable proposal — links are projections
 // of events, and a requirement relation is machinery-suggested and
 // human-confirmed, never volunteered as a standing edge by an agent.
-func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string) {
+func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string, source core.RequirementServesSource) error {
 	requirementID = strings.TrimSpace(requirementID)
 	if requirementID == "" {
-		return
+		return nil
 	}
-	requirements, _ := d.Store.ListRequirements(ctx)
+	requirements, err := d.Store.ListRequirements(ctx)
+	if err != nil {
+		return err
+	}
 	for _, requirement := range requirements {
 		if requirement.ID == requirementID {
-			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.requirement_suggested", Payload: core.JSONPayload(map[string]string{
-				"requirement_id": requirement.ID, "requirement_slug": requirement.Slug, "requirement_title": requirement.Title,
-			})})
-			return
+			_, err = d.Store.ProposeRequirementServes(ctx, task.ID, requirement.ID, source, false)
+			return err
 		}
 	}
+	return nil
 }
 
 func (d *Dispatcher) transition(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage) error {
