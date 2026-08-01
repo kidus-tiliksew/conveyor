@@ -40,6 +40,16 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'stage-aware-implement', task_id: taskId, job_id: 'stage-aware-implement', stage: 'implement', state: 'claimed', claimable: false, queue_entered_at: '2026-07-15T12:01:00Z', queue_deadline: '2026-07-16T12:01:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 			{ id: 'stage-aware-review', task_id: taskId, job_id: 'stage-aware-review', stage: 'review', state: 'timed_out', claimable: false, queue_entered_at: '2026-07-15T12:02:00Z', queue_deadline: '2026-07-16T12:02:00Z', execution_deadline: '2026-07-15T12:03:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true },
 		],
+	} : taskId === 'blocked-suppressed' ? {
+		jobs: [],
+		events: [{ id: 1, task_id: taskId, job_id: 'blocked-suppressed-implement-1', kind: 'work_order.child_failed', actor_id: 'worker', actor_role: 'runner' as const, payload: { attempt_id: 'blocked-attempt-1', reason: 'harness exited before completing work order', detail: 'provider rejected the configured model', retry_suppressed: true }, at: createdAt }],
+		work_orders: [{
+			id: 'blocked-suppressed-implement-1', task_id: taskId, job_id: 'blocked-suppressed-implement-1', stage: 'implement' as const, state: 'queued' as const, claimable: false,
+			blocking_task_ids: ['blocked-dependency'], last_attempt_id: 'blocked-attempt-1', last_attempt_outcome: 'child_failure' as const,
+			last_failure_message: 'harness exited before completing work order', last_failure_detail: 'provider rejected the configured model', last_failure_at: createdAt,
+			automatic_retry_count: 3, retry_suppressed: true, queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', updated_at: createdAt,
+			redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true,
+		}],
 	} : taskId === 'blueprint-child' || taskId === 'blocked-refresh' || taskId === 'spec-while-blocked' ? {
 		jobs: [],
 		events: [],
@@ -242,7 +252,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       repo: 'conveyor',
       base_branch: 'main',
       branch: `conveyor/task-${taskId}`,
-		state: taskId === 'gate' || taskId === 'evidence' || taskId === 'human-gate-worker-scope' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' || taskId === 'blueprint-child' || taskId === 'blocked-refresh' || taskId === 'spec-while-blocked' || taskId === 'unsatisfiable' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
+		state: taskId === 'gate' || taskId === 'evidence' || taskId === 'human-gate-worker-scope' ? 'awaiting_human' : taskId === 'parked' ? 'parked' : taskId === 'blueprint-parent' || taskId === 'blueprint-child' || taskId === 'blocked-refresh' || taskId === 'blocked-suppressed' || taskId === 'spec-while-blocked' || taskId === 'unsatisfiable' ? 'queued' : taskId.startsWith('merge-') ? 'approved' : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -262,15 +272,20 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       origin_sub_id: taskId === 'blueprint-child' ? 'SUB-3' : undefined,
       blocking_task_ids: taskId === 'blueprint-child' ? ['blueprint-sub-2']
         : taskId === 'blocked-refresh' ? ['refresh-dependency']
+		: taskId === 'blocked-suppressed' ? ['blocked-dependency']
 		  : taskId === 'spec-while-blocked' ? ['refresh-dependency']
-          : taskId === 'unsatisfiable' ? ['closed-dependency']
+          : taskId === 'unsatisfiable' ? ['closed-dependency', 'live-dependency']
             : undefined,
       dependencies: taskId === 'blueprint-child' ? [
         { id: 'blueprint-sub-2', title: 'Runtime', state: 'running' },
         { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged' },
       ] : taskId === 'blocked-refresh' ? [{ id: 'refresh-dependency', title: 'Backend contract', state: 'running' }]
+		: taskId === 'blocked-suppressed' ? [{ id: 'blocked-dependency', title: 'Schema migration', state: 'running' }]
 		: taskId === 'spec-while-blocked' ? [{ id: 'refresh-dependency', title: 'Backend contract', state: 'running' }]
-        : taskId === 'unsatisfiable' ? [{ id: 'closed-dependency', title: 'Retired API plan', state: 'closed' }]
+        : taskId === 'unsatisfiable' ? [
+          { id: 'closed-dependency', title: 'Retired API plan', state: 'closed' },
+          { id: 'live-dependency', title: 'Active schema work', state: 'running' },
+        ]
           : undefined,
       children: taskId === 'blueprint-parent' ? [
         { id: 'blueprint-sub-1', title: 'Persistence', state: 'merged', origin_spec_version: 1, origin_sub_id: 'SUB-1' },
@@ -332,7 +347,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       stage: 'implement',
       state: 'queued',
       claimable: false,
-      blocking_task_ids: ['closed-dependency'],
+      blocking_task_ids: ['closed-dependency', 'live-dependency'],
       unsatisfiable_task_ids: ['closed-dependency'],
       queue_entered_at: createdAt,
       queue_deadline: '2026-07-16T12:00:00Z',
@@ -463,6 +478,7 @@ async function mockTaskAPIs(page: Page) {
       if (taskId === 'blocked-refresh' && requestCount > 1) {
         item.task.blocking_task_ids = undefined
         item.task.dependencies = [{ id: 'refresh-dependency', title: 'Backend contract', state: 'merged' }]
+		item.work_orders = item.work_orders?.map((order) => ({ ...order, blocking_task_ids: undefined })) ?? item.work_orders
       }
 	    await route.fulfill({ json: item })
       return
@@ -1379,14 +1395,14 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
 	await page.goto('/tasks/blueprint-child/full')
 	await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
 	await expect(page.getByText('Current state · Progressing')).toBeVisible()
-	await expect(page.getByRole('link', { name: 'Runtime · Running' })).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
+	await expect(page.locator('section[aria-labelledby="current-execution-title"]').getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
 	await expect(page.getByText('Not applicable.')).toBeVisible()
 	await expect(page.getByText('Nothing — implementation starts automatically when Runtime merges.')).toBeVisible()
 	await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
 	await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
 	await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
 	await expect(page.getByRole('link', { name: 'Phase 6 blueprint · spec v1' })).toHaveAttribute('href', '/blueprints/blueprint-parent')
-	await expect(page.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
+	await expect(page.getByRole('link', { name: 'Runtime · Waiting' }).last()).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
 	await expect(page.getByRole('link', { name: 'Persistence · Satisfied' })).toHaveAttribute('href', '/tasks/blueprint-sub-1/full')
   await expect(page.getByText('awaiting_human')).toHaveCount(0)
   await expect(page.getByText('terminal outcome')).toHaveCount(0)
@@ -1415,13 +1431,24 @@ test('blocked detail polling clears waiting state without a reload and stays off
 test('dependency links follow the detail route variant and spec claiming stays available', async ({ page }) => {
   await page.goto('/tasks/blueprint-child')
   await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Runtime · Running' })).toHaveAttribute('href', '/tasks/blueprint-sub-2')
+  await expect(page.getByRole('region', { name: 'Execution event timeline' }).getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute('href', '/tasks/blueprint-sub-2')
 
   await page.goto('/tasks/spec-while-blocked/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
   await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
+})
+
+test('recovery-needing work stays primary when dependencies are also unresolved', async ({ page }) => {
+  await page.goto('/tasks/blocked-suppressed/full')
+  const currentState = page.locator('section[aria-labelledby="current-execution-title"]')
+  await expect(currentState.getByRole('heading', { name: 'Implementation paused — recovery needed' })).toBeVisible()
+  await expect(currentState.getByText('Schema migration · Waiting')).toBeVisible()
+  await expect(currentState.getByText(/task remains dependency-gated/i)).toBeVisible()
+  await expect(page.getByText(/starts automatically/i)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
 })
 
 test('board cards show a neutral, keyboard-reachable dependency chip using titles', async ({ page }) => {
@@ -1476,9 +1503,15 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(card.getByRole('button', { name: /Unlink dependency/ })).toHaveCount(0)
   await card.click()
 
-  await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toBeVisible()
+	const currentState = page.locator('section[aria-labelledby="current-execution-title"]')
+  await expect(page.getByRole('region', { name: 'Dependency needs attention' }).first()).toBeVisible()
+	await expect(currentState.getByRole('heading', { name: 'Dependency needs attention' })).toBeVisible()
+	await expect(currentState.getByText('Retired API plan · Needs attention')).toBeVisible()
+	await expect(currentState.getByText('Active schema work · Waiting')).toBeVisible()
+	await expect(currentState.getByText(/Unlink the dead dependency.*cancel this task/i)).toBeVisible()
 	await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toHaveCount(0)
 	await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
+	await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
   await page.getByRole('button', { name: 'Unlink dependency Retired API plan' }).click()
   const remove = page.getByRole('button', { name: 'Remove dependency' })

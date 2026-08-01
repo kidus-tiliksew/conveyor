@@ -5,8 +5,8 @@ import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import { buildTimeline, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type PanelSeat, type TimelineEntry } from '../../lib/activity'
-import { defaultReasonCode, stageLabels, taskStateLabels } from '../../lib/contracts'
+import { buildTimeline, dependencyRelationLabel, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type PanelSeat, type TimelineEntry } from '../../lib/activity'
+import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
@@ -136,7 +136,7 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
               <span className="flex flex-col items-start">
                 {state.blockingDependencies.map((dependency) => (
                   <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
-                    {dependency.title || dependency.id} · {taskStateLabels[dependency.state] ?? 'Unknown state'}
+                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, true, state.unsatisfiableDependencyIDs?.includes(dependency.id) === true)}
                   </Link>
                 ))}
               </span>

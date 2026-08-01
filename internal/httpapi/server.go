@@ -39,8 +39,8 @@ type Server struct {
 	// GenerateTaskTitle uses the trusted control-plane AI integration for every
 	// task intake. Nil fails closed instead of persisting an untitled task.
 	GenerateTaskTitle func(context.Context, core.Task) (string, error)
-	// OnIntervention advances stage gates after the append-only decision is
-	// committed (spec §4, §13.2).
+	// OnIntervention validates fresh authoritative state and advances the gate
+	// before the append-only decision is committed (spec §13.2).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
 	OnMerge          func(context.Context, core.Task) error
@@ -451,16 +451,35 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		TaskID: id, JobID: jobID, Action: request.Action,
 		ReasonCode: request.ReasonCode, Comment: request.Comment,
 	}
+	if request.Action != core.InterventionPull {
+		command := core.TaskInterventionApproveReview
+		switch request.Action {
+		case core.InterventionReject:
+			command = core.TaskInterventionReject
+		case core.InterventionRedirect:
+			command = core.TaskInterventionRedirect
+		}
+		if _, err := core.TransitionTask(task.State, command); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+	}
+	if s.OnIntervention != nil {
+		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
+			status := http.StatusInternalServerError
+			var invalidTransition *core.ErrInvalidTransition
+			if errors.As(err, &invalidTransition) || errors.Is(err, dispatch.ErrReviewedHeadUnavailable) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+	}
 	if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if s.OnIntervention != nil {
-		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else if request.Action == core.InterventionRedirect && s.OnCreate != nil {
+	if s.OnIntervention == nil && request.Action == core.InterventionRedirect && s.OnCreate != nil {
 		s.OnCreate(r.Context(), id)
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
