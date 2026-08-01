@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.13**
-**Date:** July 31, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. Subsequent changes proceed by amendment with version bumps.
+**Specification — v2.14**
+**Date:** August 1, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. v2.14 (§21.54) accepts **Phase 8 — deployment & multi-user**, sequenced after the Phase 7 memory store: user identity with admin-as-grant and typed actors on events, solo/server authentication with opaque per-user credentials, a human/agent/worker credential-class boundary enforced per route, the embedded worker inside `conveyord`, per-repo delivery tiers (`github` / `remote` / `local`) making GitHub optional, and control-plane packaging with versioned releases and `conveyor init` — renumbering the later deferred phases (memory keeps 7; flywheel → 9, managed execution → 10, enterprise → 11). Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -25,8 +25,9 @@ similar, connected over MCP) or unattended (the same CLIs spawned headless
 by the operator's own **worker** daemon). Conveyor does not implement a
 coding agent, does not sandbox one, and does not pool anyone's
 credentials; agents run under the operator's own logins on the operator's
-own machines, and the **pushed branch is the trust boundary** every gate
-judges.
+own machines, and the **recorded task branch head is the trust
+boundary** every gate judges — pushed to a remote, or shared through the
+repository's own ref store under `local` delivery (§11).
 
 The design philosophy follows the software-factory model: engineers do not
 primarily write code; they operate and improve a system that writes code.
@@ -62,14 +63,14 @@ was achieved July 15, 2026 (§19).
    task trail mirrored to GitHub (§11, §13).
 8. Close the loop over time: accumulated transcripts, reason codes, and
    the spec corpus feed a memory store and self-improvement engine
-   (Phases 7–8, §15).
+   (Phases 7 and 9, §15).
 
 ### 1.2 Non-goals
 
 - Building a novel coding agent or model. Conveyor is an orchestrator.
 - Owning execution environments. The sandbox execution plane — runners,
   containers, harness adapters, credential pooling — was retired by
-  §21.4; managed execution returns, if ever, as demand-triggered Phase 9
+  §21.4; managed execution returns, if ever, as demand-triggered Phase 10
   scope.
 - Environment promotion machinery (dev/staging/prod tiers). Deployment to
   production remains the responsibility of the repository's existing
@@ -111,7 +112,7 @@ Two numbers define success and are instrumented from day one:
 | **Requirement** | A living, versioned intent document: what the system is supposed to do in an area and why — generated from operator intent, maintained conversationally, amended by drift reconciliation. Flat corpus, stable `REQ-n` statement IDs, optionally served by blueprints (§4.2, §13.3). |
 | **Blueprint** | A spec (§4.1) with a non-empty `decomposition`; approval materializes child tasks with dependency edges. Optionally linked to the requirement(s) it serves — linkable at drafting or retroactively (§4.1, §4.2). |
 | **Artifact** | A workspace-scoped context file (document, image, audio) attachable to tasks and requirements, injected into agent context and fetchable over MCP (§9). |
-| **Prompt/policy pack** | The versioned bundle of role prompts shipped with the platform (proto-pack since Phase 3). Full pack versioning with shadow-run gating is Phase 8 scope (§2.2). |
+| **Prompt/policy pack** | The versioned bundle of role prompts shipped with the platform (proto-pack since Phase 3). Full pack versioning with shadow-run gating is Phase 9 scope (§2.2). |
 
 ### 2.1 Configuration scopes
 
@@ -171,7 +172,7 @@ Phase 3. The full pack lifecycle designed in v1.0 — workspace-pinned pack
 versions, self-improvement diffs against pack content, and **shadow-run
 gating** (candidate packs replayed against completed tasks and compared
 on routing decisions, bounce counts, and cost before adoption) — is
-Phase 8 scope, deferred until the transcript corpus exists to replay
+Phase 9 scope, deferred until the transcript corpus exists to replay
 (§15.2, §19). One invariant survives from the original design unchanged:
 behaviors live in prompts and configuration; invariants (lifecycle
 legality, self-review prohibition, redaction, credential handling) live
@@ -278,11 +279,13 @@ platform's obligation is **independence labels**: every verdict records
 agent and model, `same_model_as_implementer`, and `model_enforcement:
 worker-pinned | self-reported`, rendered honestly on the review card.
 
-**The pushed branch is the trust boundary.** Every gate judges the
-artifact, not the environment: spec approval and merge approval are
-factory-side; review is an independent-session judgment against the
-pushed branch; mechanical verification delegates to the repository's own
-CI. What is given up is recorded plainly: no confinement of the
+**The recorded task branch head is the trust boundary.** Every gate
+judges the artifact, not the environment: spec approval and merge
+approval are factory-side; review is an independent-session judgment
+against the recorded branch head — pushed for `github`/`remote`
+delivery, shared through the repository ref store for `local` (§11);
+mechanical verification delegates to the repository's own CI where a
+forge carries one (§12). What is given up is recorded plainly: no confinement of the
 implementing or reviewing process and no observed transcripts of either —
 jobs run this way are recorded `harness: external-mcp` (or the worker's
 CLI name), `confinement: none`, `auth: byoa`, with usage marked
@@ -557,7 +560,7 @@ returns to the submitting agent for correction. (2) Each acceptance
 criterion carries a **verification method**; `test` criteria are
 exercised by the repository's CI, `human`-tagged criteria surface on the
 review card as explicit checkboxes, and `playwright`/`computer-use`
-criteria await the Phase 9 verification agent (§12). (3) Verdicts attach
+criteria await the Phase 10 verification agent (§12). (3) Verdicts attach
 to `AC-n` IDs. (4) `Non-goals` is what review enforces when emitting
 `scope-creep` codes. (5) The *approved* spec version is the contract: a
 redirect that changes criteria produces a new version requiring
@@ -943,7 +946,31 @@ review, push, submit).
 an OS-managed service — launchd agent (macOS), systemd user unit (Linux)
 — with restart-on-failure, start-on-boot, and a documented log location.
 Supervision only: no new protocol or behavior; interactive `worker run`
-remains fully supported (§21.16).
+remains fully supported (§21.16). Phase 8.4 extends the identical
+contract to the control plane: `conveyord install | uninstall | status`
+(§17.2).
+
+### 6.6 The embedded worker *(Phase 8.1 — §21.54)*
+
+`conveyord` can supervise one worker itself: the **same §6.4 supervisor
+loop, in-process** — not a second protocol, not a shortcut past the
+work-order lifecycle. The embedded worker enrolls through the same code
+path with an internally-issued credential (no pairing token — the
+exchange pairing exists to secure is intra-process), appears on the
+Workspace page as a worker labeled `embedded`, heartbeats, probes
+harnesses, claims through `claim_work_order` with every guard intact
+(hold, self-review, serviceability, dependency gating §6.3), spawns
+harness children with per-order fresh identity/token pairs (§6.4), and
+honors stall, first-activity, and retry-suppression semantics unchanged.
+Jobs record `dispatch: worker` with the embedded worker's identity.
+
+Config: `worker.embedded.enabled` with the standard stage-aware capacity
+settings; default **on** in solo mode, **off** in server mode (§17.5) —
+a server operator opts in, understanding the control-plane host then
+needs harness CLIs and model credentials installed. External workers
+pair and operate exactly as before; embedded and external workers
+coexist under ordinary claim competition. What §21.31 forbade stays
+forbidden: this is supervision placement, not a new execution plane.
 
 ---
 
@@ -970,7 +997,7 @@ mechanics are as §2.1. Repos are `{name, url, github, base}`; per-repo
 images, tool policies, and secret references left the document with the
 execution pivot.
 
-### 7.2 Multi-repo coordination *(deferred design, Phase 9)*
+### 7.2 Multi-repo coordination *(deferred design, Phase 10)*
 
 Multi-repo worktree sets and linked-PR gating are deferred with managed
 execution. The design is preserved: expand/contract **decomposition
@@ -1000,7 +1027,10 @@ corresponding local or remote Git ref; reads and UI expose the assigned
 name as metadata without implying the ref exists. Branch availability
 has three states: **assigned** (name and base only), **local**
 (agent-owned, unpushed), **pushed** (available to review coordination
-and the human checkout flow).
+and the human checkout flow). Under `local` delivery (§11) task
+worktrees share the repository's ref store (§8.2), so a committed task
+branch is already visible without any push — "pushed" reads as "recorded
+head available to coordination."
 
 The control plane keeps a fetch-only bare-clone cache per repo for
 branch management, diffing, and checkout support; fetches into it are
@@ -1168,7 +1198,7 @@ control-plane execution settings
 (`control_plane.planning.{model, effort, timeout}`), with a per-session
 override constrained to a workspace-curated `planning_models`
 allowlist. Each session records `{model, effort, pinned SHA}` —
-provenance for the lineage graph and, later, the Phase 8 flywheel
+provenance for the lineage graph and, later, the Phase 9 flywheel
 ("which planning models produce blueprints that survive
 implementation").
 
@@ -1178,7 +1208,8 @@ injected into pipeline-agent context, listed in work orders, and
 fetchable over MCP (`read_artifact`). Artifacts are context, never
 secrets; storage is size-bounded and content-addressed.
 
-**GitHub triggers:** ready-labeled issues are polled into tasks
+**GitHub triggers** (`github`-delivery repos only, §11): ready-labeled
+issues are polled into tasks
 (provenance `github:<repo>#<n>`), and PR review comments on Conveyor PRs
 convert to redirect feedback. Monitor-agent triggers are live (§4.2,
 §21.45); the chat trigger is the Phase 6.2 planning surface; cron
@@ -1199,31 +1230,83 @@ Conveyor's credential story after the pivot is deliberately small:
    credential-class concern of the retired execution plane is moot, and
    the no-circumvention posture stands: Conveyor never disguises
    automated traffic or evades vendor limits.
-3. **Worker and session tokens.** The worker's workspace-scoped
+3. **User credentials** *(Phase 8.2 — §21.54)*. Humans authenticate
+   per §17.5: passwords stored only as argon2id hashes (or no passwords
+   at all under emailed one-time sign-in links), and session tokens and
+   personal access tokens stored server-side **only as hashes** —
+   opaque values, never JWTs, instantly revocable. The shared operator
+   bearer `CONVEYOR_API_TOKEN` retires as a deployment-wide secret: on
+   migration it is honored as a personal access token belonging to the
+   seeded admin until first login, then must be rotated to per-user
+   tokens. The variable name survives in the worker child-environment
+   contract below; the value becomes per-credential.
+4. **Worker and session tokens.** The worker's workspace-scoped
    enrollment credential is stored server-side only as a hash and is
-   operator-revocable; per-work-order freshness and identity are the
+   operator-revocable (the embedded worker's is internally issued,
+   §6.6); per-work-order freshness and identity are the
    claim's session ID and client token. None of these values may appear
    in argv, workspace documents, snapshots, fingerprints, events, logs,
    diagnostics, transcripts, or persistent harness configuration — the
    worker supplies `CONVEYOR_API_TOKEN` only in the child-only
    environment, and `json_file` transport uses a mode-0600 temporary
    file with post-exit cleanup (§5.2).
-4. **Transcript redaction is non-negotiable** and applies to everything
+5. **Transcript redaction is non-negotiable** and applies to everything
    the control plane stores: pattern/entropy detection (JWTs, `sk-…`,
    `ghp_…`, PEM blocks, high-entropy assignments) plus exact-match
    scrubbing of every control-plane-known credential. Redaction events
    are logged by count and pattern class, never value.
-5. **GitHub access** uses least privilege: a fine-grained token with
+6. **GitHub access** uses least privilege and exists only for
+   `github`-delivery repos (§11): a fine-grained token with
    commit-status and PR-comment permissions is a valid default for
-   self-hosted deployments; no GitHub App is required (§11.1).
+   self-hosted deployments; no GitHub App is required (§11.1). Under
+   `remote` and `local` delivery Conveyor stores **no forge credential
+   at all** — pushes use the host's ambient git credentials, and the
+   factory never prompts for or persists them.
 
 ---
 
-## 11. GitHub coordination
+## 11. Delivery tiers and GitHub coordination
 
-The factory coordinates GitHub; the agent only commits and pushes.
+Each repo declares a `delivery` mode *(Phase 8.3 — §21.54)*; `github`
+reproduces the pre-Phase-8 behavior exactly, so existing workspaces
+migrate as-is. In every tier the factory coordinates delivery and the
+agent only commits and pushes.
+
+- **`github`** — factory-coordinated forge delivery: the §11.1–§11.2
+  PR lifecycle, commit-status and deterministic-comment projections,
+  mergeability reads, merge/auto-merge via the forge, issue mirroring
+  (Phase 5.3), and monitor forge signals (Phase 5.6).
+- **`remote`** — a git remote, no forge API. Agents push task branches
+  with the **host's ambient git credentials** (SSH keys, credential
+  helper — §10 item 6). `submit_for_review` dispatches the in-factory
+  review panel against the pushed branch head; no PR, no status
+  projection. Merging is the operator's act, wherever they merge:
+  completion is **ancestry-detected** — the task terminates `merged`
+  when its approved head becomes an ancestor of the fetched base ref.
+  With the merge gate off, approval simply marks readiness; there is
+  nothing remote for the factory to merge without a forge API, and it
+  does not try.
+- **`local`** — the repo URL is a filesystem path; no remote need exist
+  at all. Task worktrees already share the repository's ref store
+  (§8.1–§8.2), so a committed task branch is visible without any push.
+  Review runs against the branch head as in `remote`. Merge: when the
+  base branch is **not checked out in any working tree** (the normal
+  case for a server-hosted clone), the control plane performs a
+  recorded ref merge itself; when it is (the solo operator's own
+  checkout — §21.8's containment stands, the primary checkout is never
+  mutated), approval hands off to the same ancestry detection as
+  `remote`, and the operator merges in their own tree.
+
+Invariants that do not vary by tier: approval binds to the reviewed
+head SHA and merge/completion requires the current head to equal it
+(§11.2); history is never rewritten (§8.2); the evidence gate (§12
+item 2) and the adversarial panel are the review spine. §9 webhook/poll
+intake and the forge error categories below apply to `github`-tier
+repos only.
 
 ### 11.1 PR lifecycle and portable review publication
+
+Applies to `github`-delivery repos.
 
 The PR is opened (or reused) by the control plane at
 `submit_for_review`, and not before — no draft PRs, no push-event
@@ -1246,6 +1329,9 @@ uniform rather than stringly-typed; Phase 5.3's issue creation and
 verdict mirroring adopt the same taxonomy (§21.41).
 
 ### 11.2 Merge readiness, conflict-fix dispatch, refresh review
+
+Applies to `github`-delivery repos, except the head-SHA approval
+binding, which is tier-independent.
 
 - **Readiness is read before merge is offered.** At the merge gate the
   control plane resolves PR head and mergeability first: `MERGEABLE`
@@ -1285,8 +1371,10 @@ The explicit goal is unchanged from v1.0: compress human review time by
 letting the reviewer **confirm evidence rather than reproduce
 behavior**. Current mechanics, in order of arrival:
 
-1. **Repository CI is the mechanical verifier** (now). PR checks gate
-   merge; automatic merge requires green checks.
+1. **Repository CI is the mechanical verifier** (now, `github`-delivery
+   repos). PR checks gate merge; automatic merge requires green checks.
+   `remote` and `local` delivery lean on the evidence gate and the
+   review panel until the verification agent arrives (item 3).
 2. **Evidence-gated submission** *(Phase 5.4, delivered)*: a workspace
    toggle refuses `submit_for_review` until at least one
    verification-evidence artifact (screenshots or a short recording of
@@ -1295,7 +1383,7 @@ behavior**. Current mechanics, in order of arrival:
    explicit: role `verification_evidence`; PNG, JPEG, or WebP screenshots up
    to 10 MiB; MP4 or WebM recordings up to 25 MiB; direct ownership by the
    submitting task in the active workspace. Filenames do not establish type.
-3. **The verification agent** *(Phase 9, demand-triggered)*: scripted
+3. **The verification agent** *(Phase 10, demand-triggered)*: scripted
    Playwright flows and computer-use judgment against the spec's
    acceptance criteria, with evidence attached per `AC-n`. With
    K8sRunner, this is explicitly the reintroduction of managed
@@ -1320,7 +1408,7 @@ design):
 
 The shipped default is both gates on. The historical L0–L3 escalation
 ladder and the Auto/Manual mode axis are both retired (§21.12, §21.31);
-existing records keep recorded levels/modes as history. Phase 8
+existing records keep recorded levels/modes as history. Phase 9
 graduation, when it arrives, operates on gate toggles and hold usage.
 
 ### 13.2 The review inbox
@@ -1416,12 +1504,12 @@ Conveyor records what execution cost and never lets cost gate execution
    surfaces — observational like every other usage value, never a gate
    (§21.41).
 3. **Attribution stays visible** in the per-task timeline. The
-   aggregate cost dashboard is Phase 9, observational only; nothing
+   aggregate cost dashboard is Phase 10, observational only; nothing
    revives spending enforcement without a new accepted amendment.
 
 ---
 
-## 15. Memory and self-improvement *(Phases 7–8)*
+## 15. Memory and self-improvement *(Phases 7 and 9)*
 
 ### 15.1 Memory store *(Phase 7)*
 
@@ -1437,7 +1525,7 @@ memory store is **recall over that graph**: retrieval ranks and returns
 linked nodes with their provenance, and vector similarity is the
 secondary index, never the authority (§4.2 item 4, §21.46).
 
-### 15.2 Self-improvement engine *(Phase 8)*
+### 15.2 Self-improvement engine *(Phase 9)*
 
 Consumes transcripts, reason
 codes, bounce histories, and telemetry; produces human-reviewable
@@ -1459,7 +1547,18 @@ and event in one transaction (§3.3). The core tables:
 
 - `workspaces` — slug ID, display name, versioned config document
   (§2.1).
-- `repos` — `{name, url, github, base}` per workspace.
+- `users` — email (unique, case-insensitive), display name, status
+  (`active` / `deactivated`), optional password hash (§17.5).
+  Deactivation fails a user's credentials closed at next use; history
+  never cascades.
+- `admin_grants` — `(user_id, granted_by, created_at)`, revocable;
+  every grant and revocation writes an audit event naming both parties
+  (§17.5).
+- `sessions` / `personal_access_tokens` — opaque credentials stored
+  only as hashes, per-user, named (PATs), revocable (§10 item 3).
+- `repos` — `{name, url, base, delivery, github}` per workspace;
+  `delivery ∈ {github, remote, local}` (§11), forge identifiers
+  required only by the `github` tier.
 - `tasks` — state (CHECK-constrained from the machine module), current
   stage, assigned branch/base metadata, frozen setup contract, frozen
   gates, hold, provenance, generated title, GFM body,
@@ -1487,10 +1586,13 @@ and event in one transaction (§3.3). The core tables:
   worker/BYOA labels), token telemetry, optional self-reported
   `cost_usd`, timing.
 - `events` — append-only, workspace/task/job-scoped, actor and role on
-  every row; the command vocabulary of §3.3 is the event vocabulary.
-- `interventions` — every human decision with action, derived or
-  curated reason code, comment, and (for approvals) the approved head
-  SHA.
+  every row; actors are typed — `user:<id>`, `agent:<label>`,
+  `worker:<id>`, `system` (§21.54; pre-Phase-8 rows keep their
+  historical actor values, no backfill); the command vocabulary of
+  §3.3 is the event vocabulary.
+- `interventions` — every human decision with the acting user, action,
+  derived or curated reason code, comment, and (for approvals) the
+  approved head SHA.
 - Spec versions, review rounds and verdicts, artifacts
   (content-addressed), intake idempotency keys, and
   worker enrollments (credential hashes, probe results) round out the
@@ -1517,7 +1619,7 @@ Postgres. (TanStack Start was considered and rejected — SSR and server
 functions would add a Node tier an authenticated internal dashboard
 doesn't use; cheaply reversible since Start builds on Router.)
 
-**Permitted exception:** the Phase 8 analysis side of the
+**Permitted exception:** the Phase 9 analysis side of the
 self-improvement engine may run as a small Python sidecar if transcript
 mining outgrows Go; everything else stays in the two stacks above.
 
@@ -1533,20 +1635,40 @@ conveyor done <task-id>                     # terminal-state worktree cleanup
 conveyor worker run [--workspace acme]      # enroll/poll/supervise (§6.4)
 conveyor worker install | uninstall | status   # Phase 5.5
 conveyor config export | import             # git-versioned config backup
+conveyor init                               # first-run: mode, admin, workspace (§17.2)
+conveyord install | uninstall | status      # control-plane service (Phase 8.4, §6.5)
 ```
 
-### 17.2 First-run sequence
+### 17.2 First-run and packaging *(Phase 8.4 — §21.54)*
 
-1. Deploy `conveyord` (one binary + Postgres); set the deployment file's
-   substrate settings and `CONVEYOR_API_KEY`.
-2. Create a workspace and point it at repos; the seed file imports on
-   first boot, then the database is the truth.
-3. Register harnesses in the workspace registry (or rely on interactive
-   agents only); define setups or accept the default.
-4. For unattended operation: issue a pairing token, run `conveyor worker
-   run` on the operator machine, confirm health on the Workspace page.
+Distribution is **versioned releases**: single static binaries per
+platform (Homebrew tap and tarball; the dashboard stays embedded via
+`go:embed`), schema migrations applied on startup — an upgrade is
+*replace binary, restart service*. `conveyord install | uninstall |
+status` writes a launchd agent / systemd user unit under the §6.5
+contract: restart-on-failure, start-on-boot, documented log paths,
+convergent on repeated install, refusing to touch unrecognized
+definitions. Server installs get a maintained compose stack (conveyord
++ Postgres) and terminate TLS at a fronting reverse proxy (§17.5).
+
+**`conveyor init`** is the first-run sequence:
+
+1. Start Postgres (the documented compose file) and `conveyord` (one
+   binary; `CONVEYOR_API_KEY` for in-process AI, §10).
+2. Choose **solo** or **server** mode (§17.5); seed the admin (server)
+   or the owner (solo). The seed applies only to an empty user store.
+3. Create the first workspace and add a repo — by local path (`local`
+   delivery is the zero-config default for solo, §11) or URL.
+4. Register harnesses (or rely on interactive agents only); define
+   setups or accept the default. In solo mode the embedded worker
+   (§6.6) is already live — no pairing. For additional unattended
+   machines: issue a pairing token, run `conveyor worker run`, confirm
+   health on the Workspace page.
 5. Create the first task from the dashboard, CLI, or an agent session
    over MCP — and review your first spec at the gate.
+
+The solo quickstart is therefore: install binary, start Postgres,
+`conveyor init`, create a task. No pairing, no login, no forge token.
 
 ### 17.3 HTTP API
 
@@ -1557,13 +1679,15 @@ streaming, review actions, hold toggle, setup reassignment, recovery
 operations (order recovery, redispatch, review-round retry/recover),
 workspace CRUD and config read/write (`If-Match` optimistic
 concurrency), worker pairing-token issuance and revocation, webhook/poll
-ingestion. All mutating endpoints require auth and are recorded in
-`events`.
+ingestion. All mutating endpoints require an authenticated actor —
+identity, credential classes, and the per-route auth declaration are
+§17.5 — and are recorded in `events`.
 
 ### 17.4 MCP task intake and work orders
 
 `conveyord` exposes one authenticated MCP server for agent-facing intake
-and execution; the bearer is authenticated as an agent actor, and every
+and execution; the bearer is authenticated as an agent actor (agent
+credential class, §17.5), and every
 resulting task, event, claim, report, and verdict follows the same
 durable audit path as the corresponding HTTP action.
 
@@ -1586,13 +1710,75 @@ durable audit path as the corresponding HTTP action.
 Claims and submissions are refused once a task's clocks are spent or its
 orders are cancelled — enforcement lives at the protocol boundary.
 
+### 17.5 Identity and authentication *(Phase 8.2 — §21.54)*
+
+**Users and roles.** A deployment is one organization (multi-tenancy is
+a non-goal). Users are `users` rows (§16); authorization is two
+effective roles. **Member** is the default state of existing: any
+active user may do everything the single operator could pre-Phase-8
+except the admin-only operations. **Admin is a grant, not a column**
+(`admin_grants`, §16), revocable and audited; the admin-only surface is
+user creation/deactivation, grant management, workspace
+creation/deletion, deployment-level config, and worker credential
+revocation. Workspace config writes (§2.1) remain member operations —
+the team runs the factory; admins govern who is on the team. Bootstrap
+is a seed, not a signup: deployment config or `conveyor init` names the
+initial admin, applied only to an empty user store; there is no
+self-registration surface. Deactivation, not deletion: a deactivated
+user's credentials fail closed at next use; their history is immutable
+record.
+
+**Deployment modes**, chosen at first run and recorded in deployment
+config:
+
+- **Solo** — the zero-login path for one person on their own machine.
+  `conveyord` binds loopback only (refusing to start otherwise in this
+  mode), and loopback requests authenticate as the seeded owner without
+  a login step. Switching to server mode is a supported, one-way
+  `conveyor init --server` migration that forces real credentials
+  before the bind address may widen.
+- **Server** — named users sign in. Two credential styles, chosen at
+  init: **passwords** (argon2id, no external dependencies) or **emailed
+  one-time sign-in links** (no password storage; requires a configured
+  SMTP/API sender; links are single-use through a Postgres-backed claim
+  so a restart can never resurrect a spent link, and expire within
+  minutes). Login is rate-limited per user and per source address.
+
+Session and API credentials are **opaque tokens stored server-side only
+as hashes** — never JWTs (§10 item 3): one binary plus the Postgres it
+already requires makes database-backed tokens instantly revocable with
+no signing-key machinery. Dashboard sessions are cookie-carried with
+idle and absolute expiry; CLI and MCP callers use named, per-user
+**personal access tokens**, listed and revocable on the user's settings
+surface. TLS is out of scope: server installs terminate TLS at a
+fronting reverse proxy, and the docs say so plainly.
+
+**The credential-class boundary.** Three credential classes exist —
+**human** (session or PAT), **agent** (MCP bearer, §17.4), **worker**
+(enrollment credential, §6.4) — and the class is part of the route
+contract, declared per route in one table and enforced at the protocol
+boundary, not per-handler. Operations reserved to human credentials:
+gate decisions (approve / request-changes / reject), cancel, hold,
+config writes, recovery operations, dependency unlink (§6.3),
+pairing-token issuance, user and grant management, and PAT issuance. An
+agent or worker credential is *structurally* unable to reach these — a
+refusal, not a permission check configuration could open. This
+generalizes the standing posture ("agents file tasks but cannot cancel
+them," §13.2) into the system's prompt-injection firewall: no matter
+what untrusted task or PR content persuades an agent to attempt, the
+surfaces that govern people, gates, and credentials answer only to a
+signed-in human. The §17.4 MCP tool list is unchanged — it is already
+exactly the agent-class surface.
+
 ---
 
 ## 18. Security summary
 
-- **The pushed branch is the trust boundary** (§3.2): every gate judges
-  the pushed artifact — independent review, CI checks, human approval
-  bound to the approved head SHA (§11.2) — never the execution
+- **The recorded task branch head is the trust boundary** (§3.2, §11):
+  pushed for `github`/`remote` delivery, shared through the repository
+  ref store for `local` — every gate judges the recorded artifact —
+  independent review, CI checks where a forge carries them, human
+  approval bound to the approved head SHA (§11.2) — never the execution
   environment.
 - **Execution is operator-owned and honestly labeled.** No confinement
   of implementing or reviewing processes; jobs record `confinement:
@@ -1603,14 +1789,20 @@ orders are cancelled — enforcement lives at the protocol boundary.
   and gates on by default.
 - **History is never rewritten**: append-only events; no force-pushes or
   resets of task branches anywhere in the system (§8.2).
-- **Credential hygiene** per §10: deployment key at boot, worker tokens
-  hashed server-side and passed child-environment-only, no credential
-  in argv/config/snapshots/logs, transcript redaction on everything
-  stored.
+- **Credential hygiene** per §10: deployment key at boot, user
+  passwords/sessions/PATs and worker tokens stored only as hashes,
+  worker tokens passed child-environment-only, no credential in
+  argv/config/snapshots/logs, transcript redaction on everything
+  stored, no forge credential at all outside `github` delivery.
+- **The credential-class boundary** (§17.5): human, agent, and worker
+  credentials are distinct classes declared per route; gates, cancel,
+  hold, config, recovery, and user/grant management answer only to
+  human credentials — structurally, not by configurable permission.
 - **Prompt-injection posture:** task bodies, issue content, and PR
   comments are untrusted data. Headless harness permission grants are
   explicit launch data scoped to the Conveyor MCP tools (§5.2), and
-  agents file tasks but cannot cancel them (§13.2).
+  the credential-class boundary caps what any persuaded agent can
+  reach — agents file tasks but cannot cancel them (§13.2, §17.5).
 
 ### 18.1 Enterprise path
 
@@ -1619,13 +1811,15 @@ Conveyor, proves the automation-rate and cost metrics, and champions
 adoption. Self-hosting is the wedge — the control plane runs in the
 customer's infrastructure and code never leaves their network; the audit
 chain, spec→PR→review→merge provenance, and credential hygiene are core
-architecture rather than enterprise add-ons. v1 is explicitly not
-enterprise-ready (no SSO/SAML, SCIM, RBAC enforcement, or HA story) but
-avoids foreclosing it: authentication flows through a pluggable identity
-interface, every actor and event carries a role for later RBAC
-enforcement, and operations stay boring — one Postgres, documented
-backup/restore, versioned upgrades. SSO/OIDC, SCIM, and RBAC are Phase
-10, demand-triggered.
+architecture rather than enterprise add-ons. Phase 8 ships the
+groundwork: named users with the two-role grant system, typed actors on
+every event, opaque revocable credentials, and the credential-class
+boundary (§17.5). What remains deferred and demand-triggered in Phase
+11 is the genuinely enterprise layer built atop it: SSO/OIDC and SAML,
+SCIM provisioning (§17.5's deactivation records are its landing site),
+RBAC beyond the two-role model (per-workspace roles, custom roles), and
+HA/backup hardening. Operations stay boring — one Postgres, documented
+backup/restore, versioned upgrades (§17.2).
 
 ---
 
@@ -1647,16 +1841,22 @@ backup/restore, versioned upgrades. SSO/OIDC, SCIM, and RBAC are Phase
 | **—** | Lifecycle state machines & command plane implementation (§3.3–§3.4, accepted §21.37–§21.38): machine module + event-corpus audit, then staged `taskops` migration — lands ahead of further 5.2+ lifecycle growth | In flight (factory-executed) |
 | **6** | Planning & the knowledge graph: **6.1** blueprint materialization + dependency-gated claiming (§4.1, §6.3, §8.3), **6.2** planning sessions — intent → requirement documents, chat → blueprints, features-tree migration (§4.2, §9, §13.3, §17.3), **6.3** lineage links + graph context assembly (§4.2 item 4, §16) | Accepted (§21.46) — next up |
 | **7** | Memory store: recall over lineage links; hybrid keyword/pgvector as secondary index; MCP memory tools (§15.1) | Post-Phase-6 |
-| **8** | Flywheel: transcript mining, self-improvement proposals, gate/hold graduation, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
-| **9** | Managed-execution reintroduction, demand-triggered: verification agent (§12), K8sRunner, multi-repo worktree sets and linked-PR gating (§7.2), aggregate cost dashboard | Demand-triggered |
-| **10** | SSO/OIDC, SCIM, RBAC enforcement, HA/backup hardening (§18.1) | Demand-triggered |
+| **8** | Deployment & multi-user (§21.54): **8.1** embedded worker (§6.6), **8.2** identity, grants, and credentials (§10, §16, §17.5), **8.3** delivery tiers — GitHub optional (§11), **8.4** packaging & first-run (§6.5, §17.1–§17.2) | Accepted (§21.54) — follows Phase 7; 8.1 may land earlier |
+| **9** | Flywheel: transcript mining, self-improvement proposals, gate/hold graduation, pack versioning with eval rig and shadow runs (§15.2) | Consumes the accumulated corpus |
+| **10** | Managed-execution reintroduction, demand-triggered: verification agent (§12), K8sRunner, multi-repo worktree sets and linked-PR gating (§7.2), aggregate cost dashboard | Demand-triggered |
+| **11** | SSO/OIDC and SAML, SCIM, RBAC beyond two roles, HA/backup hardening (§18.1) | Demand-triggered |
 
 Sequence: **Phase 5 is complete** (5.1 → 5.6, closed by §21.43–§21.46;
 working breakdown in docs/phase5-plan.md). Phase 6 runs 6.1 → 6.2 →
 6.3, with the first lineage links written by 6.1's materialization; the
 working breakdown lives in docs/phase6-plan.md. The state-machine /
 command-plane implementation lands ahead of further lifecycle-surface
-growth. This section is authoritative for scope and ordering.
+growth. Phase 7 (memory) follows Phase 6 — recall over the lineage
+graph continues the knowledge-graph arc while its context is fresh.
+Phase 8 runs 8.1 → 8.4 after it, except 8.1 (embedded worker), which
+touches only §6.4 supervision and may land earlier — during late
+Phase 6 or Phase 7 (§21.54). This section is authoritative for scope
+and ordering.
 
 **Beta exit criterion (met July 15, 2026):** five consecutive real tasks
 on the Conveyor repository shipped through the full pipeline — issue →
@@ -1682,7 +1882,7 @@ Standing resolutions, with retired ones marked:
    answers (original decisions on runners, session resume, subscription
    terms, and local confinement) are retired with that plane and
    preserved in §21 as the historical record; managed execution
-   returns, if ever, as Phase 8.
+   returns, if ever, as Phase 10.
 2. **Spec format.** Markdown prose plus two schema-validated fenced
    blocks (`conveyor:acceptance`, `conveyor:decomposition`) with stable
    IDs and per-criterion verification methods; the approved version is
@@ -1710,7 +1910,7 @@ Standing resolutions, with retired ones marked:
 8. **Titles and bodies.** Titles are generated at the trusted creation
    boundary and are not intake input; bodies are GitHub-flavored
    Markdown stored verbatim (§21.24–§21.25, §21.39).
-9. **Cross-repo coordination** *(design preserved, Phase 9):*
+9. **Cross-repo coordination** *(design preserved, Phase 10):*
    expand/contract decomposition first, linked-PR gating as the
    non-overridable safety floor, merge train deferred until incident
    data justifies it (§7.2).
@@ -5034,7 +5234,123 @@ lifecycle or recovery transition:
 
 ---
 
-*End of specification. v2.13 accepted July 31, 2026 — the v2.0
+### 21.54 v2.14 — Deployment & multi-user: Phase 8 accepted (August 1, 2026)
+
+Conveyor deployed as a developer artifact, not a product. The gaps were
+structural: **no user** (one shared bearer authenticated every REST and
+MCP caller, so `events.actor` and `interventions` could only ever say
+"the operator" — §18.1's promised identity interface was unfulfilled);
+**a half-packaged control plane** (the worker earned service management
+in Phase 5.5 while `conveyord` remained a foreground process started
+from a source checkout, with no release or first-run story); **solo
+installs paying multi-machine costs** (a single developer on one laptop
+still issued a pairing token to enroll a worker against `localhost`);
+and **GitHub as a de-facto hard dependency**, although the review gate
+is already in-factory (§13.1, Phase 5.2/5.4) and the surveyed
+agent-harness field (Codex CLI, Claude Code) treats the local
+repository as the primary object and the forge as optional. A prior-art
+survey of qm's identity model (grant-based admin, portal-only admin
+mutations, per-route auth declarations, Postgres-backed one-time-link
+replay claims) informed the design; the adopt/decline record is
+retained in docs/amendment-draft-deployment.md.
+
+This amendment accepts **Phase 8 — deployment & multi-user**, sequenced
+after the Phase 7 memory store — memory is recall over the Phase 6
+lineage graph and continues the knowledge-graph arc while its context
+is fresh; deployment follows. It serves two personas with one design:
+the solo operator on their own machine (zero-login, zero-pairing) and
+the small team sharing a server install (named users, simple roles).
+The later deferred phases renumber, as when Phase 6 was inserted
+(§21.46): memory keeps Phase 7; flywheel → 9, managed execution → 10,
+enterprise → 11 — all unstarted, so the renumbering costs nothing.
+Eight changes:
+
+1. **Phase 8 enters the roadmap (§19); later deferred phases renumber.**
+   Sub-phases in order: **8.1** embedded worker (smallest slice, no
+   schema dependency on identity — may land earlier, during late
+   Phase 6 or Phase 7, since it touches only §6.4 supervision);
+   **8.2** identity, grants, and credentials; **8.3** delivery tiers;
+   **8.4** packaging & first-run.
+   Every body reference to the renumbered phases updated mechanically
+   (§1, §2.2, §4.2, §7.2, §9, §12, §13.1, §14, §15, §17.0, §18.1, §19,
+   §20); the stale §20 item 1 reference (managed execution "as Phase
+   8") is corrected to the renumbered Phase 10 in passing.
+2. **Users and admin grants (§16, §17.5).** A `users` table (email,
+   display name, status, optional password hash); two effective roles —
+   member by default, **admin as a revocable audited grant row**, never
+   a column; config-seeded bootstrap applied only to an empty store; no
+   self-registration; deactivation-not-deletion failing credentials
+   closed without cascading history. `events.actor` becomes typed
+   (`user:` / `agent:` / `worker:` / `system`; no backfill) and
+   `interventions` records the acting user — fulfilling §18.1's
+   actor-and-role promise with real identities.
+3. **Authentication (§10, §17.5).** Deployment modes: **solo**
+   (loopback-bound, zero-login as the seeded owner; one-way migration
+   to server) and **server** (passwords via argon2id, or emailed
+   one-time sign-in links that are single-use through a Postgres-backed
+   claim; rate-limited login). Session and API credentials are opaque
+   hashed tokens — never JWTs; per-user PATs for CLI/MCP.
+   `CONVEYOR_API_KEY` untouched; the shared `CONVEYOR_API_TOKEN`
+   retires as a deployment-wide secret (honored as the seeded admin's
+   PAT until first login); the worker child-environment variable name
+   survives with per-credential values. TLS terminates at a fronting
+   reverse proxy, documented plainly.
+4. **The credential-class boundary (§17.5, §18).** Human / agent /
+   worker credential classes declared per route in one table, enforced
+   at the protocol boundary. Gate decisions, cancel, hold, config
+   writes, recovery, dependency unlink, pairing issuance, and
+   user/grant/PAT management answer only to human credentials —
+   structurally, generalizing "agents file tasks but cannot cancel
+   them" (§13.2) into the prompt-injection firewall. The §17.4 MCP tool
+   list is unchanged.
+5. **Embedded worker (§6.6).** The same §6.4 supervisor loop
+   in-process: internally-issued enrollment (no pairing), labeled
+   `embedded`, every guard and supervision semantic intact, per-order
+   fresh identities preserved; default on in solo mode, opt-in for
+   server; external workers coexist under ordinary claim competition.
+   Supervision placement, not a new execution plane — the §21.31
+   prohibition stands.
+6. **Delivery tiers (§8.1, §10, §11, §12, §16).** Per-repo `delivery ∈
+   {github, remote, local}`; `github` reproduces prior behavior exactly
+   (existing repos migrate as-is). `remote`: ambient-credential pushes,
+   no forge API, in-factory review, ancestry-detected completion.
+   `local`: filesystem-path repos, ref-store visibility without push,
+   control-plane ref merge only when the base is checked out in no
+   working tree — otherwise ancestry detection, preserving §21.8
+   containment. Tier-independent invariants: head-SHA approval binding
+   (§11.2), no history rewrites (§8.2), evidence gate + adversarial
+   panel as the review spine. The §18 trust boundary restates as **the
+   recorded task branch head**; CI-as-verifier (§12 item 1), §9
+   webhook/poll intake, and forge error categories scope to `github`.
+7. **Packaging and first-run (§6.5, §17.1–§17.2).** `conveyord install
+   | uninstall | status` under the §6.5 service contract; versioned
+   single-binary releases with startup migrations (upgrade = replace
+   binary, restart); `conveyor init` first-run (mode choice, admin
+   seed, workspace, repo); server compose stack. Solo quickstart:
+   install binary, start Postgres, `conveyor init`, create a task.
+8. **The enterprise phase re-scoped (§18.1, §19).** Phase 8 pulls
+   forward exactly the identity substrate §18.1 reserved; Phase 11
+   keeps the genuinely enterprise layer built atop it: SSO/OIDC and
+   SAML, SCIM provisioning (deactivation records are its landing
+   site), RBAC beyond two roles, HA/backup hardening.
+
+**Non-goals, stated to stay honest:** no multi-tenancy (one deployment,
+one organization); no per-resource ACLs (the workspace is team-visible
+by construction); no self-registration or email-verification flows
+beyond the one-time sign-in link; no built-in TLS termination; no
+change to the §17.4 tool surface, the §6.4 worker contract, or the
+§13.1 two-gate model.
+
+**Migration.** The user store starts empty, so the config seed creates
+the admin on first post-upgrade boot; the shared `CONVEYOR_API_TOKEN`
+maps to that admin's PAT; existing repos migrate to `delivery: github`;
+external workers keep their enrollments; `events` history is untouched.
+Solo mode is never inferred — absent an explicit choice, a deployment
+behaves as server mode with the seeded admin.
+
+---
+
+*End of specification. v2.14 accepted August 1, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -5057,7 +5373,14 @@ and an operator-configurable planning model recorded per session;
 §21.51 extends exploration across all workspace repos with per-repo
 lazy pinning; §21.52 makes the per-call exploration cap planning
 configuration; §21.53 adds durable attempt-aware recovery data and
-presentation. The
+presentation. §21.54 accepts Phase 8 — deployment & multi-user,
+sequenced after the Phase 7 memory store: identity with admin grants
+and typed actors, solo/server authentication with opaque per-user
+credentials, the credential-class boundary, the embedded worker,
+per-repo delivery tiers making GitHub optional, and control-plane
+packaging with `conveyor init` — renumbering the later deferred phases
+(memory keeps 7; flywheel → 9, managed execution → 10,
+enterprise → 11). The
 body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
