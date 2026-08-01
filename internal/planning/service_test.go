@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,109 @@ func TestServiceElidesOldExplorationOnlyFromLivePromptAndStillFinalizes(t *testi
 	}
 }
 
+func TestServiceElidesArtifactHeavyToolResultsAndKeepsDurableRows(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-artifact-elision")
+	large := strings.Repeat("artifact-payload-", 13_000)
+	for index := 0; index < 3; index++ {
+		callID := fmt.Sprintf("call-artifact-%d", index)
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: session.ID, Role: core.PlanningMessageAssistant,
+			Parts: core.JSONPayload([]map[string]any{{
+				"type": "tool-input-available", "toolCallId": callID,
+				"toolName": "read_artifact", "input": map[string]any{"artifact_id": fmt.Sprintf("artifact-%d", index)},
+			}}),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+			SessionID: session.ID, Role: core.PlanningMessageTool, Content: large,
+			Parts: core.JSONPayload([]map[string]any{{
+				"type": "tool-output-available", "toolCallId": callID,
+				"toolName": "read_artifact", "output": map[string]any{"content": large},
+			}}),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	explorationCallID := "call-exploration"
+	if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: session.ID, Role: core.PlanningMessageAssistant,
+		Parts: core.JSONPayload([]map[string]any{{
+			"type": "tool-input-available", "toolCallId": explorationCallID,
+			"toolName": "grep", "input": map[string]any{"pattern": "planning"},
+		}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: session.ID, Role: core.PlanningMessageTool,
+		Parts: core.JSONPayload([]map[string]any{{
+			"type": "tool-output-available", "toolCallId": explorationCallID,
+			"toolName": "grep", "output": strings.Repeat("exploration-output-", 1_000),
+		}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "Artifact context recovered.", nil)}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxContextBytes: 64 << 10}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Continue after the artifact reads."}, func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.inputs) != 1 || !strings.Contains(agent.inputs[0].Prompt, "Older artifact output was elided") ||
+		strings.Contains(agent.inputs[0].Prompt, large) {
+		t.Fatalf("artifact-heavy prompt was not compacted")
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil || len(messages) != 10 || !strings.Contains(string(messages[1].Parts), large) {
+		t.Fatalf("durable artifact rows changed: count=%d err=%v", len(messages), err)
+	}
+}
+
+func TestServiceReturnsRecoverableToolErrorsToModel(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-tool-error")
+	agent := &scriptedAgent{outputs: []string{
+		decisionJSON(t, "", []toolCall{{ID: "call-read", Name: "read_file", ArgumentsJSON: `{"path":"missing.go"}`}}),
+		decisionJSON(t, "I can continue after the failed read.", nil),
+	}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Inspect the missing file."}, func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "planning repository configuration is unavailable") {
+		t.Fatalf("model did not receive recoverable tool error: inputs=%d", len(agent.inputs))
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil || len(messages) != 4 || !strings.Contains(string(messages[2].Parts), `"type":"tool-output-error"`) {
+		t.Fatalf("recoverable tool result messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestServiceStreamsRecoverableOutcomeForIrreducibleContext(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-context-overflow")
+	large := strings.Repeat("non-tool-context-", 200)
+	if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: session.ID, Role: core.PlanningMessageSystem, Content: large,
+		Parts: core.JSONPayload([]map[string]any{{"type": "text", "text": large}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Agent: &scriptedAgent{}, Model: "planner", Prompt: testPlanningPrompt, MaxContextBytes: 1 << 10}
+	for attempt := 0; attempt < 2; attempt++ {
+		var streamed string
+		if err := service.Run(ctx, session.ID, UserMessage{Content: "Can this continue?"}, func(part map[string]any) error {
+			if delta, ok := part["delta"].(string); ok {
+				streamed += delta
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("attempt %d returned terminal error: %v", attempt, err)
+		}
+		if !strings.Contains(streamed, "narrower question") || !strings.Contains(streamed, "durable transcript rows remain unchanged") {
+			t.Fatalf("attempt %d stream=%q", attempt, streamed)
+		}
+	}
+}
+
 func TestServicePersistsSyntheticToolResultAndReleasesRunClaim(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -177,8 +281,13 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		[]byte(strings.Repeat("\x00\xff", 1_024)), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	var largeText strings.Builder
+	for line := 1; line <= 2_200; line++ {
+		fmt.Fprintf(&largeText, "line %d planning exploration output\n", line)
+	}
+	largeText.WriteString("the literal word truncated is ordinary content\n")
 	if err := os.WriteFile(filepath.Join(secondary, "internal", "large.txt"),
-		[]byte(strings.Repeat("planning exploration output\n", 200)), 0o644); err != nil {
+		[]byte(largeText.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runPlanningGit(t, secondary, "add", ".")
@@ -242,8 +351,23 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	}
 	if _, err = service.explorationTool(ctx, session, toolCall{
 		Name: "read_file", ArgumentsJSON: `{"repo":"secondary","path":"internal/oversized.bin","offset":1,"limit":10}`,
-	}); err == nil || !strings.Contains(err.Error(), "read limit is 400 bytes") {
-		t.Fatalf("planning read_file did not enforce configured size gate: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "supports text blobs only") {
+		t.Fatalf("planning read_file did not preserve binary rejection: %v", err)
+	}
+	for _, offset := range []int{1, 2000} {
+		page, pageErr := service.explorationTool(ctx, session, toolCall{
+			Name: "read_file", ArgumentsJSON: fmt.Sprintf(`{"repo":"secondary","path":"internal/large.txt","offset":%d,"limit":2}`, offset),
+		})
+		if pageErr != nil || !strings.Contains(page.Output.(string), fmt.Sprintf("%6d\tline %d", offset, offset)) ||
+			!strings.Contains(page.Output.(string), fmt.Sprintf("call again with offset=%d", offset+2)) {
+			t.Fatalf("large text page offset=%d output=%v err=%v", offset, page.Output, pageErr)
+		}
+	}
+	literal, err := service.explorationTool(ctx, session, toolCall{
+		Name: "grep", ArgumentsJSON: `{"repo":"secondary","pattern":"literal word truncated","path":"internal/large.txt","context":0,"mode":"content"}`,
+	})
+	if err != nil || strings.Contains(literal.Output.(string), "applied cap:") {
+		t.Fatalf("literal truncated grep carried false cap annotation: output=%v err=%v", literal.Output, err)
 	}
 	pinned, err := st.GetPlanningSession(ctx, session.ID)
 	if err != nil || pinned.PinnedRevisions["secondary"] == "" {
@@ -349,6 +473,33 @@ func TestExplorationToolSchemasAreStrictAndExposeNoRevision(t *testing.T) {
 		}
 		if _, exists := properties["repo"]; !exists {
 			t.Fatalf("%s omits repo selection", schema["name"])
+		}
+	}
+}
+
+func TestPlanningRoleDocumentsEveryRegisteredTool(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "pack", "roles", "planning.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	start := strings.Index(text, "Available tools and representative arguments:")
+	end := strings.Index(text, "Finalize a requirement only")
+	if start < 0 || end <= start {
+		t.Fatal("planning role tool section markers are missing")
+	}
+	matches := regexp.MustCompile("`([a-z_]+)(?:\\s|`)").FindAllStringSubmatch(text[start:end], -1)
+	documented := make([]string, 0, len(matches))
+	for _, match := range matches {
+		documented = append(documented, match[1])
+	}
+	if strings.Join(documented, ",") != strings.Join(toolNames(), ",") {
+		t.Fatalf("documented tools=%v registered=%v", documented, toolNames())
+	}
+	schemas := explorationToolSchemas()
+	for index, schema := range schemas {
+		if index >= len(documented) || schema["name"] != documented[index] {
+			t.Fatalf("exploration schema %d=%v documented=%v", index, schema["name"], documented)
 		}
 	}
 }

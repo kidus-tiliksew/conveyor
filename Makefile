@@ -44,6 +44,8 @@ test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
+# Keep the accepted work-order validation command explicit while sharing the
+# integration suite's isolated Postgres lifecycle.
 test-postgres: test-integration
 
 test-db-up:

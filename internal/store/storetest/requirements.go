@@ -668,8 +668,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil || pinned.PinnedRevisions["web"] != strings.Repeat("b", 40) {
 			t.Fatalf("pinned session=%+v err=%v", pinned, err)
 		}
-		if _, err = st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40)); err == nil {
+		conflicted, conflictErr := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("c", 40))
+		if conflictErr == nil {
 			t.Fatal("conflicting immutable pin was silently accepted")
+		}
+		if conflicted.ID != sessionID || conflicted.PinnedRevisions["web"] != strings.Repeat("b", 40) {
+			t.Fatalf("pin conflict return=%+v err=%v, want populated winning session", conflicted, conflictErr)
 		}
 		pinnedAgain, err := st.GetPlanningSession(ctx, sessionID)
 		if err != nil || pinnedAgain.PinnedRevisions["web"] != strings.Repeat("b", 40) {

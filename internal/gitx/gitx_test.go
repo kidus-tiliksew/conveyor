@@ -125,7 +125,7 @@ func TestPlanningSnapshotPlumbingStaysPinnedAndReadOnly(t *testing.T) {
 	if err != nil || !strings.Contains(string(content), "return true") {
 		t.Fatalf("content=%q err=%v", content, err)
 	}
-	matches, err := manager.GrepSnapshot(ctx, snapshot, "eligible", "internal", 0, false, false, 200, defaultSnapshotOutputBytes)
+	matches, _, err := manager.GrepSnapshot(ctx, snapshot, "eligible", "internal", 0, false, false, 200, defaultSnapshotOutputBytes)
 	if err != nil || !strings.Contains(matches, "eligibility.go:3:") {
 		t.Fatalf("matches=%q err=%v", matches, err)
 	}
@@ -166,6 +166,13 @@ func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *tes
 	if err := os.WriteFile(filepath.Join(origin, "large.bin"), []byte(strings.Repeat("\x00\xff", 32_768)), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(origin, "single-line.txt"), []byte(strings.Repeat("x", maxPlanningTextLineBytes+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "paginated-tail.txt"),
+		[]byte("one\ntwo\nthree\n"+strings.Repeat("x", maxPlanningTextLineBytes+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	mustRun(t, origin, "git", "add", ".")
 	mustRun(t, origin, "git", "commit", "-m", "large planning fixtures")
 	manager := NewManager(filepath.Join(tmp, "cache"), "")
@@ -174,11 +181,11 @@ func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *tes
 		t.Fatal(err)
 	}
 	const outputLimit = 512
-	matches, err := manager.GrepSnapshot(ctx, snapshot, ".", "large.txt", 0, false, false, 50, outputLimit)
+	matches, truncated, err := manager.GrepSnapshot(ctx, snapshot, ".", "large.txt", 0, false, false, 50, outputLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) > outputLimit || !strings.Contains(matches, "truncated at git boundary") {
+	if len(matches) > outputLimit || !truncated || !strings.Contains(matches, "truncated at git boundary") {
 		t.Fatalf("bounded grep returned %d bytes:\n%s", len(matches), matches)
 	}
 	if _, err = manager.ReadSnapshotBlob(ctx, snapshot, "large.bin", outputLimit); err == nil ||
@@ -189,7 +196,15 @@ func TestPlanningSnapshotPlumbingBoundsLargeSearchAndRejectsOversizedBlob(t *tes
 		!strings.Contains(err.Error(), "supports text blobs only") {
 		t.Fatalf("bounded binary-prefix read error=%v", err)
 	}
-	if _, err = manager.GrepSnapshot(ctx, snapshot, "[", "large.txt", 0, false, false, 50, outputLimit); err == nil {
+	if _, _, _, err = manager.ReadSnapshotTextLines(ctx, snapshot, "single-line.txt", 1, 10); err == nil ||
+		!strings.Contains(err.Error(), "line exceeding") {
+		t.Fatalf("pathological text line error=%v", err)
+	}
+	page, scanned, complete, err := manager.ReadSnapshotTextLines(ctx, snapshot, "paginated-tail.txt", 1, 2)
+	if err != nil || strings.Join(page, ",") != "one,two" || scanned != 3 || complete {
+		t.Fatalf("bounded page=%v scanned=%d complete=%t err=%v", page, scanned, complete, err)
+	}
+	if _, _, err = manager.GrepSnapshot(ctx, snapshot, "[", "large.txt", 0, false, false, 50, outputLimit); err == nil {
 		t.Fatal("invalid git grep pattern unexpectedly succeeded")
 	}
 }

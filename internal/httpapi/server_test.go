@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1513,8 +1514,111 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 || events[1].Kind != "intervention.redirect" || events[2].Kind != "task.state_changed" || events[3].Kind != "pipeline.transition_decided" {
+	if len(events) != 4 || events[1].Kind != "task.state_changed" || events[2].Kind != "pipeline.transition_decided" || events[3].Kind != "intervention.redirect" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReviewApprovalWithoutReviewedHeadConflictsBeforeIntervention(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "missing-reviewed-head", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(st, &config.Config{Workspace: "demo"}, nil)
+	s := NewServer(st)
+	s.BearerToken = "token"
+	s.OnIntervention = d.HandleIntervention
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "reviewed head SHA is unavailable") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != gate.Task.State {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	if err != nil || len(interventions) != 0 {
+		t.Fatalf("interventions=%+v err=%v", interventions, err)
+	}
+}
+
+func TestApprovedTaskRedirectAndRejectConflictWithoutIntervention(t *testing.T) {
+	for _, action := range []core.InterventionAction{core.InterventionRedirect, core.InterventionReject} {
+		t.Run(string(action), func(t *testing.T) {
+			st := store.NewMemory()
+			task := core.Task{ID: "approved-" + string(action), State: core.TaskApproved, CreatedAt: time.Now()}
+			if err := st.CreateTask(t.Context(), task); err != nil {
+				t.Fatal(err)
+			}
+			s := NewServer(st)
+			s.BearerToken = "token"
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review", bytes.NewReader([]byte(fmt.Sprintf(`{"action":%q,"reason_code":"operator-decision"}`, action))))
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			s.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			interventions, err := st.ListInterventions(t.Context(), task.ID)
+			if err != nil || len(interventions) != 0 {
+				t.Fatalf("interventions=%+v err=%v", interventions, err)
+			}
+		})
+	}
+}
+
+func TestConcurrentReviewApprovalReturnsConflictForLoser(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "concurrent-approval", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(st, &config.Config{Workspace: "demo"}, nil)
+	s := NewServer(st)
+	s.BearerToken = "token"
+	s.OnIntervention = d.HandleIntervention
+	handler := s.Handler()
+	responses := make(chan int, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			responses <- response.Code
+		}()
+	}
+	close(start)
+	statuses := []int{<-responses, <-responses}
+	slices.Sort(statuses)
+	if !slices.Equal(statuses, []int{http.StatusAccepted, http.StatusConflict}) {
+		t.Fatalf("statuses=%v", statuses)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	if err != nil || len(interventions) != 1 {
+		t.Fatalf("interventions=%+v err=%v", interventions, err)
 	}
 }
 

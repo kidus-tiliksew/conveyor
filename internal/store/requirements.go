@@ -492,7 +492,7 @@ func (m *memory) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, re
 	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
 	if existing := session.PinnedRevisions[repo]; existing != "" {
 		if existing != revision {
-			return core.PlanningSession{}, fmt.Errorf(
+			return clonePlanningSession(session), fmt.Errorf(
 				"planning repository %s is already pinned at %s; cannot repin at %s", repo, existing, revision)
 		}
 		return clonePlanningSession(session), nil
