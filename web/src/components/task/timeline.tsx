@@ -1,11 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
 import { buildExecutionAttempts, buildTimeline, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type ExecutionAttempt, type PanelSeat, type TimelineEntry } from '../../lib/activity'
-import { defaultReasonCode, stageLabels } from '../../lib/contracts'
+import { defaultReasonCode, stageLabels, taskStateLabels } from '../../lib/contracts'
+import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -35,7 +37,7 @@ const gateDots: Record<GateTone, string> = {
 // no work orders, so redispatch, worker serviceability, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
-export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
+export function Timeline({ item, executionActions = true, routeVariant = 'full' }: { item: ActivityItem; executionActions?: boolean; routeVariant?: TaskRouteVariant }) {
   const entries = buildTimeline(item)
   const currentExecution = deriveCurrentExecutionState(item)
   const attempts = buildExecutionAttempts(item, currentExecution)
@@ -81,7 +83,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
     <>
     <section ref={timelineRef} aria-label="Execution event timeline">
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{executionAnnouncement}</p>
-      {currentExecution && <CurrentExecutionSummary state={currentExecution} />}
+      {currentExecution && <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} />}
       {attempts.length > 0 && <AttemptHistory attempts={attempts} />}
       <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
       <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
@@ -110,8 +112,9 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   )
 }
 
-function CurrentExecutionSummary({ state }: { state: CurrentExecutionState }) {
+function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecutionState; routeVariant: TaskRouteVariant }) {
   const paused = state.status === 'paused'
+  const relatedRoute = relatedTaskRoute(routeVariant)
   return (
     <section
       aria-labelledby="current-execution-title"
@@ -128,7 +131,20 @@ function CurrentExecutionSummary({ state }: { state: CurrentExecutionState }) {
         </div>
       </div>
       <dl className="mt-3 grid gap-2 text-xs leading-5 sm:grid-cols-3">
-        <div><dt className="font-medium text-foreground">Current blocker</dt><dd className="text-muted">{state.blocker}</dd></div>
+        <div>
+          <dt className="font-medium text-foreground">Current blocker</dt>
+          <dd className="text-muted">
+            {state.blockingDependencies?.length ? (
+              <span className="flex flex-col items-start">
+                {state.blockingDependencies.map((dependency) => (
+                  <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
+                    {dependency.title || dependency.id} · {taskStateLabels[dependency.state] ?? 'Unknown state'}
+                  </Link>
+                ))}
+              </span>
+            ) : state.blocker}
+          </dd>
+        </div>
         <div><dt className="font-medium text-foreground">Retry</dt><dd className="text-muted">{state.retry}</dd></div>
         <div><dt className="font-medium text-foreground">What to do next</dt><dd className="text-muted">{state.nextAction}</dd></div>
       </dl>

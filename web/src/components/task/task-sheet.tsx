@@ -79,7 +79,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
           gate card renders it there — showing it twice on one page does not. */}
       {!isReviewable(item.task) && <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />}
       <AttachmentsCard attachments={item.attachments ?? []} />
-      <Timeline item={item} />
+      <Timeline item={item} routeVariant="sheet" />
     </div>
   )
 }
