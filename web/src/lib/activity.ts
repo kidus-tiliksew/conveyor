@@ -463,8 +463,6 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       }
     case 'work_order.expired':
       return { title: 'The agent’s claim expired — needs your recovery', alarm: true }
-    case 'work_order.released':
-      return { title: 'The agent released the work', detail: typeof payload.reason === 'string' ? payload.reason : undefined, alarm: true }
     case 'work_order.recovered':
       return { title: 'Recovered by an operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
     case 'pull_request.opened':
@@ -540,11 +538,11 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       if (isPanelReviewEvent(payload, panels)) return undefined
       return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
 	case 'work_order.released':
-		return {
-			title: 'Work-order claim released',
-			detail: typeof payload.reason === 'string' ? payload.reason : undefined,
-			alarm: payload.reason === 'harness exited without terminal verdict submission',
-		}
+	  return {
+		title: 'Work-order claim released',
+		detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+		alarm: payload.reason === 'harness exited without terminal verdict submission',
+	  }
     case 'merge.requested':
       return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
     case 'merge.confirmed':

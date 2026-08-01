@@ -168,7 +168,7 @@ function ChildDependencyHint({ child }: { child: BlueprintChild }) {
   if (!child.depends_on?.length) return null
   const explanation = `Starts after ${child.depends_on.join(', ')}`
   return (
-    <span className="group/dependency relative inline-flex shrink-0" aria-label={explanation}>
+    <span role="img" className="group/dependency relative inline-flex shrink-0" aria-label={explanation}>
       <Badge variant="mono">after {child.depends_on.join(', ')}</Badge>
       <span
         role="tooltip"

@@ -266,7 +266,7 @@ for (const theme of ['light', 'dark'] as const) {
     // Filtering the feed must not change lane widths when most stages empty.
     await page.getByPlaceholder('Search tasks').fill('blueprint')
     await page.waitForTimeout(300)
-    const columns = page.locator('section[aria-label]')
+    const columns = page.getByLabel('Task board').locator('section[aria-label]')
     await expect(columns).toHaveCount(7)
     const widths = await columns.evaluateAll((lanes) => lanes.map((lane) => lane.getBoundingClientRect().width))
     expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1)

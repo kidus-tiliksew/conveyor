@@ -64,11 +64,9 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 
 function FullBody({ item }: { item: ActivityItem }) {
   return (
-    <div
+    <section
       aria-label="Task content"
       className="min-h-0 flex-1 overflow-y-auto"
-      role="region"
-      tabIndex={0}
     >
       <div className="shrink-0 border-b border-border px-6 py-4">
         <TaskHeader item={item} variant="full" />
@@ -89,6 +87,6 @@ function FullBody({ item }: { item: ActivityItem }) {
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>
-    </div>
+	</section>
   )
 }

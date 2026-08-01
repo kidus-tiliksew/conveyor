@@ -93,7 +93,16 @@ func (s *Server) listPlanningMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) abandonPlanningSession(w http.ResponseWriter, r *http.Request) {
-	session, err := s.Store.AbandonPlanningSession(r.Context(), chi.URLParam(r, "id"))
+	var request struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	session, err := s.Store.AbandonPlanningSession(r.Context(), chi.URLParam(r, "id"), request.Reason)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

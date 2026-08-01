@@ -3,9 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -70,7 +70,11 @@ func (s *Server) observeMonitorSignal(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := s.Monitor.Process(r.Context(), observation)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("observe signal: %v", err), taskCreateStatus(err))
+		status := taskCreateStatus(err)
+		if errors.Is(err, monitor.ErrUnknownRequirementID) {
+			status = http.StatusUnprocessableEntity
+		}
+		http.Error(w, fmt.Sprintf("observe signal: %v", err), status)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, record)
@@ -91,7 +95,7 @@ func (s *Server) resolveMonitorDrift(w http.ResponseWriter, r *http.Request) {
 	drift, err := s.Monitor.Resolve(r.Context(), chi.URLParam(r, "id"), request.Outcome)
 	if err != nil {
 		status := http.StatusConflict
-		if strings.Contains(err.Error(), "requirement_id is missing") {
+		if errors.Is(err, monitor.ErrRequirementIDMissing) {
 			status = http.StatusUnprocessableEntity
 		}
 		http.Error(w, err.Error(), status)

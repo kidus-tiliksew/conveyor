@@ -112,7 +112,7 @@ export function RequirementsPage() {
                 ))}
               </div>
             </Card>
-            {selected && <RequirementDetail seed={selected} token={token} onPlan={() => startPlanning(selected.requirement.id)} />}
+            {selected && <RequirementDetail key={selected.requirement.id} seed={selected} token={token} onPlan={() => startPlanning(selected.requirement.id)} />}
           </div>
         )}
       </div>
@@ -185,7 +185,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
           {orderedVersions.length > 0 && (
             <div>
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Version history</p>
-              <div className="flex flex-wrap gap-2" aria-label="Requirement versions">
+			  <section className="flex flex-wrap gap-2" aria-label="Requirement versions">
                 {orderedVersions.map((version) => (
                   <button
                     key={version.version}
@@ -201,7 +201,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
                     </span>
                   </button>
                 ))}
-              </div>
+			  </section>
             </div>
           )}
           {displayed ? (
@@ -216,9 +216,15 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
               {!displayed.confirmed && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
                   <p className="text-xs leading-5 text-attention">This revision is not current intent until an operator confirms it.</p>
-                  <Button size="sm" disabled={!token || confirm.isPending} onClick={() => confirm.mutate(displayed.version)}>
+                  <Button
+                    size="sm"
+                    disabled={!token || confirm.isPending || !item.confirmation_eligible}
+                    title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
+                    onClick={() => confirm.mutate(displayed.version)}
+                  >
                     <Check /> {confirm.isPending && confirm.variables === displayed.version ? 'Confirming…' : `Confirm version ${displayed.version}`}
                   </Button>
+                  {!item.confirmation_eligible && <p className="basis-full text-xs text-muted">A migrated seed needs its first deliberate revision before it can be confirmed.</p>}
                   {confirm.error && confirm.variables === displayed.version && (
                     <p className="basis-full text-xs text-failure">{errorMessage(confirm.error, 'Could not confirm this version.')}</p>
                   )}
@@ -276,7 +282,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
           <CardHeader><CardTitle>Context artifacts</CardTitle><Badge variant="mono">{item.artifacts.length}</Badge></CardHeader>
           <CardContent className="space-y-2">
             {item.artifacts.map((artifact) => (
-              <button key={`${artifact.id}-${artifact.role}`} onClick={() => void downloadArtifact(token, artifact)} className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface">
+			  <button type="button" key={`${artifact.id}-${artifact.role}`} onClick={() => void downloadArtifact(token, artifact)} className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface">
                 <Download className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
                 <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
               </button>
@@ -305,7 +311,10 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
                       <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
                       <span className="min-w-0 flex-1">
                         <strong className="font-medium">{eventLabel(event)}</strong>
-                        <time className="mt-0.5 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                        <span className="mt-0.5 flex items-center gap-2">
+                          <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                          {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                        </span>
                       </span>
                     </li>
                   ))}
@@ -340,19 +349,20 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
 }
 
 function RequirementDiff({ current, pending }: { current: RequirementVersion; pending: RequirementVersion }) {
+  const [currentLines, pendingLines] = lineChanges(documentText(current), documentText(pending))
   return (
     <details className="rounded-lg border border-border bg-surface/40" open>
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Compared with confirmed v{current.version}</summary>
       <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
-        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">{documentText(current)}</pre></div>
-        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-positive">Pending revision</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5">{documentText(pending)}</pre></div>
+        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">{currentLines.map((line, index) => <span key={`${index}-${line.text}`} className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}>{line.text || ' '}</span>)}</pre></div>
+        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-positive">Pending revision</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5">{pendingLines.map((line, index) => <span key={`${index}-${line.text}`} className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}>{line.text || ' '}</span>)}</pre></div>
       </div>
     </details>
   )
 }
 
 function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
-  const shipped = shippedPastIntent(item)
+  const shipped = item.shipped_past_intent
   return <>
     {shipped && <Badge variant="attention"><span title={shipped}>Code ahead of intent</span></Badge>}
     {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
@@ -362,24 +372,14 @@ function RequirementStateBadges({ item, compact = false }: { item: RequirementVi
 }
 
 function RequirementStateNotices({ item }: { item: RequirementView }) {
-  const shipped = shippedPastIntent(item)
+  const shipped = item.shipped_past_intent
   return (
-    <div className="space-y-2" aria-label="Requirement alignment">
+	<section className="space-y-2" aria-label="Requirement alignment">
       {shipped && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span></p>}
       {item.pending_versions.length > 0 && !item.migrated_seed && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">A revision is pending operator confirmation.</p>}
       {item.migrated_seed && <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">This migrated seed is awaiting its first deliberate revision.</p>}
-    </div>
+	</section>
   )
-}
-
-function shippedPastIntent(item: RequirementView) {
-  const confirmedAt = item.current_version?.confirmed_at
-  if (!confirmedAt) return ''
-  const merge = [...item.lineage].reverse().find((event) =>
-    (event.kind === 'merge.confirmed' || event.kind === 'merge.reconciled') && new Date(event.at) > new Date(confirmedAt),
-  )
-  if (!merge) return ''
-  return String(merge.payload?.title ?? merge.payload?.task_title ?? merge.task_id ?? 'a serving blueprint merge')
 }
 
 function stripStatementsFence(content: string) {
@@ -390,6 +390,32 @@ function documentText(version: RequirementVersion) {
   const prose = stripStatementsFence(version.content)
   const statements = version.statements.map((statement) => `${statement.id}: ${statement.statement}`).join('\n')
   return [prose, statements].filter(Boolean).join('\n\n')
+}
+
+function lineChanges(current: string, pending: string) {
+  const left = current.split('\n')
+  const right = pending.split('\n')
+  const common = Array.from({ length: left.length + 1 }, () => Array<number>(right.length + 1).fill(0))
+  for (let i = left.length - 1; i >= 0; i--) {
+    for (let j = right.length - 1; j >= 0; j--) {
+      common[i][j] = left[i] === right[j] ? common[i + 1][j + 1] + 1 : Math.max(common[i + 1][j], common[i][j + 1])
+    }
+  }
+  const unchangedLeft = new Set<number>()
+  const unchangedRight = new Set<number>()
+  let i = 0
+  let j = 0
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      unchangedLeft.add(i++)
+      unchangedRight.add(j++)
+    } else if (common[i + 1][j] >= common[i][j + 1]) i++
+    else j++
+  }
+  return [
+    left.map((text, index) => ({ text, changed: !unchangedLeft.has(index) })),
+    right.map((text, index) => ({ text, changed: !unchangedRight.has(index) })),
+  ]
 }
 
 function eventLabel(event: TaskEvent) {

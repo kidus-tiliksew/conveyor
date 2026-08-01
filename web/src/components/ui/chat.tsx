@@ -39,7 +39,7 @@ export function Marker({ name, state, children }: { name: string; state: 'pendin
   const stateLabel = state === 'pending' ? 'in progress' : state === 'complete' ? 'complete' : 'failed'
   return (
     <span
-      role="status"
+	  role="img"
       aria-label={`${name}: ${stateLabel}`}
       className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-muted"
     >

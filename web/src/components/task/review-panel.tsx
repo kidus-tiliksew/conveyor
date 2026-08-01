@@ -189,8 +189,8 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       </div>
       <div className="px-4 py-2.5">
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-        <div className={cn('flex flex-wrap items-center gap-1', (item.verification_evidence?.length ?? 0) > 0 && 'mt-3')} role="group" aria-label="Other decisions">
-          <span className="mr-1 text-xs text-faint">Instead:</span>
+		<fieldset className={cn('flex flex-wrap items-center gap-1', (item.verification_evidence?.length ?? 0) > 0 && 'mt-3')}>
+		  <legend className="float-left mr-1 text-xs text-faint">Instead:</legend>
           {secondaryActions.map((entry) => (
             <button
               key={entry.action}
@@ -209,7 +209,7 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
             </button>
           ))}
           {!token && <span className="ml-auto text-xs text-attention">Set the operator token in Settings to act.</span>}
-        </div>
+		</fieldset>
         {expandedEntry && (
           <div className="mt-2">
             <Textarea

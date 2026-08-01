@@ -10,7 +10,7 @@ TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT
 PLAYWRIGHT_ARGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui test test-web test-ui test-ui-evidence compose-check test-integration test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-postgres test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -21,12 +21,15 @@ build: ui
 ui:
 	cd web && npm ci && npm run build
 
-test: compose-check
+dashboard-fresh: ui
+	git diff --exit-code -- internal/httpapi/dashboard
+
+test: compose-check dashboard-fresh
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
 	$(MAKE) test-web
 
 test-web:
-	cd web && npm ci && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+	cd web && npm ci && npx playwright install chromium && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui: ui
 	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
@@ -40,6 +43,8 @@ compose-check:
 test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+
+test-postgres: test-integration
 
 test-db-up:
 	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test up -d --wait postgres-test

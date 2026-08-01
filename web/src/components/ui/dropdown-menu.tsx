@@ -27,9 +27,13 @@ export function DropdownMenu({ label, children, className }: { label: string; ch
     <Button size="sm" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       {label}<ChevronDown />
     </Button>
-    {open && <div role="menu" aria-label={label} className="absolute right-0 z-20 mt-1 min-w-64 overflow-hidden rounded-md border border-border bg-card p-1 shadow-lg">
-      <div onClick={() => setOpen(false)}>{children}</div>
-    </div>}
+    {open && <div
+	  role="menu"
+	  aria-label={label}
+	  className="absolute right-0 z-20 mt-1 min-w-64 overflow-hidden rounded-md border border-border bg-card p-1 shadow-lg"
+	  onClick={() => setOpen(false)}
+	  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setOpen(false) }}
+	>{children}</div>}
   </div>
 }
 

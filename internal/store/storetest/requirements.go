@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -37,6 +38,10 @@ type RequirementFixture struct {
 // BlueprintFactory so both suites share one harness shape.
 type RequirementFactory func(*testing.T, []config.Repo) RequirementFixture
 
+type planningSessionEventStore interface {
+	ListPlanningSessionEvents(context.Context, string) ([]core.Event, error)
+}
+
 // requirementConformanceActor is the confirming operator. Confirmation records
 // identity (spec §16), so the suite owns the actor rather than depending on
 // whatever each harness happens to install in its context.
@@ -57,6 +62,97 @@ var requirementConformanceRepos = []config.Repo{
 // (spec §4.2 item 1 AC-1, §9 AC-2).
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
+
+	t.Run("planning uploads follow the produced entity on finalize", func(t *testing.T) {
+		for _, target := range []string{"requirement", "task"} {
+			t.Run(target, func(t *testing.T) {
+				st, ctx, workspace := newRequirementFixture(t, factory)
+				session := createPlanningSession(t, ctx, st)
+				upload, err := st.CreateArtifact(ctx, core.Artifact{
+					Name: "planning-context.txt", ContentType: "text/plain",
+					Role: core.ArtifactRoleTaskContext, PlanningSessionID: session.ID,
+				}, []byte("planning context"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := store.PlanningFinalizeRequest{SessionID: session.ID}
+				if target == "requirement" {
+					requirement, _ := createRequirement(t, ctx, st, "Produced requirement",
+						chatVersion("Produced prose.", requirementStatement("REQ-1", "Produced intent is explicit.")))
+					request.RequirementID = requirement.ID
+				} else {
+					taskID := core.NewTaskID()
+					if err = st.CreateTask(ctx, core.Task{
+						ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+						Branch: "conveyor/task-" + taskID, Title: "Produced blueprint", State: core.TaskAwaiting,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					request.TaskID = taskID
+				}
+				if _, err = st.FinalizePlanningSession(ctx, request); err != nil {
+					t.Fatal(err)
+				}
+				artifacts, err := st.ListArtifacts(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var rehomed core.Artifact
+				for _, artifact := range artifacts {
+					if artifact.ID == upload.ID {
+						rehomed = artifact
+					}
+				}
+				if rehomed.ID == "" || rehomed.PlanningSessionID != "" || rehomed.RequirementID != request.RequirementID || rehomed.TaskID != request.TaskID {
+					t.Fatalf("rehomed artifact=%+v request=%+v", rehomed, request)
+				}
+			})
+		}
+	})
+
+	t.Run("monitor requirement references are validated before persistence", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		monitorStore, ok := st.(monitor.Store)
+		if !ok {
+			t.Fatal("store does not implement monitor.Store")
+		}
+		intakeCalls := 0
+		service := &monitor.Service{
+			Store: monitorStore, WorkspaceID: workspace, Enabled: true,
+			Repositories: map[string]struct{}{"conveyor": {}},
+			Intake: func(context.Context, monitor.TaskRequest) (monitor.IntakeResult, error) {
+				intakeCalls++
+				taskID := core.NewTaskID()
+				task := core.Task{
+					ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+					Branch: "conveyor/task-" + taskID, Title: "Monitor task", State: core.TaskQueued,
+				}
+				return monitor.IntakeResult{Task: task, Created: true}, st.CreateTask(ctx, task)
+			},
+		}
+		observation := monitor.Observation{
+			Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "unknown-requirement",
+			SourceURL: "https://example.test/commit/unknown", CommitSHA: "unknown", RequirementID: "req-missing",
+		}
+		if _, err := service.Process(ctx, observation); !errors.Is(err, monitor.ErrUnknownRequirementID) || !strings.Contains(err.Error(), observation.RequirementID) {
+			t.Fatalf("unknown requirement error=%v", err)
+		}
+		if intakeCalls != 0 {
+			t.Fatalf("unknown requirement reached intake %d times", intakeCalls)
+		}
+		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-known", Title: "Known intent"},
+			chatVersion("Known intent remains valid.", requirementStatement("REQ-1", "Monitor references resolve.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		observation.RequirementID, observation.OccurrenceID = requirement.ID, "known-requirement"
+		if _, err = service.Process(ctx, observation); err != nil {
+			t.Fatalf("known requirement rejected: %v", err)
+		}
+		if intakeCalls != 1 {
+			t.Fatalf("known requirement intake calls=%d, want 1", intakeCalls)
+		}
+	})
 
 	t.Run("content and statement fence divergence is rejected", func(t *testing.T) {
 		st, ctx, _ := newRequirementFixture(t, factory)
@@ -1131,12 +1227,29 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		// Abandonment is idempotent, so a closed browser tab retried twice
 		// leaves one record.
 		spare := createPlanningSession(t, ctx, st)
-		firstAbandon, err := st.AbandonPlanningSession(ctx, spare.ID)
+		firstAbandon, err := st.AbandonPlanningSession(ctx, spare.ID, "Requirements were superseded")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if firstAbandon.Status != core.PlanningSessionAbandoned || !firstAbandon.FinalizedAt.IsZero() {
 			t.Fatalf("abandoned session=%+v", firstAbandon)
+		}
+		eventStore, ok := st.(planningSessionEventStore)
+		if !ok {
+			t.Fatal("store cannot list planning-session events")
+		}
+		events, err := eventStore.ListPlanningSessionEvents(ctx, spare.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		for _, event := range events {
+			if event.Kind == "planning_session.abandoned" {
+				_ = json.Unmarshal(event.Payload, &payload)
+			}
+		}
+		if payload["reason"] != "Requirements were superseded" {
+			t.Fatalf("abandon payload=%v", payload)
 		}
 		secondAbandon, err := st.AbandonPlanningSession(ctx, spare.ID)
 		if err != nil {

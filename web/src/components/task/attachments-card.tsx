@@ -198,6 +198,7 @@ function AttachmentDialog({
         {showImage ? (
           <img src={previewURL} alt={attachment.name} className="max-h-[70vh] w-auto rounded-md object-contain" />
         ) : showVideo ? (
+          /* biome-ignore lint/a11y/useMediaCaption: uploaded evidence may not include a caption track; download remains available */
           <video src={previewURL} aria-label={attachment.name} controls preload="metadata" className="max-h-[70vh] w-full rounded-md" />
         ) : (
           <div className="flex flex-col items-center gap-3 py-8 text-center">

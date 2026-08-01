@@ -165,6 +165,7 @@ type IntakeResult struct {
 }
 
 type Store interface {
+	RequirementExists(context.Context, string) (bool, error)
 	Observe(context.Context, Observation) (ObservationRecord, bool, error)
 	LinkTask(context.Context, string, string, string) (ObservationRecord, error)
 	RecordDrift(context.Context, Drift) (Drift, bool, error)
@@ -175,6 +176,11 @@ type Store interface {
 	AuditTask(context.Context, string, string, map[string]any) error
 	AuditMonitor(context.Context, string, map[string]any) error
 }
+
+var (
+	ErrUnknownRequirementID = errors.New("unknown monitor requirement_id")
+	ErrRequirementIDMissing = errors.New("monitor requirement_id is missing")
+)
 
 type Service struct {
 	Store        Store
@@ -239,6 +245,15 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 	}
 	if _, ok := repositories[observation.Repository]; !ok {
 		return ObservationRecord{}, fmt.Errorf("repository %q is outside configured monitor scope", observation.Repository)
+	}
+	if observation.RequirementID != "" {
+		exists, err := s.Store.RequirementExists(ctx, observation.RequirementID)
+		if err != nil {
+			return ObservationRecord{}, err
+		}
+		if !exists {
+			return ObservationRecord{}, fmt.Errorf("%w: %s", ErrUnknownRequirementID, observation.RequirementID)
+		}
 	}
 	record, fresh, err := s.Store.Observe(ctx, observation)
 	if err != nil {

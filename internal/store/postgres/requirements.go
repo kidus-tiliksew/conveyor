@@ -714,6 +714,12 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), request.SessionID), request.SessionID); err != nil {
 			return err
 		}
+		if _, err = tx.Exec(ctx, `UPDATE artifact_links
+			SET planning_session_id=NULL, requirement_id=NULLIF($3,''), task_id=NULLIF($4,'')
+			WHERE workspace_id=$1 AND planning_session_id=$2 AND artifact_id<>$5`,
+			workspace(ctx), session.ID, session.ProducedRequirementID, session.ProducedTaskID, session.TranscriptArtifactID); err != nil {
+			return err
+		}
 		if err = insertRequirementEvent(ctx, q, "planning_session.finalized", map[string]any{
 			"workspace_id": workspace(ctx), "session_id": session.ID,
 			"produced_requirement_id": session.ProducedRequirementID,
@@ -754,7 +760,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 	return session, nil
 }
 
-func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string) (core.PlanningSession, error) {
+func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
 	var session core.PlanningSession
 	err := s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		return s.inTx(lockedCtx, func(tx pgx.Tx, q *db.Queries) error {
@@ -781,15 +787,42 @@ func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string) (c
 				` WHERE workspace_id=$1 AND id=$2`, workspace(lockedCtx), sessionID), sessionID); err != nil {
 				return err
 			}
-			return insertRequirementEvent(lockedCtx, q, "planning_session.abandoned", map[string]any{
-				"workspace_id": workspace(lockedCtx), "session_id": session.ID,
-			})
+			payload := map[string]any{"workspace_id": workspace(lockedCtx), "session_id": session.ID}
+			if reason := firstTrimmed(reasons); reason != "" {
+				payload["reason"] = reason
+			}
+			return insertRequirementEvent(lockedCtx, q, "planning_session.abandoned", payload)
 		})
 	})
 	if err != nil {
 		return core.PlanningSession{}, err
 	}
 	return session, nil
+}
+
+func firstTrimmed(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
+		FROM events WHERE workspace_id=$1 AND payload_json->>'session_id'=$2 ORDER BY id`, workspace(ctx), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err := rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID, &event.ActorRole, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
 }
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`

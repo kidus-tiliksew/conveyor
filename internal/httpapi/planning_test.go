@@ -96,6 +96,36 @@ func TestPlanningHTTPAttachmentWithoutRequirementHasDurableSessionOwner(t *testi
 	}
 }
 
+func TestPlanningHTTPAbandonPersistsReason(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-abandon-reason"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/abandon", strings.NewReader(`{"reason":"No longer needed"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("abandon status=%d body=%s", response.Code, response.Body.String())
+	}
+	events, err := st.(interface {
+		ListPlanningSessionEvents(context.Context, string) ([]core.Event, error)
+	}).ListPlanningSessionEvents(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "planning_session.abandoned" && strings.Contains(string(event.Payload), `"reason":"No longer needed"`) {
+			return
+		}
+	}
+	t.Fatalf("abandon reason missing from events=%+v", events)
+}
+
 const planningHTTPPrompt = "test planning role"
 
 type planningHTTPAgent struct {

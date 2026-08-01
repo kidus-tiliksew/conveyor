@@ -29,6 +29,14 @@ VALUES ($1,$2,$3::jsonb)`, workspace(ctx), kind, string(data))
 	return err
 }
 
+func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM requirements WHERE workspace_id=$1 AND id=$2
+	)`, workspace(ctx), id).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
 	contextJSON, err := json.Marshal(observation.Context)
 	if err != nil {
@@ -172,7 +180,7 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 		now := time.Now().UTC()
 		if outcome == "requirements_amended" {
 			if drift.RequirementID == "" {
-				return fmt.Errorf("drift %s cannot resolve as requirements_amended: requirement_id is missing", id)
+				return fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
 			}
 			var currentVersion *int32
 			var highWaterMark int

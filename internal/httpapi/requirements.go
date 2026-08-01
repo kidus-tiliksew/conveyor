@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,7 +28,7 @@ type requirementView struct {
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
 	Lineage              []core.Event                 `json:"lineage"`
-	Stale                bool                         `json:"stale"`
+	ShippedPastIntent    string                       `json:"shipped_past_intent,omitempty"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
 }
@@ -202,7 +203,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Artifacts = append(view.Artifacts, artifact)
 			}
 		}
-		view.Lineage = append(view.Lineage, requirementEvents...)
+		view.Lineage = append(view.Lineage, annotateBackfilledEvents(requirementEvents)...)
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&
 				session.ProducedRequirementID != requirement.ID &&
@@ -230,13 +231,13 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				item.Spec = &spec
 			}
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
-			view.Lineage = append(view.Lineage, events...)
-			if !confirmedAt.IsZero() && mergedAfter(events, confirmedAt) {
-				view.Stale = true
+			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
+			if !confirmedAt.IsZero() {
+				if shipped := mergedAfter(events, confirmedAt); shipped != "" {
+					view.ShippedPastIntent = shipped
+				}
 			}
 		}
-		// An unconfirmed revision is itself visible alignment debt.
-		view.Stale = view.Stale || (len(view.PendingVersions) > 0 && !view.MigratedSeed)
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID
@@ -248,11 +249,41 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	return views, nil
 }
 
-func mergedAfter(events []core.Event, at time.Time) bool {
+func mergedAfter(events []core.Event, at time.Time) string {
+	var latest core.Event
 	for _, event := range events {
-		if (event.Kind == "merge.confirmed" || event.Kind == "merge.reconciled") && event.At.After(at) {
-			return true
+		if (event.Kind == "merge.confirmed" || event.Kind == "merge.reconciled") && event.At.After(at) && event.At.After(latest.At) {
+			latest = event
 		}
 	}
-	return false
+	if latest.Kind == "" {
+		return ""
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(latest.Payload, &payload)
+	for _, key := range []string{"title", "task_title"} {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	if latest.TaskID != "" {
+		return latest.TaskID
+	}
+	return "a serving blueprint merge"
+}
+
+func annotateBackfilledEvents(events []core.Event) []core.Event {
+	annotated := append([]core.Event(nil), events...)
+	for index := range annotated {
+		event := &annotated[index]
+		if event.ActorID != "migration-050" || (event.Kind != "requirement.created" && event.Kind != "requirement.version_proposed") {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			payload["backfilled"] = true
+			event.Payload = core.JSONPayload(payload)
+		}
+	}
+	return annotated
 }
