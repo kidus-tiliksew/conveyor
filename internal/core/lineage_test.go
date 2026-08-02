@@ -57,6 +57,9 @@ func TestTraverseLineageIsDeterministicAndBounded(t *testing.T) {
 	if !reflect.DeepEqual(got.Nodes, want) || !got.Truncated {
 		t.Fatalf("traversal=%+v, want nodes=%+v truncated", got, want)
 	}
+	if !reflect.DeepEqual(got.Roots, root) || len(got.Links) != 2 || got.Links[0].Kind != "depends_on" || got.Links[1].Kind != "executes_as" {
+		t.Fatalf("graph roots/links=%+v/%+v", got.Roots, got.Links)
+	}
 
 	limited, err := TraverseLineage(links, root, LineageTraversalBudget{MaxDepth: 8, MaxNodes: 2})
 	if err != nil || len(limited.Nodes) != 2 || !limited.Truncated {

@@ -1,0 +1,123 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "task-lineage-api", Workspace: "demo", Title: "Trace delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-lineage-api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "task-lineage-api-implement-1"})}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	handler := server.Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=2&max_nodes=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("lineage status=%d body=%s", response.Code, response.Body.String())
+	}
+	var graph core.LineageTraversal
+	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Roots) != 1 || graph.Roots[0].ID != task.ID || len(graph.Nodes) != 2 || len(graph.Links) != 1 || graph.Links[0].Kind != "dispatches" || graph.Truncated {
+		t.Fatalf("lineage graph=%+v", graph)
+	}
+
+	activity := httptest.NewRecorder()
+	handler.ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
+	if activity.Code != http.StatusOK || !json.Valid(activity.Body.Bytes()) || !containsJSONField(activity.Body.Bytes(), "lineage_graph") {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+
+	overBudget := httptest.NewRecorder()
+	handler.ServeHTTP(overBudget, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil))
+	if overBudget.Code != http.StatusBadRequest {
+		t.Fatalf("over-budget status=%d body=%s", overBudget.Code, overBudget.Body.String())
+	}
+}
+
+func TestLineageHTTPQueriesPlanningThroughDeliveryEvidenceEndToEnd(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	blueprint := core.Task{ID: "blueprint-e2e", Workspace: "demo", Title: "Blueprint", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	child := core.Task{ID: "child-e2e", Workspace: "demo", Title: "Child", Repo: "conveyor", ParentTaskID: blueprint.ID, OriginSpecVersion: 1, State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: blueprint.ID, Kind: "planning_session.finalized", Payload: core.JSONPayload(map[string]any{"session_id": "planning-e2e", "produced_requirement_id": "requirement-e2e", "produced_task_id": blueprint.ID})},
+		{TaskID: blueprint.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": "requirement-e2e"})},
+		{TaskID: blueprint.ID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "review-e2e"})},
+		{TaskID: child.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "kidus/conveyor", "number": 42, "base_sha": "base", "head_sha": "head"})},
+		{TaskID: child.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head"})},
+		{TaskID: child.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-e2e", "evidence_ids": []string{"evidence-e2e"}})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/requirement/requirement-e2e", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("lineage status=%d body=%s", response.Code, response.Body.String())
+	}
+	var graph core.LineageTraversal
+	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := map[core.LineageNodeType]bool{
+		core.LineagePlanningSession: false, core.LineageRequirement: false, core.LineageBlueprint: false,
+		core.LineageBlueprintVersion: false, core.LineageTask: false, core.LineageWorkOrder: false,
+		core.LineagePullRequest: false, core.LineageCommitRange: false, core.LineageEvidence: false, core.LineageVerdict: false,
+	}
+	for _, node := range graph.Nodes {
+		if _, ok := wantTypes[node.Type]; ok {
+			wantTypes[node.Type] = true
+		}
+	}
+	for nodeType, found := range wantTypes {
+		if !found {
+			t.Errorf("full lineage graph omitted %s: %+v", nodeType, graph.Nodes)
+		}
+	}
+	if graph.Truncated {
+		t.Fatalf("small end-to-end graph was truncated: %+v", graph)
+	}
+}
+
+func containsJSONField(data []byte, field string) bool {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(data, &payload) != nil {
+		return false
+	}
+	_, ok := payload[field]
+	return ok
+}

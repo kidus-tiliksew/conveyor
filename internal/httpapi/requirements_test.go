@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -109,6 +110,70 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"current_version"`) ||
 		strings.Contains(detail.Body.String(), `"pending_versions":[{`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+}
+
+func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-linked-stale", Title: "Linked intent"}, core.RequirementVersion{
+		Content: "Delivery follows confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-linked-stale",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	blueprint := core.Task{ID: "blueprint-linked-stale", Workspace: "demo", Title: "Linked blueprint", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": requirement.ID})}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})}); err != nil {
+		t.Fatal(err)
+	}
+	child := core.Task{ID: "child-linked-stale", Workspace: "demo", Title: "Linked child", Repo: "conveyor", ParentTaskID: blueprint.ID, OriginSpecVersion: 1, State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	mergeAt := time.Now().UTC().Add(time.Minute)
+	if err = st.AppendEvent(ctx, core.Event{TaskID: child.ID, Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head", "task_title": child.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	drift := monitor.Drift{ID: "direct_push:conveyor:linked", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
+		SourceURL: "https://example.test/commit/head", CommitSHA: "head", RequirementID: requirement.ID, TaskID: "monitor-linked-stale", DetectedAt: mergeAt.Add(time.Minute)}
+	if _, fresh, recordErr := st.(monitor.Store).RecordDrift(ctx, drift); recordErr != nil || !fresh {
+		t.Fatalf("record drift fresh=%t err=%v", fresh, recordErr)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.Staleness.Stale || view.Staleness.LatestDelivery != child.Title || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) || view.ShippedPastIntent != child.Title ||
+		len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
+		t.Fatalf("link-aware staleness=%+v shipped=%q", view.Staleness, view.ShippedPastIntent)
+	}
+	foundMaterialization := false
+	for _, link := range view.LineageGraph.Links {
+		foundMaterialization = foundMaterialization || link.Kind == "materializes"
+	}
+	if !foundMaterialization {
+		t.Fatalf("requirement graph does not reach child: %+v", view.LineageGraph)
 	}
 }
 

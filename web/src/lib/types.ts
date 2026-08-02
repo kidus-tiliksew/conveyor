@@ -123,6 +123,24 @@ export interface TaskEvent {
   at: string
 }
 
+export type LineageNodeType =
+  | 'planning_session' | 'requirement' | 'requirement_version'
+  | 'blueprint' | 'blueprint_version' | 'task' | 'work_order'
+  | 'pull_request' | 'commit_range' | 'evidence' | 'verdict'
+
+export interface LineageNode { type: LineageNodeType; id: string }
+export interface LineageLink {
+  workspace: string
+  src_type: LineageNodeType
+  src_id: string
+  dst_type: LineageNodeType
+  dst_id: string
+  kind: string
+  created_by_event_id: number
+  created_at: string
+}
+export interface LineageGraph { roots: LineageNode[]; nodes: LineageNode[]; links: LineageLink[]; truncated: boolean }
+
 export type InterventionAction = 'approve' | 'reject' | 'redirect' | 'pull_to_local' | 'cancel'
 
 export interface Intervention {
@@ -448,6 +466,7 @@ export interface ActivityItem {
   spec?: SpecVersion
   attachments?: Artifact[]
   verification_evidence?: Artifact[]
+	lineage_graph?: LineageGraph
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
@@ -642,6 +661,13 @@ export interface RequirementView {
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
   lineage: TaskEvent[]
+  lineage_graph?: LineageGraph
+  staleness?: {
+    stale: boolean
+    latest_delivery?: string
+    latest_delivery_at?: string
+    active_drift: RepositoryDrift[]
+  }
   shipped_past_intent?: string
   migrated_seed: boolean
   confirmation_eligible: boolean

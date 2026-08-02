@@ -381,6 +381,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 				created_at: createdAt,
 			},
 		] : [],
+		lineage_graph: taskId === 'full-header-id' ? {
+			roots: [{ type: 'task', id: taskId }],
+			nodes: [{ type: 'task', id: taskId }, { type: 'work_order', id: `${taskId}-implement-1` }],
+			links: [{ workspace: 'demo', src_type: 'task', src_id: taskId, dst_type: 'work_order', dst_id: `${taskId}-implement-1`, kind: 'dispatches', created_by_event_id: 1, created_at: createdAt }],
+			truncated: false,
+		} : undefined,
 		review_diagnostics: reviewDiagnostics,
 		review_recovery: taskId === 'review-retry' ? {
 			needed: true,
@@ -521,6 +527,9 @@ test('task detail headers show the task name while routes and API lookup keep us
 	const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
 	await expect(fullHeader).toContainText('Short task')
 	await expect(fullHeader).not.toContainText(fullTaskID)
+	await expect(page.getByRole('heading', { name: 'Lineage graph' })).toBeVisible()
+	await page.getByText('Trace planning to delivery evidence').click()
+	await expect(page.getByText('dispatches', { exact: true })).toBeVisible()
 	expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
 
 	const sheetTaskID = 'sheet-header-id'

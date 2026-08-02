@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
 			r.Get("/tasks/{id}/activity", s.getTaskActivity)
+			r.Get("/lineage/{type}/{id}", s.getLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)
 			r.Get("/reviews", s.listReviews)
@@ -787,6 +788,7 @@ type reviewItem struct {
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
 	VerificationEvidence      []core.Artifact                       `json:"verification_evidence"`
+	LineageGraph              core.LineageTraversal                 `json:"lineage_graph"`
 }
 
 type activityItem struct {
@@ -924,6 +926,13 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	lineageGraph, err := s.lineageGraph(r, core.LineageNode{Type: core.LineageTask, ID: id}, core.LineageTraversalBudget{
+		MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
 	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
@@ -965,6 +974,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
+		LineageGraph:              lineageGraph,
 	})
 }
 

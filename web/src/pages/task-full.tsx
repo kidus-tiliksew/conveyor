@@ -2,6 +2,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ActivityItem } from '../lib/types'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
+import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
 import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
@@ -84,6 +85,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           <AttachmentsCard attachments={item.attachments ?? []} />
         </section>
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
+          {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} />}
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>

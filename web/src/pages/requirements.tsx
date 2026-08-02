@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, MessageSquarePlus, Sparkles } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -324,6 +325,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
           </CardContent>
         </Card>
       </div>
+      {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} title="Intent to delivery" />}
     </div>
   )
 }
@@ -363,19 +365,23 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
 
 function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
   const shipped = item.shipped_past_intent
+  const drift = item.staleness?.active_drift.length ?? 0
   return <>
     {shipped && <Badge variant="attention"><span title={shipped}>Code ahead of intent</span></Badge>}
+    {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
     {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
     {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
-    {!compact && item.pending_versions.length === 0 && !shipped && !item.migrated_seed && <Badge variant="positive">Intent aligned</Badge>}
+    {!compact && item.pending_versions.length === 0 && !shipped && drift === 0 && !item.migrated_seed && <Badge variant="positive">Intent aligned</Badge>}
   </>
 }
 
 function RequirementStateNotices({ item }: { item: RequirementView }) {
   const shipped = item.shipped_past_intent
+  const activeDrift = item.staleness?.active_drift ?? []
   return (
 	<section className="space-y-2" aria-label="Requirement alignment">
       {shipped && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span></p>}
+      {activeDrift.length > 0 && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">{activeDrift.length} unreconciled repository change{activeDrift.length === 1 ? '' : 's'} affect this requirement through its delivery lineage.</p>}
       {item.pending_versions.length > 0 && !item.migrated_seed && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">A revision is pending operator confirmation.</p>}
       {item.migrated_seed && <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">This migrated seed is awaiting its first deliberate revision.</p>}
 	</section>

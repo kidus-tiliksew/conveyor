@@ -32,6 +32,16 @@ const requirement = {
     actor_id: 'planner', actor_role: 'system', payload: {},
     at: '2026-07-30T10:05:00Z',
   }],
+  lineage_graph: {
+    roots: [{ type: 'requirement', id: 'req-retries' }],
+    nodes: [{ type: 'requirement', id: 'req-retries' }, { type: 'blueprint', id: 'blueprint-task' }],
+    links: [{
+      workspace: 'demo', src_type: 'requirement', src_id: 'req-retries', dst_type: 'blueprint', dst_id: 'blueprint-task',
+      kind: 'serves', created_by_event_id: 2, created_at: '2026-07-30T10:05:00Z',
+    }],
+    truncated: false,
+  },
+  staleness: { stale: true, latest_delivery: 'blueprint-task', active_drift: [] },
   shipped_past_intent: 'blueprint-task',
   migrated_seed: false,
   confirmation_eligible: true,
@@ -103,6 +113,9 @@ test('requirements renders living intent, confirms a revision, and opens plannin
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toBeVisible()
+  await page.getByText('Trace planning to delivery evidence').click()
+  await expect(page.getByText('serves', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
