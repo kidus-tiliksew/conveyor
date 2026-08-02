@@ -299,14 +299,45 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		next, parseErr := parseDecision(result.Output)
 		if parseErr != nil {
-			return fmt.Errorf("planning model step %d: %w", step, parseErr)
+			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+				"The planning decision was malformed: "+parseErr.Error()+
+					". Return one JSON object matching the planning_step schema and re-issue the corrected decision."); err != nil {
+				return err
+			}
+			if step == maxSteps {
+				return s.finishStepLimit(runCtx, sessionID, emit, maxSteps)
+			}
+			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
+				return err
+			}
+			continue
 		}
 		if next.ResponseText == "" && len(next.ToolCalls) == 0 {
-			return fmt.Errorf("planning model step %d returned neither text nor a tool call", step)
+			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+				"The planning decision contained neither response text nor a tool call. Re-issue a corrected decision with one of them."); err != nil {
+				return err
+			}
+			if step == maxSteps {
+				return s.finishStepLimit(runCtx, sessionID, emit, maxSteps)
+			}
+			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
+				return err
+			}
+			continue
 		}
 		finalizing := containsFinalize(next.ToolCalls)
 		if finalizing && len(next.ToolCalls) != 1 {
-			return fmt.Errorf("a finalize tool must be the only tool call in its step")
+			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+				"A finalize tool must be the only tool call in its planning step. Re-issue the finalize call by itself."); err != nil {
+				return err
+			}
+			if step == maxSteps {
+				return s.finishStepLimit(runCtx, sessionID, emit, maxSteps)
+			}
+			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
+				return err
+			}
+			continue
 		}
 
 		assistantParts := make([]map[string]any, 0, len(next.ToolCalls)+1)
@@ -319,27 +350,59 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			)
 		}
 		seenCalls := map[string]bool{}
+		acceptedCalls := make([]toolCall, 0, len(next.ToolCalls))
+		rejectedCalls := make([]toolCall, 0)
+		correctionResults := make([]map[string]any, 0)
+		unpairedCorrections := make([]string, 0)
+		maxArgumentBytes := s.MaxToolBytes
+		if maxArgumentBytes <= 0 {
+			maxArgumentBytes = DefaultMaxToolBytes
+		}
 		for _, call := range next.ToolCalls {
-			if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
-				return fmt.Errorf("planning tool calls require id and name")
+			call.ID = strings.TrimSpace(call.ID)
+			call.Name = strings.TrimSpace(call.Name)
+			if call.ID == "" || call.Name == "" {
+				unpairedCorrections = append(unpairedCorrections,
+					"A planning tool call had no usable id or name. Every call requires non-empty id, name, and arguments_json fields; re-issue it corrected.")
+				continue
 			}
 			if seenCalls[call.ID] {
-				return fmt.Errorf("planning tool call id %q is duplicated", call.ID)
+				unpairedCorrections = append(unpairedCorrections, fmt.Sprintf(
+					"Planning tool call id %q was duplicated. Re-issue the duplicate call with a new unique id.", call.ID))
+				continue
 			}
 			seenCalls[call.ID] = true
-			if !finalizing {
-				if err = validatePlanningToolArguments(call); err != nil {
-					return fmt.Errorf("planning tool %s arguments: %w", call.Name, err)
-				}
-			}
 			var input any
-			if err = json.Unmarshal([]byte(call.ArgumentsJSON), &input); err != nil {
-				return fmt.Errorf("planning tool %s arguments: %w", call.Name, err)
+			validationErr := validatePlanningToolArguments(call, maxArgumentBytes)
+			if validationErr == nil {
+				validationErr = json.Unmarshal([]byte(call.ArgumentsJSON), &input)
+			} else {
+				input = call.ArgumentsJSON
 			}
 			assistantParts = append(assistantParts, map[string]any{
 				"type": "tool-input-available", "toolCallId": call.ID,
 				"toolName": call.Name, "input": input,
 			})
+			if validationErr != nil {
+				rejectedCalls = append(rejectedCalls, call)
+				correctionResults = append(correctionResults,
+					invalidToolCallResult(call, validationErr))
+				continue
+			}
+			acceptedCalls = append(acceptedCalls, call)
+		}
+		if len(unpairedCorrections) != 0 {
+			correctionText := strings.Join(unpairedCorrections, " ")
+			insertion := 0
+			if next.ResponseText != "" {
+				insertion = 3
+			}
+			next.ResponseText = strings.TrimSpace(strings.Join([]string{next.ResponseText, correctionText}, "\n\n"))
+			correctionParts := planningTextParts(correctionText)
+			orderedParts := make([]map[string]any, 0, len(assistantParts)+len(correctionParts))
+			orderedParts = append(orderedParts, assistantParts[:insertion]...)
+			orderedParts = append(orderedParts, correctionParts...)
+			assistantParts = append(orderedParts, assistantParts[insertion:]...)
 		}
 		if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
 			SessionID: sessionID, Role: core.PlanningMessageAssistant,
@@ -347,11 +410,26 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}); err != nil {
 			return err
 		}
-		for _, call := range next.ToolCalls {
+		for _, call := range acceptedCalls {
+			pending[call.ID] = call
+		}
+		for _, call := range rejectedCalls {
 			pending[call.ID] = call
 		}
 		for _, part := range assistantParts {
 			if err = emit(part); err != nil {
+				return err
+			}
+		}
+		for index, chunk := range correctionResults {
+			if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
+				SessionID: sessionID, Role: core.PlanningMessageTool,
+				Parts: core.JSONPayload([]map[string]any{chunk}),
+			}); err != nil {
+				return err
+			}
+			delete(pending, rejectedCalls[index].ID)
+			if err = emit(chunk); err != nil {
 				return err
 			}
 		}
@@ -362,9 +440,18 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			}
 			return emit(map[string]any{"type": "finish", "finishReason": "stop"})
 		}
+		if len(acceptedCalls) == 0 {
+			if step == maxSteps {
+				return s.finishStepLimit(runCtx, sessionID, emit, maxSteps)
+			}
+			if err = emit(map[string]any{"type": "finish-step"}); err != nil {
+				return err
+			}
+			continue
+		}
 
-		if containsFinalize(next.ToolCalls) {
-			call := next.ToolCalls[0]
+		if containsFinalize(acceptedCalls) {
+			call := acceptedCalls[0]
 			var chunk map[string]any
 			err = s.Store.WithPlanningSessionFinalization(runCtx, session.ID, func(lockedCtx context.Context) error {
 				execution, executeErr := s.executeTool(lockedCtx, session, call, model)
@@ -402,14 +489,14 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			return emit(map[string]any{"type": "finish", "finishReason": "tool-calls"})
 		}
 
-		executionCount := min(len(next.ToolCalls), maxCalls)
+		executionCount := min(len(acceptedCalls), maxCalls)
 		executions := make([]toolExecution, executionCount)
 		executionErrors := make([]error, executionCount)
 		var executionGroup sync.WaitGroup
 		// Parallel exploration calls intentionally share a best-effort session
 		// budget snapshot. Each complete attempt is charged durably, but calls in
 		// this one step may all observe the same pre-step low-budget threshold.
-		for index, call := range next.ToolCalls[:executionCount] {
+		for index, call := range acceptedCalls[:executionCount] {
 			executionGroup.Add(1)
 			go func() {
 				defer executionGroup.Done()
@@ -417,7 +504,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			}()
 		}
 		executionGroup.Wait()
-		for index, call := range next.ToolCalls {
+		for index, call := range acceptedCalls {
 			if index >= executionCount {
 				chunk := deferredToolCallResult(call, maxCalls)
 				if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
@@ -441,6 +528,10 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			if executeErr != nil {
 				if errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) || runCtx.Err() != nil {
 					return fmt.Errorf("planning tool %s: %w", call.Name, executeErr)
+				}
+				var infrastructure *planningInfrastructureError
+				if errors.As(executeErr, &infrastructure) {
+					return fmt.Errorf("planning tool %s infrastructure: %w", call.Name, executeErr)
 				}
 				chunkType = "tool-output-error"
 				output = recoverableToolError(call.Name, executeErr)
@@ -468,11 +559,75 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 				return err
 			}
 		}
+		if step == maxSteps {
+			return s.finishStepLimit(runCtx, sessionID, emit, maxSteps)
+		}
 		if err = emit(map[string]any{"type": "finish-step"}); err != nil {
 			return err
 		}
 	}
-	return fmt.Errorf("planning agent reached the bounded %d-step limit without a final response", maxSteps)
+	return nil
+}
+
+func invalidToolCallResult(call toolCall, validationErr error) map[string]any {
+	return map[string]any{
+		"type": "tool-output-error", "toolCallId": call.ID, "toolName": call.Name,
+		"output": map[string]any{
+			"ok": false, "status": "invalid", "tool": call.Name,
+			"error":    validationErr.Error(),
+			"expected": expectedToolArguments(call.Name),
+			"message":  "Correct the tool arguments and re-issue the request with a new unique call id.",
+		},
+	}
+}
+
+func planningTextParts(message string) []map[string]any {
+	textID := "text-" + core.NewTaskID()
+	return []map[string]any{
+		{"type": "text-start", "id": textID},
+		{"type": "text-delta", "id": textID, "delta": message},
+		{"type": "text-end", "id": textID},
+	}
+}
+
+func (s *Service) persistAssistantCorrection(
+	ctx context.Context,
+	sessionID string,
+	emit Emitter,
+	message string,
+) error {
+	parts := planningTextParts(message)
+	if _, err := s.Store.AppendPlanningMessage(ctx, core.PlanningMessage{
+		SessionID: sessionID, Role: core.PlanningMessageAssistant,
+		Content: message, Parts: core.JSONPayload(parts),
+	}); err != nil {
+		return err
+	}
+	for _, part := range parts {
+		if err := emit(part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) finishStepLimit(
+	ctx context.Context,
+	sessionID string,
+	emit Emitter,
+	maxSteps int,
+) error {
+	message := fmt.Sprintf(
+		"Planning reached its bounded %d-step limit. The correction and tool results are preserved; send another message to continue from this transcript.",
+		maxSteps,
+	)
+	if err := s.persistAssistantCorrection(ctx, sessionID, emit, message); err != nil {
+		return err
+	}
+	if err := emit(map[string]any{"type": "finish-step"}); err != nil {
+		return err
+	}
+	return emit(map[string]any{"type": "finish", "finishReason": "stop"})
 }
 
 func deferredToolCallResult(call toolCall, maxCalls int) map[string]any {
@@ -495,6 +650,20 @@ func recoverableToolError(toolName string, err error) map[string]any {
 		"error":   err.Error(),
 		"message": "The tool request failed; narrow or correct the request and try another planning step.",
 	}
+}
+
+type planningInfrastructureError struct {
+	err error
+}
+
+func (e *planningInfrastructureError) Error() string { return e.err.Error() }
+func (e *planningInfrastructureError) Unwrap() error { return e.err }
+
+func planningStoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &planningInfrastructureError{err: err}
 }
 
 func (s *Service) appendSyntheticToolResults(
@@ -886,31 +1055,52 @@ func containsFinalize(calls []toolCall) bool {
 	return false
 }
 
-func validatePlanningToolArguments(call toolCall) error {
-	var target any
-	switch call.Name {
+func planningToolTarget(name string) (any, error) {
+	switch name {
 	case "list_requirements", "list_approved_specs":
-		target = &noPlanningArgs{}
+		return &noPlanningArgs{}, nil
 	case "read_requirement":
-		target = &readRequirementArgs{}
+		return &readRequirementArgs{}, nil
 	case "read_approved_spec", "read_task_lineage":
-		target = &taskIDArgs{}
+		return &taskIDArgs{}, nil
 	case "read_artifact":
-		target = &artifactIDArgs{}
+		return &artifactIDArgs{}, nil
 	case "list_files":
-		target = &listFilesArgs{}
+		return &listFilesArgs{}, nil
 	case "read_file":
-		target = &readFileArgs{}
+		return &readFileArgs{}, nil
 	case "grep":
-		target = &grepArgs{}
+		return &grepArgs{}, nil
 	case "history":
-		target = &historyArgs{}
+		return &historyArgs{}, nil
 	case "draft_requirement", "revise_requirement", "finalize_requirement":
-		target = &requirementArgs{}
+		return &requirementArgs{}, nil
 	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
-		target = &blueprintArgs{}
+		return &blueprintArgs{}, nil
 	default:
-		return fmt.Errorf("unsupported planning tool %q", call.Name)
+		return nil, fmt.Errorf("unsupported planning tool %q", name)
+	}
+}
+
+func expectedToolArguments(name string) string {
+	target, err := planningToolTarget(name)
+	if err != nil {
+		return "a supported tool name (" + strings.Join(toolNames(), ", ") + ") and that tool's JSON object arguments"
+	}
+	data, err := json.Marshal(target)
+	if err != nil {
+		return "a JSON object matching the selected tool's schema"
+	}
+	return string(data)
+}
+
+func validatePlanningToolArguments(call toolCall, maxBytes int) error {
+	if len(call.ArgumentsJSON) > maxBytes {
+		return fmt.Errorf("arguments exceed the %d-byte limit", maxBytes)
+	}
+	target, err := planningToolTarget(call.Name)
+	if err != nil {
+		return err
 	}
 	if err := decodeArgs(call.ArgumentsJSON, target); err != nil {
 		return err
@@ -1001,7 +1191,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		items, err := s.Store.ListRequirements(ctx)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		return toolExecution{Output: items}, nil
 	case "read_requirement":
@@ -1011,14 +1201,14 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		requirement, err := s.Store.GetRequirement(ctx, args.RequirementID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		if args.Version > 0 {
 			version, versionErr := s.Store.GetRequirementVersion(ctx, args.RequirementID, args.Version)
-			return toolExecution{Output: map[string]any{"requirement": requirement, "version": version}}, versionErr
+			return toolExecution{Output: map[string]any{"requirement": requirement, "version": version}}, planningStoreError(versionErr)
 		}
 		versions, err := s.Store.ListRequirementVersions(ctx, args.RequirementID)
-		return toolExecution{Output: map[string]any{"requirement": requirement, "versions": versions}}, err
+		return toolExecution{Output: map[string]any{"requirement": requirement, "versions": versions}}, planningStoreError(err)
 	case "list_approved_specs":
 		var args noPlanningArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
@@ -1026,7 +1216,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		tasks, err := s.Store.ListTasks(ctx)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		type approved struct {
 			Task core.Task        `json:"task"`
@@ -1036,7 +1226,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		for _, task := range tasks {
 			spec, exists, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
 			if specErr != nil {
-				return toolExecution{}, specErr
+				return toolExecution{}, planningStoreError(specErr)
 			}
 			if exists && spec.Approved {
 				items = append(items, approved{Task: task, Spec: spec})
@@ -1053,11 +1243,11 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		task, err := s.Store.GetTask(ctx, args.TaskID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		spec, exists, err := s.Store.GetLatestSpecVersion(ctx, args.TaskID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		if !exists || !spec.Approved {
 			return toolExecution{}, fmt.Errorf("task %s has no approved spec", args.TaskID)
@@ -1070,7 +1260,7 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		artifact, content, err := s.Store.GetArtifact(ctx, args.ArtifactID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		maxBytes := s.MaxToolBytes
 		if maxBytes <= 0 {
@@ -1093,15 +1283,15 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		}
 		task, err := s.Store.GetTask(ctx, args.TaskID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		spec, exists, err := s.Store.GetLatestSpecVersion(ctx, args.TaskID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		events, err := s.Store.ListEvents(ctx, args.TaskID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		if len(events) > 100 {
 			events = events[len(events)-100:]
@@ -1161,7 +1351,7 @@ func (s *Service) explorationTool(ctx context.Context, original core.PlanningSes
 	output = truncateExplorationKnown(output, exploration.capTokens, refine, call.Name == "grep", truncated)
 	used := approximateTokens(output)
 	if _, err = s.Store.RecordPlanningExplorationTokens(ctx, original.ID, used); err != nil {
-		return toolExecution{}, err
+		return toolExecution{}, planningStoreError(err)
 	}
 	return toolExecution{Output: output, Exploration: true}, nil
 }
@@ -1173,7 +1363,7 @@ func (s *Service) recordExplorationAttempt(ctx context.Context, sessionID string
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if _, err := s.Store.RecordPlanningExplorationTokens(recordCtx, sessionID, used); err != nil {
-		return errors.Join(attemptErr, fmt.Errorf("record failed exploration usage: %w", err))
+		return planningStoreError(errors.Join(attemptErr, fmt.Errorf("record failed exploration usage: %w", err)))
 	}
 	return attemptErr
 }
@@ -1193,14 +1383,14 @@ func (s *Service) resolveExploration(
 ) (explorationContext, error) {
 	session, err := s.Store.GetPlanningSession(ctx, original.ID)
 	if err != nil {
-		return explorationContext{}, err
+		return explorationContext{}, planningStoreError(err)
 	}
 	if s.ConfigProvider == nil {
-		return explorationContext{}, fmt.Errorf("planning repository configuration is unavailable")
+		return explorationContext{}, &planningInfrastructureError{err: fmt.Errorf("planning repository configuration is unavailable")}
 	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
-		return explorationContext{}, err
+		return explorationContext{}, &planningInfrastructureError{err: err}
 	}
 	if repoName == "" {
 		repoName = session.PrimaryRepo
@@ -1228,7 +1418,7 @@ func (s *Service) resolveExploration(
 	if revision == "" {
 		candidate, pinErr := manager.PinSnapshot(ctx, selected.URL, selected.Base)
 		if pinErr != nil {
-			return explorationContext{}, fmt.Errorf("pin planning repository %s: %w", selected.Name, pinErr)
+			return explorationContext{}, &planningInfrastructureError{err: fmt.Errorf("pin planning repository %s: %w", selected.Name, pinErr)}
 		}
 		session, err = s.Store.PinPlanningSessionRepo(ctx, session.ID, selected.Name, candidate.Revision)
 		if err != nil {
@@ -1236,7 +1426,7 @@ func (s *Service) resolveExploration(
 			// that compatible snapshot instead of aborting the whole planning run.
 			winner, getErr := s.Store.GetPlanningSession(ctx, session.ID)
 			if getErr != nil || winner.PinnedRevisions[selected.Name] == "" {
-				return explorationContext{}, errors.Join(err, getErr)
+				return explorationContext{}, planningStoreError(errors.Join(err, getErr))
 			}
 			session = winner
 		}
@@ -1244,7 +1434,7 @@ func (s *Service) resolveExploration(
 	}
 	snapshot, err = manager.OpenSnapshot(ctx, selected.URL, revision)
 	if err != nil {
-		return explorationContext{}, fmt.Errorf("open planning repository %s@%s: %w", selected.Name, revision, err)
+		return explorationContext{}, &planningInfrastructureError{err: fmt.Errorf("open planning repository %s@%s: %w", selected.Name, revision, err)}
 	}
 	capTokens := 0
 	if cfg.ExecutionSettings != nil {
@@ -1558,11 +1748,11 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 		}
 		requirement, err := s.Store.GetRequirement(ctx, args.RequirementID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		versions, err := s.Store.ListRequirementVersions(ctx, args.RequirementID)
 		if err != nil {
-			return toolExecution{}, err
+			return toolExecution{}, planningStoreError(err)
 		}
 		issued := make([]string, 0)
 		for _, version := range versions {
@@ -1786,11 +1976,11 @@ func (s *Service) boundedOutput(value any) (any, error) {
 }
 
 func decodeArgs(raw string, target any) error {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return err
 	}
-	if object == nil {
+	if _, ok := value.(map[string]any); !ok {
 		return fmt.Errorf("arguments must be a JSON object")
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
