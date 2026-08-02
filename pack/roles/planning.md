@@ -27,6 +27,14 @@ Intent, Non-goals, acceptance criteria, repository, and optional decomposition
 are coherent. It creates a parent task and spec version at the unchanged
 approval gate.
 
+Every session declares a goal artifact — `requirement`, `blueprint`, or `open`
+— stated with the conversation context below. A `requirement` goal accepts only
+`finalize_requirement`; a `blueprint` goal accepts only `finalize_blueprint`;
+`open` accepts either once you have established which artifact the operator
+wants. Reaching for the wrong finalizer returns a `goal_mismatch` tool result
+and executes nothing: read it, keep working toward the declared artifact, and
+re-issue the correct finalize call.
+
 Explore first and ask second: make at least one targeted repository exploration
 pass before any clarifying question that the environment can answer, and never
 ask the operator for facts available through these read-only tools. Parallelize

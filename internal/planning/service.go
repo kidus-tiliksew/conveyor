@@ -124,6 +124,9 @@ type historyArgs struct {
 type produced struct {
 	RequirementID string
 	TaskID        string
+	// Title is the produced artifact's own title. Finalizing adopts it as the
+	// session title, retiring the provisional one (spec §21.57 change 3).
+	Title string
 }
 
 type toolExecution struct {
@@ -132,9 +135,27 @@ type toolExecution struct {
 	Exploration bool
 }
 
-func (s *Service) CreateSession(ctx context.Context, title, requirementContextID, modelOverride string) (core.PlanningSession, error) {
+// CreateSessionInput opens a durable planning session. Goal is declared once
+// and never updated (spec §21.57 change 3); an empty goal is compatible and
+// reads back as `open`.
+type CreateSessionInput struct {
+	Title                string
+	RequirementContextID string
+	ModelOverride        string
+	Goal                 core.PlanningSessionGoal
+}
+
+func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (core.PlanningSession, error) {
 	if s == nil || s.Store == nil || s.ConfigProvider == nil {
 		return core.PlanningSession{}, fmt.Errorf("planning session configuration is unavailable")
+	}
+	goal := input.Goal
+	if goal == "" {
+		goal = core.PlanningGoalOpen
+	}
+	if !goal.Valid() {
+		return core.PlanningSession{}, fmt.Errorf(
+			"planning session goal %q is invalid; want requirement, blueprint, or open", input.Goal)
 	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
@@ -144,7 +165,7 @@ func (s *Service) CreateSession(ctx context.Context, title, requirementContextID
 		return core.PlanningSession{}, fmt.Errorf("planning execution settings are unavailable")
 	}
 	settings := cfg.ExecutionSettings.ControlPlane.Planning
-	model := strings.TrimSpace(modelOverride)
+	model := strings.TrimSpace(input.ModelOverride)
 	if model == "" {
 		model = settings.Model
 	}
@@ -170,9 +191,16 @@ func (s *Service) CreateSession(ctx context.Context, title, requirementContextID
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("pin primary planning repository %s: %w", primary.Name, err)
 	}
+	// A session carries its goal-derived provisional title until it produces
+	// something; only a deliberate operator title outranks it. That is what
+	// retires the five identical "New requirement" rows (spec §21.57).
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = goal.ProvisionalTitle()
+	}
 	return s.Store.CreatePlanningSession(ctx, core.PlanningSession{
-		ID: "session-" + core.NewTaskID(), Title: strings.TrimSpace(title),
-		RequirementContextID: requirementContextID,
+		ID: "session-" + core.NewTaskID(), Title: title, Goal: goal,
+		RequirementContextID: input.RequirementContextID,
 		Model:                model, Effort: settings.Effort,
 		ExplorationOutputTokens: settings.ExplorationOutputTokens,
 		PrimaryRepo:             primary.Name,
@@ -389,6 +417,17 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 					invalidToolCallResult(call, validationErr))
 				continue
 			}
+			// A non-open goal accepts only its matching finalizer. The mismatch
+			// is an ordinary recoverable tool result — never a run abort — so
+			// the agent reads the correction and may finalize correctly in a
+			// later step of this same run (spec §21.57 change 3).
+			if expected := session.Goal.ExpectedFinalizeTool(); expected != "" &&
+				strings.HasPrefix(call.Name, "finalize_") && call.Name != expected {
+				rejectedCalls = append(rejectedCalls, call)
+				correctionResults = append(correctionResults,
+					goalMismatchToolCallResult(call, session.Goal, expected))
+				continue
+			}
 			acceptedCalls = append(acceptedCalls, call)
 		}
 		if len(unpairedCorrections) != 0 {
@@ -577,6 +616,25 @@ func invalidToolCallResult(call toolCall, validationErr error) map[string]any {
 			"error":    validationErr.Error(),
 			"expected": expectedToolArguments(call.Name),
 			"message":  "Correct the tool arguments and re-issue the request with a new unique call id.",
+		},
+	}
+}
+
+// goalMismatchToolCallResult is the stable payload a non-open session returns
+// when the model reaches for the wrong finalizer. It creates no artifact and
+// leaves the session active (spec §21.57 change 3).
+func goalMismatchToolCallResult(call toolCall, goal core.PlanningSessionGoal, expected string) map[string]any {
+	return map[string]any{
+		"type": "tool-output-error", "toolCallId": call.ID, "toolName": call.Name,
+		"output": map[string]any{
+			"ok": false, "status": "invalid", "tool": call.Name,
+			"code": "goal_mismatch", "recoverable": true,
+			"goal":              string(goal),
+			"expected_finalize": expected,
+			"received_finalize": call.Name,
+			"message": fmt.Sprintf(
+				"This planning session's goal is %s, so %s is the only finalize tool it accepts; %s was not executed. Continue toward %s, then re-issue %s with a new unique call id.",
+				goal, expected, call.Name, expected, expected),
 		},
 	}
 }
@@ -806,8 +864,24 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 	return role +
 		"\n\nConfigured workspace repositories: " + strings.Join(repositories, ", ") + "." +
 		"\n" + snapshotStatement +
+		"\n" + goalStatement(session.Goal) +
 		"\nStrict exploration tool schemas:\n" + string(explorationSchemas) +
 		"\n\nDurable conversation context:\n" + string(contextJSON), nil
+}
+
+// goalStatement tells the agent which artifact this session exists to produce
+// and which finalizer it may reach for (spec §21.57 change 3). It is advisory
+// here and enforced at finalize time.
+func goalStatement(goal core.PlanningSessionGoal) string {
+	switch expected := goal.ExpectedFinalizeTool(); expected {
+	case "":
+		return "This session's goal is open: either finalize_requirement or finalize_blueprint is legal. " +
+			"Establish which artifact the operator wants before finalizing anything."
+	default:
+		return "This session's goal is " + string(goal) + ": " + expected +
+			" is the only finalize tool it accepts, and the other one will be rejected without executing. " +
+			"Steer the conversation toward that artifact."
+	}
 }
 
 type planningContextOverflowError struct {
@@ -1845,7 +1919,7 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 	}
 	return toolExecution{
 		Output:   map[string]any{"requirement": requirement, "version": version, "confirmation_required": true},
-		Produced: &produced{RequirementID: requirementID},
+		Produced: &produced{RequirementID: requirementID, Title: requirement.Title},
 	}, nil
 }
 
@@ -1926,7 +2000,7 @@ func (s *Service) blueprintTool(ctx context.Context, session core.PlanningSessio
 			"task": task, "spec": version,
 			"approval_required": task.State == core.TaskAwaiting,
 		},
-		Produced: &produced{TaskID: task.ID},
+		Produced: &produced{TaskID: task.ID, Title: task.Title},
 	}, nil
 }
 
@@ -1952,6 +2026,7 @@ func (s *Service) archiveAndFinalize(ctx context.Context, session core.PlanningS
 	_, err = s.Store.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
 		SessionID: session.ID, RequirementID: value.RequirementID,
 		TaskID: value.TaskID, TranscriptArtifactID: artifact.ID,
+		Title: value.Title,
 	})
 	return err
 }

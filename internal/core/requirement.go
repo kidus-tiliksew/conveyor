@@ -162,6 +162,50 @@ func (s PlanningSessionStatus) Valid() bool {
 		s == PlanningSessionAbandoned
 }
 
+// PlanningSessionGoal is the artifact a session declares it is working toward
+// (spec §9, §21.57). It is set at creation and never updated: it steers the
+// agent's finalize target so a requirement-drafting conversation does not skip
+// to a blueprint. `open` keeps the historical unconstrained behavior.
+type PlanningSessionGoal string
+
+const (
+	PlanningGoalRequirement PlanningSessionGoal = "requirement"
+	PlanningGoalBlueprint   PlanningSessionGoal = "blueprint"
+	PlanningGoalOpen        PlanningSessionGoal = "open"
+)
+
+func (g PlanningSessionGoal) Valid() bool {
+	return g == PlanningGoalRequirement || g == PlanningGoalBlueprint ||
+		g == PlanningGoalOpen
+}
+
+// ExpectedFinalizeTool is the only finalizer a non-open goal accepts. An open
+// goal returns "" — either finalizer is legal (spec §21.57 change 3).
+func (g PlanningSessionGoal) ExpectedFinalizeTool() string {
+	switch g {
+	case PlanningGoalRequirement:
+		return "finalize_requirement"
+	case PlanningGoalBlueprint:
+		return "finalize_blueprint"
+	default:
+		return ""
+	}
+}
+
+// ProvisionalTitle names a session before it has produced anything. Finalizing
+// replaces it with the produced artifact's title, so no two sessions share a
+// static label (spec §21.57 change 3).
+func (g PlanningSessionGoal) ProvisionalTitle() string {
+	switch g {
+	case PlanningGoalRequirement:
+		return "Drafting requirement…"
+	case PlanningGoalBlueprint:
+		return "Planning work…"
+	default:
+		return "Exploring…"
+	}
+}
+
 // PlanningSession is a durable planning chat. It produces at most one artifact
 // — a requirement version or a blueprint parent task — and grants no approval
 // authority over either (spec §9, §13.1).
@@ -169,6 +213,9 @@ type PlanningSession struct {
 	ID     string                `json:"id"`
 	Title  string                `json:"title,omitempty"`
 	Status PlanningSessionStatus `json:"status"`
+	// Goal is immutable declared intent (spec §21.57). Pre-goal rows read back
+	// as `open`, which is exactly their historical behavior.
+	Goal PlanningSessionGoal `json:"goal"`
 	// Model, Effort, ExplorationOutputTokens, and PinnedRevisions are the
 	// immutable serving provenance selected when the session starts. Existing
 	// pre-provenance rows remain readable with zero values (spec §21.50-§21.52).

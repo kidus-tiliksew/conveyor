@@ -483,17 +483,25 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 	if session.PinnedRevisions == nil {
 		session.PinnedRevisions = map[string]string{}
 	}
+	if session.Goal == "" {
+		session.Goal = core.PlanningGoalOpen
+	}
+	if !session.Goal.Valid() {
+		return core.PlanningSession{}, fmt.Errorf(
+			"planning session goal %q is invalid; want requirement, blueprint, or open", session.Goal)
+	}
 	pins, err := json.Marshal(session.PinnedRevisions)
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("encode planning revisions: %w", err)
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO planning_sessions
-			(workspace_id,id,title,status,requirement_context_id,model,effort,
+			(workspace_id,id,title,status,goal,requirement_context_id,model,effort,
 			 exploration_output_tokens,exploration_tokens_used,primary_repo,pinned_revisions,
 			 created_at,updated_at)
-			VALUES ($1,$2,$3,'active',NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12)`,
-			session.Workspace, session.ID, session.Title, session.RequirementContextID,
+			VALUES ($1,$2,$3,'active',$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13)`,
+			session.Workspace, session.ID, session.Title, string(session.Goal),
+			session.RequirementContextID,
 			session.Model, session.Effort, session.ExplorationOutputTokens,
 			session.ExplorationTokensUsed, session.PrimaryRepo, pins,
 			session.CreatedAt, session.UpdatedAt); err != nil {
@@ -502,6 +510,7 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 		return insertRequirementEvent(ctx, q, "planning_session.created", map[string]any{
 			"workspace_id": session.Workspace, "session_id": session.ID, "title": session.Title,
 			"requirement_context_id": session.RequirementContextID,
+			"goal":                   string(session.Goal),
 			"model":                  session.Model, "effort": session.Effort,
 			"exploration_output_tokens": session.ExplorationOutputTokens,
 			"primary_repo":              session.PrimaryRepo, "pinned_revisions": session.PinnedRevisions,
@@ -704,10 +713,11 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
 			SET status='finalized', produced_requirement_id=NULLIF($3,''),
 			    produced_task_id=NULLIF($4,''), transcript_artifact_id=NULLIF($5,''),
+			    title=COALESCE(NULLIF($7,''),title),
 			    finalized_at=$6, updated_at=$6
 			WHERE workspace_id=$1 AND id=$2`,
 			workspace(ctx), request.SessionID, request.RequirementID, request.TaskID,
-			request.TranscriptArtifactID, now); err != nil {
+			request.TranscriptArtifactID, now, strings.TrimSpace(request.Title)); err != nil {
 			return err
 		}
 		if session, err = scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
@@ -721,7 +731,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			return err
 		}
 		if err = insertRequirementEvent(ctx, q, "planning_session.finalized", map[string]any{
-			"workspace_id": workspace(ctx), "session_id": session.ID,
+			"workspace_id": workspace(ctx), "session_id": session.ID, "title": session.Title,
 			"produced_requirement_id": session.ProducedRequirementID,
 			"produced_task_id":        session.ProducedTaskID,
 			"transcript_artifact_id":  session.TranscriptArtifactID,
@@ -829,7 +839,7 @@ const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,sta
 
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at FROM requirement_versions`
 
-const planningSessionSelect = `SELECT workspace_id,id,title,status,COALESCE(requirement_context_id,''),
+const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),
 	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
 	exploration_tokens_used,primary_repo,pinned_revisions,created_at,updated_at,finalized_at
@@ -894,9 +904,10 @@ func scanPlanningSession(row pgx.Row, id string) (core.PlanningSession, error) {
 func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 	var session core.PlanningSession
 	var status string
+	var goal string
 	var finalizedAt *time.Time
 	var pins []byte
-	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status,
+	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status, &goal,
 		&session.RequirementContextID, &session.ProducedRequirementID, &session.ProducedTaskID,
 		&session.TranscriptArtifactID, &session.Model, &session.Effort,
 		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
@@ -907,6 +918,7 @@ func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 		return core.PlanningSession{}, fmt.Errorf("decode planning revisions: %w", err)
 	}
 	session.Status = core.PlanningSessionStatus(status)
+	session.Goal = core.PlanningSessionGoal(goal)
 	if finalizedAt != nil {
 		session.FinalizedAt = *finalizedAt
 	}
