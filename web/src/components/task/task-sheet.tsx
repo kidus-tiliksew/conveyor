@@ -2,6 +2,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
 import type { ActivityItem } from '../../lib/types'
 import { useCanonicalBlueprintRedirect } from '../blueprint/use-blueprint-route'
+import { LineageGraphCard } from '../lineage/lineage-graph-card'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
@@ -79,6 +80,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
           gate card renders it there — showing it twice on one page does not. */}
       {!isReviewable(item.task) && <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />}
       <AttachmentsCard attachments={item.attachments ?? []} />
+      {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} />}
       <Timeline item={item} routeVariant="sheet" />
     </div>
   )

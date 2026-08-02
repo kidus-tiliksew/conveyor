@@ -82,8 +82,10 @@ type LineageTraversalBudget struct {
 // LineageTraversal is deterministic for the same roots, links, and budget.
 // Truncated reports that a reachable node was omitted by either bound.
 type LineageTraversal struct {
-	Nodes     []LineageNode
-	Truncated bool
+	Roots     []LineageNode `json:"roots"`
+	Nodes     []LineageNode `json:"nodes"`
+	Links     []LineageLink `json:"links"`
+	Truncated bool          `json:"truncated"`
 }
 
 // ContextArtifactSelection is the common bounded artifact view used by both
@@ -190,7 +192,11 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	}
 	queue := make([]queuedNode, 0, budget.MaxNodes)
 	seen := map[LineageNode]bool{}
-	result := LineageTraversal{Nodes: make([]LineageNode, 0, budget.MaxNodes)}
+	result := LineageTraversal{
+		Roots: []LineageNode{},
+		Nodes: make([]LineageNode, 0, budget.MaxNodes),
+		Links: []LineageLink{},
+	}
 	for _, root := range sortedRoots {
 		if !root.Valid() || seen[root] {
 			continue
@@ -200,6 +206,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 			break
 		}
 		seen[root] = true
+		result.Roots = append(result.Roots, root)
 		result.Nodes = append(result.Nodes, root)
 		queue = append(queue, queuedNode{node: root})
 	}
@@ -229,6 +236,24 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 			queue = append(queue, queuedNode{node: next.node, depth: current.depth + 1})
 		}
 	}
+	reachable := make(map[LineageNode]bool, len(result.Nodes))
+	for _, node := range result.Nodes {
+		reachable[node] = true
+	}
+	for _, link := range links {
+		if link.Validate() != nil || !reachable[LineageNode{Type: link.SrcType, ID: link.SrcID}] ||
+			!reachable[LineageNode{Type: link.DstType, ID: link.DstID}] {
+			continue
+		}
+		result.Links = append(result.Links, link)
+	}
+	sort.Slice(result.Links, func(i, j int) bool {
+		left, right := lineageTraversalLinkKey(result.Links[i]), lineageTraversalLinkKey(result.Links[j])
+		if left != right {
+			return left < right
+		}
+		return result.Links[i].CreatedByEventID < result.Links[j].CreatedByEventID
+	})
 	return result, nil
 }
 

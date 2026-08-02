@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -28,9 +29,18 @@ type requirementView struct {
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
 	Lineage              []core.Event                 `json:"lineage"`
+	LineageGraph         core.LineageTraversal        `json:"lineage_graph"`
+	Staleness            requirementStaleness         `json:"staleness"`
 	ShippedPastIntent    string                       `json:"shipped_past_intent,omitempty"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
+}
+
+type requirementStaleness struct {
+	Stale            bool            `json:"stale"`
+	LatestDelivery   string          `json:"latest_delivery,omitempty"`
+	LatestDeliveryAt time.Time       `json:"latest_delivery_at,omitempty"`
+	ActiveDrift      []monitor.Drift `json:"active_drift"`
 }
 
 type blueprintLineage struct {
@@ -154,6 +164,25 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	for _, link := range servesLinks {
 		linksByRequirement[link.RequirementID] = append(linksByRequirement[link.RequirementID], link)
 	}
+	activeDrift := []monitor.Drift{}
+	if s.Monitor != nil {
+		status, statusErr := s.Monitor.Status(r.Context())
+		if statusErr != nil {
+			return nil, fmt.Errorf("resolve requirement drift: %w", statusErr)
+		}
+		activeDrift = status.Drift
+	}
+	eventsByTask := map[string][]core.Event{}
+	loadTaskEvents := func(taskID string) ([]core.Event, error) {
+		if events, ok := eventsByTask[taskID]; ok {
+			return events, nil
+		}
+		events, listErr := s.Store.ListEvents(r.Context(), taskID)
+		if listErr == nil {
+			eventsByTask[taskID] = events
+		}
+		return events, listErr
+	}
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
 		versions, listErr := s.Store.ListRequirementVersions(r.Context(), requirement.ID)
@@ -172,6 +201,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
 			Lineage:           []core.Event{},
+			Staleness:         requirementStaleness{ActiveDrift: []monitor.Drift{}},
 		}
 		if view.RequirementLinks == nil {
 			view.RequirementLinks = []core.RequirementServesLink{}
@@ -220,7 +250,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if getErr != nil {
 				return nil, getErr
 			}
-			events, eventsErr := s.Store.ListEvents(r.Context(), task.ID)
+			events, eventsErr := loadTaskEvents(task.ID)
 			if eventsErr != nil {
 				return nil, eventsErr
 			}
@@ -232,12 +262,39 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
 			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
-			if !confirmedAt.IsZero() {
-				if shipped := mergedAfter(events, confirmedAt); shipped != "" {
-					view.ShippedPastIntent = shipped
+		}
+		graph, graphErr := s.lineageGraph(r, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}, core.LineageTraversalBudget{
+			MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes,
+		})
+		if graphErr != nil {
+			return nil, graphErr
+		}
+		view.LineageGraph = graph
+		reachableTasks := map[string]bool{}
+		for _, node := range graph.Nodes {
+			if node.Type == core.LineageTask || node.Type == core.LineageBlueprint {
+				reachableTasks[node.ID] = true
+			}
+		}
+		if !confirmedAt.IsZero() {
+			for taskID := range reachableTasks {
+				events, eventsErr := loadTaskEvents(taskID)
+				if eventsErr != nil {
+					return nil, eventsErr
+				}
+				label, at := mergedAfter(events, confirmedAt)
+				if label != "" && at.After(view.Staleness.LatestDeliveryAt) {
+					view.Staleness.LatestDelivery, view.Staleness.LatestDeliveryAt = label, at
 				}
 			}
 		}
+		for _, drift := range activeDrift {
+			if drift.RequirementID == requirement.ID || reachableTasks[drift.TaskID] {
+				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
+			}
+		}
+		view.Staleness.Stale = view.Staleness.LatestDelivery != "" || len(view.Staleness.ActiveDrift) > 0
+		view.ShippedPastIntent = view.Staleness.LatestDelivery
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID
@@ -249,7 +306,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	return views, nil
 }
 
-func mergedAfter(events []core.Event, at time.Time) string {
+func mergedAfter(events []core.Event, at time.Time) (string, time.Time) {
 	var latest core.Event
 	for _, event := range events {
 		if (event.Kind == "merge.confirmed" || event.Kind == "merge.reconciled") && event.At.After(at) && event.At.After(latest.At) {
@@ -257,19 +314,19 @@ func mergedAfter(events []core.Event, at time.Time) string {
 		}
 	}
 	if latest.Kind == "" {
-		return ""
+		return "", time.Time{}
 	}
 	var payload map[string]any
 	_ = json.Unmarshal(latest.Payload, &payload)
 	for _, key := range []string{"title", "task_title"} {
 		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
-			return value
+			return value, latest.At
 		}
 	}
 	if latest.TaskID != "" {
-		return latest.TaskID
+		return latest.TaskID, latest.At
 	}
-	return "a serving blueprint merge"
+	return "a serving blueprint merge", latest.At
 }
 
 func annotateBackfilledEvents(events []core.Event) []core.Event {
