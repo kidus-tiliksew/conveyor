@@ -187,15 +187,21 @@ func TestServiceElidesArtifactHeavyToolResultsAndKeepsDurableRows(t *testing.T) 
 
 func TestServiceReturnsRecoverableToolErrorsToModel(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-tool-error")
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{
+		Name: "large.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext,
+	}, []byte(strings.Repeat("x", 129)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	agent := &scriptedAgent{outputs: []string{
-		decisionJSON(t, "", []toolCall{{ID: "call-read", Name: "read_file", ArgumentsJSON: `{"path":"missing.go"}`}}),
+		decisionJSON(t, "", []toolCall{{ID: "call-read", Name: "read_artifact", ArgumentsJSON: jsonString(t, artifactIDArgs{ArtifactID: artifact.ID})}}),
 		decisionJSON(t, "I can continue after the failed read.", nil),
 	}}
-	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxToolBytes: 128}
 	if err := service.Run(ctx, session.ID, UserMessage{Content: "Inspect the missing file."}, func(map[string]any) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "planning repository configuration is unavailable") {
+	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "exceeds the 128-byte planning read limit") {
 		t.Fatalf("model did not receive recoverable tool error: inputs=%d", len(agent.inputs))
 	}
 	messages, err := st.ListPlanningMessages(ctx, session.ID)
@@ -290,24 +296,33 @@ func TestServiceDefersToolCallsBeyondStepCap(t *testing.T) {
 func TestServiceRejectsMixedFinalizeBatchBeforeCapDegradation(t *testing.T) {
 	ctx, underlying, session := planningFixture(t, "session-mixed-finalize")
 	st := &countingPlanningStore{Store: underlying}
-	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{
-		{ID: "call-read", Name: "list_requirements", ArgumentsJSON: `{}`},
-		{ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: `{}`},
-	})}}
+	agent := &scriptedAgent{outputs: []string{
+		decisionJSON(t, "", []toolCall{
+			{ID: "call-read", Name: "list_requirements", ArgumentsJSON: `{}`},
+			{ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: `{}`},
+		}),
+		decisionJSON(t, "I will issue the finalize call by itself after the requirement is ready.", nil),
+	}}
 	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 1}
-	err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize after checking requirements."}, func(map[string]any) error {
+	var chunks []map[string]any
+	err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize after checking requirements."}, func(part map[string]any) error {
+		chunks = append(chunks, part)
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "a finalize tool must be the only tool call in its step") {
-		t.Fatalf("mixed finalize error=%v", err)
+	if err != nil {
+		t.Fatalf("mixed finalize correction failed: %v", err)
 	}
 	if st.listRequirementsCalls != 0 {
 		t.Fatalf("mixed finalize executed %d tools", st.listRequirementsCalls)
 	}
 	messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
-	if listErr != nil || len(messages) != 1 || messages[0].Role != core.PlanningMessageUser {
-		t.Fatalf("mixed finalize persisted decision: messages=%+v err=%v", messages, listErr)
+	if listErr != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageAssistant ||
+		!strings.Contains(messages[1].Content, "finalize tool must be the only tool call") {
+		t.Fatalf("mixed finalize correction messages=%+v err=%v", messages, listErr)
 	}
+	assertChunkTypes(t, chunks,
+		"start", "start-step", "text-start", "text-delta", "text-end", "finish-step",
+		"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish")
 }
 
 func TestServiceValidatesEveryCallBeforeCapDegradation(t *testing.T) {
@@ -341,25 +356,278 @@ func TestServiceValidatesEveryCallBeforeCapDegradation(t *testing.T) {
 				}
 			}
 			calls = append(calls, test.invalid)
-			agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", calls)}}
+			agent := &scriptedAgent{outputs: []string{
+				decisionJSON(t, "", calls),
+				decisionJSON(t, "I received the correction and will continue with valid calls only.", nil),
+			}}
 			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxCallsPerStep: 4}
 			var chunks []map[string]any
 			err := service.Run(ctx, session.ID, UserMessage{Content: "Validate before reading."}, func(part map[string]any) error {
 				chunks = append(chunks, part)
 				return nil
 			})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("validation error=%v, want %q", err, test.want)
+			if err != nil {
+				t.Fatalf("validation correction error=%v", err)
 			}
-			if st.listRequirementsCalls != 0 {
-				t.Fatalf("validation failure executed %d tools", st.listRequirementsCalls)
+			if st.listRequirementsCalls != 4 {
+				t.Fatalf("valid calls executed=%d, want 4", st.listRequirementsCalls)
 			}
-			assertChunkTypes(t, chunks, "start", "start-step")
+			encodedChunks := string(core.JSONPayload(chunks))
+			if !strings.Contains(encodedChunks, test.want) || !strings.Contains(encodedChunks, `"status":"invalid"`) {
+				t.Fatalf("correction chunks omitted %q: %s", test.want, encodedChunks)
+			}
 			messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
-			if listErr != nil || len(messages) != 1 || messages[0].Role != core.PlanningMessageUser {
-				t.Fatalf("validation failure left malformed transcript: messages=%+v err=%v", messages, listErr)
+			if listErr != nil || !strings.Contains(string(messages[2].Parts), `"toolCallId":"call-6"`) {
+				t.Fatalf("validation correction transcript: messages=%+v err=%v", messages, listErr)
 			}
 		})
+	}
+}
+
+func TestServiceCorrectsMalformedToolArgumentsInBand(t *testing.T) {
+	tests := []struct {
+		name string
+		call toolCall
+		want string
+	}{
+		{name: "prose arguments", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `Repo: conveyor`}, want: "invalid character"},
+		{name: "truncated JSON", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `{"repo":"conveyor"`}, want: "unexpected end"},
+		{name: "empty arguments", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: ``}, want: "unexpected end"},
+		{name: "non-object JSON", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `[]`}, want: "JSON object"},
+		{name: "unknown field", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `{"unknown":true}`}, want: "unknown field"},
+		{name: "trailing data", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `{} {}`}, want: "after top-level value"},
+		{name: "tool-specific invalid value", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: `{"depth":-1}`}, want: "depth must not be negative"},
+		{name: "oversized arguments", call: toolCall{ID: "call-invalid", Name: "list_files", ArgumentsJSON: strings.Repeat("x", 65)}, want: "64-byte limit"},
+		{name: "unknown tool", call: toolCall{ID: "call-invalid", Name: "invent_files", ArgumentsJSON: `{}`}, want: "unsupported planning tool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, underlying, session := planningFixture(t, "session-malformed-"+strings.ReplaceAll(tt.name, " ", "-"))
+			st := &countingPlanningStore{Store: underlying}
+			agent := &scriptedAgent{outputs: []string{
+				decisionJSON(t, "", []toolCall{tt.call}),
+				decisionJSON(t, "", []toolCall{{ID: "call-corrected", Name: "list_requirements", ArgumentsJSON: `{}`}}),
+				decisionJSON(t, "The corrected request completed.", nil),
+			}}
+			service := &Service{
+				Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt,
+				MaxToolBytes: 64,
+			}
+			var chunks []map[string]any
+			if err := service.Run(ctx, session.ID, UserMessage{Content: "Inspect the repository."}, func(part map[string]any) error {
+				chunks = append(chunks, part)
+				return nil
+			}); err != nil {
+				t.Fatalf("malformed call aborted the run: %v", err)
+			}
+			if st.listRequirementsCalls != 1 {
+				t.Fatalf("corrected calls executed=%d, want 1", st.listRequirementsCalls)
+			}
+			encoded := string(core.JSONPayload(chunks))
+			if !strings.Contains(encoded, tt.want) ||
+				!strings.Contains(encoded, `"status":"invalid"`) ||
+				!strings.Contains(encoded, `"expected"`) ||
+				!strings.Contains(encoded, "re-issue") {
+				t.Fatalf("correction omitted defect/schema/instruction: %s", encoded)
+			}
+			if len(agent.inputs) != 3 || !strings.Contains(agent.inputs[1].Prompt, tt.want) {
+				t.Fatalf("next model step did not receive correction: inputs=%d", len(agent.inputs))
+			}
+			messages, err := underlying.ListPlanningMessages(ctx, session.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertPlanningCallHasOneResult(t, messages, "call-invalid")
+			assertPlanningCallHasOneResult(t, messages, "call-corrected")
+		})
+	}
+}
+
+func TestServiceCorrectsDuplicateAndUnpairableCallsInBand(t *testing.T) {
+	tests := []struct {
+		name  string
+		calls []toolCall
+		want  string
+	}{
+		{
+			name: "duplicate id",
+			calls: []toolCall{
+				{ID: "call-shared", Name: "list_requirements", ArgumentsJSON: `{}`},
+				{ID: "call-shared", Name: "read_requirement", ArgumentsJSON: `{"requirement_id":"req-x"}`},
+			},
+			want: "was duplicated",
+		},
+		{
+			name:  "missing id",
+			calls: []toolCall{{Name: "list_requirements", ArgumentsJSON: `{}`}},
+			want:  "no usable id or name",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, underlying, session := planningFixture(t, "session-unpaired-"+strings.ReplaceAll(tt.name, " ", "-"))
+			st := &countingPlanningStore{Store: underlying}
+			agent := &scriptedAgent{outputs: []string{
+				decisionJSON(t, "", tt.calls),
+				decisionJSON(t, "The malformed call was corrected.", nil),
+			}}
+			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+			if err := service.Run(ctx, session.ID, UserMessage{Content: "Read safely."}, func(map[string]any) error { return nil }); err != nil {
+				t.Fatalf("unpairable call aborted the run: %v", err)
+			}
+			if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, tt.want) {
+				t.Fatalf("correction missing from next prompt: inputs=%d", len(agent.inputs))
+			}
+			messages, err := underlying.ListPlanningMessages(ctx, session.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(messages[1].Content, tt.want) {
+				t.Fatalf("assistant correction not persisted: %+v", messages)
+			}
+			if tt.name == "duplicate id" {
+				if st.listRequirementsCalls != 1 {
+					t.Fatalf("first valid duplicate-id call executed=%d, want 1", st.listRequirementsCalls)
+				}
+				assertPlanningCallHasOneResult(t, messages, "call-shared")
+			} else if st.listRequirementsCalls != 0 {
+				t.Fatalf("unpairable call executed=%d", st.listRequirementsCalls)
+			}
+		})
+	}
+}
+
+func TestServiceCorrectsMalformedDecisionEnvelopeInBand(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-malformed-envelope")
+	agent := &scriptedAgent{outputs: []string{
+		`This is not a planning_step object.`,
+		decisionJSON(t, "The corrected decision completed.", nil),
+	}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Continue safely."}, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("malformed envelope aborted the run: %v", err)
+	}
+	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "planning decision was malformed") ||
+		!strings.Contains(agent.inputs[1].Prompt, "planning_step schema") {
+		t.Fatalf("malformed-envelope correction missing: inputs=%d", len(agent.inputs))
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageAssistant {
+		t.Fatalf("malformed-envelope transcript=%+v err=%v", messages, err)
+	}
+}
+
+func TestServiceFinishesCorrectionExhaustionInStream(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-correction-exhaustion")
+	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+		ID: "call-invalid", Name: "list_files", ArgumentsJSON: `Repo: conveyor`,
+	}})}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxSteps: 1}
+	var chunks []map[string]any
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Inspect once."}, func(part map[string]any) error {
+		chunks = append(chunks, part)
+		return nil
+	}); err != nil {
+		t.Fatalf("correction exhaustion returned terminal error: %v", err)
+	}
+	encoded := string(core.JSONPayload(chunks))
+	if !strings.Contains(encoded, `"status":"invalid"`) ||
+		!strings.Contains(encoded, "bounded 1-step limit") ||
+		!strings.Contains(encoded, `"type":"finish"`) {
+		t.Fatalf("correction exhaustion was not cleanly streamed: %s", encoded)
+	}
+	messages, err := st.ListPlanningMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanningCallHasOneResult(t, messages, "call-invalid")
+	if !strings.Contains(messages[len(messages)-1].Content, "bounded 1-step limit") {
+		t.Fatalf("exhaustion outcome was not persisted: %+v", messages)
+	}
+}
+
+type failingPlanningAgent struct{ err error }
+
+func (a failingPlanningAgent) Run(context.Context, string, inprocess.Input) (inprocess.Result, error) {
+	return inprocess.Result{}, a.err
+}
+
+type failingListRequirementsStore struct {
+	store.Store
+	err error
+}
+
+func (s *failingListRequirementsStore) ListRequirements(context.Context) ([]core.Requirement, error) {
+	return nil, s.err
+}
+
+func TestServiceKeepsInfrastructureFailuresTerminal(t *testing.T) {
+	t.Run("model transport", func(t *testing.T) {
+		ctx, st, session := planningFixture(t, "session-model-failure")
+		providerErr := errors.New("provider transport unavailable")
+		service := &Service{Store: st, Agent: failingPlanningAgent{err: providerErr}, Model: "planner", Prompt: testPlanningPrompt}
+		err := service.Run(ctx, session.ID, UserMessage{Content: "Plan it."}, func(map[string]any) error { return nil })
+		if !errors.Is(err, providerErr) {
+			t.Fatalf("model failure=%v, want terminal provider error", err)
+		}
+	})
+
+	t.Run("context construction", func(t *testing.T) {
+		ctx, st, session := planningFixture(t, "session-context-failure")
+		contextErr := errors.New("configuration store unavailable")
+		agent := &scriptedAgent{outputs: []string{decisionJSON(t, "must not run", nil)}}
+		service := &Service{
+			Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt,
+			ConfigProvider: func(context.Context) (*config.Config, error) { return nil, contextErr },
+		}
+		err := service.Run(ctx, session.ID, UserMessage{Content: "Plan it."}, func(map[string]any) error { return nil })
+		if !errors.Is(err, contextErr) || len(agent.inputs) != 0 {
+			t.Fatalf("context failure=%v agent inputs=%d", err, len(agent.inputs))
+		}
+	})
+
+	t.Run("tool store retrieval", func(t *testing.T) {
+		ctx, underlying, session := planningFixture(t, "session-tool-store-failure")
+		storeErr := errors.New("planning database unavailable")
+		st := &failingListRequirementsStore{Store: underlying, err: storeErr}
+		agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+			ID: "call-store", Name: "list_requirements", ArgumentsJSON: `{}`,
+		}})}}
+		service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+		err := service.Run(ctx, session.ID, UserMessage{Content: "Read requirements."}, func(map[string]any) error { return nil })
+		if !errors.Is(err, storeErr) || !strings.Contains(err.Error(), "infrastructure") {
+			t.Fatalf("tool store failure=%v, want terminal infrastructure error", err)
+		}
+		messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		assertPlanningCallHasOneResult(t, messages, "call-store")
+	})
+}
+
+func assertPlanningCallHasOneResult(t *testing.T, messages []core.PlanningMessage, callID string) {
+	t.Helper()
+	inputs, results := 0, 0
+	for _, message := range messages {
+		var parts []map[string]any
+		if err := json.Unmarshal(message.Parts, &parts); err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range parts {
+			if part["toolCallId"] != callID {
+				continue
+			}
+			switch part["type"] {
+			case "tool-input-available":
+				inputs++
+			case "tool-output-available", "tool-output-error":
+				results++
+			}
+		}
+	}
+	if inputs != 1 || results != 1 {
+		t.Fatalf("call %s transcript inputs=%d results=%d", callID, inputs, results)
 	}
 }
 
@@ -1067,15 +1335,26 @@ func TestServiceStopsAtBoundedToolLoop(t *testing.T) {
 		decisionJSON(t, "", []toolCall{{ID: "call-read-again", Name: "list_requirements", ArgumentsJSON: `{}`}}),
 	}}
 	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt, MaxSteps: 2}
-	err := service.Run(ctx, session.ID, UserMessage{Content: "Keep reading forever."}, func(map[string]any) error {
+	var chunks []map[string]any
+	err := service.Run(ctx, session.ID, UserMessage{Content: "Keep reading forever."}, func(part map[string]any) error {
+		chunks = append(chunks, part)
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "bounded 2-step limit") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("bounded loop returned terminal error: %v", err)
 	}
 	restored, getErr := st.GetPlanningSession(ctx, session.ID)
 	if getErr != nil || restored.Status != core.PlanningSessionActive {
 		t.Fatalf("session=%+v err=%v", restored, getErr)
+	}
+	encoded := string(core.JSONPayload(chunks))
+	if !strings.Contains(encoded, "bounded 2-step limit") ||
+		!strings.Contains(encoded, `"type":"finish"`) {
+		t.Fatalf("bounded loop did not finish in stream: %s", encoded)
+	}
+	messages, listErr := st.ListPlanningMessages(ctx, session.ID)
+	if listErr != nil || !strings.Contains(messages[len(messages)-1].Content, "bounded 2-step limit") {
+		t.Fatalf("bounded outcome not persisted: messages=%+v err=%v", messages, listErr)
 	}
 }
 
