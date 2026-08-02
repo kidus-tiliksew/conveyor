@@ -44,6 +44,10 @@ type Context struct {
 	BounceHistory []json.RawMessage     `json:"bounce_history,omitempty"`
 	PriorFeedback []string              `json:"prior_feedback,omitempty"`
 	Artifacts     []ArtifactReference   `json:"artifacts,omitempty"`
+	// ContextTruncated tells a client that the explicit lineage/node or
+	// artifact-reference budget was reached. Authorization uses the identical
+	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
+	ContextTruncated bool `json:"context_truncated,omitempty"`
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
 	// capability without treating an artifact id as a bearer token.
@@ -536,6 +540,24 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			result.ApprovedSpec = &spec
 		}
 	}
+	if order.Stage != core.StageSpec && result.ApprovedSpec == nil && task.ParentTaskID != "" && task.OriginSpecVersion > 0 {
+		// A materialized child skips its own spec stage. Its immutable contract is
+		// the exact parent blueprint version that created its SUB-n, not the
+		// parent's newest draft or the child's empty spec history (spec §4.1).
+		spec, ok, getErr := s.Store.GetSpecVersion(ctx, task.ParentTaskID, task.OriginSpecVersion)
+		if getErr != nil {
+			return Context{}, getErr
+		}
+		if !ok || !spec.Approved {
+			return Context{}, fmt.Errorf("approved blueprint %s version %d not found for child task %s", task.ParentTaskID, task.OriginSpecVersion, task.ID)
+		}
+		parent, getErr := s.Store.GetTask(ctx, task.ParentTaskID)
+		if getErr != nil {
+			return Context{}, getErr
+		}
+		spec.MaterializedChildren = append([]core.TaskRelation(nil), parent.Children...)
+		result.ApprovedSpec = &spec
+	}
 	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
@@ -555,18 +577,17 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			result.PriorFeedback = append(result.PriorFeedback, item.Comment)
 		}
 	}
-	artifacts, err := s.Store.ListArtifacts(ctx)
+	artifacts, truncated, err := s.artifactsForOrder(ctx, order)
 	if err != nil {
-		return Context{}, fmt.Errorf("list task artifacts: %w", err)
+		return Context{}, err
 	}
-	for _, artifact := range artifacts {
-		if artifact.TaskID == task.ID {
-			artifact.DownloadURL = ""
-			reference := ArtifactReference{Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact"}
-			result.Artifacts = append(result.Artifacts, reference)
-			if order.Stage == core.StageReview && artifact.TaskID == task.ID && artifact.EligibleVerificationEvidence() {
-				result.VerificationEvidence = append(result.VerificationEvidence, reference)
-			}
+	result.Artifacts = artifacts
+	result.ContextTruncated = truncated
+	for _, reference := range artifacts {
+		// Verification evidence intentionally remains direct-task only even when
+		// other context arrives through lineage (spec §12, §21.44 change 2).
+		if order.Stage == core.StageReview && reference.TaskID == task.ID && reference.EligibleVerificationEvidence() {
+			result.VerificationEvidence = append(result.VerificationEvidence, reference)
 		}
 	}
 	if order.Stage == core.StageReview {
@@ -587,17 +608,53 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	task, err := s.Store.GetTask(ctx, order.TaskID)
+	references, _, err := s.artifactsForOrder(ctx, order)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	artifact, content, err := s.Store.GetArtifactForContext(ctx, artifactID, task.ID)
-	if err != nil {
+	var authorized *core.Artifact
+	for i := range references {
+		if references[i].ID == artifactID {
+			artifact := references[i].Artifact
+			authorized = &artifact
+			break
+		}
+	}
+	if authorized == nil {
 		// Keep unauthorized ownership mismatches indistinguishable from missing
 		// artifacts; artifact ids alone are never bearer capabilities (spec §21.4).
 		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
 	}
-	return ArtifactContent{Artifact: artifact, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
+	_, content, err := s.Store.GetArtifact(ctx, artifactID)
+	if err != nil {
+		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
+	}
+	return ArtifactContent{Artifact: *authorized, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
+}
+
+func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, bool, error) {
+	links, err := s.Store.ListLineageLinks(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("list lineage for work order %s: %w", order.ID, err)
+	}
+	artifacts, err := s.Store.ListArtifacts(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("list artifacts for work order %s: %w", order.ID, err)
+	}
+	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{{
+		Type: core.LineageWorkOrder, ID: order.ID,
+	}}, artifacts)
+	if err != nil {
+		return nil, false, fmt.Errorf("assemble context artifacts for work order %s: %w", order.ID, err)
+	}
+	references := make([]ArtifactReference, 0, len(selection.Artifacts))
+	for _, artifact := range selection.Artifacts {
+		artifact.DownloadURL = ""
+		references = append(references, ArtifactReference{
+			Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact",
+		})
+	}
+	return references, selection.Truncated, nil
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {

@@ -103,6 +103,7 @@ type Store interface {
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
 	CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error)
+	GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error)
 	GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 	ApproveSpecVersion(ctx context.Context, taskID string, version int) error
@@ -2680,6 +2681,23 @@ func (m *memory) GetLatestSpecVersion(_ context.Context, taskID string) (core.Sp
 		return core.SpecVersion{}, false, nil
 	}
 	return versions[len(versions)-1], true, nil
+}
+
+func (m *memory) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if selected, scoped := WorkspaceFromContext(ctx); scoped {
+		task, ok := m.tasks[taskID]
+		if !ok || task.Workspace != selected {
+			return core.SpecVersion{}, false, nil
+		}
+	}
+	for _, spec := range m.specs[taskID] {
+		if spec.Version == version {
+			return spec, true, nil
+		}
+	}
+	return core.SpecVersion{}, false, nil
 }
 
 // GetApprovedSpecVersion returns the newest approved spec version, which is

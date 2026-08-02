@@ -250,11 +250,11 @@ func (st *artifactContextFailureStore) ListArtifacts(ctx context.Context) ([]cor
 	return st.Store.ListArtifacts(ctx)
 }
 
-func (st *artifactContextFailureStore) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
+func (st *artifactContextFailureStore) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	if st.readErr {
 		return core.Artifact{}, nil, errors.New("artifact read unavailable")
 	}
-	return st.Store.GetArtifactForContext(ctx, id, taskID)
+	return st.Store.GetArtifact(ctx, id)
 }
 
 func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
@@ -314,6 +314,61 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	}
 	if !foundLargeText || kinds[inprocess.AttachmentDocument] != 2 || kinds[inprocess.AttachmentImage] != 1 || kinds[inprocess.AttachmentAudio] != 1 {
 		t.Fatalf("kinds=%+v foundLargeText=%t", kinds, foundLargeText)
+	}
+}
+
+func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	parent := core.Task{ID: "context-blueprint", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: now}
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: parent.ID, Content: "shared context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "context-child", Workspace: "demo", Repo: "api", Title: "Use sibling context", State: core.TaskQueued, NextStage: core.StageTriage,
+		ParentTaskID: parent.ID, OriginSpecVersion: spec.Version, CreatedAt: now}
+	sibling := core.Task{ID: "context-sibling", Workspace: "demo", State: core.TaskRunning,
+		ParentTaskID: parent.ID, OriginSpecVersion: spec.Version, CreatedAt: now}
+	unrelated := core.Task{ID: "context-unrelated", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
+	for _, item := range []core.Task{task, sibling, unrelated} {
+		if err = st.CreateTask(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		name, taskID, content string
+	}{
+		{name: "direct.md", taskID: task.ID, content: "direct context"},
+		{name: "sibling.md", taskID: sibling.ID, content: "sibling outcome"},
+		{name: "unrelated.md", taskID: unrelated.ID, content: "must stay out"},
+	} {
+		if _, err = st.CreateArtifact(ctx, core.Artifact{Name: item.name, ContentType: "text/markdown", TaskID: item.taskID}, []byte(item.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	dispatcher := New(st, &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Model: "gpt", Timeout: time.Minute},
+	}}}, agent)
+	dispatcher.Pack = bundle
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, attachment := range agent.input.Attachments {
+		names[attachment.Name] = true
+	}
+	if !names["direct.md"] || !names["sibling.md"] || names["unrelated.md"] || len(names) != 2 {
+		t.Fatalf("lineage-derived attachment names=%v", names)
 	}
 }
 

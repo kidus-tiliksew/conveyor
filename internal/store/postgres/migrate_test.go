@@ -163,6 +163,10 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 54 {
 		t.Fatalf("lineage projection version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/055_blueprint_version_lineage.sql")
+	if err != nil || version != 55 {
+		t.Fatalf("blueprint version lineage version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)

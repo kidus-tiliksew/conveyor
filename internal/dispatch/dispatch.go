@@ -517,15 +517,12 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 }
 
 func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, task core.Task) (int, []string) {
-	artifacts, err := d.Store.ListArtifacts(ctx)
+	artifacts, err := d.contextArtifacts(ctx, task.ID)
 	if err != nil {
 		return 0, nil
 	}
 	types := []string{}
 	for _, artifact := range artifacts {
-		if artifact.TaskID != task.ID {
-			continue
-		}
 		if !artifact.Role.ModelInputEligible() {
 			continue
 		}
@@ -628,16 +625,13 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			fmt.Fprintf(&prompt, "\n---\n\n%s\n", item.Comment)
 		}
 	}
-	artifacts, err := d.Store.ListArtifacts(ctx)
+	artifacts, err := d.contextArtifacts(ctx, task.ID)
 	if err != nil {
-		return inprocess.Input{}, fmt.Errorf("list context artifacts for task %s: %w", task.ID, err)
+		return inprocess.Input{}, fmt.Errorf("assemble context artifacts for task %s: %w", task.ID, err)
 	}
 	seen := map[string]bool{}
 	totalBytes := 0
 	for _, artifact := range artifacts {
-		if artifact.TaskID != task.ID {
-			continue
-		}
 		if !artifact.Role.ModelInputEligible() {
 			continue
 		}
@@ -645,29 +639,45 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			continue
 		}
 		seen[artifact.ID] = true
-		resolved, content, getErr := d.Store.GetArtifactForContext(ctx, artifact.ID, task.ID)
+		_, content, getErr := d.Store.GetArtifact(ctx, artifact.ID)
 		if getErr != nil {
 			return inprocess.Input{}, fmt.Errorf("read context artifact %s for task %s: %w", artifact.ID, task.ID, getErr)
 		}
 		if len(content) > maxModelAttachmentBytes {
-			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", resolved.ID, resolved.Name, maxModelAttachmentBytes)
+			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", artifact.ID, artifact.Name, maxModelAttachmentBytes)
 		}
-		kind, kindErr := modelAttachmentKind(resolved)
+		kind, kindErr := modelAttachmentKind(artifact)
 		if kindErr != nil {
 			return inprocess.Input{}, kindErr
 		}
 		if kind == inprocess.AttachmentImage && len(content) > maxModelImageBytes {
-			return inprocess.Input{}, fmt.Errorf("image artifact %s (%s) exceeds the %d-byte image input limit", resolved.ID, resolved.Name, maxModelImageBytes)
+			return inprocess.Input{}, fmt.Errorf("image artifact %s (%s) exceeds the %d-byte image input limit", artifact.ID, artifact.Name, maxModelImageBytes)
 		}
 		totalBytes += len(content)
 		if totalBytes > maxModelFileBytes {
 			return inprocess.Input{}, fmt.Errorf("context artifacts for task %s exceed the %d-byte combined model input limit", task.ID, maxModelFileBytes)
 		}
-		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, resolved.Name, resolved.ContentType, len(content), resolved.ID)
-		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: resolved.ID, Name: resolved.Name, ContentType: resolved.ContentType, Kind: kind, Content: content})
+		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, artifact.Name, artifact.ContentType, len(content), artifact.ID)
+		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind, Content: content})
 	}
 	input.Prompt = prompt.String()
 	return input, nil
+}
+
+func (d *Dispatcher) contextArtifacts(ctx context.Context, taskID string) ([]core.Artifact, error) {
+	links, err := d.Store.ListLineageLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err := d.Store.ListArtifacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{{Type: core.LineageTask, ID: taskID}}, artifacts)
+	if err != nil {
+		return nil, err
+	}
+	return selection.Artifacts, nil
 }
 
 // modelAttachmentKind is the provider boundary for in-process pipeline context:

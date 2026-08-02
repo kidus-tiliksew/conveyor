@@ -20,8 +20,18 @@ func TestLineageProjectionRebuildIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: parent.ID, Content: "lineage parent",
+		Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored, ok, getErr := st.GetSpecVersion(ctx, parent.ID, spec.Version); getErr != nil || !ok || restored.Content != spec.Content {
+		t.Fatalf("exact spec=%+v ok=%t err=%v", restored, ok, getErr)
+	}
 	child := phase61Task(workspace, "lineage-child-"+suffix, core.TaskRunning, parent.ID)
-	child.OriginSpecVersion, child.OriginSubID, child.CreatedAt = 2, "SUB-1", now
+	child.OriginSpecVersion, child.OriginSubID, child.CreatedAt = spec.Version, "SUB-1", now
 	if err := st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -29,23 +39,23 @@ func TestLineageProjectionRebuildIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"materializes": false, "depends_on": false}
+	want := map[string]bool{"materializes": false, "depends_on": false, "versions": false}
 	for _, link := range links {
-		if link.DstID == child.ID || link.SrcID == child.ID {
+		if link.DstID == child.ID || link.SrcID == child.ID || link.SrcID == parent.ID {
 			want[link.Kind] = true
 		}
 	}
-	if !want["materializes"] || !want["depends_on"] {
+	if !want["materializes"] || !want["depends_on"] || !want["versions"] {
 		t.Fatalf("missing child lineage: %+v", links)
 	}
 	if _, err = st.pool.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1`, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if count, rebuildErr := st.RebuildLineage(ctx); rebuildErr != nil || count < 2 {
+	if count, rebuildErr := st.RebuildLineage(ctx); rebuildErr != nil || count < 3 {
 		t.Fatalf("rebuild count=%d err=%v", count, rebuildErr)
 	}
 	links, err = st.ListLineageLinks(ctx)
-	if err != nil || len(links) < 2 {
+	if err != nil || len(links) < 3 {
 		t.Fatalf("rebuilt links=%+v err=%v", links, err)
 	}
 }
