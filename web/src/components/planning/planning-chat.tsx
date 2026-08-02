@@ -123,7 +123,9 @@ export function PlanningChat({
   // hosts the chat, so the document canvas refreshes without navigating away
   // (spec §21.57 change 1). It reports once per produced artifact.
   const finalizeHandler = useRef(onFinalized)
-  finalizeHandler.current = onFinalized
+  useEffect(() => {
+    finalizeHandler.current = onFinalized
+  }, [onFinalized])
   const reported = useRef('')
   useEffect(() => {
     const produced = session.produced_requirement_id || session.produced_task_id || ''

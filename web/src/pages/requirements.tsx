@@ -51,12 +51,19 @@ export function RequirementsPage() {
   const selectedId = search.requirement ?? ''
   const sessionId = search.session ?? ''
 
+  // Falling back to the first document must not close an open conversation:
+  // the corpus refetches while the sidebar is mid-session, so the session
+  // parameter has to survive the redirect.
   useEffect(() => {
     if (!requirements?.length) return
     if (!requirements.some((item) => item.requirement.id === selectedId)) {
-      void navigate({ to: '/requirements', search: { requirement: requirements[0].requirement.id }, replace: true })
+      void navigate({
+        to: '/requirements',
+        search: { requirement: requirements[0].requirement.id, session: sessionId || undefined },
+        replace: true,
+      })
     }
-  }, [navigate, requirements, selectedId])
+  }, [navigate, requirements, selectedId, sessionId])
   const selected = requirements?.find((item) => item.requirement.id === selectedId)
 
   // Opening another document ends the sidebar's scope: its session belonged to
