@@ -170,6 +170,9 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = st.ApproveSpecVersion(ctx, blueprint.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
 	for _, task := range []core.Task{
 		{ID: "child-a", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
 		{ID: "child-b", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
@@ -221,7 +224,19 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		t.Fatal(err)
 	}
 
-	service := &Service{Store: st}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle}
+	workOrderContext, err := service.Get(ctx, order.ID, "child-a-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workOrderContext.ApprovedSpec == nil || workOrderContext.ApprovedSpec.TaskID != blueprint.ID ||
+		workOrderContext.ApprovedSpec.Version != spec.Version || workOrderContext.ApprovedSpec.Content != "parent rationale" || !workOrderContext.ApprovedSpec.Approved {
+		t.Fatalf("child governing spec=%+v want blueprint %s version %d", workOrderContext.ApprovedSpec, blueprint.ID, spec.Version)
+	}
 	for _, artifact := range []core.Artifact{sibling, rationale} {
 		read, readErr := service.ReadArtifact(ctx, order.ID, "child-a-session", artifact.ID)
 		if readErr != nil {

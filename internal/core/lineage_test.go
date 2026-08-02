@@ -67,6 +67,30 @@ func TestTraverseLineageIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestSelectContextArtifactsUsesBoundedReachabilityAndStableOrder(t *testing.T) {
+	now := time.Now().UTC()
+	links := []LineageLink{
+		lineageTestLink(1, LineageTask, "task-a", LineageTask, "task-b", "depends_on"),
+		lineageTestLink(2, LineageTask, "task-a", LineageRequirement, "req-a", "serves"),
+	}
+	artifacts := []Artifact{
+		{ID: "unrelated", TaskID: "task-c", CreatedAt: now.Add(-time.Minute)},
+		{ID: "requirement", RequirementID: "req-a", CreatedAt: now},
+		{ID: "sibling", TaskID: "task-b", CreatedAt: now.Add(-time.Second)},
+	}
+	selection, err := SelectContextArtifacts(links, []LineageNode{{Type: LineageTask, ID: "task-a"}}, artifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(selection.Artifacts))
+	for _, artifact := range selection.Artifacts {
+		ids = append(ids, artifact.ID)
+	}
+	if !reflect.DeepEqual(ids, []string{"sibling", "requirement"}) || selection.Truncated {
+		t.Fatalf("selection=%+v ids=%v", selection, ids)
+	}
+}
+
 func lineageTestLink(id int64, srcType LineageNodeType, srcID string, dstType LineageNodeType, dstID, kind string) LineageLink {
 	return LineageLink{
 		Workspace: "demo", SrcType: srcType, SrcID: srcID,

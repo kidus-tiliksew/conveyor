@@ -23,17 +23,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
-const (
-	MaxTranscriptBytes = 4 << 20
-
-	// Context traversal is deliberately small and deterministic. Six edges
-	// reach from a work order through its task and parent blueprint to served
-	// requirements, sibling outcomes, and adjacent evidence without allowing a
-	// connected workspace graph to become an unbounded prompt (spec §4.2 item 4).
-	contextLineageMaxDepth = 6
-	contextLineageMaxNodes = 128
-	contextArtifactMaxRefs = 64
-)
+const MaxTranscriptBytes = 4 << 20
 
 type Service struct {
 	Store          store.Store
@@ -550,6 +540,24 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			result.ApprovedSpec = &spec
 		}
 	}
+	if order.Stage != core.StageSpec && result.ApprovedSpec == nil && task.ParentTaskID != "" && task.OriginSpecVersion > 0 {
+		// A materialized child skips its own spec stage. Its immutable contract is
+		// the exact parent blueprint version that created its SUB-n, not the
+		// parent's newest draft or the child's empty spec history (spec §4.1).
+		spec, ok, getErr := s.Store.GetSpecVersion(ctx, task.ParentTaskID, task.OriginSpecVersion)
+		if getErr != nil {
+			return Context{}, getErr
+		}
+		if !ok || !spec.Approved {
+			return Context{}, fmt.Errorf("approved blueprint %s version %d not found for child task %s", task.ParentTaskID, task.OriginSpecVersion, task.ID)
+		}
+		parent, getErr := s.Store.GetTask(ctx, task.ParentTaskID)
+		if getErr != nil {
+			return Context{}, getErr
+		}
+		spec.MaterializedChildren = append([]core.TaskRelation(nil), parent.Children...)
+		result.ApprovedSpec = &spec
+	}
 	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
@@ -629,57 +637,24 @@ func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) (
 	if err != nil {
 		return nil, false, fmt.Errorf("list lineage for work order %s: %w", order.ID, err)
 	}
-	traversal, err := core.TraverseLineage(links, []core.LineageNode{{
-		Type: core.LineageWorkOrder, ID: order.ID,
-	}}, core.LineageTraversalBudget{MaxDepth: contextLineageMaxDepth, MaxNodes: contextLineageMaxNodes})
-	if err != nil {
-		return nil, false, fmt.Errorf("traverse lineage for work order %s: %w", order.ID, err)
-	}
-	reachable := make(map[core.LineageNode]bool, len(traversal.Nodes))
-	for _, node := range traversal.Nodes {
-		reachable[node] = true
-	}
 	artifacts, err := s.Store.ListArtifacts(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("list context artifacts for work order %s: %w", order.ID, err)
+		return nil, false, fmt.Errorf("list artifacts for work order %s: %w", order.ID, err)
 	}
-	sort.Slice(artifacts, func(i, j int) bool {
-		if !artifacts[i].CreatedAt.Equal(artifacts[j].CreatedAt) {
-			return artifacts[i].CreatedAt.Before(artifacts[j].CreatedAt)
-		}
-		left := strings.Join([]string{artifacts[i].ID, string(artifacts[i].Role), artifacts[i].TaskID, artifacts[i].RequirementID, artifacts[i].PlanningSessionID}, "\x00")
-		right := strings.Join([]string{artifacts[j].ID, string(artifacts[j].Role), artifacts[j].TaskID, artifacts[j].RequirementID, artifacts[j].PlanningSessionID}, "\x00")
-		return left < right
-	})
-	references := make([]ArtifactReference, 0, min(len(artifacts), contextArtifactMaxRefs))
-	truncated := traversal.Truncated
-	for _, artifact := range artifacts {
-		if !artifactReachableFromLineage(artifact, reachable) {
-			continue
-		}
-		if len(references) == contextArtifactMaxRefs {
-			truncated = true
-			continue
-		}
+	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{{
+		Type: core.LineageWorkOrder, ID: order.ID,
+	}}, artifacts)
+	if err != nil {
+		return nil, false, fmt.Errorf("assemble context artifacts for work order %s: %w", order.ID, err)
+	}
+	references := make([]ArtifactReference, 0, len(selection.Artifacts))
+	for _, artifact := range selection.Artifacts {
 		artifact.DownloadURL = ""
 		references = append(references, ArtifactReference{
 			Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact",
 		})
 	}
-	return references, truncated, nil
-}
-
-func artifactReachableFromLineage(artifact core.Artifact, reachable map[core.LineageNode]bool) bool {
-	for _, node := range []core.LineageNode{
-		{Type: core.LineageTask, ID: artifact.TaskID},
-		{Type: core.LineageRequirement, ID: artifact.RequirementID},
-		{Type: core.LineagePlanningSession, ID: artifact.PlanningSessionID},
-	} {
-		if node.ID != "" && reachable[node] {
-			return true
-		}
-	}
-	return artifact.EligibleVerificationEvidence() && reachable[core.LineageNode{Type: core.LineageEvidence, ID: artifact.ID}]
+	return references, selection.Truncated, nil
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {

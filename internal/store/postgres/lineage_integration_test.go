@@ -27,6 +27,9 @@ func TestLineageProjectionRebuildIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if restored, ok, getErr := st.GetSpecVersion(ctx, parent.ID, spec.Version); getErr != nil || !ok || restored.Content != spec.Content {
+		t.Fatalf("exact spec=%+v ok=%t err=%v", restored, ok, getErr)
+	}
 	child := phase61Task(workspace, "lineage-child-"+suffix, core.TaskRunning, parent.ID)
 	child.OriginSpecVersion, child.OriginSubID, child.CreatedAt = spec.Version, "SUB-1", now
 	if err := st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {

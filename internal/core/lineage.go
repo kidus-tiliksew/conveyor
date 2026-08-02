@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+const (
+	// Context traversal is deliberately small and deterministic. Six edges
+	// reach from a work order or task through its parent blueprint to served
+	// requirements, sibling outcomes, and adjacent evidence without allowing a
+	// connected workspace graph to become an unbounded prompt (spec §4.2 item 4).
+	ContextLineageMaxDepth = 6
+	ContextLineageMaxNodes = 128
+	ContextArtifactMaxRefs = 64
+)
+
 // LineageNodeType names a durable node class in the Phase 6 knowledge graph
 // (spec §4.2 item 4, §16). IDs remain opaque to the graph.
 type LineageNodeType string
@@ -74,6 +84,68 @@ type LineageTraversalBudget struct {
 type LineageTraversal struct {
 	Nodes     []LineageNode
 	Truncated bool
+}
+
+// ContextArtifactSelection is the common bounded artifact view used by both
+// MCP work-order delivery and in-process pipeline input. Keeping selection in
+// one pure domain function prevents those context paths from granting
+// different reachability (spec §4.2 item 4).
+type ContextArtifactSelection struct {
+	Nodes     []LineageNode
+	Artifacts []Artifact
+	Truncated bool
+}
+
+func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts []Artifact) (ContextArtifactSelection, error) {
+	traversal, err := TraverseLineage(links, roots, LineageTraversalBudget{
+		MaxDepth: ContextLineageMaxDepth,
+		MaxNodes: ContextLineageMaxNodes,
+	})
+	if err != nil {
+		return ContextArtifactSelection{}, err
+	}
+	reachable := make(map[LineageNode]bool, len(traversal.Nodes))
+	for _, node := range traversal.Nodes {
+		reachable[node] = true
+	}
+	ordered := append([]Artifact(nil), artifacts...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if !ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
+			return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+		}
+		left := strings.Join([]string{ordered[i].ID, string(ordered[i].Role), ordered[i].TaskID, ordered[i].RequirementID, ordered[i].PlanningSessionID}, "\x00")
+		right := strings.Join([]string{ordered[j].ID, string(ordered[j].Role), ordered[j].TaskID, ordered[j].RequirementID, ordered[j].PlanningSessionID}, "\x00")
+		return left < right
+	})
+	selection := ContextArtifactSelection{
+		Nodes: append([]LineageNode(nil), traversal.Nodes...),
+		Artifacts: make([]Artifact, 0, min(len(ordered), ContextArtifactMaxRefs)),
+		Truncated: traversal.Truncated,
+	}
+	for _, artifact := range ordered {
+		if !artifactReachableFromContext(artifact, reachable) {
+			continue
+		}
+		if len(selection.Artifacts) == ContextArtifactMaxRefs {
+			selection.Truncated = true
+			continue
+		}
+		selection.Artifacts = append(selection.Artifacts, artifact)
+	}
+	return selection, nil
+}
+
+func artifactReachableFromContext(artifact Artifact, reachable map[LineageNode]bool) bool {
+	for _, node := range []LineageNode{
+		{Type: LineageTask, ID: artifact.TaskID},
+		{Type: LineageRequirement, ID: artifact.RequirementID},
+		{Type: LineagePlanningSession, ID: artifact.PlanningSessionID},
+	} {
+		if node.ID != "" && reachable[node] {
+			return true
+		}
+	}
+	return artifact.EligibleVerificationEvidence() && reachable[LineageNode{Type: LineageEvidence, ID: artifact.ID}]
 }
 
 // TraverseLineage walks links in both directions: lineage edges retain their
