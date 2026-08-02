@@ -1120,9 +1120,11 @@ func TestRunHarnessChildMaterializesSpecRepositoryOutsideWorkerDirectory(t *test
 	}
 }
 
-func TestRunHarnessChildFirstActivityTimeoutTerminatesAndReleasesSilentHarness(t *testing.T) {
+func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "silent-harness.pid")
+	grandchildPIDFile := filepath.Join(t.TempDir(), "silent-grandchild.pid")
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+	t.Setenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE", grandchildPIDFile)
 	releases := make(chan core.WorkOrderRelease, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -1149,7 +1151,7 @@ func TestRunHarnessChildFirstActivityTimeoutTerminatesAndReleasesSilentHarness(t
 
 	item := workerservice.DispatchOrder{
 		Order:   core.WorkOrder{ID: "silent-first-activity", Stage: core.StageImplement},
-		Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
+		Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
 	}
 	var stdout, stderr bytes.Buffer
 	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 500*time.Millisecond, &stdout, &stderr)
@@ -1182,6 +1184,25 @@ func TestRunHarnessChildFirstActivityTimeoutTerminatesAndReleasesSilentHarness(t
 	}
 	if err = syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("silent harness process %d was not reaped: %v", pid, err)
+	}
+	grandchildPIDData, err := os.ReadFile(grandchildPIDFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchildPID, err := strconv.Atoi(strings.TrimSpace(string(grandchildPIDData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = syscall.Kill(grandchildPID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("silent harness grandchild %d was not reaped: %v", grandchildPID, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1671,6 +1692,16 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	case "cancel":
 		time.Sleep(30 * time.Second)
 	case "silent":
+		time.Sleep(30 * time.Second)
+	case "silent-grandchild":
+		grandchild := exec.Command(os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel")
+		grandchild.Env = append(os.Environ(), "CONVEYOR_FAKE_HARNESS_PID_FILE=")
+		if err := grandchild.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE"), []byte(strconv.Itoa(grandchild.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(30 * time.Second)
 	case "early-output":
 		fmt.Fprintln(os.Stdout, "first activity")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -423,12 +424,25 @@ func TestDoneCleansOnlyClosedTasksAndRetainsBranches(t *testing.T) {
 	if _, err := removeTaskWorktree(context.Background(), branch, core.TaskRunning); err == nil || !strings.Contains(err.Error(), "merged or closed") {
 		t.Fatalf("active cleanup error = %v", err)
 	}
+	leaked := exec.Command("sh", "-c", "exec sleep 30")
+	leaked.Dir = destination
+	if err := leaked.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = leaked.Process.Kill()
+		_ = leaked.Wait()
+	})
 	result, err := removeTaskWorktree(context.Background(), branch, core.TaskMerged)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Worktree != "removed" || result.Branch != "retained" || result.Path != destination {
 		t.Fatalf("cleanup result = %+v", result)
+	}
+	warnings := strings.Join(result.ProcessWarnings, "\n")
+	if !strings.Contains(warnings, strconv.Itoa(leaked.Process.Pid)) || !strings.Contains(warnings, destination) {
+		t.Fatalf("cleanup warnings do not identify process %d at %s: %q", leaked.Process.Pid, destination, warnings)
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists: %v", err)

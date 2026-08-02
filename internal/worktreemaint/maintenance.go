@@ -106,12 +106,16 @@ func (m *Maintainer) Reconcile(ctx context.Context) (Result, error) {
 			m.logf("worktree cleanup workspace %s task %s repository %s branch %s: %v", cfg.Workspace, task.ID, task.Repo, task.Branch, cleanupErr)
 			continue
 		}
+		for _, warning := range cleanup.ProcessWarnings {
+			m.logf("worktree cleanup workspace %s task %s repository %s: warning: %s", cfg.Workspace, task.ID, task.Repo, warning)
+		}
 		if appendErr := m.Store.AppendEvent(ctx, core.Event{
 			TaskID: task.ID,
 			Kind:   CleanupCompletedEvent,
 			Payload: core.JSONPayload(map[string]any{
 				"workspace": cfg.Workspace, "repository": task.Repo, "branch": task.Branch,
 				"worktree": cleanup.Worktree, "branch_result": cleanup.Branch, "path": cleanup.Path,
+				"process_warnings": cleanup.ProcessWarnings,
 			}),
 		}); appendErr != nil {
 			result.Failed++
