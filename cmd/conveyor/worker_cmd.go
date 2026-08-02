@@ -627,6 +627,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
 	command.Env = childEnv
 	command.Dir = workingDirectory
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -637,6 +638,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
+	processGroup := harnessProcessGroup{pgid: command.Process.Pid, done: done}
 	firstActivityTimer := time.NewTimer(firstActivityTimeout)
 	defer firstActivityTimer.Stop()
 	firstActivityDeadline := firstActivityTimer.C
@@ -663,6 +665,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	defer ticker.Stop()
 	claimFinalized := false
 	handleChildExit := func(waitErr error) error {
+		waitErr = processGroup.terminate(&waitErr)
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
@@ -748,8 +751,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -763,8 +765,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -781,8 +782,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				return handleChildExit(waitErr)
 			default:
 			}
-			_ = command.Process.Kill()
-			waitErr := <-done
+			waitErr := processGroup.terminate(nil)
 			var exitStatus *int
 			var exitErr *exec.ExitError
 			if errors.As(waitErr, &exitErr) {
@@ -821,8 +821,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -835,8 +834,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -862,8 +860,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				stallDeadline = stallTimer.C
 				continue
 			}
-			_ = command.Process.Kill()
-			waitErr := <-done
+			waitErr := processGroup.terminate(nil)
 			var exitStatus *int
 			var exitErr *exec.ExitError
 			if errors.As(waitErr, &exitErr) {
@@ -880,8 +877,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -896,18 +892,69 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = command.Process.Kill()
-				<-done
+				_ = processGroup.terminate(nil)
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
 		case <-ctx.Done():
-			_ = command.Process.Kill()
-			<-done
+			_ = processGroup.terminate(nil)
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
 		}
 	}
+}
+
+var workerProcessGroupTerminationGrace = 2 * time.Second
+
+type harnessProcessGroup struct {
+	pgid int
+	done <-chan error
+}
+
+// terminate owns every post-start harness shutdown path. The harness is the
+// leader of a dedicated process group, so TERM and the bounded KILL escalation
+// cover dev servers, watchers, and other descendants as well as the child.
+// A completed child may still have live descendants, so normal-exit cleanup
+// also routes through this method (spec §6.4, §21.41, §21.42).
+func (g harnessProcessGroup) terminate(completed *error) error {
+	if g.pgid <= 0 || g.pgid == syscall.Getpgrp() {
+		if completed != nil {
+			return *completed
+		}
+		return <-g.done
+	}
+	waitErr, waited := error(nil), false
+	if completed != nil {
+		waitErr, waited = *completed, true
+	}
+	_ = syscall.Kill(-g.pgid, syscall.SIGTERM)
+	deadline := time.Now().Add(workerProcessGroupTerminationGrace)
+	for processGroupAlive(g.pgid) && time.Now().Before(deadline) {
+		if !waited {
+			select {
+			case waitErr = <-g.done:
+				waited = true
+			default:
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processGroupAlive(g.pgid) {
+		_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
+	}
+	if !waited {
+		waitErr = <-g.done
+	}
+	killDeadline := time.Now().Add(workerProcessGroupTerminationGrace)
+	for processGroupAlive(g.pgid) && time.Now().Before(killDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return waitErr
+}
+
+func processGroupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 const workerFirstActivityTimeoutReason = "harness produced no output before first_activity_timeout"

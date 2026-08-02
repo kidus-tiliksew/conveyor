@@ -413,7 +413,10 @@ func doneCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("worktree=%s branch=%s path=%s\n", result.Worktree, result.Branch, result.Path)
+			for _, warning := range result.ProcessWarnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "worktree=%s branch=%s path=%s\n", result.Worktree, result.Branch, result.Path)
 			return nil
 		},
 	}

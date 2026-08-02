@@ -9,9 +9,10 @@ import (
 )
 
 type TaskWorktreeCleanupResult struct {
-	Worktree string
-	Branch   string
-	Path     string
+	Worktree        string
+	Branch          string
+	Path            string
+	ProcessWarnings []string
 }
 
 type linkedWorktree struct {
@@ -91,6 +92,17 @@ func CleanupTaskWorktree(ctx context.Context, primary, branch string) (TaskWorkt
 	}
 	if actualBranch != branch {
 		return result, fmt.Errorf("task worktree %s owns %s instead of %s", assigned.Path, actualBranch, branch)
+	}
+	processes, inspectErr := processesWithinPath(ctx, assigned.Path)
+	for _, process := range processes {
+		result.ProcessWarnings = append(result.ProcessWarnings, fmt.Sprintf(
+			"live worktree process pid=%d command=%s cwd=%s", process.PID, process.Command, process.CWD,
+		))
+	}
+	if inspectErr != nil {
+		result.ProcessWarnings = append(result.ProcessWarnings, fmt.Sprintf(
+			"worktree process inspection for %s was incomplete: %v", assigned.Path, inspectErr,
+		))
 	}
 	if err := run(ctx, root, "git", "worktree", "remove", assigned.Path); err != nil {
 		return result, err

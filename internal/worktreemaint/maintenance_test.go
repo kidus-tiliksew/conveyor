@@ -2,9 +2,12 @@ package worktreemaint
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -41,6 +44,15 @@ func TestTerminalCleanupRetriesDirtyWorktreesAndRecordsNoOps(t *testing.T) {
 	if err := os.RemoveAll(stalePath); err != nil {
 		t.Fatal(err)
 	}
+	leaked := exec.Command("sh", "-c", "exec sleep 30")
+	leaked.Dir = cleanPath
+	if err := leaked.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = leaked.Process.Kill()
+		_ = leaked.Wait()
+	})
 
 	st := store.NewMemory()
 	for _, task := range []core.Task{
@@ -63,9 +75,13 @@ func TestTerminalCleanupRetriesDirtyWorktreesAndRecordsNoOps(t *testing.T) {
 			{Name: "missing", URL: filepath.Join(tmp, "missing-origin.git"), Base: "main"},
 		},
 	}
+	var logs strings.Builder
 	maintainer := &Maintainer{
 		Store: st, StartDir: primary,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(&logs, format+"\n", args...)
+		},
 	}
 
 	first, err := maintainer.Reconcile(ctx)
@@ -84,6 +100,12 @@ func TestTerminalCleanupRetriesDirtyWorktreesAndRecordsNoOps(t *testing.T) {
 	assertCompletionCount(t, st, ctx, "dirty", 0)
 	assertCompletionCount(t, st, ctx, "unavailable", 0)
 	assertCompletionCount(t, st, ctx, "running", 0)
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "live worktree process") ||
+		!strings.Contains(logOutput, strconv.Itoa(leaked.Process.Pid)) ||
+		!strings.Contains(logOutput, cleanPath) {
+		t.Fatalf("cleanup did not identify leaked worktree process %d at %s: %s", leaked.Process.Pid, cleanPath, logOutput)
+	}
 
 	dirtyFile := filepath.Join(dirtyPath, "uncommitted.txt")
 	if err := os.Remove(dirtyFile); err != nil {

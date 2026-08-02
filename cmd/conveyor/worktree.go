@@ -20,9 +20,10 @@ type registeredWorktree struct {
 }
 
 type worktreeCleanupResult struct {
-	Worktree string
-	Branch   string
-	Path     string
+	Worktree        string
+	Branch          string
+	Path            string
+	ProcessWarnings []string
 }
 
 // checkoutTask resolves one safe, task-dedicated checkout without switching or
