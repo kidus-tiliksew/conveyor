@@ -653,9 +653,9 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		views++
 		if views == 1 {
-			return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE"}, nil
+			return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE", BaseSHA: "base-sha", HeadSHA: "head-sha"}, nil
 		}
-		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "closed", Merged: true}, nil
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "closed", Merged: true, BaseSHA: "base-sha", HeadSHA: "head-sha"}, nil
 	}
 	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
 
@@ -677,6 +677,10 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	}
 	if requested != 1 || confirmed != 1 {
 		t.Fatalf("events=%+v", events)
+	}
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil || len(links) != 1 || links[0].Kind != "merged_range" || links[0].DstID != core.CommitRangeLineageID("acme/app", "base-sha", "head-sha") {
+		t.Fatalf("merge lineage=%+v err=%v", links, err)
 	}
 	if err := d.MergeApprovedTask(ctx, task); err != nil {
 		t.Fatal(err)

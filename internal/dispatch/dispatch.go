@@ -540,6 +540,11 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	if stage == core.StageReview {
 		role = pack.InProcessReviewRole(role)
 	}
+	servedRequirements, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	if err != nil {
+		return inprocess.Input{}, fmt.Errorf("resolve served requirements for task %s: %w", task.ID, err)
+	}
+	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	input := inprocess.Input{}
 	var prompt strings.Builder
 	prompt.WriteString(role)
@@ -908,6 +913,22 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
+	servedRequirements, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	if err != nil {
+		return fmt.Errorf("resolve served requirements for review: %w", err)
+	}
+	if len(servedRequirements) == 0 && result.RequirementCitations == nil {
+		result.RequirementCitations = &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}}
+	}
+	if result.RequirementCitations == nil {
+		return fmt.Errorf("review requirement_citations assessment is required for a task with confirmed served requirements")
+	}
+	if result.RequirementCitations.Applicable != (len(servedRequirements) > 0) {
+		return fmt.Errorf("review requirement_citations applicable=%t does not match confirmed served requirements=%t", result.RequirementCitations.Applicable, len(servedRequirements) > 0)
+	}
+	if len(servedRequirements) == 0 && (len(result.RequirementCitations.CitedIDs) > 0 || len(result.RequirementCitations.UnknownIDs) > 0 || len(result.RequirementCitations.UnservedIDs) > 0 || len(result.RequirementCitations.Conflicts) > 0) {
+		return fmt.Errorf("review requirement_citations findings must be empty when no confirmed serves relation exists")
+	}
 	if reviewWorkOrderID == "" {
 		reviewWorkOrderID = job.ID
 	}
@@ -965,7 +986,8 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
-		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs, Reviewer: reviewer,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
+		RequirementCitations: result.RequirementCitations, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
 		ReviewKind: decisionReviewKind, ReviewScope: decisionReviewScope, BaselineSHA: decisionBaseline, HeadSHA: decisionHead,
@@ -1484,7 +1506,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return d.recordMergeFailure(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err))
 	}
 	if pr.Merged {
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "result": "already_merged"})}); err != nil {
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged"})}); err != nil {
 			return err
 		}
 		return d.confirmTaskMerged(ctx, current.ID)
@@ -1541,7 +1563,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if !confirmed.Merged {
 		return d.recordMergeFailure(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number))
 	}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "head_sha": confirmed.HeadSHA})}); err != nil {
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA})}); err != nil {
 		return err
 	}
 	return d.confirmTaskMerged(ctx, current.ID)

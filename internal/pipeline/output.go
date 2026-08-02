@@ -32,10 +32,11 @@ type TriageBrief struct {
 }
 
 type Review struct {
-	Verdict    string `json:"verdict"`
-	ReasonCode string `json:"reason_code"`
-	Summary    string `json:"summary"`
-	Feedback   string `json:"feedback"`
+	Verdict              string                              `json:"verdict"`
+	ReasonCode           string                              `json:"reason_code"`
+	Summary              string                              `json:"summary"`
+	Feedback             string                              `json:"feedback"`
+	RequirementCitations *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
 }
 
 type AcceptanceCriterion struct {
@@ -107,7 +108,20 @@ func ParseReview(output string) (Review, error) {
 	if value.Verdict == "changes_requested" && strings.TrimSpace(value.Feedback) == "" {
 		return value, fmt.Errorf("review feedback is required when changes are requested")
 	}
+	if value.RequirementCitations != nil {
+		value.RequirementCitations.CitedIDs = nonNilStrings(value.RequirementCitations.CitedIDs)
+		value.RequirementCitations.UnknownIDs = nonNilStrings(value.RequirementCitations.UnknownIDs)
+		value.RequirementCitations.UnservedIDs = nonNilStrings(value.RequirementCitations.UnservedIDs)
+		value.RequirementCitations.Conflicts = nonNilStrings(value.RequirementCitations.Conflicts)
+	}
 	return value, nil
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func ParseSpec(output string) (Spec, error) {

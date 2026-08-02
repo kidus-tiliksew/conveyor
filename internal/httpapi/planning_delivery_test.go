@@ -215,6 +215,7 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		}
 		if err = dispatcher.ApplyExternalReview(ctx, started.Task, reviewJob, pipeline.Review{
 			Verdict: "approve", ReasonCode: "approved", Summary: "child review passed",
+			RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
 		}, reviewJob.ID, "review-session", "reviewer"); err != nil {
 			t.Fatal(err)
 		}

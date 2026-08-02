@@ -271,6 +271,7 @@ type PullRequest struct {
 	Mergeable string
 	Merged    bool
 	HeadSHA   string
+	BaseSHA   string
 }
 
 // PullRequestForBranch resolves the pull request attached to one assigned
@@ -281,7 +282,7 @@ func PullRequestForBranch(ctx context.Context, repo, branch string) (PullRequest
 }
 
 func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner) (PullRequest, error) {
-	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid")
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid,baseRefOid")
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
 			return PullRequest{}, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for branch %s: %v", ErrPullRequestNotFound, branch, err)}
@@ -295,13 +296,15 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 		MergedAt  *time.Time `json:"mergedAt"`
 		Mergeable string     `json:"mergeable"`
 		HeadSHA   string     `json:"headRefOid"`
+		BaseSHA   string     `json:"baseRefOid"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 || view.URL == "" || view.State == "" || view.Mergeable == "" || view.HeadSHA == "" {
 		return PullRequest{}, forgeResponseError("parse pull request for branch %s", branch)
 	}
 	return PullRequest{
 		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
-		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil, HeadSHA: strings.TrimSpace(view.HeadSHA),
+		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil,
+		HeadSHA: strings.TrimSpace(view.HeadSHA), BaseSHA: strings.TrimSpace(view.BaseSHA),
 	}, nil
 }
 
@@ -511,21 +514,23 @@ type reviewTargetResult struct {
 	Number  int    `json:"number"`
 	URL     string `json:"url"`
 	HeadSHA string `json:"headRefOid"`
+	BaseSHA string `json:"baseRefOid"`
 }
 
 type ReviewTarget struct {
 	Number  int
 	URL     string
 	HeadSHA string
+	BaseSHA string
 }
 
 func ReviewTargetForBranch(ctx context.Context, repo, branch string) (ReviewTarget, error) {
 	target, err := reviewTarget(ctx, repo, branch, gh)
-	return ReviewTarget{Number: target.Number, URL: target.URL, HeadSHA: target.HeadSHA}, err
+	return ReviewTarget{Number: target.Number, URL: target.URL, HeadSHA: target.HeadSHA, BaseSHA: target.BaseSHA}, err
 }
 
 func reviewTarget(ctx context.Context, repo, branch string, run ghRunner) (reviewTargetResult, error) {
-	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,headRefOid")
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,headRefOid,baseRefOid")
 	if err != nil {
 		return reviewTargetResult{}, fmt.Errorf("resolve reviewed PR: %w", forgeCallError(err))
 	}

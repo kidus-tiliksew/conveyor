@@ -235,7 +235,20 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.AwaitReview(ctx, stringArg("work_order_id"), session, time.Duration(seconds*float64(time.Second)))
 	case "submit_review_verdict":
-		return s.WorkOrders.SubmitVerdict(ctx, stringArg("work_order_id"), session, pipeline.Review{Verdict: stringArg("verdict"), ReasonCode: stringArg("reason_code"), Summary: stringArg("summary"), Feedback: stringArg("feedback")})
+		payload, marshalErr := json.Marshal(map[string]any{
+			"verdict": args["verdict"], "reason_code": args["reason_code"], "summary": args["summary"],
+			"feedback": args["feedback"], "requirement_citations": args["requirement_citations"],
+		})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		var review pipeline.Review
+		decoder := json.NewDecoder(strings.NewReader(string(payload)))
+		decoder.DisallowUnknownFields()
+		if decodeErr := decoder.Decode(&review); decodeErr != nil {
+			return nil, fmt.Errorf("invalid review verdict: %w", decodeErr)
+		}
+		return s.WorkOrders.SubmitVerdict(ctx, stringArg("work_order_id"), session, review)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
@@ -349,6 +362,12 @@ func mcpTools() []map[string]any {
 		"remaining": num,
 		"reset_at":  map[string]any{"type": "string", "format": "date-time"},
 	}, "status")
+	stringList := map[string]any{"type": "array", "items": str}
+	requirementCitations := object(map[string]any{
+		"applicable": map[string]string{"type": "boolean"},
+		"cited_ids":  stringList, "unknown_ids": stringList,
+		"unserved_ids": stringList, "conflicts": stringList,
+	}, "applicable", "cited_ids", "unknown_ids", "unserved_ids", "conflicts")
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "setup": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; an operator-attached agent claims it explicitly (spec §21.31)."}, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}, "description": "Deprecated (spec §21.31): manual maps to hold=true, auto is a no-op."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
@@ -365,6 +384,6 @@ func mcpTools() []map[string]any {
 		{"name": "submit_spec", "description": "Validate and submit a structured specification for a claimed spec order. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": str, "acceptance": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "criterion": str, "verify": str, "ref": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"id", "criterion", "verify"}, "additionalProperties": false}}, "decomposition": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "acceptance", "decomposition")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
-		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict and structured feedback.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str}, "work_order_id", "session_id", "verdict", "reason_code", "summary")},
+		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, and REQ-n citation assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations")},
 	}
 }
