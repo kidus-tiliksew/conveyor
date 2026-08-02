@@ -95,6 +95,10 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 			{ id: 'reviews-review-1-seat-1', task_id: taskId, job_id: 'reviews-review-1-seat-1', stage: 'review', state: 'completed', review_round: 1, review_seat: 1, required_model: 'gpt-review', required_harness: 'codex', required_effort: 'high', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:01:00Z' },
 			{ id: 'reviews-review-1-seat-2', task_id: taskId, job_id: 'reviews-review-1-seat-2', stage: 'review', state: 'completed', review_round: 1, review_seat: 2, required_model: 'claude-review', required_harness: 'claude', model_enforcement: 'worker-pinned', queue_entered_at: createdAt, queue_deadline: '2026-07-16T12:00:00Z', redispatch_count: 0, cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true, created_at: createdAt, updated_at: '2026-07-15T12:03:00Z' },
 		],
+	} : taskId === 'markdown-summary' ? {
+		jobs: [{ id: 'markdown-summary-implement-1', task_id: taskId, stage: 'implement', harness: 'codex', model_tier: 'gpt-implement', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z' }],
+		events: [{ id: 1, task_id: taskId, job_id: 'markdown-summary-implement-1', kind: 'job.summary', actor_id: 'runner', actor_role: 'runner', payload: { summary: 'Validated `make build` while preserving context and <script data-summary-unsafe>window.hacked = true</script> as text.' }, at: '2026-07-15T12:01:00Z' }],
+		work_orders: [],
 	} : taskId === 'output-invalid' ? {
 		jobs: [
 			...Array.from({ length: 5 }, (_, index) => ({
@@ -981,6 +985,18 @@ test('task body renders safe GFM in sheet and full-page headers', async ({ page 
 		await expect(page.locator('script[data-unsafe]')).toHaveCount(0)
 		await expect(page.getByText('<script data-unsafe>window.hacked = true</script>')).toBeVisible()
 	}
+})
+
+test('activity job summaries render inline code without enabling raw HTML', async ({ page }) => {
+	await page.goto('/tasks/markdown-summary/full')
+
+	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+	const summary = timeline.locator('article').filter({ hasText: 'Validated make build while preserving context' })
+	await expect(summary).toHaveCount(1)
+	await expect(summary.locator('.markdown code')).toHaveText('make build')
+	await expect(summary).toContainText('Validated make build while preserving context and <script data-summary-unsafe>window.hacked = true</script> as text.')
+	await expect(summary).not.toContainText('`')
+	await expect(summary.locator('script[data-summary-unsafe]')).toHaveCount(0)
 })
 
 test('long task body is constrained and expands accessibly in both header variants', async ({ page }) => {

@@ -11,6 +11,7 @@ import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
 import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-card'
@@ -620,7 +621,10 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
           {running && <Badge variant="accent">Running</Badge>}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
         </div>
-        <p className="whitespace-pre-line px-4 py-3 text-sm leading-6 text-foreground/85">{summary}</p>
+        <MarkdownProse
+          className="px-4 py-3 text-sm leading-6 text-foreground/85"
+          components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
+        >{summary}</MarkdownProse>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
           <ModelChip model={model} costUSD={displayedCostUSD(job)} tokensIn={job.tokens_in} tokensOut={job.tokens_out} note={note || undefined} />
