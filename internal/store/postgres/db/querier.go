@@ -25,6 +25,7 @@ type Querier interface {
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	InsertIntervention(ctx context.Context, arg InsertInterventionParams) (Intervention, error)
 	InsertJob(ctx context.Context, arg InsertJobParams) (Job, error)
+	InsertLineageLink(ctx context.Context, arg InsertLineageLinkParams) error
 	InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error)
 	InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error)
 	InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) (Workspace, error)
@@ -35,6 +36,8 @@ type Querier interface {
 	ListRequirementEvents(ctx context.Context, arg ListRequirementEventsParams) ([]Event, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
+	ListLineageLinks(ctx context.Context, workspaceID string) ([]Link, error)
+	ListWorkspaceEvents(ctx context.Context, workspaceID string) ([]Event, error)
 	ListTasks(ctx context.Context, workspaceID string) ([]ListTasksRow, error)
 	MarkTaskApprovalStale(ctx context.Context, arg MarkTaskApprovalStaleParams) (Task, error)
 	SkipTaskRefresh(ctx context.Context, arg SkipTaskRefreshParams) (Task, error)
@@ -46,6 +49,7 @@ type Querier interface {
 	UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspaceConfigParams) (Workspace, error)
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) error
 	UpsertTranscript(ctx context.Context, arg UpsertTranscriptParams) (Transcript, error)
+	DeleteLineageLinks(ctx context.Context, workspaceID string) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

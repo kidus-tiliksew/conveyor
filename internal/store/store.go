@@ -85,6 +85,8 @@ type Store interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
+	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
+	RebuildLineage(ctx context.Context) (int, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
@@ -641,6 +643,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		dependencies:                map[string]map[string]struct{}{},
 		jobs:                        map[string][]core.Job{},
 		events:                      map[string][]core.Event{},
+		lineage:                     map[string]core.LineageLink{},
 		interventions:               map[string][]core.Intervention{},
 		transcripts:                 map[string]core.Transcript{},
 		specs:                       map[string][]core.SpecVersion{},
@@ -698,6 +701,7 @@ type memory struct {
 	dependencies                map[string]map[string]struct{}
 	jobs                        map[string][]core.Job
 	events                      map[string][]core.Event
+	lineage                     map[string]core.LineageLink
 	interventions               map[string][]core.Intervention
 	transcripts                 map[string]core.Transcript
 	specs                       map[string][]core.SpecVersion
@@ -1398,6 +1402,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
+		"evidence_ids":   decision.EvidenceIDs,
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
@@ -2787,7 +2792,10 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			m.dependencies[child.ID] = map[string]struct{}{}
 		}
 		for _, dependency := range item.DependsOn {
-			m.dependencies[child.ID][childrenBySub[dependency].ID] = struct{}{}
+			dependencyID := childrenBySub[dependency].ID
+			m.dependencies[child.ID][dependencyID] = struct{}{}
+			m.appendEventLocked(ctx, core.Event{TaskID: child.ID, Kind: "task.dependency_added", At: createdAt,
+				Payload: core.JSONPayload(map[string]string{"task_id": child.ID, "depends_on_task_id": dependencyID})})
 		}
 	}
 	versions[len(versions)-1].Approved = true
@@ -3062,6 +3070,10 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 		}
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt})
+	for dependencyID := range seen {
+		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
+			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})
+	}
 	return nil
 }
 
@@ -3788,6 +3800,72 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 	m.nextEventID++
 	event.ID = m.nextEventID
 	m.events[event.TaskID] = append(m.events[event.TaskID], event)
+	workspace := workspaceOrDefault(ctx, "")
+	if event.TaskID != "" {
+		if task, ok := m.tasks[event.TaskID]; ok {
+			workspace = task.Workspace
+		}
+	}
+	for _, link := range lineageLinksForEvent(workspace, event) {
+		m.lineage[lineageLinkKey(link)] = link
+	}
+}
+
+func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	links := make([]core.LineageLink, 0, len(m.lineage))
+	for _, link := range m.lineage {
+		if link.Workspace == workspace {
+			links = append(links, link)
+		}
+	}
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].CreatedByEventID != links[j].CreatedByEventID {
+			return links[i].CreatedByEventID < links[j].CreatedByEventID
+		}
+		return lineageLinkKey(links[i]) < lineageLinkKey(links[j])
+	})
+	return links, nil
+}
+
+func (m *memory) RebuildLineage(ctx context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	for key, link := range m.lineage {
+		if link.Workspace == workspace {
+			delete(m.lineage, key)
+		}
+	}
+	for _, events := range m.events {
+		for _, event := range events {
+			if event.TaskID != "" {
+				task, ok := m.tasks[event.TaskID]
+				if !ok || task.Workspace != workspace {
+					continue
+				}
+			} else {
+				var payload struct {
+					WorkspaceID string `json:"workspace_id"`
+				}
+				if json.Unmarshal(event.Payload, &payload) != nil || payload.WorkspaceID != workspace {
+					continue
+				}
+			}
+			for _, link := range lineageLinksForEvent(workspace, event) {
+				m.lineage[lineageLinkKey(link)] = link
+			}
+		}
+	}
+	count := 0
+	for _, link := range m.lineage {
+		if link.Workspace == workspace {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (m *memory) findJobLocked(id string) (core.Job, int, bool) {

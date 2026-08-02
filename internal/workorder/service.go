@@ -765,7 +765,14 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if targetErr != nil {
 			return nil, fmt.Errorf("resolve reviewed PR head: %w", targetErr)
 		}
-		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"url": prURL, "number": target.Number, "head_sha": target.HeadSHA})}); err != nil {
+		evidenceIDs := make([]string, 0, len(evidence))
+		for _, item := range evidence {
+			evidenceIDs = append(evidenceIDs, item.ID)
+		}
+		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
+			"url": prURL, "number": target.Number, "head_sha": target.HeadSHA,
+			"repository": repo.GitHub, "work_order_id": order.ID, "evidence_ids": evidenceIDs,
+		})}); err != nil {
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
 		}
 		reviewedHead = target.HeadSHA

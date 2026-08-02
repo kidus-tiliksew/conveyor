@@ -468,7 +468,7 @@ func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, 
 		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 			return err
 		}
-		taskCreatedEventID, err := insertEventWithID(ctx, q, core.Event{
+		_, err := insertEventWithID(ctx, q, core.Event{
 			TaskID:  task.ID,
 			Kind:    "task.created",
 			Payload: core.JSONPayload(task),
@@ -482,10 +482,8 @@ func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, 
 				VALUES ($1,$2,$3)`, task.Workspace, task.ID, dependencyID); err != nil {
 				return fmt.Errorf("depends_on %s: %w", dependencyID, err)
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO links
-				(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id)
-				VALUES ($1,'task',$2,'task',$3,'depends_on',$4)
-				ON CONFLICT DO NOTHING`, task.Workspace, task.ID, dependencyID, taskCreatedEventID); err != nil {
+			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: task.CreatedAt,
+				Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})}); err != nil {
 				return err
 			}
 		}
@@ -1240,9 +1238,8 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				childrenToCreate++
 			}
 		}
-		var materializationEventID int64
 		if childrenToCreate > 0 {
-			materializationEventID, err = insertEventWithID(ctx, q, core.Event{
+			_, err = insertEventWithID(ctx, q, core.Event{
 				TaskID: taskID, Kind: "blueprint.materialized", At: createdAt,
 				Payload: core.JSONPayload(map[string]any{
 					"version": version, "children_created": childrenToCreate, "children_total": len(decomposition),
@@ -1283,12 +1280,6 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {
 				return err
 			}
-			if _, err = tx.Exec(ctx, `INSERT INTO links
-				(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id)
-				VALUES ($1,'blueprint_version',$2,'task',$3,'materializes',$4)
-				ON CONFLICT DO NOTHING`, workspace(ctx), fmt.Sprintf("%s:v%d", taskID, version), child.ID, materializationEventID); err != nil {
-				return err
-			}
 			childrenBySub[item.ID] = child
 			createdSubs[item.ID] = struct{}{}
 		}
@@ -1304,10 +1295,8 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 					ON CONFLICT DO NOTHING`, workspace(ctx), child.ID, dependency.ID); err != nil {
 					return fmt.Errorf("materialize dependency %s -> %s: %w", item.ID, dependencySubID, err)
 				}
-				if _, err = tx.Exec(ctx, `INSERT INTO links
-					(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id)
-					VALUES ($1,'task',$2,'task',$3,'depends_on',$4)
-					ON CONFLICT DO NOTHING`, workspace(ctx), child.ID, dependency.ID, materializationEventID); err != nil {
+				if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.dependency_added", At: createdAt,
+					Payload: core.JSONPayload(map[string]string{"task_id": child.ID, "depends_on_task_id": dependency.ID})}); err != nil {
 					return err
 				}
 			}
@@ -1470,11 +1459,6 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 		}
 		if command.RowsAffected() != 1 {
 			return fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
-		}
-		if _, err = tx.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
-			AND src_type='task' AND src_id=$2 AND dst_type='task' AND dst_id=$3 AND kind='depends_on'`,
-			workspace(ctx), request.TaskID, request.DependsOnTaskID); err != nil {
-			return err
 		}
 		now := time.Now().UTC()
 		if _, err = tx.Exec(ctx, `INSERT INTO task_dependency_removals
@@ -1723,7 +1707,9 @@ func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", event.JobID, event.TaskID, workspace(ctx))
 		}
 	}
-	return insertEvent(ctx, s.queries, event)
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		return insertEvent(ctx, q, event)
+	})
 }
 
 func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
@@ -1750,6 +1736,57 @@ func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string)
 		result[i] = eventFromDB(rows[i])
 	}
 	return result, nil
+}
+
+func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error) {
+	rows, err := s.queries.ListLineageLinks(ctx, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	links := make([]core.LineageLink, 0, len(rows))
+	for _, row := range rows {
+		if !row.CreatedByEventID.Valid {
+			continue
+		}
+		links = append(links, core.LineageLink{
+			Workspace: row.WorkspaceID, SrcType: core.LineageNodeType(row.SrcType), SrcID: row.SrcID,
+			DstType: core.LineageNodeType(row.DstType), DstID: row.DstID, Kind: row.Kind,
+			CreatedByEventID: row.CreatedByEventID.Int64, CreatedAt: row.CreatedAt.Time,
+		})
+	}
+	return links, nil
+}
+
+func (s *Store) RebuildLineage(ctx context.Context) (int, error) {
+	count := 0
+	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		if _, err := q.DeleteLineageLinks(ctx, workspace(ctx)); err != nil {
+			return err
+		}
+		events, err := q.ListWorkspaceEvents(ctx, workspace(ctx))
+		if err != nil {
+			return err
+		}
+		for _, row := range events {
+			event := eventFromDB(row)
+			for _, link := range store.LineageLinksForEvent(workspace(ctx), event) {
+				if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
+					WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+					DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+					CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		links, err := q.ListLineageLinks(ctx, workspace(ctx))
+		if err != nil {
+			return err
+		}
+		count = len(links)
+		return nil
+	})
+	return count, err
 }
 
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
@@ -3914,6 +3951,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
+		"evidence_ids":   decision.EvidenceIDs,
 		"reviewer_model": decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
@@ -4312,7 +4350,20 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 		ActorID: event.ActorID, ActorRole: string(event.ActorRole),
 		PayloadJson: event.Payload, At: timestamp(event.At),
 	})
-	return inserted.ID, err
+	if err != nil {
+		return 0, err
+	}
+	event.ID, event.At = inserted.ID, inserted.At.Time
+	for _, link := range store.LineageLinksForEvent(inserted.WorkspaceID, event) {
+		if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
+			WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+			DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+			CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return inserted.ID, nil
 }
 
 func lockDependencyEdgesTx(ctx context.Context, tx pgx.Tx, workspaceID string) error {

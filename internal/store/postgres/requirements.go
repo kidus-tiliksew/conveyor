@@ -940,10 +940,23 @@ func unmarshalRequirementStatements(raw []byte) ([]core.RequirementStatement, er
 // and the migration 046 scope allowlist.
 func insertRequirementEvent(ctx context.Context, q *db.Queries, kind string, payload map[string]any) error {
 	actor := store.ActorFromContext(ctx)
-	_, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+	inserted, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 		WorkspaceID: workspace(ctx), Kind: kind, ActorID: actor.ID,
 		ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(payload),
 		At: timestamp(time.Now().UTC()),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	event := eventFromDB(inserted)
+	for _, link := range store.LineageLinksForEvent(workspace(ctx), event) {
+		if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
+			WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+			DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+			CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

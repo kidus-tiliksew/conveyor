@@ -904,6 +904,14 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if model == "" {
 		model = job.ModelTier
 	}
+	var evidenceIDs []string
+	if artifacts, artifactErr := d.Store.ListArtifacts(ctx); artifactErr == nil {
+		for _, artifact := range artifacts {
+			if artifact.TaskID == task.ID && artifact.Role == core.ArtifactRoleVerificationEvidence {
+				evidenceIDs = append(evidenceIDs, artifact.ID)
+			}
+		}
+	}
 	reviewedCommitSHA := ""
 	events, _ := d.Store.ListEvents(ctx, task.ID)
 	for i := len(events) - 1; i >= 0; i-- {
@@ -947,7 +955,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
-		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, Reviewer: reviewer,
+		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
 		ReviewKind: decisionReviewKind, ReviewScope: decisionReviewScope, BaselineSHA: decisionBaseline, HeadSHA: decisionHead,
@@ -1523,7 +1531,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if !confirmed.Merged {
 		return d.recordMergeFailure(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number))
 	}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL})}); err != nil {
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "head_sha": confirmed.HeadSHA})}); err != nil {
 		return err
 	}
 	return d.confirmTaskMerged(ctx, current.ID)
