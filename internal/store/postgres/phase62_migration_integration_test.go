@@ -736,3 +736,47 @@ func TestRequirementServesMigrationBackfillsSuggestionsAsProposalsIntegration(t 
 		t.Fatalf("backfilled serves link=%+v", link)
 	}
 }
+
+// Migration 056 declares the session goal (spec §21.57 change 3). Rows written
+// before it predate the declaration, so they take `open` — which is exactly
+// their historical behavior — and the CHECK refuses anything outside the three.
+func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	f.upgradeTo(t, 55)
+
+	legacyID := "session-" + core.NewTaskID()
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO planning_sessions (workspace_id,id,title,status,created_at,updated_at)
+		 VALUES ($1,$2,$3,'active',now(),now())`,
+		f.workspace, legacyID, "New requirement"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.upgradeTo(t, 56)
+
+	migrated, err := f.store.GetPlanningSession(f.ctx, legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Goal != core.PlanningGoalOpen || migrated.Title != "New requirement" {
+		t.Fatalf("migrated session=%+v, want the open goal with its title intact", migrated)
+	}
+	for _, goal := range []core.PlanningSessionGoal{
+		core.PlanningGoalRequirement, core.PlanningGoalBlueprint, core.PlanningGoalOpen,
+	} {
+		created, createErr := f.store.CreatePlanningSession(f.ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
+		})
+		if createErr != nil || created.Goal != goal {
+			t.Fatalf("goal %q created=%+v err=%v", goal, created, createErr)
+		}
+	}
+	// The column constraint is the last line of defense behind the service and
+	// API validation, so it must reject an unknown goal on its own.
+	if _, err = f.pool.Exec(f.ctx,
+		`INSERT INTO planning_sessions (workspace_id,id,title,status,goal,created_at,updated_at)
+		 VALUES ($1,$2,'Epic','active','epic',now(),now())`,
+		f.workspace, "session-"+core.NewTaskID()); err == nil {
+		t.Fatal("the goal CHECK accepted an unknown goal")
+	}
+}

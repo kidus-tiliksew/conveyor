@@ -86,7 +86,7 @@ function shellResponse(route: Route) {
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
 
-test('requirements renders living intent, confirms a revision, and opens planning in context', async ({ page }) => {
+test('requirements renders living intent as the canvas, confirms a revision, and docks the assistant', async ({ page }) => {
   await initShell(page)
   let confirmed = false
   await page.route('**/v1/**', async (route) => {
@@ -120,9 +120,16 @@ test('requirements renders living intent, confirms a revision, and opens plannin
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
 
-  await page.getByRole('button', { name: 'Plan work' }).click()
-  await expect(page).toHaveURL(/\/planning$/)
-  await expect(page.getByLabel('Planning session title')).toHaveAttribute('placeholder', 'Plan work for Retry behavior')
+  // The document is the canvas and the assistant is docked beside it, scoped
+  // to that document — no detached chat page (spec §21.57 change 1).
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  await expect(assistant.getByText('Retry behavior')).toBeVisible()
+  for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work']) {
+    await expect(assistant.getByRole('button', { name: action })).toBeVisible()
+  }
+  await expect(page).toHaveURL(/\/requirements/)
 })
 
 test('planning starts with an allowlisted model and sends that choice', async ({ page }) => {
@@ -137,7 +144,7 @@ test('planning starts with an allowlisted model and sends that choice', async ({
       createdWith = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
       return route.fulfill({
         json: {
-          id: 'session-new', title: createdWith.title, status: 'active',
+          id: 'session-new', title: 'Planning work…', status: 'active', goal: createdWith.goal,
           model: createdWith.model, effort: 'high', exploration_output_tokens: 12000,
           primary_repo: 'conveyor', pinned_revisions: { conveyor: '0123456789abcdef' },
           workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
@@ -151,11 +158,13 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   await page.goto('/planning')
   await expect(page.getByLabel('Planning model')).toHaveValue('gpt-plan')
   await expect(page.getByLabel('Planning model').locator('option')).toHaveText(['gpt-plan', 'gpt-plan-fast'])
-  await page.getByLabel('Planning session title').fill('Explore companion changes')
+  await page.getByLabel('Planning goal').selectOption('blueprint')
   await page.getByLabel('Planning model').selectOption('gpt-plan-fast')
   await page.getByRole('button', { name: 'New session' }).click()
-  await expect.poll(() => createdWith).toMatchObject({
-    title: 'Explore companion changes',
+  // The goal and model are the only creation inputs: no caller title reaches
+  // the server, which names the session itself (spec §21.57 change 3).
+  await expect.poll(() => createdWith).toEqual({
+    goal: 'blueprint',
     model: 'gpt-plan-fast',
   })
 })
@@ -493,4 +502,361 @@ test('a finalized blueprint session hands off to the ordinary spec gate', async 
   await page.goto('/planning')
   await expect(page.getByText('Planning artifact finalized')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Open spec gate' })).toHaveAttribute('href', '/tasks/blueprint-task')
+})
+
+// AC-4: every guided action starts a sidebar session with its declared goal,
+// and none of them leaves the Requirements view (spec §21.57 change 1).
+test('guided actions start goal-declared sidebar sessions without leaving requirements', async ({ page }) => {
+  await initShell(page)
+  const created: Record<string, unknown>[] = []
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
+      created.push(body)
+      return route.fulfill({
+        json: {
+          id: `session-${created.length}`, title: 'Drafting requirement…', status: 'active',
+          goal: body.goal, requirement_context_id: body.requirement_context_id,
+          workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+        },
+      })
+    }
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [requirement] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
+    if (url.pathname.startsWith('/v1/planning-sessions/')) {
+      const id = url.pathname.split('/')[3]
+      const body = created[Number(id.split('-')[1]) - 1] ?? {}
+      return route.fulfill({
+        json: {
+          id, title: 'Drafting requirement…', status: 'active',
+          goal: body.goal, requirement_context_id: body.requirement_context_id,
+          workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+        },
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const expected = [
+    { action: 'Revise', goal: 'requirement', context: 'req-retries' },
+    { action: 'Q&A', goal: 'open', context: 'req-retries' },
+    { action: 'Plan work', goal: 'blueprint', context: 'req-retries' },
+    { action: 'Draft', goal: 'requirement', context: undefined },
+  ]
+  for (const [index, step] of expected.entries()) {
+    await assistant.getByRole('button', { name: step.action }).click()
+    await expect.poll(() => created.length).toBe(index + 1)
+    expect(created[index].goal).toBe(step.goal)
+    expect(created[index].requirement_context_id).toBe(step.context)
+    // The conversation opens in the sidebar; the canvas never navigates away.
+    await expect(assistant.getByRole('log', { name: 'Planning conversation' })).toBeVisible()
+    await expect(page).toHaveURL(/\/requirements\?/)
+    await expect(page).toHaveURL(/requirement=req-retries/)
+  }
+  // The sidebar session is deep-linkable, so a reload restores the assistant.
+  await expect(page).toHaveURL(/session=session-4/)
+})
+
+// AC-5: finalizing in the sidebar refreshes the canvas in place — a produced
+// requirement becomes the open document with its pending version and the
+// unchanged confirmation affordance; a produced blueprint refreshes the
+// proposed serves link on the document it serves.
+test('finalizing in the sidebar refreshes the canvas without leaving the view', async ({ page }) => {
+  await initShell(page)
+  const drafted = {
+    requirement: {
+      id: 'req-drafted', slug: 'drafted-intent', title: 'Drafted intent',
+      statement_high_water_mark: 1, workspace: 'demo',
+      created_at: '2026-07-30T11:00:00Z', updated_at: '2026-07-30T11:00:00Z',
+    },
+    pending_versions: [{
+      requirement_id: 'req-drafted', version: 1,
+      content: 'The drafted intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Drafted statements are stable.\n```',
+      statements: [{ id: 'REQ-1', statement: 'Drafted statements are stable.' }],
+      origin: 'chat', origin_session_id: 'session-draft', confirmed: false,
+      workspace: 'demo', created_at: '2026-07-30T11:05:00Z',
+    }],
+    serving_blueprints: [], planning_sessions: [], artifacts: [], lineage: [],
+    migrated_seed: false, confirmation_eligible: true,
+  }
+  let finalized = false
+  const session = () => ({
+    id: 'session-draft', title: finalized ? 'Drafted intent' : 'Drafting requirement…',
+    status: finalized ? 'finalized' : 'active', goal: 'requirement',
+    produced_requirement_id: finalized ? 'req-drafted' : undefined,
+    workspace: 'demo', created_at: '2026-07-30T11:00:00Z', updated_at: '2026-07-30T11:05:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: finalized ? [drafted] : [] })
+    if (url.pathname === '/v1/requirements/req-drafted') return route.fulfill({ json: drafted })
+    if (url.pathname === '/v1/requirements/req-drafted/versions') return route.fulfill({ json: drafted.pending_versions })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
+    if (url.pathname === '/v1/planning-sessions/session-draft') return route.fulfill({ json: session() })
+    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/messages')) {
+      finalized = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: [
+          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"finalize_requirement"}', '',
+          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}', '',
+          'data: {"type":"finish","finishReason":"tool-calls"}', '',
+        ].join('\n'),
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  await assistant.getByRole('button', { name: 'Draft' }).click()
+  await assistant.getByLabel('Planning message').fill('Capture the drafted intent.')
+  await assistant.getByRole('button', { name: 'Send' }).click()
+
+  // The produced document arrives on the canvas, pending, with the ordinary
+  // confirmation affordance and no navigation away.
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Drafted intent' })).toBeVisible()
+  await expect(canvas.getByText('A revision is pending operator confirmation.')).toBeVisible()
+  await expect(canvas.getByRole('button', { name: 'Confirm version 1' })).toBeEnabled()
+  await expect(page).toHaveURL(/requirement=req-drafted/)
+  await expect(page).toHaveURL(/\/requirements\?/)
+})
+
+// AC-5 (blueprint half): contextual Plan work refreshes the visible proposed
+// serves link on the requirement it serves.
+test('finalizing contextual plan work refreshes the proposed serves link', async ({ page }) => {
+  await initShell(page)
+  let served = false
+  const view = () => ({
+    ...requirement,
+    serving_blueprints: served ? requirement.serving_blueprints : [],
+    planning_sessions: [],
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    const planned = {
+      id: 'session-plan', title: served ? 'Ship bounded retries' : 'Planning work…',
+      status: served ? 'finalized' : 'active', goal: 'blueprint',
+      requirement_context_id: 'req-retries', produced_task_id: served ? 'blueprint-task' : undefined,
+      workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    }
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: planned })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [planned] })
+    if (url.pathname === '/v1/planning-sessions/session-plan') return route.fulfill({ json: planned })
+    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/messages')) {
+      served = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_blueprint"}\n\n',
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  await assistant.getByRole('button', { name: 'Plan work' }).click()
+  await assistant.getByLabel('Planning message').fill('Plan the delivery.')
+  await assistant.getByRole('button', { name: 'Send' }).click()
+  await expect(canvas.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute('href', '/blueprints/blueprint-task')
+  await expect(page).toHaveURL(/requirement=req-retries/)
+})
+
+// AC-6: session lists carry human-readable goals with goal- or
+// artifact-derived titles, and the requirements authoring surface offers no
+// freehand editor — the sidebar is the only authoring path (change 2).
+test('session lists label goals and the requirements surface has no freehand editor', async ({ page }) => {
+  await initShell(page)
+  const sessions = [
+    {
+      id: 'session-drafting', title: 'Drafting requirement…', status: 'active', goal: 'requirement',
+      workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:02:00Z',
+    },
+    {
+      id: 'session-shipped', title: 'Ship bounded retries', status: 'finalized', goal: 'blueprint',
+      produced_task_id: 'blueprint-task',
+      workspace: 'demo', created_at: '2026-07-30T09:00:00Z', updated_at: '2026-07-30T09:30:00Z',
+    },
+    {
+      id: 'session-legacy', title: 'Exploring…', status: 'active',
+      workspace: 'demo', created_at: '2026-07-30T08:00:00Z', updated_at: '2026-07-30T08:30:00Z',
+    },
+  ]
+  const withSession = { ...requirement, planning_sessions: [{ ...requirement.planning_sessions[0], goal: 'requirement' }] }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [withSession] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: withSession })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: sessions })
+    if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
+    if (url.pathname.startsWith('/v1/planning-sessions/')) return route.fulfill({ json: sessions[0] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/planning')
+  // Goal- and artifact-derived titles, never a wall of "New requirement".
+  await expect(page.getByRole('button', { name: /Drafting requirement…/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Ship bounded retries/ })).toBeVisible()
+  await expect(page.getByText('New requirement', { exact: true })).toHaveCount(0)
+  // Human-readable goals, never the raw enum. Pre-goal rows read as open.
+  await expect(page.getByRole('button', { name: /Drafting requirement…/ }).getByText('Requirement', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Ship bounded retries/ }).getByText('Blueprint', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Exploring…/ }).getByText('Open exploration', { exact: true })).toBeVisible()
+  // The standalone surface keeps only the goals with no document context.
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveText(['Open exploration', 'Blueprint'])
+  // Requirement drafting moved beside the document, so it is not offered here.
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(2)
+
+  await page.goto('/requirements?requirement=req-retries')
+  await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()
+  // No contentEditable and no Markdown textarea: the only textarea on this
+  // surface is the assistant's message composer (spec §21.57 change 2).
+  await expect(page.locator('[contenteditable]')).toHaveCount(0)
+  await expect(page.locator('textarea:not([aria-label="Planning message"])')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Requirement document' }).locator('textarea')).toHaveCount(0)
+  // The assistant sidebar is that only authoring path.
+  await expect(page.getByRole('complementary', { name: 'Planning assistant' }).getByRole('button', { name: 'Revise' })).toBeVisible()
+})
+
+// AC-5 regression: with a non-empty corpus, the "fall back to the first
+// document" effect used to race the post-finalize navigation and strand the
+// operator on an unrelated document, and the canvas kept displaying the older
+// version because the newly proposed one was never selected.
+test('a sidebar revision opens its new version on the canvas over an existing corpus', async ({ page }) => {
+  await initShell(page)
+  const other = {
+    ...requirement,
+    requirement: { ...requirement.requirement, id: 'req-other', slug: 'other-intent', title: 'Other intent' },
+    serving_blueprints: [], planning_sessions: [], lineage_graph: undefined,
+  }
+  const confirmedV1 = {
+    ...requirement.pending_versions[0], version: 1, confirmed: true,
+    content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop.\n```',
+    statements: [{ id: 'REQ-1', statement: 'Retries stop.' }],
+  }
+  const pendingV2 = {
+    ...requirement.pending_versions[0], version: 2,
+    content: 'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: Retries are explainable.\n```',
+    statements: [{ id: 'REQ-2', statement: 'Retries are explainable.' }],
+  }
+  let revised = false
+  const retries = () => ({
+    ...requirement, current_version: confirmedV1,
+    pending_versions: revised ? [pendingV2] : [],
+    planning_sessions: [], confirmation_eligible: true,
+  })
+  const session = () => ({
+    id: 'session-revise', title: revised ? 'Retry behavior' : 'Drafting requirement…',
+    status: revised ? 'finalized' : 'active', goal: 'requirement',
+    requirement_context_id: 'req-retries',
+    produced_requirement_id: revised ? 'req-retries' : undefined,
+    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    // "Other intent" sorts first, so a bounce lands there and is visible.
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [other, retries()] })
+    if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
+    if (url.pathname === '/v1/requirements/req-other/versions') return route.fulfill({ json: [confirmedV1] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: retries() })
+    if (url.pathname === '/v1/requirements/req-retries/versions') {
+      return route.fulfill({ json: revised ? [confirmedV1, pendingV2] : [confirmedV1] })
+    }
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
+    if (url.pathname === '/v1/planning-sessions/session-revise') return route.fulfill({ json: session() })
+    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/messages')) {
+      revised = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}\n\n',
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  await assistant.getByRole('button', { name: 'Revise' }).click()
+  await assistant.getByLabel('Planning message').fill('Add the observability statement.')
+  await assistant.getByRole('button', { name: 'Send' }).click()
+
+  // The canvas stays on the revised document and advances to its new version,
+  // with the diff and the unchanged confirmation affordance.
+  await expect(canvas.getByRole('button', { name: 'Confirm version 2' })).toBeEnabled()
+  await expect(canvas.getByText('Compared with confirmed v1')).toBeVisible()
+  await expect(canvas.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-current', 'true')
+  await expect(page).toHaveURL(/requirement=req-retries/)
+  await expect(canvas.getByRole('heading', { name: 'Other intent' })).toHaveCount(0)
+})
+
+// A deep link names the document to open; restoring an earlier finalized
+// session beside it must not navigate the canvas somewhere else.
+test('a deep link to a finalized session keeps the document the URL asked for', async ({ page }) => {
+  await initShell(page)
+  const other = {
+    ...requirement,
+    requirement: { ...requirement.requirement, id: 'req-other', slug: 'other-intent', title: 'Other intent' },
+    serving_blueprints: [], planning_sessions: [], lineage_graph: undefined,
+  }
+  const finished = {
+    id: 'session-done', title: 'Retry behavior', status: 'finalized', goal: 'requirement',
+    produced_requirement_id: 'req-retries', transcript_artifact_id: 'artifact-1',
+    workspace: 'demo', created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:10:00Z', finalized_at: '2026-07-30T10:10:00Z',
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [other, requirement] })
+    if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
+    if (url.pathname === '/v1/requirements/req-other/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [finished] })
+    if (url.pathname === '/v1/planning-sessions/session-done') return route.fulfill({ json: finished })
+    if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-other&session=session-done')
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Other intent' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Planning assistant' })
+    .getByText('Planning artifact finalized')).toBeVisible()
+  // The already-finalized session is history, not news: the canvas stays put.
+  await expect(page).toHaveURL(/requirement=req-other/)
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toHaveCount(0)
 })

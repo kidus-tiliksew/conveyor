@@ -26,6 +26,10 @@ type PlanningFinalizeRequest struct {
 	RequirementID        string
 	TaskID               string
 	TranscriptArtifactID string
+	// Title is the produced artifact's title, which replaces the session's
+	// goal-derived provisional title (spec §21.57 change 3). An empty title
+	// leaves the provisional one in place.
+	Title string
 }
 
 // NormalizeRequirementVersionDocument enforces that the denormalized statement
@@ -424,6 +428,11 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 			return core.PlanningSession{}, fmt.Errorf("requirement %s not found", session.RequirementContextID)
 		}
 	}
+	goal, err := core.NormalizePlanningSessionGoal(session.Goal)
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	session.Goal = goal
 	now := time.Now().UTC()
 	session.Workspace = workspace
 	session.Status = core.PlanningSessionActive
@@ -440,6 +449,7 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.created", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
 		"requirement_context_id": session.RequirementContextID,
+		"goal":                   string(session.Goal),
 	})})
 	return clonePlanningSession(session), nil
 }
@@ -652,11 +662,14 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	session.ProducedRequirementID = request.RequirementID
 	session.ProducedTaskID = request.TaskID
 	session.TranscriptArtifactID = request.TranscriptArtifactID
+	if title := strings.TrimSpace(request.Title); title != "" {
+		session.Title = title
+	}
 	session.FinalizedAt = now
 	session.UpdatedAt = now
 	m.planningSessions[key] = session
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.finalized", Payload: core.JSONPayload(map[string]any{
-		"workspace_id": workspace, "session_id": session.ID,
+		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
 		"produced_requirement_id": session.ProducedRequirementID,
 		"produced_task_id":        session.ProducedTaskID,
 		"transcript_artifact_id":  session.TranscriptArtifactID,

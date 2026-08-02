@@ -54,8 +54,11 @@ const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/set
 const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/requirements',
-  validateSearch: (search: Record<string, unknown>) => ({
+  // `session` deep-links the document-scoped planning sidebar, so a reload
+  // restores the assistant beside the same document (spec §21.57).
+  validateSearch: (search: Record<string, unknown>): { requirement?: string; session?: string } => ({
     requirement: typeof search.requirement === 'string' ? search.requirement : undefined,
+    session: typeof search.session === 'string' ? search.session : undefined,
   }),
   component: RequirementsPage,
 })

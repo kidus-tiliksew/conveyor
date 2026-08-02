@@ -752,11 +752,14 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		Store: st, Git: gitx.NewManager(cfg.CacheDir, ""),
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 	}
-	if _, err := service.CreateSession(ctx, "Rejected", "", "outside"); err == nil ||
-		!strings.Contains(err.Error(), "configured models: planner, planner-alt") {
+	if _, err := service.CreateSession(ctx, CreateSessionInput{
+		ModelOverride: "outside",
+	}); err == nil || !strings.Contains(err.Error(), "configured models: planner, planner-alt") {
 		t.Fatalf("off-allowlist model error=%v", err)
 	}
-	session, err := service.CreateSession(ctx, "Explore eligibility", "", "planner-alt")
+	session, err := service.CreateSession(ctx, CreateSessionInput{
+		ModelOverride: "planner-alt",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1211,6 +1214,398 @@ func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
 	}
 }
 
+// AC-1: the goal is declared once at creation and names the session until it
+// produces something (spec §21.57 change 3).
+func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
+	tmp := t.TempDir()
+	repo := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "planning fixture\n")
+	cfg := &config.Config{
+		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Repos:          []config.Repo{{Name: "primary", URL: "file://" + repo, Base: "main"}},
+		PlanningModels: []string{"planner"},
+		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
+			Planning: config.PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "10m"},
+		}},
+	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	service := &Service{
+		Store: st, Git: gitx.NewManager(cfg.CacheDir, ""),
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	for _, test := range []struct {
+		goal  core.PlanningSessionGoal
+		title string
+	}{
+		{core.PlanningGoalRequirement, "Drafting requirement…"},
+		{core.PlanningGoalBlueprint, "Planning work…"},
+		{core.PlanningGoalOpen, "Exploring…"},
+		{"", "Exploring…"},
+	} {
+		created, err := service.CreateSession(ctx, CreateSessionInput{Goal: test.goal})
+		if err != nil {
+			t.Fatalf("goal %q: %v", test.goal, err)
+		}
+		wantGoal := test.goal
+		if wantGoal == "" {
+			wantGoal = core.PlanningGoalOpen
+		}
+		if created.Goal != wantGoal || created.Title != test.title {
+			t.Fatalf("goal %q created=%+v, want goal %q title %q",
+				test.goal, created, wantGoal, test.title)
+		}
+		read, err := st.GetPlanningSession(ctx, created.ID)
+		if err != nil || read.Goal != wantGoal || read.Title != test.title {
+			t.Fatalf("goal %q read back=%+v err=%v", test.goal, read, err)
+		}
+	}
+	// An unknown goal is refused before anything is persisted.
+	if _, err := service.CreateSession(ctx, CreateSessionInput{
+		Goal: core.PlanningSessionGoal("epic"),
+	}); err == nil || !strings.Contains(err.Error(), "want requirement, blueprint, or open") {
+		t.Fatalf("unknown goal error=%v", err)
+	}
+	listed, err := st.ListPlanningSessions(ctx)
+	if err != nil || len(listed) != 4 {
+		t.Fatalf("listed=%d err=%v, want the four accepted sessions", len(listed), err)
+	}
+}
+
+// AC-2: finalizing replaces the provisional title with the produced artifact's
+// own title, and a retry keeps it (spec §21.57 change 3).
+func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
+	t.Run("requirement", func(t *testing.T) {
+		ctx, st, session := goalPlanningFixture(t, "session-260802-title-req", core.PlanningGoalRequirement)
+		args := requirementArgs{
+			Title: "Bounded retries", Prose: "Retries stay explainable.",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stop at the bound."}},
+		}
+		call := toolCall{ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)}
+		service := &Service{
+			Store: st, Model: "planner", Prompt: testPlanningPrompt,
+			Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{call})}},
+		}
+		if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize it."}, func(map[string]any) error {
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		finalized, err := st.GetPlanningSession(ctx, session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if finalized.Title != "Bounded retries" || finalized.ProducedRequirementID != "req-260802-title-req" ||
+			finalized.Status != core.PlanningSessionFinalized {
+			t.Fatalf("finalized session=%+v", finalized)
+		}
+		// Re-running the finalize tool adopts the same existing requirement
+		// and reports the same title, so an idempotent retry cannot rename
+		// the session.
+		execution, err := service.requirementTool(ctx, finalized, call)
+		if err != nil || execution.Produced == nil || execution.Produced.Title != "Bounded retries" {
+			t.Fatalf("retry execution=%+v err=%v", execution, err)
+		}
+		repeated, err := st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{
+			SessionID: session.ID, RequirementID: execution.Produced.RequirementID,
+			TranscriptArtifactID: finalized.TranscriptArtifactID,
+		})
+		if err != nil || repeated.Title != "Bounded retries" ||
+			!repeated.FinalizedAt.Equal(finalized.FinalizedAt) {
+			t.Fatalf("repeated finalize=%+v err=%v", repeated, err)
+		}
+	})
+
+	t.Run("blueprint", func(t *testing.T) {
+		ctx, st, session := goalPlanningFixture(t, "session-260802-title-bp", core.PlanningGoalBlueprint)
+		args := blueprintArgs{
+			Title: "Bound the retry loop", Repo: "conveyor",
+			Markdown: "## Intent\n\nBound retries.\n\n## Non-goals\n\nNo queue rewrite.",
+			Acceptance: []pipeline.AcceptanceCriterion{{
+				ID: "AC-1", Criterion: "Retries stop at the bound.", Verify: "test",
+			}},
+		}
+		service := &Service{
+			Store: st, Model: "planner", Prompt: testPlanningPrompt,
+			Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+				ID: "call-blueprint", Name: "finalize_blueprint", ArgumentsJSON: jsonString(t, args),
+			}})}},
+			FinalizeBlueprint: func(
+				ctx context.Context,
+				sessionID, taskID, title, repo string,
+				spec pipeline.StructuredSpec,
+				model string,
+			) (core.Task, core.SpecVersion, error) {
+				task := core.Task{
+					ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
+					Title: title, Repo: repo, State: core.TaskAwaiting, NextStage: core.StageImplement,
+				}
+				if err := st.CreateTask(ctx, task); err != nil {
+					return core.Task{}, core.SpecVersion{}, err
+				}
+				return task, core.SpecVersion{TaskID: taskID, Version: 1, Content: spec.Markdown}, nil
+			},
+		}
+		if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize the blueprint."}, func(map[string]any) error {
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		finalized, err := st.GetPlanningSession(ctx, session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if finalized.Title != "Bound the retry loop" || finalized.ProducedTaskID != "260802-title-bp" {
+			t.Fatalf("finalized session=%+v", finalized)
+		}
+	})
+}
+
+// AC-3: a non-open goal rejects the mismatched finalizer in band. The run
+// survives, nothing is produced, and the matching finalize still lands in the
+// same run (spec §21.57 change 3).
+func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
+	requirementArgsJSON := jsonString(t, requirementArgs{
+		Title: "Bounded retries", Prose: "Retries stay explainable.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stop at the bound."}},
+	})
+	blueprintArgsJSON := jsonString(t, blueprintArgs{
+		Title: "Bound the retry loop", Repo: "conveyor",
+		Markdown: "## Intent\n\nBound retries.\n\n## Non-goals\n\nNo queue rewrite.",
+		Acceptance: []pipeline.AcceptanceCriterion{{
+			ID: "AC-1", Criterion: "Retries stop at the bound.", Verify: "test",
+		}},
+	})
+	tests := []struct {
+		name      string
+		sessionID string
+		goal      core.PlanningSessionGoal
+		rejected  toolCall
+		accepted  toolCall
+		expected  string
+	}{
+		{
+			name: "requirement goal refuses a blueprint", sessionID: "session-260802-goal-req",
+			goal:     core.PlanningGoalRequirement,
+			rejected: toolCall{ID: "call-wrong", Name: "finalize_blueprint", ArgumentsJSON: blueprintArgsJSON},
+			accepted: toolCall{ID: "call-right", Name: "finalize_requirement", ArgumentsJSON: requirementArgsJSON},
+			expected: "finalize_requirement",
+		},
+		{
+			name: "blueprint goal refuses a requirement", sessionID: "session-260802-goal-bp",
+			goal:     core.PlanningGoalBlueprint,
+			rejected: toolCall{ID: "call-wrong", Name: "finalize_requirement", ArgumentsJSON: requirementArgsJSON},
+			accepted: toolCall{ID: "call-right", Name: "finalize_blueprint", ArgumentsJSON: blueprintArgsJSON},
+			expected: "finalize_blueprint",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, session := goalPlanningFixture(t, test.sessionID, test.goal)
+			blueprintFinalized := false
+			service := &Service{
+				Store: st, Model: "planner", Prompt: testPlanningPrompt,
+				Agent: &scriptedAgent{outputs: []string{
+					decisionJSON(t, "", []toolCall{test.rejected}),
+					decisionJSON(t, "", []toolCall{test.accepted}),
+				}},
+				FinalizeBlueprint: func(
+					ctx context.Context,
+					sessionID, taskID, title, repo string,
+					spec pipeline.StructuredSpec,
+					model string,
+				) (core.Task, core.SpecVersion, error) {
+					blueprintFinalized = true
+					task := core.Task{
+						ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
+						Title: title, Repo: repo, State: core.TaskAwaiting, NextStage: core.StageImplement,
+					}
+					if err := st.CreateTask(ctx, task); err != nil {
+						return core.Task{}, core.SpecVersion{}, err
+					}
+					return task, core.SpecVersion{TaskID: taskID, Version: 1, Content: spec.Markdown}, nil
+				},
+			}
+			var chunks []map[string]any
+			if err := service.Run(ctx, session.ID, UserMessage{Content: "Wrap this up."}, func(part map[string]any) error {
+				chunks = append(chunks, part)
+				return nil
+			}); err != nil {
+				t.Fatalf("goal mismatch aborted the run: %v", err)
+			}
+			// The mismatch is one ordinary tool result; the corrected finalize
+			// completes the same run.
+			assertChunkTypes(t, chunks,
+				"start", "start-step", "tool-input-available", "tool-output-error", "finish-step",
+				"start-step", "tool-input-available", "tool-output-available", "finish-step", "finish")
+			mismatch, ok := chunks[3]["output"].(map[string]any)
+			if !ok {
+				t.Fatalf("mismatch chunk=%+v", chunks[3])
+			}
+			if mismatch["code"] != "goal_mismatch" || mismatch["recoverable"] != true ||
+				mismatch["expected_finalize"] != test.expected ||
+				mismatch["received_finalize"] != test.rejected.Name ||
+				mismatch["goal"] != string(test.goal) ||
+				!strings.Contains(mismatch["message"].(string), test.expected) {
+				t.Fatalf("goal mismatch output=%+v", mismatch)
+			}
+			// The refused finalizer executed nothing.
+			if test.rejected.Name == "finalize_blueprint" && blueprintFinalized {
+				t.Fatal("a requirement-goal session finalized a blueprint")
+			}
+			if test.rejected.Name == "finalize_requirement" {
+				if _, err := st.GetRequirement(ctx, "req-"+strings.TrimPrefix(test.sessionID, "session-")); err == nil {
+					t.Fatal("a blueprint-goal session created a requirement")
+				}
+			}
+			finalized, err := st.GetPlanningSession(ctx, session.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if finalized.Status != core.PlanningSessionFinalized {
+				t.Fatalf("session after corrected finalize=%+v", finalized)
+			}
+			if test.expected == "finalize_requirement" {
+				if finalized.ProducedRequirementID == "" || finalized.ProducedTaskID != "" {
+					t.Fatalf("produced lineage=%+v, want the requirement only", finalized)
+				}
+			} else if finalized.ProducedTaskID == "" || finalized.ProducedRequirementID != "" {
+				t.Fatalf("produced lineage=%+v, want the blueprint only", finalized)
+			}
+			// The mismatch is durable in the transcript, so the correction
+			// survives a session restore.
+			messages, err := st.ListPlanningMessages(ctx, session.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted := false
+			for _, message := range messages {
+				persisted = persisted || strings.Contains(string(message.Parts), "goal_mismatch")
+			}
+			if !persisted {
+				t.Fatal("the goal mismatch was not persisted in the transcript")
+			}
+		})
+	}
+}
+
+// An open goal keeps the historical behavior: either finalizer is legal.
+// A session opened from a document revises that document. Without this the
+// sidebar's Revise action forks a competing requirement whenever the model
+// omits requirement_id — and the sidebar is the only authoring path there is
+// (spec §21.57 changes 1 and 2).
+func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	existing, _, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior"},
+		core.RequirementVersion{
+			Content: "Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
+			Statements: []core.RequirementStatement{{
+				ID: "REQ-1", Statement: "Retries stop at the bound.",
+			}},
+			Origin: core.RequirementOriginChat, OriginSessionID: "session-seed",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+		ID: "session-260802-revise", Title: "Drafting requirement…",
+		Goal: core.PlanningGoalRequirement, RequirementContextID: existing.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The model omits requirement_id — the case that used to fork a document.
+	args := requirementArgs{
+		Prose: "Retries stay bounded and observable.",
+		Statements: []core.RequirementStatement{
+			{ID: "REQ-1", Statement: "Retries stop at the bound."},
+			{ID: "REQ-2", Statement: "Every retry decision is explainable."},
+		},
+	}
+	service := &Service{
+		Store: st, Model: "planner", Prompt: testPlanningPrompt,
+		Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+			ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
+		}})}},
+	}
+	if err = service.Run(ctx, session.ID, UserMessage{Content: "Add the observability statement."},
+		func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// The context document gained a version; no second document was minted.
+	versions, err := st.ListRequirementVersions(ctx, existing.ID)
+	if err != nil || len(versions) != 2 || versions[1].Version != 2 ||
+		versions[1].OriginSessionID != session.ID {
+		t.Fatalf("context document versions=%+v err=%v, want a proposed v2", versions, err)
+	}
+	corpus, err := st.ListRequirements(ctx)
+	if err != nil || len(corpus) != 1 || corpus[0].ID != existing.ID {
+		t.Fatalf("corpus=%+v err=%v, want only the context document", corpus, err)
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.ProducedRequirementID != existing.ID ||
+		finalized.Title != "Retry behavior" {
+		t.Fatalf("finalized session=%+v err=%v", finalized, err)
+	}
+	// The prompt names the context document so the model can pass the id
+	// itself rather than relying on the default.
+	prompt, err := service.prompt(ctx, session, nil, 1, DefaultMaxSteps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "opened from requirement "+existing.ID) {
+		t.Fatalf("prompt omitted the context document:\n%s", prompt)
+	}
+}
+
+func TestServiceOpenGoalAcceptsEitherFinalizer(t *testing.T) {
+	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-open", core.PlanningGoalOpen)
+	args := requirementArgs{
+		Title: "Open exploration", Prose: "The operator settled on a requirement.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Open sessions still finalize."}},
+	}
+	service := &Service{
+		Store: st, Model: "planner", Prompt: testPlanningPrompt,
+		Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+			ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
+		}})}},
+	}
+	if err := service.Run(ctx, session.ID, UserMessage{Content: "Capture it."}, func(map[string]any) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.Status != core.PlanningSessionFinalized ||
+		finalized.ProducedRequirementID != "req-260802-goal-open" {
+		t.Fatalf("open-goal finalize=%+v err=%v", finalized, err)
+	}
+}
+
+// The role prompt states the goal and its finalize expectation, so steering
+// reaches the agent before enforcement does (spec §21.57 change 3).
+func TestPlanningPromptStatesTheSessionGoal(t *testing.T) {
+	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-prompt", core.PlanningGoalRequirement)
+	service := &Service{Store: st, Model: "planner", Prompt: testPlanningPrompt}
+	prompt, err := service.prompt(ctx, session, nil, 1, DefaultMaxSteps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "This session's goal is requirement: finalize_requirement is the only finalize tool it accepts") {
+		t.Fatalf("requirement-goal prompt omitted its finalize expectation:\n%s", prompt)
+	}
+	session.Goal = core.PlanningGoalOpen
+	openPrompt, err := service.prompt(ctx, session, nil, 1, DefaultMaxSteps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(openPrompt, "This session's goal is open") ||
+		!strings.Contains(openPrompt, `"goal":"open"`) {
+		t.Fatalf("open-goal prompt=%s", openPrompt)
+	}
+}
+
 func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1481,9 +1876,22 @@ func TestServiceLateAbandonmentCannotSplitProducedWritesFromFinalization(t *test
 
 func planningFixture(t *testing.T, id string) (context.Context, store.Store, core.PlanningSession) {
 	t.Helper()
+	return goalPlanningFixture(t, id, "")
+}
+
+// goalPlanningFixture opens a session with a declared goal (spec §21.57). An
+// empty goal exercises the compatible `open` default.
+func goalPlanningFixture(
+	t *testing.T,
+	id string,
+	goal core.PlanningSessionGoal,
+) (context.Context, store.Store, core.PlanningSession) {
+	t.Helper()
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")
-	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: id, Title: "Planning"})
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+		ID: id, Title: "Planning", Goal: goal,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

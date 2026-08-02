@@ -31,32 +31,37 @@ func (s *Server) listPlanningSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
+	// No title is accepted: the session is named by its goal and then by the
+	// artifact it produces (spec §21.57 change 3).
 	var request struct {
-		Title                string `json:"title"`
 		RequirementContextID string `json:"requirement_context_id"`
 		Model                string `json:"model"`
+		// Goal is accepted once at creation and never updated (spec §21.57).
+		Goal string `json:"goal"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxPlanningRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	request.Title = strings.TrimSpace(request.Title)
 	request.RequirementContextID = strings.TrimSpace(request.RequirementContextID)
 	request.Model = strings.TrimSpace(request.Model)
-	if len(request.Title) > 200 {
-		http.Error(w, "planning session title must be at most 200 characters", http.StatusBadRequest)
+	goal, err := core.NormalizePlanningSessionGoal(
+		core.PlanningSessionGoal(strings.TrimSpace(request.Goal)))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	var session core.PlanningSession
-	var err error
 	if s.Planning != nil && s.Planning.ConfigProvider != nil {
-		session, err = s.Planning.CreateSession(
-			r.Context(), request.Title, request.RequirementContextID, request.Model,
-		)
+		session, err = s.Planning.CreateSession(r.Context(), planning.CreateSessionInput{
+			RequirementContextID: request.RequirementContextID,
+			ModelOverride:        request.Model,
+			Goal:                 goal,
+		})
 	} else {
 		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
-			ID: "session-" + core.NewTaskID(), Title: request.Title,
+			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
 			RequirementContextID: request.RequirementContextID,
 		})
 	}

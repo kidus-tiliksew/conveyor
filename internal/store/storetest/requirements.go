@@ -647,6 +647,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		sessionID := "session-" + core.NewTaskID()
 		session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 			ID: sessionID, Title: "Plan the queue rewrite", RequirementContextID: opened.ID,
+			Goal:  core.PlanningGoalBlueprint,
 			Model: "planner", Effort: "high", ExplorationOutputTokens: 10_000,
 			PrimaryRepo: "api", PinnedRevisions: map[string]string{"api": strings.Repeat("a", 40)},
 		})
@@ -655,6 +656,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		if session.ID != sessionID || session.Workspace != workspace ||
 			session.Status != core.PlanningSessionActive || session.Title != "Plan the queue rewrite" ||
+			session.Goal != core.PlanningGoalBlueprint ||
 			session.RequirementContextID != opened.ID || session.ProducedRequirementID != "" ||
 			session.ProducedTaskID != "" || session.TranscriptArtifactID != "" ||
 			session.Model != "planner" || session.Effort != "high" ||
@@ -664,6 +666,21 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("created session=%+v", session)
 		}
 		assertPlanningSessionRoundTrip(t, ctx, st, session)
+		// The goal is declared once (spec §21.57 change 3). Omitting it is
+		// compatible and reads back as `open` — historical rows migrate the
+		// same way — while an unknown goal is refused at the boundary.
+		defaulted, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Title: "Exploring…",
+		})
+		if err != nil || defaulted.Goal != core.PlanningGoalOpen {
+			t.Fatalf("goal-less session=%+v err=%v, want open", defaulted, err)
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, defaulted)
+		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Goal: core.PlanningSessionGoal("epic"),
+		}); err == nil {
+			t.Fatal("planning session with an unknown goal was accepted")
+		}
 		pinned, err := st.PinPlanningSessionRepo(ctx, sessionID, "web", strings.Repeat("b", 40))
 		if err != nil || pinned.PinnedRevisions["web"] != strings.Repeat("b", 40) {
 			t.Fatalf("pinned session=%+v err=%v", pinned, err)
@@ -776,8 +793,15 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(sessions) != 2 || sessions[0].ID != sessionID || sessions[1].ID != quiet.ID {
-			t.Fatalf("listed sessions=%+v, want %s before %s", sessions, sessionID, quiet.ID)
+		if len(sessions) != 3 || sessions[0].ID != sessionID || sessions[1].ID != quiet.ID ||
+			sessions[2].ID != defaulted.ID {
+			t.Fatalf("listed sessions=%+v, want %s before %s before %s",
+				sessions, sessionID, quiet.ID, defaulted.ID)
+		}
+		// Listing exposes the declared goal, so a session list can label it
+		// without a second read (spec §21.57).
+		if sessions[0].Goal != core.PlanningGoalBlueprint || sessions[2].Goal != core.PlanningGoalOpen {
+			t.Fatalf("listed goals=%q/%q, want blueprint/open", sessions[0].Goal, sessions[2].Goal)
 		}
 		for _, listed := range sessions {
 			if listed.Status != core.PlanningSessionActive || listed.Workspace != workspace ||
@@ -1156,6 +1180,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			var finalizeErr error
 			requirementRun, finalizeErr = st.FinalizePlanningSession(lockedCtx, store.PlanningFinalizeRequest{
 				SessionID: session.ID, RequirementID: produced.ID, TranscriptArtifactID: transcript.ID,
+				Title: produced.Title,
 			})
 			return finalizeErr
 		})
@@ -1166,6 +1191,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			requirementRun.ProducedRequirementID != produced.ID || requirementRun.ProducedTaskID != "" ||
 			requirementRun.TranscriptArtifactID != transcript.ID || requirementRun.FinalizedAt.IsZero() {
 			t.Fatalf("finalized session=%+v", requirementRun)
+		}
+		// The produced artifact names the session; the provisional title is
+		// gone (spec §21.57 change 3).
+		if requirementRun.Title != produced.Title {
+			t.Fatalf("finalized session title=%q, want produced requirement title %q",
+				requirementRun.Title, produced.Title)
 		}
 		assertPlanningSessionRoundTrip(t, ctx, st, requirementRun)
 
@@ -1178,7 +1209,8 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal(err)
 		}
 		if repeat.ProducedRequirementID != produced.ID || repeat.ProducedTaskID != "" ||
-			!repeat.FinalizedAt.Equal(requirementRun.FinalizedAt) {
+			!repeat.FinalizedAt.Equal(requirementRun.FinalizedAt) ||
+			repeat.Title != produced.Title {
 			t.Fatalf("idempotent finalize=%+v, want %+v", repeat, requirementRun)
 		}
 		// A different artifact is a contradiction, not a retry: overwriting
@@ -1426,6 +1458,7 @@ func assertPlanningSessionRoundTrip(t *testing.T, ctx context.Context, st store.
 		t.Fatal(err)
 	}
 	if got.ID != want.ID || got.Title != want.Title || got.Status != want.Status ||
+		got.Goal != want.Goal ||
 		got.Workspace != want.Workspace || got.RequirementContextID != want.RequirementContextID ||
 		got.ProducedRequirementID != want.ProducedRequirementID || got.ProducedTaskID != want.ProducedTaskID ||
 		got.TranscriptArtifactID != want.TranscriptArtifactID ||

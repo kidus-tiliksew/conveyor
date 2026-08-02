@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -88,8 +89,9 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 55 {
-		t.Fatalf("post-upgrade migration version=%d", afterVersion)
+	if afterVersion != embeddedMigrationHead(t) {
+		t.Fatalf("post-upgrade migration version=%d, want the embedded head %d",
+			afterVersion, embeddedMigrationHead(t))
 	}
 	var leakedTempTables int
 	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_catalog.pg_class
@@ -200,8 +202,9 @@ WHERE table_schema=current_schema() AND table_name='planning_sessions'
 	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
-	if afterVersion != 55 {
-		t.Fatalf("post-upgrade migration version=%d", afterVersion)
+	if afterVersion != embeddedMigrationHead(t) {
+		t.Fatalf("post-upgrade migration version=%d, want the embedded head %d",
+			afterVersion, embeddedMigrationHead(t))
 	}
 	var attemptMigrationName string
 	if err = pool.QueryRow(t.Context(), "SELECT name FROM conveyor_schema_migrations WHERE version=49").Scan(&attemptMigrationName); err != nil {
@@ -422,4 +425,27 @@ func TestTaskCancellationAndRecoveryRefreezeIntegration(t *testing.T) {
 	if persisted.SetupContract.ExecutionSettings.Implementation.Model != "new" || count != 1 {
 		t.Fatalf("setup=%+v events=%d", persisted.SetupContract, count)
 	}
+}
+
+// embeddedMigrationHead is the highest version the binary carries. Deriving it
+// keeps "the upgrade path reaches head" honest as migrations are added, rather
+// than restating a number that goes stale on the next one.
+func embeddedMigrationHead(t *testing.T) int {
+	t.Helper()
+	files, err := fs.Glob(migrationFiles, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := 0
+	for _, name := range files {
+		version, versionErr := migrationVersion(name)
+		if versionErr != nil {
+			t.Fatalf("migration %s: %v", name, versionErr)
+		}
+		head = max(head, version)
+	}
+	if head == 0 {
+		t.Fatal("no embedded control-plane migrations found")
+	}
+	return head
 }

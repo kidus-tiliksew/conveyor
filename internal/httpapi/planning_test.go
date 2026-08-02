@@ -324,3 +324,60 @@ func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+// The creation route accepts the goal once and refuses an unknown one; the
+// stored session carries the goal-derived provisional title (spec §21.57).
+func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+
+	create := func(body string) (int, core.PlanningSession) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		var session core.PlanningSession
+		if response.Code == http.StatusCreated {
+			if err := json.Unmarshal(response.Body.Bytes(), &session); err != nil {
+				t.Fatalf("decode %s: %v", response.Body.String(), err)
+			}
+		}
+		return response.Code, session
+	}
+
+	code, drafting := create(`{"goal":"requirement"}`)
+	if code != http.StatusCreated || drafting.Goal != core.PlanningGoalRequirement ||
+		drafting.Title != "Drafting requirement…" {
+		t.Fatalf("requirement-goal create status=%d session=%+v", code, drafting)
+	}
+	// A caller-supplied title carries no weight: the session is named by its
+	// goal and then by the artifact it produces (spec §21.57 change 3).
+	code, planning := create(`{"goal":"blueprint","title":"Bound the retry loop"}`)
+	if code != http.StatusCreated || planning.Goal != core.PlanningGoalBlueprint ||
+		planning.Title != "Planning work…" {
+		t.Fatalf("blueprint-goal create status=%d session=%+v", code, planning)
+	}
+	// Omitting the goal stays compatible and reads back as open.
+	code, compatible := create(`{}`)
+	if code != http.StatusCreated || compatible.Goal != core.PlanningGoalOpen ||
+		compatible.Title != "Exploring…" {
+		t.Fatalf("goal-less create status=%d session=%+v", code, compatible)
+	}
+	if code, _ = create(`{"goal":"epic"}`); code != http.StatusBadRequest {
+		t.Fatalf("unknown goal status=%d, want 400", code)
+	}
+
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	listed, err := st.ListPlanningSessions(ctx)
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("listed=%d err=%v, want the three accepted sessions", len(listed), err)
+	}
+	// The goal is declared once: there is no update route for it.
+	reread, err := st.GetPlanningSession(ctx, drafting.ID)
+	if err != nil || reread.Goal != core.PlanningGoalRequirement {
+		t.Fatalf("re-read session=%+v err=%v", reread, err)
+	}
+}

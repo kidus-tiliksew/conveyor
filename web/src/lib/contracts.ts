@@ -1,4 +1,4 @@
-import type { InterventionAction } from './types'
+import type { InterventionAction, PlanningSessionGoal } from './types'
 
 // The six fixed feed groups (spec §13.3) plus a collapsed archive so merged
 // and closed work stays reachable without cluttering the factory's WIP view.
@@ -64,4 +64,17 @@ export const taskStateLabels: Record<string, string> = {
   merged: 'Merged',
   closed: 'Closed',
   parked: 'Parked',
+}
+
+// A planning session's declared goal, rendered for operators rather than as
+// the stored enum (spec §21.57 change 3 introduces the goal; showing labels
+// instead of raw state strings is the §13.3 presentation convention).
+export const sessionGoalLabels: Record<PlanningSessionGoal, string> = {
+  requirement: 'Requirement',
+  blueprint: 'Blueprint',
+  open: 'Open exploration',
+}
+
+export function sessionGoalLabel(session: { goal?: PlanningSessionGoal }) {
+  return sessionGoalLabels[session.goal ?? 'open']
 }
