@@ -116,7 +116,7 @@ product (§4.2, §9, §13.3, §17.3).*
    reaches the identical blueprint contract; no planning-only MCP
    surface in this phase.
 
-**Exit criterion:** a real feature is planned entirely in-product —
+**Exit criterion met August 2, 2026:** Phase 6.3 was planned entirely in-product — requirement req-260802-72fc68 (five REQ-n statements) drafted and confirmed, blueprint 260802-0a6360 approved at the ordinary spec gate with the serves link confirmed (retroactively — its session predated the requirement, itself the finding that produced §21.57), four children materialized in dependency order. Original criterion: a real feature is planned entirely in-product —
 intent stated in chat → generated requirement confirmed → blueprint
 drafted in its context and approved → materialized children shipped
 through the unchanged pipeline — with the `serves` link recorded, the

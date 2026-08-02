@@ -1,7 +1,7 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.16,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.56
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.17,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.57
 through Phase 5 closure, the accepted Phase 6, the §21.47 dependency
 semantics, §21.48 worktree containment, the §21.49 blueprint
 presentation surface, §21.50–§21.52 planning repo exploration
