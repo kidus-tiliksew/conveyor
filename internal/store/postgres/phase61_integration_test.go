@@ -544,7 +544,7 @@ func TestNewLinksReferenceCommittedEventIdentitiesIntegration(t *testing.T) {
 		Scan(&directEventID, &directEventTaskID, &directEventKind); err != nil {
 		t.Fatal(err)
 	}
-	if directEventID == 0 || directEventTaskID != dependent.ID || directEventKind != "task.created" {
+	if directEventID == 0 || directEventTaskID != dependent.ID || directEventKind != "task.dependency_added" {
 		t.Fatalf("direct provenance event=%d task=%s kind=%s", directEventID, directEventTaskID, directEventKind)
 	}
 
@@ -566,11 +566,11 @@ func TestNewLinksReferenceCommittedEventIdentitiesIntegration(t *testing.T) {
 	if err != nil || len(children) != 2 {
 		t.Fatalf("materialize children=%d err=%v", len(children), err)
 	}
-	var linkCount, resolvedCount, materializationEvents int
+	var linkCount, resolvedCount, provenanceEvents int
 	if err = st.pool.QueryRow(ctx, `SELECT
 			count(*),
 			count(*) FILTER (WHERE event.id IS NOT NULL AND link.legacy_created_by_event IS NULL),
-			count(DISTINCT event.id) FILTER (WHERE event.kind='blueprint.materialized')
+			count(DISTINCT event.id)
 		FROM links link
 		LEFT JOIN events event
 		  ON event.workspace_id=link.workspace_id AND event.id=link.created_by_event_id
@@ -583,12 +583,12 @@ func TestNewLinksReferenceCommittedEventIdentitiesIntegration(t *testing.T) {
 		    ))
 		  )`,
 		workspace, parent.ID+":v1", parent.ID).
-		Scan(&linkCount, &resolvedCount, &materializationEvents); err != nil {
+		Scan(&linkCount, &resolvedCount, &provenanceEvents); err != nil {
 		t.Fatal(err)
 	}
-	if linkCount != 3 || resolvedCount != 3 || materializationEvents != 1 {
-		t.Fatalf("materialization links=%d resolved=%d distinct_events=%d, want 3/3/1",
-			linkCount, resolvedCount, materializationEvents)
+	if linkCount != 3 || resolvedCount != 3 || provenanceEvents != 3 {
+		t.Fatalf("materialization links=%d resolved=%d distinct_events=%d, want 3/3/3",
+			linkCount, resolvedCount, provenanceEvents)
 	}
 }
 

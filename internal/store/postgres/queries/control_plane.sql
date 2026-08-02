@@ -186,6 +186,30 @@ INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, p
 VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: InsertLineageLink :exec
+INSERT INTO links (
+    workspace_id, src_type, src_id, dst_type, dst_id, kind,
+    created_by_event_id, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (workspace_id, src_type, src_id, dst_type, dst_id, kind)
+DO UPDATE SET
+	created_by_event_id = LEAST(COALESCE(links.created_by_event_id, EXCLUDED.created_by_event_id), EXCLUDED.created_by_event_id),
+    created_at = LEAST(links.created_at, EXCLUDED.created_at),
+    legacy_created_by_event = NULL;
+
+-- name: ListLineageLinks :many
+SELECT * FROM links
+WHERE workspace_id = $1
+ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
+
+-- name: DeleteLineageLinks :execrows
+DELETE FROM links WHERE workspace_id = $1;
+
+-- name: ListWorkspaceEvents :many
+SELECT * FROM events
+WHERE workspace_id = $1
+ORDER BY id;
+
 -- name: ListEvents :many
 SELECT e.* FROM events e
 JOIN tasks t ON t.id = e.task_id
