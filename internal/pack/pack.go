@@ -100,8 +100,37 @@ response must contain the verdict.
 
 End your answer with exactly one machine-owned block and nothing after it:
 
-` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing AC-n status","feedback":"specific implementation guidance, empty only on approval"}
+` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]}}
 ` + "```"
+}
+
+// WithRequirementCitationContract binds implementation and review guidance to
+// the confirmed served requirements reached through canonical lineage. Review
+// findings are structured evidence, not a source-code parser (spec §4.2 item
+// 4).
+func WithRequirementCitationContract(role string, stage core.Stage, requirements []core.ServedRequirementContext) string {
+	var contract strings.Builder
+	contract.WriteString(strings.TrimSpace(role))
+	if len(requirements) == 0 {
+		if stage == core.StageReview {
+			contract.WriteString("\n\n# Requirement citation contract\n\nNo confirmed served requirement is linked to this task. Record requirement_citations with applicable=false and all four finding lists empty; an unlinked task remains legal.\n")
+		}
+		return contract.String()
+	}
+	contract.WriteString("\n\n# Confirmed served requirements\n\n")
+	for _, requirement := range requirements {
+		fmt.Fprintf(&contract, "- %s v%d — %s\n", requirement.ID, requirement.Version, requirement.Title)
+		for _, statement := range requirement.Statements {
+			fmt.Fprintf(&contract, "  - %s: %s\n", statement.ID, statement.Statement)
+		}
+	}
+	if stage == core.StageImplement {
+		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs in code comments alongside existing (spec §N) citations. Do not add ornamental citations where no implementation decision needs explanation.\n")
+	}
+	if stage == core.StageReview {
+		contract.WriteString("\nValidate REQ-n citations against the confirmed statements above and the approved governing spec. Record requirement_citations with applicable=true plus cited_ids, unknown_ids, unserved_ids, and conflicts arrays. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
+	}
+	return contract.String()
 }
 
 // MCPReviewRole adds the terminal lifecycle contract used by operator-owned
@@ -114,7 +143,8 @@ branch diff against its base; you may read any file for context, but judge
 only what the diff changes.
 
 Before ending, call Conveyor's ` + "`submit_review_verdict`" + ` MCP tool with
-your verdict, reason code, summary, and feedback, then wait for and observe a
+your verdict, reason code, summary, feedback, and requirement-citation
+assessment, then wait for and observe a
 successful tool response. Printing, returning, or describing verdict JSON is
 not completion and is never a substitute for the tool call. A missing or failed
 tool response is not terminal success: keep the review active and retry or

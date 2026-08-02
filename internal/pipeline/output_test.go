@@ -17,6 +17,18 @@ func TestParseTriageAndReview(t *testing.T) {
 	}
 }
 
+func TestParseReviewNormalizesRequirementCitationLists(t *testing.T) {
+	t.Parallel()
+	review, err := ParseReview("```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"passes\",\"feedback\":\"\",\"requirement_citations\":{\"applicable\":true}}\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment := review.RequirementCitations
+	if assessment == nil || assessment.CitedIDs == nil || assessment.UnknownIDs == nil || assessment.UnservedIDs == nil || assessment.Conflicts == nil {
+		t.Fatalf("assessment lists were not normalized: %+v", assessment)
+	}
+}
+
 func TestParseTriageTakesRequirementIDAndRejectsRetiredFeatureID(t *testing.T) {
 	t.Parallel()
 	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")

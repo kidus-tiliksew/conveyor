@@ -177,15 +177,15 @@ func TestPublishIssueReusesExplicitSourceIssue(t *testing.T) {
 
 func TestPullRequestForBranchReturnsAuthoritativeMergeState(t *testing.T) {
 	pr, err := pullRequestForBranch(context.Background(), "acme/api", "conveyor/task-1", func(_ context.Context, args ...string) ([]byte, error) {
-		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable,headRefOid" {
+		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable,headRefOid,baseRefOid" {
 			t.Fatalf("args = %s", got)
 		}
-		return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","state":"CLOSED","mergedAt":"2026-07-15T10:00:00Z","mergeable":"UNKNOWN","headRefOid":"abc123"}`), nil
+		return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","state":"CLOSED","mergedAt":"2026-07-15T10:00:00Z","mergeable":"UNKNOWN","headRefOid":"abc123","baseRefOid":"base123"}`), nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 12 || !pr.Merged || pr.State != "closed" || pr.Mergeable != "UNKNOWN" || pr.HeadSHA != "abc123" {
+	if pr.Number != 12 || !pr.Merged || pr.State != "closed" || pr.Mergeable != "UNKNOWN" || pr.HeadSHA != "abc123" || pr.BaseSHA != "base123" {
 		t.Fatalf("pull request = %+v", pr)
 	}
 }

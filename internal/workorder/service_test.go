@@ -237,6 +237,11 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		workOrderContext.ApprovedSpec.Version != spec.Version || workOrderContext.ApprovedSpec.Content != "parent rationale" || !workOrderContext.ApprovedSpec.Approved {
 		t.Fatalf("child governing spec=%+v want blueprint %s version %d", workOrderContext.ApprovedSpec, blueprint.ID, spec.Version)
 	}
+	if len(workOrderContext.ServedRequirements) != 1 || workOrderContext.ServedRequirements[0].ID != requirement.ID ||
+		!strings.Contains(workOrderContext.RolePrompt, "REQ-1: Sibling outcomes inform later work") ||
+		!strings.Contains(workOrderContext.RolePrompt, "cite the applicable stable REQ-n IDs") {
+		t.Fatalf("served requirement contract=%+v role=%s", workOrderContext.ServedRequirements, workOrderContext.RolePrompt)
+	}
 	for _, artifact := range []core.Artifact{sibling, rationale} {
 		read, readErr := service.ReadArtifact(ctx, order.ID, "child-a-session", artifact.ID)
 		if readErr != nil {
@@ -1113,7 +1118,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 			return "https://github.com/acme/app/pull/54", nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
-			return githubtrigger.ReviewTarget{Number: 54, HeadSHA: "abc123"}, nil
+			return githubtrigger.ReviewTarget{Number: 54, BaseSHA: "base123", HeadSHA: "abc123"}, nil
 		},
 	}
 
@@ -1170,6 +1175,19 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		!strings.Contains(prBody, evidence.ID) || !strings.Contains(prBody, "image/png") ||
 		strings.Contains(prBody, "control-plane.invalid") || strings.Contains(prBody, "token=secret") {
 		t.Fatalf("unsafe or incomplete PR evidence body: %s", prBody)
+	}
+	links, listErr := st.ListLineageLinks(ctx)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	wantRange := core.CommitRangeLineageID("acme/app", "base123", "abc123")
+	foundPR, foundRange := false, false
+	for _, link := range links {
+		foundPR = foundPR || (link.Kind == "submitted_as" && link.DstID == core.PullRequestLineageID("acme/app", 54))
+		foundRange = foundRange || (link.Kind == "submitted_range" && link.DstID == wantRange)
+	}
+	if !foundPR || !foundRange {
+		t.Fatalf("submission lineage=%+v", links)
 	}
 
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {

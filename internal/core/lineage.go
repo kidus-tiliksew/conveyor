@@ -30,7 +30,7 @@ const (
 	LineageTask               LineageNodeType = "task"
 	LineageWorkOrder          LineageNodeType = "work_order"
 	LineagePullRequest        LineageNodeType = "pull_request"
-	LineageCommit             LineageNodeType = "commit"
+	LineageCommitRange        LineageNodeType = "commit_range"
 	LineageEvidence           LineageNodeType = "evidence"
 	LineageVerdict            LineageNodeType = "verdict"
 )
@@ -39,7 +39,7 @@ func (nodeType LineageNodeType) Valid() bool {
 	switch nodeType {
 	case LineagePlanningSession, LineageRequirement, LineageRequirementVersion,
 		LineageBlueprint, LineageBlueprintVersion, LineageTask, LineageWorkOrder,
-		LineagePullRequest, LineageCommit, LineageEvidence, LineageVerdict:
+		LineagePullRequest, LineageCommitRange, LineageEvidence, LineageVerdict:
 		return true
 	default:
 		return false
@@ -118,7 +118,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 		return left < right
 	})
 	selection := ContextArtifactSelection{
-		Nodes: append([]LineageNode(nil), traversal.Nodes...),
+		Nodes:     append([]LineageNode(nil), traversal.Nodes...),
 		Artifacts: make([]Artifact, 0, min(len(ordered), ContextArtifactMaxRefs)),
 		Truncated: traversal.Truncated,
 	}
@@ -264,6 +264,17 @@ func BlueprintVersionLineageID(taskID string, version int) string {
 
 func RequirementVersionLineageID(requirementID string, version int) string {
 	return fmt.Sprintf("%s:v%d", requirementID, version)
+}
+
+// PullRequestLineageID and CommitRangeLineageID document the stable forge/git
+// identities written into lifecycle events. A range is asserted only when
+// both immutable endpoints are known (spec §4.2 item 4).
+func PullRequestLineageID(repository string, number int) string {
+	return fmt.Sprintf("%s#%d", strings.TrimSpace(repository), number)
+}
+
+func CommitRangeLineageID(repository, baseSHA, headSHA string) string {
+	return fmt.Sprintf("%s@%s..%s", strings.TrimSpace(repository), strings.TrimSpace(baseSHA), strings.TrimSpace(headSHA))
 }
 
 func VerdictLineageID(workOrderID string) string { return "review:" + workOrderID }

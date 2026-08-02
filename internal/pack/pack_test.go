@@ -85,6 +85,23 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	}
 }
 
+func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
+	t.Parallel()
+	requirements := []core.ServedRequirementContext{{ID: "req-runtime", Title: "Runtime", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-3", Statement: "Retries stop."}}}}
+	implement := WithRequirementCitationContract("implement", core.StageImplement, requirements)
+	review := WithRequirementCitationContract("review", core.StageReview, requirements)
+	unlinked := WithRequirementCitationContract("review", core.StageReview, nil)
+	if !strings.Contains(implement, "REQ-3: Retries stop.") || !strings.Contains(implement, "cite the applicable stable REQ-n IDs") {
+		t.Fatalf("implement contract=%s", implement)
+	}
+	if !strings.Contains(review, "unknown_ids") || !strings.Contains(review, "not a claim of exhaustive source parsing") {
+		t.Fatalf("review contract=%s", review)
+	}
+	if !strings.Contains(unlinked, "applicable=false") || !strings.Contains(unlinked, "unlinked task remains legal") {
+		t.Fatalf("unlinked contract=%s", unlinked)
+	}
+}
+
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {

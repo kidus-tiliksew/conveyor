@@ -46,6 +46,27 @@ type RequirementStatement struct {
 	Statement string `yaml:"statement" json:"statement"`
 }
 
+// ServedRequirementContext is the confirmed intent a task reaches through
+// canonical lineage. It is supplied to implement/review role contracts so
+// REQ-n citations are checked against durable authority, not guessed context.
+type ServedRequirementContext struct {
+	ID         string                 `json:"id"`
+	Title      string                 `json:"title"`
+	Version    int                    `json:"version"`
+	Statements []RequirementStatement `json:"statements"`
+}
+
+// RequirementCitationAssessment is the reviewer's structured assessment of
+// implementation citations. Findings are observational review evidence; they
+// never create lineage or alter confirmed requirement authority (spec §4.2 item 4).
+type RequirementCitationAssessment struct {
+	Applicable  bool     `json:"applicable"`
+	CitedIDs    []string `json:"cited_ids"`
+	UnknownIDs  []string `json:"unknown_ids"`
+	UnservedIDs []string `json:"unserved_ids"`
+	Conflicts   []string `json:"conflicts"`
+}
+
 // Requirement is the document identity. Prose and statements live on versions;
 // the row records only which version is currently confirmed.
 type Requirement struct {

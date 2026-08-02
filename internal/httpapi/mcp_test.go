@@ -379,6 +379,21 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 				t.Fatalf("create_task body does not publish structured GFM guidance: %s", data)
 			}
 		}
+		if tool["name"] == "submit_review_verdict" {
+			schema := tool["inputSchema"].(map[string]any)
+			properties := schema["properties"].(map[string]any)
+			assessment, ok := properties["requirement_citations"].(map[string]any)
+			if !ok || assessment["additionalProperties"] != false {
+				t.Fatalf("submit_review_verdict lacks strict requirement_citations: %s", data)
+			}
+			required := map[string]bool{}
+			for _, field := range schema["required"].([]string) {
+				required[field] = true
+			}
+			if !required["requirement_citations"] {
+				t.Fatalf("submit_review_verdict does not require requirement_citations: %s", data)
+			}
+		}
 	}
 }
 

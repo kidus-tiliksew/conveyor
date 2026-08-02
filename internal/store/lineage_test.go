@@ -16,10 +16,11 @@ func TestLineageProjectorCoversDeliveryChain(t *testing.T) {
 		{ID: 2, TaskID: "blueprint-1", Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": "req-1"})},
 		{ID: 3, TaskID: "blueprint-1", Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})},
 		{ID: 4, TaskID: "task-1", Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "implement-1"})},
-		{ID: 5, TaskID: "task-1", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 7, "head_sha": "abc"})},
+		{ID: 5, TaskID: "task-1", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 7, "base_sha": "base", "head_sha": "abc"})},
 		{ID: 6, TaskID: "task-1", Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1", "evidence_ids": []string{"artifact-1"}})},
+		{ID: 7, TaskID: "task-1", Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "base_sha": "base", "head_sha": "abc"})},
 	}
-	wantKinds := map[string]bool{"produces": false, "serves": false, "versions": false, "executes_as": false, "delivered_by": false, "head": false, "implemented_by": false, "supports": false}
+	wantKinds := map[string]bool{"produced_requirement": false, "serves": false, "versions": false, "dispatches": false, "submitted_as": false, "submitted_range": false, "produced_verdict": false, "supports": false, "merged_range": false}
 	for index := range events {
 		events[index].At = time.Now().UTC()
 		// Round-trip through JSON because production events arrive as raw JSON;
@@ -34,6 +35,21 @@ func TestLineageProjectorCoversDeliveryChain(t *testing.T) {
 	for kind, found := range wantKinds {
 		if !found {
 			t.Errorf("projector did not produce %q edge", kind)
+		}
+	}
+}
+
+func TestLineageProjectorDoesNotInventCommitRanges(t *testing.T) {
+	t.Parallel()
+	for _, event := range []core.Event{
+		{ID: 1, TaskID: "task-1", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 7, "head_sha": "head-only"})},
+		{ID: 2, TaskID: "task-1", Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "base_sha": "base-only"})},
+	} {
+		event.At = time.Now().UTC()
+		for _, link := range lineageLinksForEvent("demo", event) {
+			if link.DstType == core.LineageCommitRange {
+				t.Fatalf("partial event projected commit range: %+v", link)
+			}
 		}
 	}
 }

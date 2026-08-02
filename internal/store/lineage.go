@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -63,15 +62,15 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 		if id == "" {
 			id = text("work_order_id")
 		}
-		return valid(link(core.LineageTask, event.TaskID, core.LineageWorkOrder, id, "executes_as"))
+		return valid(link(core.LineageTask, event.TaskID, core.LineageWorkOrder, id, "dispatches"))
 	case "planning_session.finalized":
 		sessionID := text("session_id")
 		var links []core.LineageLink
 		if requirementID := text("produced_requirement_id"); requirementID != "" {
-			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageRequirement, requirementID, "produces"))
+			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageRequirement, requirementID, "produced_requirement"))
 		}
 		if taskID := text("produced_task_id"); taskID != "" {
-			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageBlueprint, taskID, "produces"))
+			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageBlueprint, taskID, "produced_blueprint"))
 		}
 		return valid(links...)
 	case "requirement.serves_confirmed":
@@ -90,24 +89,23 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 			return valid(links...)
 		}
 	case "pull_request.opened":
-		numberText := fmt.Sprint(payload["number"])
-		if numberText == "<nil>" || numberText == "0" {
-			numberText = ""
-		}
-		prID := strings.Trim(strings.Join([]string{text("repository"), numberText}, "#"), "#")
+		repository, prNumber := text("repository"), number("number")
 		var links []core.LineageLink
-		if prID != "" {
-			links = append(links, link(core.LineageTask, event.TaskID, core.LineagePullRequest, prID, "delivered_by"))
+		if repository != "" && prNumber > 0 {
+			links = append(links, link(core.LineageTask, event.TaskID, core.LineagePullRequest, core.PullRequestLineageID(repository, prNumber), "submitted_as"))
 		}
-		if sha := text("head_sha"); sha != "" && prID != "" {
-			links = append(links, link(core.LineagePullRequest, prID, core.LineageCommit, sha, "head"))
-			links = append(links, link(core.LineageTask, event.TaskID, core.LineageCommit, sha, "implemented_by"))
+		if baseSHA, headSHA := text("base_sha"), text("head_sha"); repository != "" && baseSHA != "" && headSHA != "" {
+			links = append(links, link(core.LineageTask, event.TaskID, core.LineageCommitRange, core.CommitRangeLineageID(repository, baseSHA, headSHA), "submitted_range"))
 		}
 		return valid(links...)
+	case "merge.confirmed", "merge.reconciled":
+		if repository, baseSHA, headSHA := text("repository"), text("base_sha"), text("head_sha"); repository != "" && baseSHA != "" && headSHA != "" {
+			return valid(link(core.LineageTask, event.TaskID, core.LineageCommitRange, core.CommitRangeLineageID(repository, baseSHA, headSHA), "merged_range"))
+		}
 	case "review.completed":
 		workOrderID := text("review_work_order_id")
 		verdictID := core.VerdictLineageID(workOrderID)
-		links := []core.LineageLink{link(core.LineageWorkOrder, workOrderID, core.LineageVerdict, verdictID, "produces")}
+		links := []core.LineageLink{link(core.LineageWorkOrder, workOrderID, core.LineageVerdict, verdictID, "produced_verdict")}
 		if evidence, ok := payload["evidence_ids"].([]any); ok {
 			for _, raw := range evidence {
 				if id, ok := raw.(string); ok {

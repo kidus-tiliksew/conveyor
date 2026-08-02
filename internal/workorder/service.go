@@ -35,15 +35,16 @@ type Service struct {
 }
 
 type Context struct {
-	Order         core.WorkOrder        `json:"work_order"`
-	Task          core.Task             `json:"task"`
-	ApprovedSpec  *core.SpecVersion     `json:"approved_spec,omitempty"`
-	PriorSpec     *core.SpecVersion     `json:"prior_spec,omitempty"`
-	TriageBrief   *pipeline.TriageBrief `json:"triage_brief,omitempty"`
-	RolePrompt    string                `json:"role_prompt"`
-	BounceHistory []json.RawMessage     `json:"bounce_history,omitempty"`
-	PriorFeedback []string              `json:"prior_feedback,omitempty"`
-	Artifacts     []ArtifactReference   `json:"artifacts,omitempty"`
+	Order              core.WorkOrder                  `json:"work_order"`
+	Task               core.Task                       `json:"task"`
+	ApprovedSpec       *core.SpecVersion               `json:"approved_spec,omitempty"`
+	PriorSpec          *core.SpecVersion               `json:"prior_spec,omitempty"`
+	TriageBrief        *pipeline.TriageBrief           `json:"triage_brief,omitempty"`
+	RolePrompt         string                          `json:"role_prompt"`
+	ServedRequirements []core.ServedRequirementContext `json:"served_requirements,omitempty"`
+	BounceHistory      []json.RawMessage               `json:"bounce_history,omitempty"`
+	PriorFeedback      []string                        `json:"prior_feedback,omitempty"`
+	Artifacts          []ArtifactReference             `json:"artifacts,omitempty"`
 	// ContextTruncated tells a client that the explicit lineage/node or
 	// artifact-reference budget was reached. Authorization uses the identical
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
@@ -525,7 +526,12 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
-	result := Context{Order: order, Task: task, RolePrompt: role}
+	servedRequirements, err := store.ServedRequirementsForTask(ctx, s.Store, task.ID)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve served requirements for task %s: %w", task.ID, err)
+	}
+	role = pack.WithRequirementCitationContract(role, order.Stage, servedRequirements)
+	result := Context{Order: order, Task: task, RolePrompt: role, ServedRequirements: servedRequirements}
 	if order.Stage == core.StageSpec {
 		// Spec work has repository/base context but never receives a branch.
 		result.Task.Branch = ""
@@ -827,7 +833,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 			evidenceIDs = append(evidenceIDs, item.ID)
 		}
 		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
-			"url": prURL, "number": target.Number, "head_sha": target.HeadSHA,
+			"url": prURL, "number": target.Number, "base_sha": target.BaseSHA, "head_sha": target.HeadSHA,
 			"repository": repo.GitHub, "work_order_id": order.ID, "evidence_ids": evidenceIDs,
 		})}); err != nil {
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
