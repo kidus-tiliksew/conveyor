@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, MessageSquarePlus, Sparkles } from 'lucide-react'
+import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, Sparkles } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
+import { sessionGoalLabel } from '../components/planning/planning-chat'
+import { type GuidedAction, RequirementAssistant, draftAction } from '../components/planning/requirement-assistant'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmRequirementVersion,
+  createPlanningSession,
   downloadArtifact,
   fetchRequirement,
   fetchRequirements,
@@ -18,7 +21,7 @@ import {
 } from '../lib/api'
 import { taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
-import type { RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
+import type { PlanningSession, RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Planning conversation',
@@ -26,10 +29,19 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
   feature_migration: 'Migrated feature',
 }
 
+/**
+ * The Requirements workspace is document-first (spec §21.57 change 1): the
+ * corpus list on the left, the requirement document as the canvas in the
+ * center, and the planning assistant docked as a subordinate sidebar scoped to
+ * whatever document is open. There is no freehand editor anywhere — the
+ * sidebar is the editor, and every revision arrives as a proposed version the
+ * operator confirms on the canvas (change 2).
+ */
 export function RequirementsPage() {
   const token = useOperatorToken()
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
+  const client = useQueryClient()
   const search = useSearch({ from: '/requirements' })
   const { data: requirements, isLoading, error } = useQuery({
     queryKey: ['requirements', workspace],
@@ -37,6 +49,7 @@ export function RequirementsPage() {
     enabled: Boolean(workspace),
   })
   const selectedId = search.requirement ?? ''
+  const sessionId = search.session ?? ''
 
   useEffect(() => {
     if (!requirements?.length) return
@@ -46,82 +59,129 @@ export function RequirementsPage() {
   }, [navigate, requirements, selectedId])
   const selected = requirements?.find((item) => item.requirement.id === selectedId)
 
+  // Opening another document ends the sidebar's scope: its session belonged to
+  // the document it was started from.
   const selectRequirement = (requirement: string) => {
     void navigate({ to: '/requirements', search: { requirement }, replace: true })
   }
-  const startPlanning = (requirementId?: string) => {
-    if (requirementId) sessionStorage.setItem('conveyor-planning-requirement', requirementId)
-    else sessionStorage.removeItem('conveyor-planning-requirement')
-    void navigate({ to: '/planning' })
+  const openSession = (session: string) => {
+    void navigate({ to: '/requirements', search: { requirement: selectedId || undefined, session }, replace: true })
+  }
+  const start = useMutation({
+    mutationFn: (action: GuidedAction) => createPlanningSession(token, {
+      goal: action.goal,
+      requirement_context_id: action.contextual ? selectedId || undefined : undefined,
+    }),
+    onSuccess: (session) => {
+      void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
+      openSession(session.id)
+    },
+  })
+  // A finalized session lands its artifact on the canvas without navigating
+  // away: a requirement becomes the open document with its pending version, a
+  // blueprint refreshes the proposed serves link on the document it serves.
+  const adoptFinalized = (session: PlanningSession) => {
+    void client.invalidateQueries({ queryKey: ['requirements', workspace] })
+    const produced = session.produced_requirement_id ?? session.requirement_context_id ?? selectedId
+    if (produced) {
+      void client.invalidateQueries({ queryKey: ['requirement', workspace, produced] })
+      void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, produced] })
+    }
+    if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
+      void navigate({
+        to: '/requirements',
+        search: { requirement: session.produced_requirement_id, session: session.id },
+        replace: true,
+      })
+    }
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Requirements</h1>
-              <Badge variant="mono">{requirements?.length ?? 0}</Badge>
-            </div>
-            <p className="mt-1 max-w-2xl text-sm text-muted">Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.</p>
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
+            <Badge variant="mono">{requirements?.length ?? 0}</Badge>
           </div>
-          <Button onClick={() => startPlanning()}><MessageSquarePlus /> New planning session</Button>
-        </header>
+          <p className="mt-0.5 text-xs text-muted">Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.</p>
+        </div>
+        <Button disabled={!token || start.isPending} onClick={() => start.mutate(draftAction)}>
+          <Sparkles /> {start.isPending ? 'Starting…' : 'New requirement'}
+        </Button>
+      </header>
 
-        {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
-        {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
-        {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
-        {requirements?.length === 0 && (
-          <Card className="mt-8 border-dashed">
-            <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-              <Sparkles className="size-7 text-primary" />
-              <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">Describe what the system should do. Planning turns the conversation into a structured requirement for you to confirm.</p>
-              <Button className="mt-5" onClick={() => startPlanning()}>Plan a requirement <ArrowRight /></Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {requirements && requirements.length > 0 && (
-          <div className="mt-7 grid min-h-[620px] gap-4 lg:grid-cols-[330px_minmax(0,1fr)]">
-            <Card className="self-start overflow-hidden">
-              <CardHeader><CardTitle>Living documents</CardTitle><span className="text-[11px] text-faint">Flat corpus</span></CardHeader>
-              <div className="divide-y divide-border">
-                {requirements.map((item) => (
-                  <button
-                    key={item.requirement.id}
-                    type="button"
-                    aria-current={selectedId === item.requirement.id ? 'true' : undefined}
-                    onClick={() => selectRequirement(item.requirement.id)}
-                    className={`block w-full px-4 py-3.5 text-left transition-colors ${selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
-                  >
-                    <span className="flex items-start gap-3">
-                      <FileText className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`} />
-                      <span className="min-w-0 flex-1">
-                        <strong className="block truncate text-sm font-medium">{item.requirement.title}</strong>
-                        <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                          {item.current_version
-                            ? <Badge variant="positive"><Check /> Confirmed v{item.current_version.version}</Badge>
-                            : <Badge variant="attention">Needs confirmation</Badge>}
-                          <RequirementStateBadges item={item} compact />
-                          {item.serving_blueprints.length > 0 && <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>}
-                        </span>
-                      </span>
+      <div className="flex min-h-0 flex-1">
+        <aside aria-label="Requirement corpus" className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-surface/40">
+          <div className="flex items-baseline justify-between px-4 py-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Living documents</p>
+            <span className="text-[10px] text-faint">Flat corpus</span>
+          </div>
+          <div className="divide-y divide-border">
+            {requirements?.map((item) => (
+              <button
+                key={item.requirement.id}
+                type="button"
+                aria-current={selectedId === item.requirement.id ? 'true' : undefined}
+                onClick={() => selectRequirement(item.requirement.id)}
+                className={`block w-full px-4 py-3.5 text-left transition-colors ${selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
+              >
+                <span className="flex items-start gap-3">
+                  <FileText className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`} />
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm font-medium">{item.requirement.title}</strong>
+                    <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {item.current_version
+                        ? <Badge variant="positive"><Check /> Confirmed v{item.current_version.version}</Badge>
+                        : <Badge variant="attention">Needs confirmation</Badge>}
+                      <RequirementStateBadges item={item} compact />
+                      {item.serving_blueprints.length > 0 && <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>}
                     </span>
-                  </button>
-                ))}
-              </div>
-            </Card>
-            {selected && <RequirementDetail key={selected.requirement.id} seed={selected} token={token} onPlan={() => startPlanning(selected.requirement.id)} />}
+                  </span>
+                </span>
+              </button>
+            ))}
           </div>
-        )}
+          {requirements?.length === 0 && <p className="px-4 text-xs leading-5 text-muted">No requirement documents yet.</p>}
+        </aside>
+
+        <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-4xl px-6 py-6">
+            {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
+            {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
+            {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
+            {requirements?.length === 0 && (
+              <Card className="mt-2 border-dashed">
+                <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                  <Sparkles className="size-7 text-primary" />
+                  <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted">Describe what the system should do. The assistant beside this canvas turns the conversation into a structured requirement for you to confirm.</p>
+                  <Button className="mt-5" disabled={!token || start.isPending} onClick={() => start.mutate(draftAction)}>
+                    Draft a requirement <ArrowRight />
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+            {selected && <RequirementDetail key={selected.requirement.id} seed={selected} token={token} />}
+          </div>
+        </section>
+
+        <RequirementAssistant
+          selected={selected}
+          sessionId={sessionId}
+          token={token}
+          workspace={workspace}
+          onStart={(action) => start.mutate(action)}
+          starting={start.isPending}
+          startError={start.error}
+          onFinalized={adoptFinalized}
+        />
       </div>
     </div>
   )
 }
 
-function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; token: string; onPlan: () => void }) {
+function RequirementDetail({ seed, token }: { seed: RequirementView; token: string }) {
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const { data: item = seed, error: detailError } = useQuery({
@@ -178,7 +238,6 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
             <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
             <h2 className="mt-1 truncate text-lg font-semibold">{item.requirement.title}</h2>
           </div>
-          <Button variant="secondary" size="sm" onClick={onPlan}><MessageSquarePlus /> Plan work</Button>
         </CardHeader>
         <CardContent className="space-y-4">
           <RequirementStateNotices item={item} />
@@ -192,6 +251,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
                     key={version.version}
                     type="button"
                     aria-pressed={displayed?.version === version.version}
+                    aria-current={displayed?.version === version.version ? 'true' : undefined}
                     onClick={() => setSelectedVersion(version.version)}
                     className={`rounded-md border px-2.5 py-2 text-left text-xs ${displayed?.version === version.version ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface'}`}
                   >
@@ -264,6 +324,7 @@ function RequirementDetail({ seed, token, onPlan }: { seed: RequirementView; tok
               <div key={session.id} className="rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="text-sm">{session.title || session.id}</strong>
+                  <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
                   {session.model && <Badge variant="mono">{session.model}{session.effort ? ` · ${session.effort}` : ''}</Badge>}
                   {session.exploration_output_tokens && <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>}
                 </div>

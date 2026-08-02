@@ -567,10 +567,15 @@ export interface RequirementVersion {
   created_at: string
 }
 
+/** The artifact a session declares it is working toward (spec §21.57). */
+export type PlanningSessionGoal = 'requirement' | 'blueprint' | 'open'
+
 export interface PlanningSession {
   id: string
   title?: string
   status: 'active' | 'finalized' | 'abandoned'
+  /** Declared once at creation; sessions predating the goal read as `open`. */
+  goal?: PlanningSessionGoal
   requirement_context_id?: string
   produced_requirement_id?: string
   produced_task_id?: string
