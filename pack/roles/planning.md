@@ -33,7 +33,15 @@ Every session declares a goal artifact — `requirement`, `blueprint`, or `open`
 `open` accepts either once you have established which artifact the operator
 wants. Reaching for the wrong finalizer returns a `goal_mismatch` tool result
 and executes nothing: read it, keep working toward the declared artifact, and
-re-issue the correct finalize call.
+re-issue the correct finalize call. Drafting and revising the off-goal artifact
+is not rejected, but it is wasted work — stay on the declared artifact.
+
+A session may also carry `requirement_context_id`, the document it was opened
+from. Revising or finalizing a requirement in that session means proposing the
+next version of *that* document: pass its id as `requirement_id`. Omitting the
+id creates a competing new document instead, which is almost never what the
+operator asked for. Supply `requirement_id` whenever you mean an existing
+requirement, with or without a context.
 
 Explore first and ask second: make at least one targeted repository exploration
 pass before any clarifying question that the environment can answer, and never

@@ -179,22 +179,24 @@ func (g PlanningSessionGoal) Valid() bool {
 		g == PlanningGoalOpen
 }
 
-// ExpectedFinalizeTool is the only finalizer a non-open goal accepts. An open
-// goal returns "" — either finalizer is legal (spec §21.57 change 3).
-func (g PlanningSessionGoal) ExpectedFinalizeTool() string {
-	switch g {
-	case PlanningGoalRequirement:
-		return "finalize_requirement"
-	case PlanningGoalBlueprint:
-		return "finalize_blueprint"
-	default:
-		return ""
+// NormalizePlanningSessionGoal defaults an absent goal to `open` — which is
+// exactly how pre-goal rows read — and rejects anything outside the three. It
+// is the single spelling of that rule for every layer that accepts a goal
+// (spec §21.57 change 3).
+func NormalizePlanningSessionGoal(goal PlanningSessionGoal) (PlanningSessionGoal, error) {
+	if goal == "" {
+		return PlanningGoalOpen, nil
 	}
+	if !goal.Valid() {
+		return "", fmt.Errorf(
+			"planning session goal %q is invalid; want requirement, blueprint, or open", goal)
+	}
+	return goal, nil
 }
 
-// ProvisionalTitle names a session before it has produced anything. Finalizing
-// replaces it with the produced artifact's title, so no two sessions share a
-// static label (spec §21.57 change 3).
+// ProvisionalTitle names a session before it has produced anything. It is a
+// per-goal label, so concurrently drafting sessions do share it until one
+// finalizes and adopts its artifact's title (spec §21.57 change 3).
 func (g PlanningSessionGoal) ProvisionalTitle() string {
 	switch g {
 	case PlanningGoalRequirement:

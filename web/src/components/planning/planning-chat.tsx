@@ -15,20 +15,12 @@ import {
   streamPlanningMessage,
   uploadArtifact,
 } from '../../lib/api'
+import { sessionGoalLabel } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
-import type { Artifact, PlanningMessage, PlanningMessagePart, PlanningSession, PlanningSessionGoal } from '../../lib/types'
+import type { Artifact, PlanningMessage, PlanningMessagePart, PlanningSession } from '../../lib/types'
 
 export const sessionStatusLabels: Record<PlanningSession['status'], string> = {
   active: 'Active', finalized: 'Finalized', abandoned: 'Abandoned',
-}
-
-/** Human labels for the declared goal — never the raw enum (spec §21.57). */
-export const sessionGoalLabels: Record<PlanningSessionGoal, string> = {
-  requirement: 'Requirement', blueprint: 'Blueprint', open: 'Open exploration',
-}
-
-export function sessionGoalLabel(session: PlanningSession) {
-  return sessionGoalLabels[session.goal ?? 'open']
 }
 
 export function PlanningChat({
@@ -126,9 +118,17 @@ export function PlanningChat({
   useEffect(() => {
     finalizeHandler.current = onFinalized
   }, [onFinalized])
-  const reported = useRef('')
+  // Only a finalize observed while this conversation is open is news. Adopting
+  // whatever was already produced on mount keeps a deep link to an earlier
+  // finalized session from yanking the canvas off the document the URL asked
+  // for.
+  const reported = useRef<string | null>(null)
   useEffect(() => {
     const produced = session.produced_requirement_id || session.produced_task_id || ''
+    if (reported.current === null) {
+      reported.current = produced
+      return
+    }
     if (!produced || reported.current === produced) return
     reported.current = produced
     finalizeHandler.current?.(session)
@@ -164,7 +164,14 @@ export function PlanningChat({
         {!sidebar && session.exploration_output_tokens && <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>}
         <Badge variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}>{sessionStatusLabels[session.status]}</Badge>
         {session.status === 'active' && (
-          <Button variant="ghost" size="sm" disabled={!token || abandon.isPending} onClick={() => setShowAbandon(true)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="Abandon"
+            title="Abandon this planning session"
+            disabled={!token || abandon.isPending}
+            onClick={() => setShowAbandon(true)}
+          >
             <Square /> {sidebar ? '' : 'Abandon'}
           </Button>
         )}
@@ -219,7 +226,7 @@ export function PlanningChat({
         </div>
       </MessageScroller>
 
-      {session.status === 'finalized' && <FinalizedHandoff session={session} gutter={gutter} />}
+      {session.status === 'finalized' && <FinalizedHandoff session={session} gutter={gutter} sidebar={sidebar} />}
       {session.status === 'active' && (
         <form
           className={`shrink-0 border-t border-border bg-background ${gutter} py-4`}
@@ -381,10 +388,10 @@ function failPendingMarkers(parts: PlanningMessagePart[], message: string) {
   return [...parts, ...failures]
 }
 
-function FinalizedHandoff({ session, gutter }: { session: PlanningSession; gutter: string }) {
+function FinalizedHandoff({ session, gutter, sidebar }: { session: PlanningSession; gutter: string; sidebar: boolean }) {
   return (
     <div className={`shrink-0 border-t border-border bg-positive-soft ${gutter} py-4`}>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className={`flex flex-wrap items-center gap-3 ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
         <CheckCircle2 className="size-5 text-positive" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-positive">Planning artifact finalized</p>

@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, Sparkles } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
-import { sessionGoalLabel } from '../components/planning/planning-chat'
 import { type GuidedAction, RequirementAssistant, draftAction } from '../components/planning/requirement-assistant'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -19,7 +18,7 @@ import {
   fetchRequirementVersions,
   uploadArtifact,
 } from '../lib/api'
-import { taskStateLabels } from '../lib/contracts'
+import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSession, RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
 
@@ -51,18 +50,27 @@ export function RequirementsPage() {
   const selectedId = search.requirement ?? ''
   const sessionId = search.session ?? ''
 
-  // Falling back to the first document must not close an open conversation:
-  // the corpus refetches while the sidebar is mid-session, so the session
-  // parameter has to survive the redirect.
+  // A document the sidebar just produced is selected before the corpus refetch
+  // that contains it lands. Without this latch the fallback below sees it as
+  // unknown and bounces to the first document, so the operator never reaches
+  // the version they have to confirm.
+  const adopting = useRef('')
+  // Falling back to the first document must not close an open conversation
+  // either: the corpus refetches while the sidebar is mid-session, so the
+  // session parameter has to survive the redirect.
   useEffect(() => {
     if (!requirements?.length) return
-    if (!requirements.some((item) => item.requirement.id === selectedId)) {
-      void navigate({
-        to: '/requirements',
-        search: { requirement: requirements[0].requirement.id, session: sessionId || undefined },
-        replace: true,
-      })
+    const adopted = adopting.current !== '' && adopting.current === selectedId
+    if (requirements.some((item) => item.requirement.id === selectedId)) {
+      if (adopted) adopting.current = ''
+      return
     }
+    if (adopted) return
+    void navigate({
+      to: '/requirements',
+      search: { requirement: requirements[0].requirement.id, session: sessionId || undefined },
+      replace: true,
+    })
   }, [navigate, requirements, selectedId, sessionId])
   const selected = requirements?.find((item) => item.requirement.id === selectedId)
 
@@ -95,6 +103,7 @@ export function RequirementsPage() {
       void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, produced] })
     }
     if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
+      adopting.current = session.produced_requirement_id
       void navigate({
         to: '/requirements',
         search: { requirement: session.produced_requirement_id, session: session.id },
@@ -113,7 +122,7 @@ export function RequirementsPage() {
           </div>
           <p className="mt-0.5 text-xs text-muted">Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.</p>
         </div>
-        <Button disabled={!token || start.isPending} onClick={() => start.mutate(draftAction)}>
+        <Button disabled={!token || !workspace || start.isPending} onClick={() => start.mutate(draftAction)}>
           <Sparkles /> {start.isPending ? 'Starting…' : 'New requirement'}
         </Button>
       </header>
@@ -163,7 +172,7 @@ export function RequirementsPage() {
                   <Sparkles className="size-7 text-primary" />
                   <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
                   <p className="mt-2 max-w-md text-sm leading-6 text-muted">Describe what the system should do. The assistant beside this canvas turns the conversation into a structured requirement for you to confirm.</p>
-                  <Button className="mt-5" disabled={!token || start.isPending} onClick={() => start.mutate(draftAction)}>
+                  <Button className="mt-5" disabled={!token || !workspace || start.isPending} onClick={() => start.mutate(draftAction)}>
                     Draft a requirement <ArrowRight />
                   </Button>
                 </CardContent>
@@ -202,10 +211,19 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
   })
   const orderedVersions = useMemo(() => [...versions].sort((left, right) => right.version - left.version), [versions])
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  // A revision proposed from the sidebar has to become the displayed version.
+  // Only resetting when the selection disappears is not enough — the older
+  // version is still in the refetched list, so the canvas would keep showing
+  // confirmed intent with no pending banner and no confirm action (spec
+  // §21.57 change 1).
+  const highestSeen = useRef<number | null>(null)
   useEffect(() => {
     if (!orderedVersions.length) return
-    if (!orderedVersions.some((version) => version.version === selectedVersion)) {
-      setSelectedVersion(orderedVersions[0].version)
+    const latest = orderedVersions[0].version
+    const arrived = highestSeen.current === null || latest > highestSeen.current
+    highestSeen.current = latest
+    if (arrived || !orderedVersions.some((version) => version.version === selectedVersion)) {
+      setSelectedVersion(latest)
     }
   }, [orderedVersions, selectedVersion])
   const displayed = orderedVersions.find((version) => version.version === selectedVersion)

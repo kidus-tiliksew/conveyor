@@ -428,13 +428,11 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 			return core.PlanningSession{}, fmt.Errorf("requirement %s not found", session.RequirementContextID)
 		}
 	}
-	if session.Goal == "" {
-		session.Goal = core.PlanningGoalOpen
+	goal, err := core.NormalizePlanningSessionGoal(session.Goal)
+	if err != nil {
+		return core.PlanningSession{}, err
 	}
-	if !session.Goal.Valid() {
-		return core.PlanningSession{}, fmt.Errorf(
-			"planning session goal %q is invalid; want requirement, blueprint, or open", session.Goal)
-	}
+	session.Goal = goal
 	now := time.Now().UTC()
 	session.Workspace = workspace
 	session.Status = core.PlanningSessionActive

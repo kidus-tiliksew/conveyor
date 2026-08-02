@@ -353,9 +353,11 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 		drafting.Title != "Drafting requirement…" {
 		t.Fatalf("requirement-goal create status=%d session=%+v", code, drafting)
 	}
+	// A caller-supplied title carries no weight: the session is named by its
+	// goal and then by the artifact it produces (spec §21.57 change 3).
 	code, planning := create(`{"goal":"blueprint","title":"Bound the retry loop"}`)
 	if code != http.StatusCreated || planning.Goal != core.PlanningGoalBlueprint ||
-		planning.Title != "Bound the retry loop" {
+		planning.Title != "Planning work…" {
 		t.Fatalf("blueprint-goal create status=%d session=%+v", code, planning)
 	}
 	// Omitting the goal stays compatible and reads back as open.

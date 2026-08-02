@@ -483,13 +483,11 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 	if session.PinnedRevisions == nil {
 		session.PinnedRevisions = map[string]string{}
 	}
-	if session.Goal == "" {
-		session.Goal = core.PlanningGoalOpen
+	goal, err := core.NormalizePlanningSessionGoal(session.Goal)
+	if err != nil {
+		return core.PlanningSession{}, err
 	}
-	if !session.Goal.Valid() {
-		return core.PlanningSession{}, fmt.Errorf(
-			"planning session goal %q is invalid; want requirement, blueprint, or open", session.Goal)
-	}
+	session.Goal = goal
 	pins, err := json.Marshal(session.PinnedRevisions)
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("encode planning revisions: %w", err)

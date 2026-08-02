@@ -753,12 +753,12 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 	}
 	if _, err := service.CreateSession(ctx, CreateSessionInput{
-		Title: "Rejected", ModelOverride: "outside",
+		ModelOverride: "outside",
 	}); err == nil || !strings.Contains(err.Error(), "configured models: planner, planner-alt") {
 		t.Fatalf("off-allowlist model error=%v", err)
 	}
 	session, err := service.CreateSession(ctx, CreateSessionInput{
-		Title: "Explore eligibility", ModelOverride: "planner-alt",
+		ModelOverride: "planner-alt",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1259,21 +1259,15 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 			t.Fatalf("goal %q read back=%+v err=%v", test.goal, read, err)
 		}
 	}
-	// A deliberate operator title outranks the provisional one; an unknown
-	// goal is refused before anything is persisted.
-	named, err := service.CreateSession(ctx, CreateSessionInput{
-		Title: "Queue rewrite intent", Goal: core.PlanningGoalRequirement,
-	})
-	if err != nil || named.Title != "Queue rewrite intent" || named.Goal != core.PlanningGoalRequirement {
-		t.Fatalf("named session=%+v err=%v", named, err)
-	}
-	if _, err = service.CreateSession(ctx, CreateSessionInput{Goal: core.PlanningSessionGoal("epic")}); err == nil ||
-		!strings.Contains(err.Error(), "want requirement, blueprint, or open") {
+	// An unknown goal is refused before anything is persisted.
+	if _, err := service.CreateSession(ctx, CreateSessionInput{
+		Goal: core.PlanningSessionGoal("epic"),
+	}); err == nil || !strings.Contains(err.Error(), "want requirement, blueprint, or open") {
 		t.Fatalf("unknown goal error=%v", err)
 	}
 	listed, err := st.ListPlanningSessions(ctx)
-	if err != nil || len(listed) != 5 {
-		t.Fatalf("listed=%d err=%v, want the five accepted sessions", len(listed), err)
+	if err != nil || len(listed) != 4 {
+		t.Fatalf("listed=%d err=%v, want the four accepted sessions", len(listed), err)
 	}
 }
 
@@ -1495,6 +1489,76 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 }
 
 // An open goal keeps the historical behavior: either finalizer is legal.
+// A session opened from a document revises that document. Without this the
+// sidebar's Revise action forks a competing requirement whenever the model
+// omits requirement_id — and the sidebar is the only authoring path there is
+// (spec §21.57 changes 1 and 2).
+func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	existing, _, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior"},
+		core.RequirementVersion{
+			Content: "Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
+			Statements: []core.RequirementStatement{{
+				ID: "REQ-1", Statement: "Retries stop at the bound.",
+			}},
+			Origin: core.RequirementOriginChat, OriginSessionID: "session-seed",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+		ID: "session-260802-revise", Title: "Drafting requirement…",
+		Goal: core.PlanningGoalRequirement, RequirementContextID: existing.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The model omits requirement_id — the case that used to fork a document.
+	args := requirementArgs{
+		Prose: "Retries stay bounded and observable.",
+		Statements: []core.RequirementStatement{
+			{ID: "REQ-1", Statement: "Retries stop at the bound."},
+			{ID: "REQ-2", Statement: "Every retry decision is explainable."},
+		},
+	}
+	service := &Service{
+		Store: st, Model: "planner", Prompt: testPlanningPrompt,
+		Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
+			ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args),
+		}})}},
+	}
+	if err = service.Run(ctx, session.ID, UserMessage{Content: "Add the observability statement."},
+		func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// The context document gained a version; no second document was minted.
+	versions, err := st.ListRequirementVersions(ctx, existing.ID)
+	if err != nil || len(versions) != 2 || versions[1].Version != 2 ||
+		versions[1].OriginSessionID != session.ID {
+		t.Fatalf("context document versions=%+v err=%v, want a proposed v2", versions, err)
+	}
+	corpus, err := st.ListRequirements(ctx)
+	if err != nil || len(corpus) != 1 || corpus[0].ID != existing.ID {
+		t.Fatalf("corpus=%+v err=%v, want only the context document", corpus, err)
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.ProducedRequirementID != existing.ID ||
+		finalized.Title != "Retry behavior" {
+		t.Fatalf("finalized session=%+v err=%v", finalized, err)
+	}
+	// The prompt names the context document so the model can pass the id
+	// itself rather than relying on the default.
+	prompt, err := service.prompt(ctx, session, nil, 1, DefaultMaxSteps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "opened from requirement "+existing.ID) {
+		t.Fatalf("prompt omitted the context document:\n%s", prompt)
+	}
+}
+
 func TestServiceOpenGoalAcceptsEitherFinalizer(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-open", core.PlanningGoalOpen)
 	args := requirementArgs{

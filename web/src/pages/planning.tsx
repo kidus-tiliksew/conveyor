@@ -5,26 +5,25 @@ import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell
 import {
   PlanningChat,
   relativeDate,
-  sessionGoalLabel,
   sessionStatusLabels,
 } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Input, Select } from '../components/ui/input'
+import { Select } from '../components/ui/input'
 import {
   createPlanningSession,
   fetchPlanningSessions,
   fetchWorkspaceConfig,
 } from '../lib/api'
+import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
 
-// A document-scoped session belongs beside its document, so this surface keeps
-// only the goals that have no document context (spec §21.57 change 1).
-const standaloneGoals: { value: PlanningSessionGoal; label: string }[] = [
-  { value: 'open', label: 'Open exploration' },
-  { value: 'blueprint', label: 'Blueprint' },
-]
+// "The free-form planning page remains for goal-`open` and blueprint-only
+// sessions" (spec §21.57 change 1) — requirement drafting moved beside the
+// document. Blueprint sessions still take a requirement context, just not from
+// this surface.
+const standaloneGoals: PlanningSessionGoal[] = ['open', 'blueprint']
 
 export function PlanningPage() {
   const token = useOperatorToken()
@@ -32,7 +31,6 @@ export function PlanningPage() {
   const client = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const restoredWorkspace = useRef('')
-  const [title, setTitle] = useState('')
   const [model, setModel] = useState('')
   const [goal, setGoal] = useState<PlanningSessionGoal>('open')
   const { data: workspaceConfig } = useQuery({
@@ -71,15 +69,13 @@ export function PlanningPage() {
   }, [configuredModels, defaultModel, model, workspaceConfig])
 
   const create = useMutation({
-    // An omitted title takes the goal-derived provisional one from the server,
-    // which the produced artifact then replaces (spec §21.57 change 3).
+    // No title is sent: the server names the session from its goal, and the
+    // artifact it produces renames it (spec §21.57 change 3).
     mutationFn: () => createPlanningSession(token, {
-      title: title.trim() || undefined,
       goal,
       model: configuredModels.length ? model || undefined : undefined,
     }),
     onSuccess: (session) => {
-      setTitle('')
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
     },
@@ -94,20 +90,13 @@ export function PlanningPage() {
           <p className="mt-0.5 text-xs text-muted">Open exploration and blueprints without a document. Requirement drafting lives beside the document, in Requirements.</p>
         </div>
         <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (token) create.mutate() }}>
-          <Input
-            aria-label="Planning session title"
-            className="w-56"
-            placeholder="What are we planning?"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-          />
           <Select
             aria-label="Planning goal"
             className="w-44"
             value={goal}
             onChange={(event) => setGoal(event.target.value as PlanningSessionGoal)}
           >
-            {standaloneGoals.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {standaloneGoals.map((option) => <option key={option} value={option}>{sessionGoalLabels[option]}</option>)}
           </Select>
           <Select
             aria-label="Planning model"

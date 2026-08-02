@@ -11,24 +11,23 @@ export type GuidedAction = {
   label: string
   hint: string
   goal: PlanningSessionGoal
+  icon: typeof PenLine
   /** Draft is the blank-page flow, so it carries no requirement context. */
   contextual: boolean
 }
 
 // The four guided actions replace the blank prompt (spec §21.57 change 1).
-// Each declares the goal its session finalizes toward.
+// Each declares the goal its session finalizes toward. Q&A is goal `open`,
+// which carries no finalize expectation — it does not forbid one, so the hint
+// promises exploration rather than immunity.
 export const guidedActions: GuidedAction[] = [
-  { id: 'draft', label: 'Draft', hint: 'Start a new requirement document', goal: 'requirement', contextual: false },
-  { id: 'revise', label: 'Revise', hint: 'Propose the next version of this document', goal: 'requirement', contextual: true },
-  { id: 'qa', label: 'Q&A', hint: 'Ask about this requirement without finalizing', goal: 'open', contextual: true },
-  { id: 'plan', label: 'Plan work', hint: 'Open a blueprint at the spec gate, serving this requirement', goal: 'blueprint', contextual: true },
+  { id: 'draft', label: 'Draft', hint: 'Start a new requirement document', goal: 'requirement', icon: Sparkles, contextual: false },
+  { id: 'revise', label: 'Revise', hint: 'Propose the next version of this document', goal: 'requirement', icon: PenLine, contextual: true },
+  { id: 'qa', label: 'Q&A', hint: 'Explore this requirement with no artifact in mind', goal: 'open', icon: MessageCircleQuestion, contextual: true },
+  { id: 'plan', label: 'Plan work', hint: 'Open a blueprint at the spec gate, serving this requirement', goal: 'blueprint', icon: GitBranch, contextual: true },
 ]
 
-export const draftAction = guidedActions[0]
-
-const actionIcons: Record<GuidedAction['id'], typeof PenLine> = {
-  draft: Sparkles, revise: PenLine, qa: MessageCircleQuestion, plan: GitBranch,
-}
+export const draftAction = guidedActions.find((action) => action.id === 'draft') as GuidedAction
 
 /**
  * The planning assistant docked beside the document canvas. It is the only
@@ -74,21 +73,18 @@ export function RequirementAssistant({
       </div>
 
       <div className="flex shrink-0 flex-wrap gap-1.5 border-b border-border px-4 py-3">
-        {actions.map((action) => {
-          const Icon = actionIcons[action.id]
-          return (
-            <Button
-              key={action.id}
-              variant="secondary"
-              size="sm"
-              title={action.hint}
-              disabled={!token || starting}
-              onClick={() => onStart(action)}
-            >
-              <Icon /> {action.label}
-            </Button>
-          )
-        })}
+        {actions.map((action) => (
+          <Button
+            key={action.id}
+            variant="secondary"
+            size="sm"
+            title={action.hint}
+            disabled={!token || !workspace || starting}
+            onClick={() => onStart(action)}
+          >
+            <action.icon /> {action.label}
+          </Button>
+        ))}
       </div>
       {startError != null && (
         <p className="shrink-0 border-b border-border px-4 py-2 text-xs text-failure">
@@ -97,10 +93,15 @@ export function RequirementAssistant({
       )}
 
       <div className="flex min-h-0 flex-1 flex-col">
+        {/* A session id that no longer resolves — a stale bookmark, or one
+            belonging to the workspace we just switched away from — must not
+            strand the sidebar: say so, then offer the guided actions. */}
         {sessionError && (
-          <p className="px-4 py-3 text-xs text-failure">{errorMessage(sessionError, 'Could not restore this planning session.')}</p>
+          <p className="shrink-0 px-4 py-3 text-xs text-muted">
+            {errorMessage(sessionError, 'That planning session is not available in this workspace.')}
+          </p>
         )}
-        {session
+        {session && !sessionError
           ? (
               <PlanningChat
                 key={`${workspace}:${session.id}`}
@@ -111,7 +112,7 @@ export function RequirementAssistant({
                 onFinalized={onFinalized}
               />
             )
-          : !sessionError && (
+          : (
               <div className="px-5 py-8 text-center">
                 <Sparkles className="mx-auto size-6 text-primary" />
                 <h3 className="mt-3 text-sm font-semibold">The assistant is the editor</h3>
