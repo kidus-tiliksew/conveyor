@@ -157,6 +157,89 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScoped(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	blueprint := core.Task{ID: "blueprint", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: now}
+	if err := st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: blueprint.ID, Content: "parent rationale"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []core.Task{
+		{ID: "child-a", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
+		{ID: "child-b", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
+		{ID: "unrelated", Workspace: "demo", State: core.TaskRunning, CreatedAt: now},
+	} {
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-lineage", Title: "Lineage intent"}, core.RequirementVersion{
+		Content:    "Sibling outcomes inform later work.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Sibling outcomes inform later work.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Sibling outcomes inform later work."}},
+		Origin:     core.RequirementOriginChat, OriginSessionID: "planning-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	humanCtx := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(humanCtx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, blueprint.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(humanCtx, blueprint.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	order := core.WorkOrder{ID: "child-a-implement", TaskID: "child-a", JobID: "child-a-job", Stage: core.StageImplement}
+	if err = st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "child-a-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	sibling, err := st.CreateArtifact(ctx, core.Artifact{Name: "sibling.md", ContentType: "text/markdown", TaskID: "child-b"}, []byte("sibling outcome"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rationale, err := st.CreateArtifact(ctx, core.Artifact{Name: "intent.md", ContentType: "text/markdown", RequirementID: requirement.ID}, []byte("parent rationale"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := st.CreateArtifact(ctx, core.Artifact{Name: "unrelated.md", ContentType: "text/markdown", TaskID: "unrelated"}, []byte("unrelated"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := &Service{Store: st}
+	for _, artifact := range []core.Artifact{sibling, rationale} {
+		read, readErr := service.ReadArtifact(ctx, order.ID, "child-a-session", artifact.ID)
+		if readErr != nil {
+			t.Fatalf("lineage artifact %s was not authorized: %v", artifact.Name, readErr)
+		}
+		decoded, decodeErr := base64.StdEncoding.DecodeString(read.Data)
+		if decodeErr != nil || len(decoded) == 0 || read.Artifact.ID != artifact.ID || read.Artifact.TaskID != artifact.TaskID || read.Artifact.RequirementID != artifact.RequirementID {
+			t.Fatalf("read=%+v decoded=%q err=%v", read, decoded, decodeErr)
+		}
+	}
+	if _, err = service.ReadArtifact(ctx, order.ID, "child-a-session", unrelated.ID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unrelated artifact authorization error=%v", err)
+	}
+	if _, err = service.ReadArtifact(ctx, order.ID, "wrong-session", sibling.ID); err == nil || !strings.Contains(err.Error(), "another session") {
+		t.Fatalf("wrong-session lineage read error=%v", err)
+	}
+}
+
 func TestPostClaimProgressDoesNotReevaluateDependencies(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

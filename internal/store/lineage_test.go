@@ -14,11 +14,12 @@ func TestLineageProjectorCoversDeliveryChain(t *testing.T) {
 	events := []core.Event{
 		{ID: 1, Kind: "planning_session.finalized", Payload: core.JSONPayload(map[string]any{"session_id": "plan-1", "produced_requirement_id": "req-1"})},
 		{ID: 2, TaskID: "blueprint-1", Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": "req-1"})},
-		{ID: 3, TaskID: "task-1", Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "implement-1"})},
-		{ID: 4, TaskID: "task-1", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 7, "head_sha": "abc"})},
-		{ID: 5, TaskID: "task-1", Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1", "evidence_ids": []string{"artifact-1"}})},
+		{ID: 3, TaskID: "blueprint-1", Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})},
+		{ID: 4, TaskID: "task-1", Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "implement-1"})},
+		{ID: 5, TaskID: "task-1", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 7, "head_sha": "abc"})},
+		{ID: 6, TaskID: "task-1", Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1", "evidence_ids": []string{"artifact-1"}})},
 	}
-	wantKinds := map[string]bool{"produces": false, "serves": false, "executes_as": false, "delivered_by": false, "head": false, "implemented_by": false, "supports": false}
+	wantKinds := map[string]bool{"produces": false, "serves": false, "versions": false, "executes_as": false, "delivered_by": false, "head": false, "implemented_by": false, "supports": false}
 	for index := range events {
 		events[index].At = time.Now().UTC()
 		// Round-trip through JSON because production events arrive as raw JSON;

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -46,6 +47,125 @@ type LineageLink struct {
 	Kind             string          `json:"kind"`
 	CreatedByEventID int64           `json:"created_by_event_id"`
 	CreatedAt        time.Time       `json:"created_at"`
+}
+
+// LineageNode identifies one endpoint without implying a persisted record of
+// its own. Traversal is over event-provenanced links; nodes are only the
+// bounded read model needed to assemble context (spec §4.2 item 4).
+type LineageNode struct {
+	Type LineageNodeType `json:"type"`
+	ID   string          `json:"id"`
+}
+
+func (node LineageNode) Valid() bool {
+	return node.Type.Valid() && strings.TrimSpace(node.ID) != ""
+}
+
+// LineageTraversalBudget makes graph reads fail closed against an unbounded
+// workspace graph. MaxDepth counts edges from the root; MaxNodes includes the
+// root and is a hard cap on returned nodes (spec §4.2 item 4, §15.1).
+type LineageTraversalBudget struct {
+	MaxDepth int
+	MaxNodes int
+}
+
+// LineageTraversal is deterministic for the same roots, links, and budget.
+// Truncated reports that a reachable node was omitted by either bound.
+type LineageTraversal struct {
+	Nodes     []LineageNode
+	Truncated bool
+}
+
+// TraverseLineage walks links in both directions: lineage edges retain their
+// semantic direction, while context assembly needs ancestors and descendants
+// around the work-order root. Invalid links are ignored rather than granting
+// reachability through malformed projection data.
+func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTraversalBudget) (LineageTraversal, error) {
+	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
+		return LineageTraversal{}, fmt.Errorf("lineage traversal requires max depth >= 0 and max nodes > 0")
+	}
+	type neighbor struct {
+		node LineageNode
+		key  string
+	}
+	adjacent := map[LineageNode][]neighbor{}
+	for _, link := range links {
+		if link.Validate() != nil {
+			continue
+		}
+		src := LineageNode{Type: link.SrcType, ID: link.SrcID}
+		dst := LineageNode{Type: link.DstType, ID: link.DstID}
+		key := lineageTraversalLinkKey(link)
+		adjacent[src] = append(adjacent[src], neighbor{node: dst, key: key})
+		adjacent[dst] = append(adjacent[dst], neighbor{node: src, key: key})
+	}
+	for node := range adjacent {
+		sort.Slice(adjacent[node], func(i, j int) bool {
+			if adjacent[node][i].key != adjacent[node][j].key {
+				return adjacent[node][i].key < adjacent[node][j].key
+			}
+			return lineageTraversalNodeKey(adjacent[node][i].node) < lineageTraversalNodeKey(adjacent[node][j].node)
+		})
+	}
+
+	sortedRoots := append([]LineageNode(nil), roots...)
+	sort.Slice(sortedRoots, func(i, j int) bool {
+		return lineageTraversalNodeKey(sortedRoots[i]) < lineageTraversalNodeKey(sortedRoots[j])
+	})
+	type queuedNode struct {
+		node  LineageNode
+		depth int
+	}
+	queue := make([]queuedNode, 0, budget.MaxNodes)
+	seen := map[LineageNode]bool{}
+	result := LineageTraversal{Nodes: make([]LineageNode, 0, budget.MaxNodes)}
+	for _, root := range sortedRoots {
+		if !root.Valid() || seen[root] {
+			continue
+		}
+		if len(result.Nodes) == budget.MaxNodes {
+			result.Truncated = true
+			break
+		}
+		seen[root] = true
+		result.Nodes = append(result.Nodes, root)
+		queue = append(queue, queuedNode{node: root})
+	}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		neighbors := adjacent[current.node]
+		if current.depth == budget.MaxDepth {
+			for _, next := range neighbors {
+				if !seen[next.node] {
+					result.Truncated = true
+					break
+				}
+			}
+			continue
+		}
+		for _, next := range neighbors {
+			if seen[next.node] {
+				continue
+			}
+			if len(result.Nodes) == budget.MaxNodes {
+				result.Truncated = true
+				continue
+			}
+			seen[next.node] = true
+			result.Nodes = append(result.Nodes, next.node)
+			queue = append(queue, queuedNode{node: next.node, depth: current.depth + 1})
+		}
+	}
+	return result, nil
+}
+
+func lineageTraversalNodeKey(node LineageNode) string {
+	return string(node.Type) + "\x00" + node.ID
+}
+
+func lineageTraversalLinkKey(link LineageLink) string {
+	return strings.Join([]string{string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
 }
 
 func (link LineageLink) Validate() error {

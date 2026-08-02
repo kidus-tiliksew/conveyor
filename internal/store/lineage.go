@@ -82,8 +82,12 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version-1), "supersedes"))
 		}
 	case "spec.version_created":
-		if version := number("version"); version > 1 {
-			return valid(link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version-1), "supersedes"))
+		if version := number("version"); version > 0 {
+			links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), "versions")}
+			if version > 1 {
+				links = append(links, link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version-1), "supersedes"))
+			}
+			return valid(links...)
 		}
 	case "pull_request.opened":
 		numberText := fmt.Sprint(payload["number"])

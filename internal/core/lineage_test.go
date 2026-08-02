@@ -1,6 +1,7 @@
 package core
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -34,5 +35,42 @@ func TestLineageVersionIDsAreStable(t *testing.T) {
 	}
 	if got := RequirementVersionLineageID("req-1", 4); got != "req-1:v4" {
 		t.Fatalf("requirement version id=%q", got)
+	}
+}
+
+func TestTraverseLineageIsDeterministicAndBounded(t *testing.T) {
+	links := []LineageLink{
+		lineageTestLink(3, LineageTask, "task-b", LineageEvidence, "evidence-b", "proved_by"),
+		lineageTestLink(1, LineageTask, "task-a", LineageWorkOrder, "order-a", "executes_as"),
+		lineageTestLink(2, LineageTask, "task-a", LineageTask, "task-b", "depends_on"),
+	}
+	root := []LineageNode{{Type: LineageWorkOrder, ID: "order-a"}}
+	got, err := TraverseLineage(links, root, LineageTraversalBudget{MaxDepth: 2, MaxNodes: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []LineageNode{
+		{Type: LineageWorkOrder, ID: "order-a"},
+		{Type: LineageTask, ID: "task-a"},
+		{Type: LineageTask, ID: "task-b"},
+	}
+	if !reflect.DeepEqual(got.Nodes, want) || !got.Truncated {
+		t.Fatalf("traversal=%+v, want nodes=%+v truncated", got, want)
+	}
+
+	limited, err := TraverseLineage(links, root, LineageTraversalBudget{MaxDepth: 8, MaxNodes: 2})
+	if err != nil || len(limited.Nodes) != 2 || !limited.Truncated {
+		t.Fatalf("node-limited traversal=%+v err=%v", limited, err)
+	}
+	if _, err = TraverseLineage(links, root, LineageTraversalBudget{}); err == nil {
+		t.Fatal("accepted an unbounded traversal budget")
+	}
+}
+
+func lineageTestLink(id int64, srcType LineageNodeType, srcID string, dstType LineageNodeType, dstID, kind string) LineageLink {
+	return LineageLink{
+		Workspace: "demo", SrcType: srcType, SrcID: srcID,
+		DstType: dstType, DstID: dstID, Kind: kind,
+		CreatedByEventID: id, CreatedAt: time.Unix(id, 0).UTC(),
 	}
 }

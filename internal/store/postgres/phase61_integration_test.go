@@ -413,20 +413,20 @@ func TestBlueprintApprovalWithoutDecompositionWritesNoMaterializationRowsIntegra
 	if err = st.ApproveSpecVersion(ctx, parentID, spec.Version); err != nil {
 		t.Fatal(err)
 	}
-	var children, edges, links, materializedEvents int
+	var children, edges, materializedLinks, materializedEvents int
 	for query, destination := range map[string]*int{
-		`SELECT count(*) FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`:                                  &children,
-		`SELECT count(*) FROM task_dependencies WHERE workspace_id=$1 AND (task_id=$2 OR depends_on_task_id=$2)`:  &edges,
-		`SELECT count(*) FROM links WHERE workspace_id=$1 AND (src_id LIKE $2 || ':%' OR src_id=$2 OR dst_id=$2)`: &links,
-		`SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='blueprint.materialized'`:      &materializedEvents,
+		`SELECT count(*) FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2`:                                                          &children,
+		`SELECT count(*) FROM task_dependencies WHERE workspace_id=$1 AND (task_id=$2 OR depends_on_task_id=$2)`:                          &edges,
+		`SELECT count(*) FROM links WHERE workspace_id=$1 AND kind='materializes' AND (src_id LIKE $2 || ':%' OR src_id=$2 OR dst_id=$2)`: &materializedLinks,
+		`SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='blueprint.materialized'`:                              &materializedEvents,
 	} {
 		if err = st.pool.QueryRow(ctx, query, workspace, parentID).Scan(destination); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if children != 0 || edges != 0 || links != 0 || materializedEvents != 0 {
-		t.Fatalf("children=%d edges=%d links=%d materialized_events=%d, want all zero",
-			children, edges, links, materializedEvents)
+	if children != 0 || edges != 0 || materializedLinks != 0 || materializedEvents != 0 {
+		t.Fatalf("children=%d edges=%d materialized_links=%d materialized_events=%d, want all zero",
+			children, edges, materializedLinks, materializedEvents)
 	}
 }
 
