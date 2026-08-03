@@ -1938,6 +1938,61 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	}
 }
 
+func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
+	for _, reviewPath := range []string{"in-process", "external-mcp"} {
+		t.Run(reviewPath, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "evidence-" + reviewPath, Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review"}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: "evidence.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID}, []byte("png"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ineligible, err := st.CreateArtifact(ctx, core.Artifact{Name: "context.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext, TaskID: task.ID}, []byte("context"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
+			d.DisableMemoryQueueForTest()
+			review := pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: reviewPath, Feedback: "revise"}
+			if reviewPath == "external-mcp" {
+				err = d.ApplyExternalReview(ctx, task, job, review, job.ID, "review-session", "review")
+			} else {
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			links, err := st.ListLineageLinks(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundEligible := false
+			for _, link := range links {
+				if link.Kind != "supports" {
+					continue
+				}
+				if link.SrcID == ineligible.ID {
+					t.Fatalf("ineligible artifact gained supports edge: %+v", link)
+				}
+				if link.SrcID == eligible.ID {
+					foundEligible = true
+				}
+			}
+			if !foundEligible {
+				t.Fatalf("eligible evidence missing supports edge: %+v", links)
+			}
+		})
+	}
+}
+
 func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "test")

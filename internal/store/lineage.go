@@ -36,7 +36,7 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 		}
 	}
 	valid := func(items ...core.LineageLink) []core.LineageLink {
-		out := items[:0]
+		out := make([]core.LineageLink, 0, len(items))
 		for _, item := range items {
 			if item.Validate() == nil {
 				out = append(out, item)
@@ -78,7 +78,15 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 	case "requirement.version_confirmed":
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
-			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version-1), "supersedes"))
+			_, predecessorRecorded := payload["supersedes_version"]
+			predecessor := number("supersedes_version")
+			if !predecessorRecorded {
+				predecessor = version - 1
+			}
+			if predecessor <= 0 {
+				return nil
+			}
+			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
@@ -124,6 +132,52 @@ func LineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 	return lineageLinksForEvent(workspace, event)
 }
 
+// HistoricalRequirementConfirmation identifies confirmation events written
+// before supersedes_version was recorded explicitly.
+func HistoricalRequirementConfirmation(event core.Event) (string, int, bool) {
+	if event.Kind != "requirement.version_confirmed" {
+		return "", 0, false
+	}
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return "", 0, false
+	}
+	if _, recorded := payload["supersedes_version"]; recorded {
+		return "", 0, false
+	}
+	requirementID, _ := payload["requirement_id"].(string)
+	version, _ := payload["version"].(float64)
+	return strings.TrimSpace(requirementID), int(version), requirementID != "" && version > 1
+}
+
+// LineageLinksForHistoricalConfirmation supplies the durable confirmed
+// predecessor for an event that predates supersedes_version.
+func LineageLinksForHistoricalConfirmation(workspace string, event core.Event, predecessor int) []core.LineageLink {
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return nil
+	}
+	payload["supersedes_version"] = predecessor
+	event.Payload = core.JSONPayload(payload)
+	return lineageLinksForEvent(workspace, event)
+}
+
 func lineageLinkKey(link core.LineageLink) string {
 	return strings.Join([]string{link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
+}
+
+var projectorOwnedLineageKinds = map[string]struct{}{
+	"dispatches": {}, "produced_requirement": {}, "produced_blueprint": {}, "serves": {},
+	"versions": {}, "supersedes": {}, "submitted_as": {}, "submitted_range": {},
+	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
+}
+
+func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }
+
+func CanonicalLineageKinds() map[string]struct{} {
+	out := make(map[string]struct{}, len(projectorOwnedLineageKinds))
+	for kind := range projectorOwnedLineageKinds {
+		out[kind] = struct{}{}
+	}
+	return out
 }

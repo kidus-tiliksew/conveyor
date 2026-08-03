@@ -148,6 +148,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == 57 {
+			if err := recordLineageRepairAudit(ctx, tx); err != nil {
+				return fmt.Errorf("record lineage repair audit: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO conveyor_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
 			version, filepath.Base(name), checksum,
@@ -161,6 +166,29 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 	return nil
 }
 
+// recordLineageRepairAudit deliberately lives in application code: schema
+// migrations may repair projections but never manufacture ledger events.
+func recordLineageRepairAudit(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT w.id,'lineage.vocabulary_repaired','system','system',jsonb_build_object(
+  'reason','migration 057 canonicalized the lineage projection',
+  'excluded_count',count(x.*),
+  'excluded',COALESCE(jsonb_agg(jsonb_build_object('src_type',x.src_type,'src_id',x.src_id,'dst_type',x.dst_type,'dst_id',x.dst_id,'kind',x.kind,'reason',x.reason)) FILTER (WHERE x.workspace_id IS NOT NULL),'[]'::jsonb)
+),now()
+FROM workspaces w LEFT JOIN lineage_repair_exclusions x ON x.workspace_id=w.id
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.vocabulary_repaired')
+GROUP BY w.id;
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT w.id,'lineage.historical_fabrication_recorded','system','system',jsonb_build_object(
+  'migration',54,'event_kind','task.dependency_added','known_ids','74871-74888',
+  'reason','migration 054 fabricated backdated dependency events; records remain immutable'
+),now()
+FROM workspaces w
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.historical_fabrication_recorded')`)
+	return err
+}
+
 // repairPendingMigration overlays safety repairs only while an affected
 // historical migration is still pending. The embedded bytes and the checksum
 // recorded in conveyor_schema_migrations remain unchanged, so databases that
@@ -168,6 +196,40 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 // 050 repairs their projections; this overlay prevents pre-046 databases from
 // failing before they can reach it.
 func repairPendingMigration(version int, sql []byte) ([]byte, error) {
+	if version == 55 {
+		text := string(sql)
+		const old = "(event.payload_json ->> 'version')::integer"
+		const replacement = "(CASE WHEN event.payload_json ->> 'version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'version')::integer ELSE 0 END)"
+		if found := strings.Count(text, old); found != 1 {
+			return nil, fmt.Errorf("pending-055 repair found %d occurrences of %q, want 1", found, old)
+		}
+		return []byte("-- Pending-055 safety overlay: guard historical numeric payloads.\n" + strings.ReplaceAll(text, old, replacement)), nil
+	}
+	if version == 54 {
+		text := string(sql)
+		for _, replacement := range []struct {
+			old   string
+			new   string
+			count int
+		}{
+			{
+				old:   "(event.payload_json ->> 'origin_spec_version')::integer",
+				new:   "(CASE WHEN event.payload_json ->> 'origin_spec_version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'origin_spec_version')::integer ELSE 0 END)",
+				count: 1,
+			},
+			{
+				old:   "(event.payload_json ->> 'version')::integer",
+				new:   "(CASE WHEN event.payload_json ->> 'version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'version')::integer ELSE 0 END)",
+				count: 4,
+			},
+		} {
+			if found := strings.Count(text, replacement.old); found != replacement.count {
+				return nil, fmt.Errorf("pending-054 repair found %d occurrences of %q, want %d", found, replacement.old, replacement.count)
+			}
+			text = strings.ReplaceAll(text, replacement.old, replacement.new)
+		}
+		return []byte("-- Pending-054 safety overlay: guard historical numeric payloads.\n" + text), nil
+	}
 	if version != 46 {
 		return sql, nil
 	}

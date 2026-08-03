@@ -54,6 +54,16 @@ func TestLineageProjectorDoesNotInventCommitRanges(t *testing.T) {
 	}
 }
 
+func TestRequirementConfirmationWithoutPredecessorDoesNotSupersedeDraft(t *testing.T) {
+	t.Parallel()
+	event := core.Event{ID: 1, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
+		"requirement_id": "req-1", "version": 3, "supersedes_version": 0,
+	})}
+	if links := lineageLinksForEvent("demo", event); len(links) != 0 {
+		t.Fatalf("first confirmed version superseded an unconfirmed draft: %+v", links)
+	}
+}
+
 func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	const workspace = "lineage-memory"
 	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}})
@@ -80,10 +90,19 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	}
 	// The operational edge is gone, but the immutable historical lineage stays.
 	assertMemoryLineage(t, st, ctx, 2)
-	if count, err := st.RebuildLineage(ctx); err != nil || count != 2 {
-		t.Fatalf("rebuild count=%d err=%v", count, err)
+	memoryStore := st.(*memory)
+	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note"})] = core.LineageLink{
+		Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note", CreatedByEventID: 1,
 	}
-	assertMemoryLineage(t, st, ctx, 2)
+	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment"})] = core.LineageLink{
+		Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment",
+	}
+	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 2 {
+		t.Fatalf("rebuild result=%+v err=%v", result, err)
+	} else if result.Existing != 2 {
+		t.Fatalf("rebuild omitted retained legacy links: %+v", result)
+	}
+	assertMemoryLineage(t, st, ctx, 4)
 }
 
 func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) {
@@ -93,6 +112,9 @@ func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) 
 		t.Fatalf("lineage links=%+v err=%v, want %d", links, err, want)
 	}
 	for _, link := range links {
+		if !projectorOwnsLineageKind(link.Kind) {
+			continue
+		}
 		if err := link.Validate(); err != nil {
 			t.Fatalf("invalid projected link %+v: %v", link, err)
 		}

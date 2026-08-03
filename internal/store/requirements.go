@@ -262,12 +262,13 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	confirmed.ConfirmedAt = now
 	versions[index] = confirmed
 	m.requirementVersions[key] = versions
+	previousConfirmedVersion := requirement.CurrentVersion
 	requirement.CurrentVersion = version
 	requirement.UpdatedAt = now
 	m.requirements[key] = requirement
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "requirement_id": requirementID, "version": version,
-		"origin": confirmed.Origin, "confirmed_by": actor.ID,
+		"origin": confirmed.Origin, "confirmed_by": actor.ID, "supersedes_version": previousConfirmedVersion,
 	})})
 	return requirement, confirmed, nil
 }

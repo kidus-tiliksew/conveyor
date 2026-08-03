@@ -281,6 +281,7 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", map[string]any{
 			"workspace_id": workspace(ctx), "requirement_id": requirementID,
 			"version": version, "origin": stored.Origin, "confirmed_by": actor.ID,
+			"supersedes_version": current,
 		})
 	})
 	if err != nil {

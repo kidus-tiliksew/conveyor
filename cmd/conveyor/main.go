@@ -39,6 +39,7 @@ func main() {
 		monitorCmd(),
 		workerCmd(),
 		checkoutCmd(),
+		lineageCmd(),
 		doneCmd(),
 	)
 	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", os.Getenv("CONVEYOR_WORKSPACE"), "workspace id (required when the server has multiple workspaces)")
@@ -47,6 +48,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func lineageCmd() *cobra.Command {
+	command := &cobra.Command{Use: "lineage", Short: "Operate the workspace lineage projection"}
+	var reason, requestID string
+	rebuild := &cobra.Command{Use: "rebuild", Short: "Atomically rebuild event-derived lineage", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(workspaceFlag) == "" {
+				return fmt.Errorf("--workspace is required")
+			}
+			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
+				return fmt.Errorf("--reason and --request-id are required")
+			}
+			result, err := newClient().rebuildLineage(reason, requestID)
+			if err != nil {
+				return err
+			}
+			out, _ := json.Marshal(result)
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			return err
+		}}
+	rebuild.Flags().StringVar(&reason, "reason", "", "operator reason")
+	rebuild.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
+	command.AddCommand(rebuild)
+	return command
 }
 
 func monitorCmd() *cobra.Command {

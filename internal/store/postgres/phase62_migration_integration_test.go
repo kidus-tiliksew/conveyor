@@ -130,6 +130,39 @@ func (f *phase62Fixture) upgradeTo(t *testing.T, version int) {
 	}
 }
 
+func TestPendingLineageMigrationSurvivesMalformedNumericPayloadsIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	taskID := f.task(t, "", "")
+	f.upgradeTo(t, 53)
+	for _, event := range []struct {
+		kind    string
+		taskID  any
+		payload map[string]any
+	}{
+		{kind: "task.created", taskID: taskID, payload: map[string]any{"parent_task_id": "blueprint", "origin_spec_version": "not-a-number"}},
+		{kind: "requirement.version_confirmed", payload: map[string]any{"workspace_id": f.workspace, "requirement_id": "req-malformed", "version": "not-a-number"}},
+		{kind: "spec.version_created", taskID: taskID, payload: map[string]any{"version": "not-a-number"}},
+		{kind: "pull_request.opened", taskID: taskID, payload: map[string]any{"repository": "example/repo", "number": "not-a-number"}},
+	} {
+		if _, err := f.pool.Exec(f.ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,$3,'migration-test','system',$4,now())`,
+			f.workspace, event.taskID, event.kind, core.JSONPayload(event.payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateControlPlaneToVersion(t.Context(), f.pool, 0); err != nil {
+		t.Fatalf("full upgrade from pre-054 malformed history: %v", err)
+	}
+	var version int
+	if err := f.pool.QueryRow(f.ctx, `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version < 57 {
+		t.Fatalf("migration version=%d, want at least 57", version)
+	}
+}
+
 func TestPhase62FeatureMigrationSeedsPendingRequirementsIntegration(t *testing.T) {
 	f := newPhase62MigrationFixture(t)
 

@@ -196,6 +196,16 @@ func (c *client) monitorStatus() (monitor.Status, error) {
 	return status, err
 }
 
+func (c *client) rebuildLineage(reason, requestID string) (core.LineageRebuildResult, error) {
+	if c.token == "" {
+		return core.LineageRebuildResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for lineage rebuild")
+	}
+	payload, _ := json.Marshal(core.LineageRebuildRequest{Reason: reason, RequestID: requestID})
+	var result core.LineageRebuildResult
+	err := c.do(http.MethodPost, "/v1/lineage/rebuild", payload, &result)
+	return result, err
+}
+
 func (c *client) resolveMonitorDrift(id, outcome string) (monitor.Drift, error) {
 	if c.token == "" {
 		return monitor.Drift{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for drift reconciliation")

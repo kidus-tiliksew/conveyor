@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
 			r.Get("/tasks/{id}/activity", s.getTaskActivity)
 			r.Get("/lineage/{type}/{id}", s.getLineage)
+			r.With(s.requireMutationAuth).Post("/lineage/rebuild", s.rebuildLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)
 			r.Get("/reviews", s.listReviews)

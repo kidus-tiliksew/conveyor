@@ -59,6 +59,20 @@ type LineageLink struct {
 	CreatedAt        time.Time       `json:"created_at"`
 }
 
+// LineageRebuildResult reports projection reconciliation without treating
+// retained, non-derived legacy links as event-derived graph state.
+type LineageRebuildResult struct {
+	Projected   int `json:"projected"`
+	Existing    int `json:"existing"`
+	Unsupported int `json:"unsupported"`
+	Ambiguous   int `json:"ambiguous"`
+}
+
+type LineageRebuildRequest struct {
+	Reason    string `json:"reason"`
+	RequestID string `json:"request_id"`
+}
+
 // LineageNode identifies one endpoint without implying a persisted record of
 // its own. Traversal is over event-provenanced links; nodes are only the
 // bounded read model needed to assemble context (spec §4.2 item 4).

@@ -1,14 +1,56 @@
 package postgres
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	controlstore "github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
+
+func TestFutureMigrationsDoNotWriteEvents(t *testing.T) {
+	files, err := fs.Glob(migrationFiles, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		version, err := migrationVersion(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version <= 54 {
+			continue
+		} // immutable historical exception is documented by migration 057 application audit.
+		raw, err := migrationFiles.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.ToLower(string(raw))
+		for _, forbidden := range []string{"insert into events", "update events", "delete from events"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s mutates the append-only event ledger via %q", name, forbidden)
+			}
+		}
+	}
+}
+
+func TestLineageMigrationVocabularyAgreesWithProjector(t *testing.T) {
+	canonical := controlstore.CanonicalLineageKinds()
+	for _, kind := range []string{"dispatches", "submitted_as", "produced_requirement", "produced_blueprint", "produced_verdict", "submitted_range"} {
+		if _, ok := canonical[kind]; !ok {
+			t.Fatalf("migration emits non-projector kind %q", kind)
+		}
+	}
+	for _, legacy := range []string{"executes_as", "produces", "delivered_by", "head", "implemented_by"} {
+		if _, ok := canonical[legacy]; ok {
+			t.Fatalf("legacy kind %q entered canonical vocabulary", legacy)
+		}
+	}
+}
 
 func TestMigrationVersion(t *testing.T) {
 	t.Parallel()
@@ -214,6 +256,41 @@ func TestPendingPhase62RepairPreservesDeployedMigrationBytes(t *testing.T) {
 	}
 	if migrationChecksum(repaired) == migrationChecksum(raw) {
 		t.Fatal("pending execution overlay unexpectedly equals immutable ledger bytes")
+	}
+}
+
+func TestPendingLineageProjectionGuardsHistoricalNumericPayloads(t *testing.T) {
+	for _, migration := range []struct {
+		version int
+		name    string
+		marker  string
+	}{
+		{version: 54, name: "migrations/054_lineage_projection.sql", marker: "Pending-054 safety overlay: guard historical numeric payloads"},
+		{version: 55, name: "migrations/055_blueprint_version_lineage.sql", marker: "Pending-055 safety overlay: guard historical numeric payloads"},
+	} {
+		raw, err := migrationFiles.ReadFile(migration.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repaired, err := repairPendingMigration(migration.version, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(repaired)
+		if !strings.Contains(text, migration.marker) {
+			t.Fatalf("pending-%d repair marker missing", migration.version)
+		}
+		for _, unsafe := range []string{
+			"COALESCE((event.payload_json ->> 'origin_spec_version')::integer",
+			"COALESCE((event.payload_json ->> 'version')::integer",
+		} {
+			if strings.Contains(text, unsafe) {
+				t.Fatalf("pending-%d repair retained unsafe cast %q", migration.version, unsafe)
+			}
+		}
+		if migrationChecksum(repaired) == migrationChecksum(raw) {
+			t.Fatalf("pending-%d execution overlay unexpectedly equals immutable ledger bytes", migration.version)
+		}
 	}
 }
 
