@@ -849,7 +849,7 @@ func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	if err := row.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
 		&currentVersion, &requirement.StatementHighWaterMark, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return core.Requirement{}, fmt.Errorf("requirement %s not found", id)
+			return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
 		}
 		return core.Requirement{}, err
 	}
@@ -862,7 +862,7 @@ func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 func scanRequirementVersion(row pgx.Row, requirementID string, version int) (core.RequirementVersion, error) {
 	stored, err := scanRequirementVersionRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.RequirementVersion{}, fmt.Errorf("requirement %s has no version %d", requirementID, version)
+		return core.RequirementVersion{}, fmt.Errorf("%w: requirement %s has no version %d", store.ErrNotFound, requirementID, version)
 	}
 	return stored, err
 }

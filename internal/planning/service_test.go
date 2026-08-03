@@ -316,12 +316,12 @@ func TestServiceRejectsMixedFinalizeBatchBeforeCapDegradation(t *testing.T) {
 		t.Fatalf("mixed finalize executed %d tools", st.listRequirementsCalls)
 	}
 	messages, listErr := underlying.ListPlanningMessages(ctx, session.ID)
-	if listErr != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageAssistant ||
+	if listErr != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageSystem ||
 		!strings.Contains(messages[1].Content, "finalize tool must be the only tool call") {
 		t.Fatalf("mixed finalize correction messages=%+v err=%v", messages, listErr)
 	}
 	assertChunkTypes(t, chunks,
-		"start", "start-step", "text-start", "text-delta", "text-end", "finish-step",
+		"start", "start-step", "system-correction", "finish-step",
 		"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish")
 }
 
@@ -482,8 +482,12 @@ func TestServiceCorrectsDuplicateAndUnpairableCallsInBand(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(messages[1].Content, tt.want) {
-				t.Fatalf("assistant correction not persisted: %+v", messages)
+			foundSystemCorrection := false
+			for _, message := range messages {
+				foundSystemCorrection = foundSystemCorrection || (message.Role == core.PlanningMessageSystem && strings.Contains(message.Content, tt.want))
+			}
+			if !foundSystemCorrection {
+				t.Fatalf("system correction not persisted: %+v", messages)
 			}
 			if tt.name == "duplicate id" {
 				if st.listRequirementsCalls != 1 {
@@ -512,7 +516,8 @@ func TestServiceCorrectsMalformedDecisionEnvelopeInBand(t *testing.T) {
 		t.Fatalf("malformed-envelope correction missing: inputs=%d", len(agent.inputs))
 	}
 	messages, err := st.ListPlanningMessages(ctx, session.ID)
-	if err != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageAssistant {
+	if err != nil || len(messages) != 3 || messages[1].Role != core.PlanningMessageSystem ||
+		!strings.Contains(string(messages[1].Parts), `"type":"system-correction"`) {
 		t.Fatalf("malformed-envelope transcript=%+v err=%v", messages, err)
 	}
 }
@@ -927,12 +932,9 @@ func TestPlanningRoleDocumentsEveryRegisteredTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(content)
-	if DefaultMaxCallsPerStep != 8 {
-		t.Fatalf("default max calls per step=%d, want 8", DefaultMaxCallsPerStep)
-	}
 	normalizedRole := strings.Join(strings.Fields(text), " ")
-	if !strings.Contains(normalizedRole, "Parallelize independent reads and searches, at most 8 tool calls per step.") {
-		t.Fatal("planning role does not disclose the default per-step tool-call cap")
+	if !strings.Contains(normalizedRole, "Parallelize independent reads and searches, at most {{MAX_CALLS_PER_STEP}} tool calls per step.") {
+		t.Fatal("planning role does not carry the per-step tool-call cap placeholder")
 	}
 	start := strings.Index(text, "Available tools and representative arguments:")
 	end := strings.Index(text, "Finalize a requirement only")
@@ -1587,7 +1589,7 @@ func TestServiceOpenGoalAcceptsEitherFinalizer(t *testing.T) {
 // reaches the agent before enforcement does (spec §21.57 change 3).
 func TestPlanningPromptStatesTheSessionGoal(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-prompt", core.PlanningGoalRequirement)
-	service := &Service{Store: st, Model: "planner", Prompt: testPlanningPrompt}
+	service := &Service{Store: st, Model: "planner", Prompt: testPlanningPrompt + " at most {{MAX_CALLS_PER_STEP}} tool calls", MaxCallsPerStep: 3}
 	prompt, err := service.prompt(ctx, session, nil, 1, DefaultMaxSteps)
 	if err != nil {
 		t.Fatal(err)
@@ -1603,6 +1605,38 @@ func TestPlanningPromptStatesTheSessionGoal(t *testing.T) {
 	if !strings.Contains(openPrompt, "This session's goal is open") ||
 		!strings.Contains(openPrompt, `"goal":"open"`) {
 		t.Fatalf("open-goal prompt=%s", openPrompt)
+	}
+	if !strings.Contains(prompt, "at most 3 tool calls") || strings.Contains(prompt, "{{MAX_CALLS_PER_STEP}}") {
+		t.Fatalf("planning prompt did not bind configured call limit:\n%s", prompt)
+	}
+}
+
+func TestServiceTreatsMissingResourceIDsAsRecoverable(t *testing.T) {
+	tests := []struct {
+		name string
+		call toolCall
+	}{
+		{"requirement", toolCall{ID: "call-missing", Name: "read_requirement", ArgumentsJSON: `{"requirement_id":"req-missing"}`}},
+		{"approved spec", toolCall{ID: "call-missing", Name: "read_approved_spec", ArgumentsJSON: `{"task_id":"task-missing"}`}},
+		{"artifact", toolCall{ID: "call-missing", Name: "read_artifact", ArgumentsJSON: `{"artifact_id":"artifact-missing"}`}},
+		{"lineage", toolCall{ID: "call-missing", Name: "read_task_lineage", ArgumentsJSON: `{"task_id":"task-missing"}`}},
+		{"revision", toolCall{ID: "call-missing", Name: "revise_requirement", ArgumentsJSON: `{"requirement_id":"req-missing","prose":"Revised intent.","statements":[{"id":"REQ-1","statement":"It works."}]}`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, st, session := planningFixture(t, "session-missing-"+strings.ReplaceAll(tt.name, " ", "-"))
+			agent := &scriptedAgent{outputs: []string{
+				decisionJSON(t, "", []toolCall{tt.call}),
+				decisionJSON(t, "I corrected the identifier after the in-band result.", nil),
+			}}
+			service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+			if err := service.Run(ctx, session.ID, UserMessage{Content: "Read it."}, func(map[string]any) error { return nil }); err != nil {
+				t.Fatalf("missing id aborted planning: %v", err)
+			}
+			if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "resource not found") || !strings.Contains(agent.inputs[1].Prompt, "missing") {
+				t.Fatalf("recoverable result omitted requested id: inputs=%d", len(agent.inputs))
+			}
+		})
 	}
 }
 

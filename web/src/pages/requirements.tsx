@@ -55,6 +55,11 @@ export function RequirementsPage() {
   // unknown and bounces to the first document, so the operator never reaches
   // the version they have to confirm.
   const adopting = useRef('')
+	const adoptingTimer = useRef<number | undefined>(undefined)
+	const [adoptionError, setAdoptionError] = useState('')
+	useEffect(() => () => {
+	  if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+	}, [])
   // Falling back to the first document must not close an open conversation
   // either: the corpus refetches while the sidebar is mid-session, so the
   // session parameter has to survive the redirect.
@@ -62,7 +67,9 @@ export function RequirementsPage() {
     if (!requirements?.length) return
     const adopted = adopting.current !== '' && adopting.current === selectedId
     if (requirements.some((item) => item.requirement.id === selectedId)) {
-      if (adopted) adopting.current = ''
+	  if (adopted) adopting.current = ''
+	  if (adopted && adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+	  if (adopted) setAdoptionError('')
       return
     }
     if (adopted) return
@@ -102,8 +109,15 @@ export function RequirementsPage() {
       void client.invalidateQueries({ queryKey: ['requirement', workspace, produced] })
       void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, produced] })
     }
-    if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
-      adopting.current = session.produced_requirement_id
+	if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
+	  adopting.current = session.produced_requirement_id
+	  setAdoptionError('')
+	  if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+	  adoptingTimer.current = window.setTimeout(() => {
+		if (adopting.current !== session.produced_requirement_id) return
+		adopting.current = ''
+		setAdoptionError(`The new requirement ${session.produced_requirement_id} did not appear in the corpus. Refresh or reopen the planning session.`)
+	  }, 10_000)
       void navigate({
         to: '/requirements',
         search: { requirement: session.produced_requirement_id, session: session.id },
@@ -165,7 +179,8 @@ export function RequirementsPage() {
           <div className="mx-auto max-w-4xl px-6 py-6">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
             {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
-            {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
+			{error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
+			{adoptionError && <EmptyMessage tone="failure">{adoptionError}</EmptyMessage>}
             {requirements?.length === 0 && (
               <Card className="mt-2 border-dashed">
                 <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">

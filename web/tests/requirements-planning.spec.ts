@@ -188,11 +188,34 @@ test('planning restores durable messages, tool markers, and streams a new turn',
       parts: [{ type: 'tool-input-available', toolName: 'read_approved_spec', toolCallId: 'call-1', input: { task_id: 'task-1' } }],
       workspace: 'demo', created_at: '2026-07-30T10:02:00Z',
     },
-    {
-      session_id: session.id, seq: 3, role: 'tool', content: '',
-      parts: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { title: 'Queue contract' } }],
-      workspace: 'demo', created_at: '2026-07-30T10:02:01Z',
-    },
+	{
+	  session_id: session.id, seq: 3, role: 'tool', content: '',
+	  parts: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { title: 'Queue contract' } }],
+	  workspace: 'demo', created_at: '2026-07-30T10:02:01Z',
+	},
+	{
+	  session_id: session.id, seq: 4, role: 'system', content: 'planning_step parse detail',
+	  parts: [{ type: 'system-correction', text: "The assistant's response needed correction — retrying.", detail: 'planning_step parse detail' }],
+	  workspace: 'demo', created_at: '2026-07-30T10:02:02Z',
+	},
+	{
+	  session_id: session.id, seq: 5, role: 'assistant', content: '',
+	  parts: [
+		{ type: 'tool-input-available', toolName: 'finalize_blueprint', toolCallId: 'call-corrected' },
+		{ type: 'tool-input-available', toolName: 'read_artifact', toolCallId: 'call-deferred' },
+		{ type: 'tool-input-available', toolName: 'read_requirement', toolCallId: 'call-failed' },
+	  ],
+	  workspace: 'demo', created_at: '2026-07-30T10:02:03Z',
+	},
+	{
+	  session_id: session.id, seq: 6, role: 'tool', content: '',
+	  parts: [
+		{ type: 'tool-output-error', toolCallId: 'call-corrected', output: { status: 'invalid' } },
+		{ type: 'tool-output-error', toolCallId: 'call-deferred', output: { status: 'deferred' } },
+		{ type: 'tool-output-error', toolCallId: 'call-failed', output: { status: 'failed' } },
+	  ],
+	  workspace: 'demo', created_at: '2026-07-30T10:02:04Z',
+	},
   ]
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -228,6 +251,12 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect(page.getByText('Plan bounded retries.')).toBeVisible()
   await expect(page.getByText('I found the approved queue contract.')).toBeVisible()
   await expect(page.getByText('read_approved_spec')).toBeVisible()
+	await expect(page.getByText("The assistant's response needed correction — retrying.")).toBeVisible()
+	await page.getByText('Technical details').click()
+	await expect(page.getByText('planning_step parse detail')).toBeVisible()
+	await expect(page.getByText('finalize_blueprint corrected')).toBeVisible()
+	await expect(page.getByText('read_artifact deferred')).toBeVisible()
+	await expect(page.getByText('read_requirement failed')).toBeVisible()
   await expect(page.getByLabel('read_approved_spec: complete')).toHaveCount(1)
   await expect(page.getByText(/Queue contract/)).toHaveCount(0)
   await expect(page.getByText('gpt-plan · high')).toBeVisible()

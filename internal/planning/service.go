@@ -11,6 +11,7 @@ import (
 	"io"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -320,7 +321,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		next, parseErr := parseDecision(result.Output)
 		if parseErr != nil {
-			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+			if err = s.persistSystemCorrection(runCtx, sessionID, emit,
 				"The planning decision was malformed: "+parseErr.Error()+
 					". Return one JSON object matching the planning_step schema and re-issue the corrected decision."); err != nil {
 				return err
@@ -334,7 +335,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			continue
 		}
 		if next.ResponseText == "" && len(next.ToolCalls) == 0 {
-			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+			if err = s.persistSystemCorrection(runCtx, sessionID, emit,
 				"The planning decision contained neither response text nor a tool call. Re-issue a corrected decision with one of them."); err != nil {
 				return err
 			}
@@ -348,7 +349,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 		}
 		finalizing := containsFinalize(next.ToolCalls)
 		if finalizing && len(next.ToolCalls) != 1 {
-			if err = s.persistAssistantCorrection(runCtx, sessionID, emit,
+			if err = s.persistSystemCorrection(runCtx, sessionID, emit,
 				"A finalize tool must be the only tool call in its planning step. Re-issue the finalize call by itself."); err != nil {
 				return err
 			}
@@ -423,24 +424,16 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			}
 			acceptedCalls = append(acceptedCalls, call)
 		}
-		if len(unpairedCorrections) != 0 {
-			correctionText := strings.Join(unpairedCorrections, " ")
-			insertion := 0
-			if next.ResponseText != "" {
-				insertion = 3
-			}
-			next.ResponseText = strings.TrimSpace(strings.Join([]string{next.ResponseText, correctionText}, "\n\n"))
-			correctionParts := planningTextParts(correctionText)
-			orderedParts := make([]map[string]any, 0, len(assistantParts)+len(correctionParts))
-			orderedParts = append(orderedParts, assistantParts[:insertion]...)
-			orderedParts = append(orderedParts, correctionParts...)
-			assistantParts = append(orderedParts, assistantParts[insertion:]...)
-		}
 		if _, err = s.Store.AppendPlanningMessage(runCtx, core.PlanningMessage{
 			SessionID: sessionID, Role: core.PlanningMessageAssistant,
 			Content: next.ResponseText, Parts: core.JSONPayload(assistantParts),
 		}); err != nil {
 			return err
+		}
+		if len(unpairedCorrections) != 0 {
+			if err = s.persistSystemCorrection(runCtx, sessionID, emit, strings.Join(unpairedCorrections, " ")); err != nil {
+				return err
+			}
 		}
 		for _, call := range acceptedCalls {
 			pending[call.ID] = call
@@ -628,7 +621,7 @@ func goalMismatchToolCallResult(call toolCall, goal core.PlanningSessionGoal, ex
 			"goal":              string(goal),
 			"expected_finalize": expected,
 			"received_finalize": call.Name,
-			"error": fmt.Sprintf("planning session goal %s does not accept %s", goal, call.Name),
+			"error":             fmt.Sprintf("planning session goal %s does not accept %s", goal, call.Name),
 			"message": fmt.Sprintf(
 				"This planning session's goal is %s, so %s is the only finalize tool it accepts; %s was not executed. Continue toward %s, then re-issue %s with a new unique call id.",
 				goal, expected, call.Name, expected, expected),
@@ -645,15 +638,18 @@ func planningTextParts(message string) []map[string]any {
 	}
 }
 
-func (s *Service) persistAssistantCorrection(
+func (s *Service) persistSystemCorrection(
 	ctx context.Context,
 	sessionID string,
 	emit Emitter,
 	message string,
 ) error {
-	parts := planningTextParts(message)
+	parts := []map[string]any{{
+		"type": "system-correction", "text": "The assistant's response needed correction — retrying.",
+		"detail": message,
+	}}
 	if _, err := s.Store.AppendPlanningMessage(ctx, core.PlanningMessage{
-		SessionID: sessionID, Role: core.PlanningMessageAssistant,
+		SessionID: sessionID, Role: core.PlanningMessageSystem,
 		Content: message, Parts: core.JSONPayload(parts),
 	}); err != nil {
 		return err
@@ -676,7 +672,7 @@ func (s *Service) finishStepLimit(
 		"Planning reached its bounded %d-step limit. The correction and tool results are preserved; send another message to continue from this transcript.",
 		maxSteps,
 	)
-	if err := s.persistAssistantCorrection(ctx, sessionID, emit, message); err != nil {
+	if err := s.persistSystemCorrection(ctx, sessionID, emit, message); err != nil {
 		return err
 	}
 	if err := emit(map[string]any{"type": "finish-step"}); err != nil {
@@ -717,6 +713,9 @@ func (e *planningInfrastructureError) Unwrap() error { return e.err }
 func planningStoreError(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return err
 	}
 	return &planningInfrastructureError{err: err}
 }
@@ -858,6 +857,11 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 	if role == "" {
 		return "", fmt.Errorf("planning role prompt is unavailable or empty")
 	}
+	maxCalls := s.MaxCallsPerStep
+	if maxCalls <= 0 {
+		maxCalls = DefaultMaxCallsPerStep
+	}
+	role = strings.ReplaceAll(role, "{{MAX_CALLS_PER_STEP}}", strconv.Itoa(maxCalls))
 	return role +
 		"\n\nConfigured workspace repositories: " + strings.Join(repositories, ", ") + "." +
 		"\n" + snapshotStatement +

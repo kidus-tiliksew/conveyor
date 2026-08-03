@@ -68,7 +68,7 @@ export function RequirementAssistant({
       <div className="shrink-0 border-b border-border px-4 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Assistant</p>
         <p className="mt-0.5 truncate text-xs text-muted">
-          {selected ? selected.requirement.title : 'No document open'}
+		  {session ? session.title || 'Untitled planning session' : selected ? selected.requirement.title : 'No document open'}
         </p>
       </div>
 

@@ -331,7 +331,8 @@ function Avatar({ kind }: { kind: 'assistant' | 'user' }) {
 type DisplayPart =
   | { kind: 'text'; text: string }
   | { kind: 'file'; name: string; contentType?: string }
-  | { kind: 'tool'; id: string; name: string; state: 'pending' | 'complete' | 'failed' }
+  | { kind: 'correction'; text: string; detail: string }
+  | { kind: 'tool'; id: string; name: string; state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'failed' }
 
 function normalizeParts(parts: PlanningMessagePart[], fallback: string): DisplayPart[] {
   const output: DisplayPart[] = []
@@ -343,6 +344,10 @@ function normalizeParts(parts: PlanningMessagePart[], fallback: string): Display
     else output.push({ kind: 'text', text })
   }
   for (const part of parts) {
+	if (part.type === 'system-correction') {
+	  output.push({ kind: 'correction', text: String(part.text || 'The assistant response needed correction — retrying.'), detail: String(part.detail || '') })
+	  continue
+	}
     if (part.type === 'text' || part.type === 'text-delta') {
       appendText(String(part.text || part.delta || ''))
       continue
@@ -354,28 +359,30 @@ function normalizeParts(parts: PlanningMessagePart[], fallback: string): Display
     if (!part.type.includes('tool') && part.type !== 'dynamic-tool') continue
     const id = String(part.toolCallId || `tool-${output.length}`)
     const previousIndex = tools.get(id)
-    const complete = part.type.includes('output') || part.state === 'output-available'
-    const failed = part.type.includes('error') || part.state === 'output-error'
+	const complete = part.type.includes('output') || part.state === 'output-available'
+	const status = typeof part.output === 'object' && part.output ? String((part.output as Record<string, unknown>).status || '') : ''
+	const nextState = status === 'invalid' ? 'corrected' : status === 'deferred' ? 'deferred' : part.type.includes('error') || part.state === 'output-error' ? 'failed' : complete ? 'complete' : 'pending'
     if (previousIndex != null) {
       const previous = output[previousIndex]
       if (previous.kind === 'tool') {
-        previous.state = failed ? 'failed' : complete ? 'complete' : previous.state
+		previous.state = nextState === 'pending' ? previous.state : nextState
         if (part.toolName) previous.name = String(part.toolName)
       }
     } else {
       tools.set(id, output.length)
-      output.push({ kind: 'tool', id, name: String(part.toolName || 'Planning tool'), state: failed ? 'failed' : complete ? 'complete' : 'pending' })
+	  output.push({ kind: 'tool', id, name: String(part.toolName || 'Planning tool'), state: nextState })
     }
   }
-  if (!output.some((part) => part.kind === 'text') && fallback) output.unshift({ kind: 'text', text: fallback })
+  if (!output.some((part) => part.kind === 'text' || part.kind === 'correction') && fallback) output.unshift({ kind: 'text', text: fallback })
   return output
 }
 
 function RenderedParts({ parts, fallback, role = 'assistant' }: { parts: PlanningMessagePart[]; fallback: string; role?: MessageGroup['role'] }) {
   const display = normalizeParts(parts, fallback)
   return <>{display.map((part, index) => {
-    if (part.kind === 'text') return <Bubble key={`text-${index}`} from={role}>{part.text}</Bubble>
-    if (part.kind === 'file') return <Attachment key={`file-${index}`} name={part.name} contentType={part.contentType} />
+	if (part.kind === 'text') return <Bubble key={`text-${index}`} from={role}>{part.text}</Bubble>
+	if (part.kind === 'file') return <Attachment key={`file-${index}`} name={part.name} contentType={part.contentType} />
+	if (part.kind === 'correction') return <Bubble key={`correction-${index}`} from="system"><span>{part.text}</span>{part.detail && <details className="mt-1 text-xs"><summary>Technical details</summary><pre className="mt-1 whitespace-pre-wrap">{part.detail}</pre></details>}</Bubble>
     return <Marker key={part.id} name={part.name} state={part.state} />
   })}</>
 }

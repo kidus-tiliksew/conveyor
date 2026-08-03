@@ -97,7 +97,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
 		],
 	} : taskId === 'markdown-summary' ? {
 		jobs: [{ id: 'markdown-summary-implement-1', task_id: taskId, stage: 'implement', harness: 'codex', model_tier: 'gpt-implement', runner: 'worker', confinement: 'none', cost_usd: 0, tokens_in: 0, tokens_out: 0, state: 'done', started_at: createdAt, ended_at: '2026-07-15T12:01:00Z' }],
-		events: [{ id: 1, task_id: taskId, job_id: 'markdown-summary-implement-1', kind: 'job.summary', actor_id: 'runner', actor_role: 'runner', payload: { summary: 'Validated `make build` while preserving context and <script data-summary-unsafe>window.hacked = true</script> as text.' }, at: '2026-07-15T12:01:00Z' }],
+		events: [{ id: 1, task_id: taskId, job_id: 'markdown-summary-implement-1', kind: 'job.summary', actor_id: 'runner', actor_role: 'runner', payload: { summary: '## Validation\n\nValidated `make build` while preserving _structured context_:\n\n- completed item\n\n<script data-summary-unsafe>window.hacked = true</script> as text.' }, at: '2026-07-15T12:01:00Z' }],
 		work_orders: [],
 	} : taskId === 'output-invalid' ? {
 		jobs: [
@@ -991,10 +991,13 @@ test('activity job summaries render inline code without enabling raw HTML', asyn
 	await page.goto('/tasks/markdown-summary/full')
 
 	const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-	const summary = timeline.locator('article').filter({ hasText: 'Validated make build while preserving context' })
+	const summary = timeline.locator('article').filter({ has: page.getByRole('heading', { name: 'Validation' }) })
 	await expect(summary).toHaveCount(1)
 	await expect(summary.locator('.markdown code')).toHaveText('make build')
-	await expect(summary).toContainText('Validated make build while preserving context and <script data-summary-unsafe>window.hacked = true</script> as text.')
+	await expect(summary.getByRole('heading', { name: 'Validation' })).toBeVisible()
+	await expect(summary.getByText('structured context', { exact: true })).toHaveCSS('font-style', 'italic')
+	await expect(summary.getByRole('listitem')).toHaveText('completed item')
+	await expect(summary).toContainText('<script data-summary-unsafe>window.hacked = true</script> as text.')
 	await expect(summary).not.toContainText('`')
 	await expect(summary.locator('script[data-summary-unsafe]')).toHaveCount(0)
 })
