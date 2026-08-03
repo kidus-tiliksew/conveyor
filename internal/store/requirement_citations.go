@@ -8,18 +8,26 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-const ServedRequirementAuthorityMaxNodes = 256
-
 type ServedRequirementsResult struct {
 	Requirements []core.ServedRequirementContext
-	Truncated    bool
-	Omitted      int
+}
+
+// AuthorityBudgetError is a stable fail-closed category. Callers surface it
+// through the ordinary needs-attention lifecycle so an operator can raise the
+// named workspace limit and redispatch the task.
+type AuthorityBudgetError struct {
+	TaskID string
+	Limit  int
+}
+
+func (e *AuthorityBudgetError) Error() string {
+	return fmt.Sprintf("served requirement authority for task %s exceeds authority_nodes=%d", e.TaskID, e.Limit)
 }
 
 // ServedRequirementsForTask resolves current confirmed requirement authority
 // through the bounded canonical graph used for model context (spec §4.2 item
 // 4; REQ-4). Unconfirmed and merely proposed serves relations project no edge.
-func ServedRequirementsForTask(ctx context.Context, st Store, taskID string) (ServedRequirementsResult, error) {
+func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, authorityNodes ...int) (ServedRequirementsResult, error) {
 	task, err := st.GetTask(ctx, taskID)
 	if err != nil {
 		return ServedRequirementsResult{}, err
@@ -29,7 +37,11 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string) (Se
 		roots = append(roots, core.LineageNode{Type: core.LineageBlueprint, ID: task.ParentTaskID})
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
-	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: ServedRequirementAuthorityMaxNodes, MaxLinks: ServedRequirementAuthorityMaxNodes * 4, Workspace: workspace}
+	limit := 256
+	if len(authorityNodes) > 0 && authorityNodes[0] > 0 {
+		limit = authorityNodes[0]
+	}
+	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: limit, MaxLinks: limit * 4, Workspace: workspace}
 	fetchBudget := budget
 	fetchBudget.MaxNodes++
 	fetchBudget.MaxLinks++
@@ -46,7 +58,7 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string) (Se
 		authorityTruncated = authorityTruncated || reason == "nodes" || reason == "links"
 	}
 	if authorityTruncated {
-		return ServedRequirementsResult{Truncated: true, Omitted: walk.OmittedNodes + walk.OmittedLinks}, fmt.Errorf("served requirement authority for task %s is truncated", taskID)
+		return ServedRequirementsResult{}, &AuthorityBudgetError{TaskID: taskID, Limit: limit}
 	}
 	governingBlueprints := map[string]bool{task.ID: true}
 	if task.ParentTaskID != "" {

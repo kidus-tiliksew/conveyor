@@ -1970,6 +1970,43 @@ func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.
 	}
 }
 
+func TestPlanningPromptReservesLargeLineageOverheadBeforeCompaction(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-large-lineage", Slug: "large-lineage", Title: "Large lineage"}, core.RequirementVersion{
+		Content: strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 3, Nodes: 32, RenderableBytes: 64 << 10}}}}}
+	service := &Service{Store: st, Prompt: testPlanningPrompt, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, MaxContextBytes: 1 << 20}
+	session := core.PlanningSession{ID: "session-large-lineage", RequirementContextID: requirement.ID}
+	baseline, err := service.prompt(ctx, session, nil, 1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("tool-result-", 2_000)
+	messages := []core.PlanningMessage{
+		{Role: core.PlanningMessageAssistant, Parts: core.JSONPayload([]map[string]any{{"type": "tool-input-available", "toolCallId": "call-large", "toolName": "grep", "input": map[string]any{"pattern": "lineage"}}})},
+		{Role: core.PlanningMessageTool, Content: large, Parts: core.JSONPayload([]map[string]any{{"type": "tool-output-available", "toolCallId": "call-large", "toolName": "grep", "output": large}})},
+	}
+	service.MaxContextBytes = len(baseline) + 2_048
+	prompt, err := service.prompt(ctx, session, messages, 1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompt) > service.MaxContextBytes || !strings.Contains(prompt, "Older exploration output was elided") || strings.Contains(prompt, large) {
+		t.Fatalf("prompt bytes=%d limit=%d was not compacted against remaining capacity", len(prompt), service.MaxContextBytes)
+	}
+	if messages[1].Content != large {
+		t.Fatal("durable input messages were mutated during prompt compaction")
+	}
+}
+
 func decisionJSON(t *testing.T, text string, calls []toolCall) string {
 	t.Helper()
 	if calls == nil {

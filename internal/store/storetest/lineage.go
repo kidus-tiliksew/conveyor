@@ -142,6 +142,14 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 	if repeated, repeatErr := st.CreateArtifact(ctx, core.Artifact{Name: "shared-farther.txt", ContentType: "text/plain", TaskID: dependencies[1].ID}, sharedContent); repeatErr != nil || repeated.ID != shared.ID {
 		t.Fatalf("deduplicated artifact=%+v err=%v, want id %s", repeated, repeatErr, shared.ID)
 	}
+	roleContent := []byte("same-owner-two-role-ordering")
+	roleArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "same-owner-context.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext, TaskID: rootID, CreatedAt: now}, roleContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated, repeatErr := st.CreateArtifact(ctx, core.Artifact{Name: "same-owner-output.txt", ContentType: "text/plain", Role: core.ArtifactRoleGeneratedOutput, TaskID: rootID, CreatedAt: now}, roleContent); repeatErr != nil || repeated.ID != roleArtifact.ID {
+		t.Fatalf("same-owner role artifact=%+v err=%v, want id %s", repeated, repeatErr, roleArtifact.ID)
+	}
 	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: config.DefaultLineageContextNodes, MaxLinks: config.DefaultLineageContextNodes * config.DefaultLineageContextLinksPerNode, Workspace: workspace}
 	links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, budget)
 	if err != nil {
@@ -171,7 +179,7 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 	for i, node := range graph.Nodes {
 		ranks[node.ID] = i
 	}
-	lastRank, sharedNear, sharedFar := -1, -1, -1
+	lastRank, sharedNear, sharedFar, outputRole, contextRole := -1, -1, -1, -1, -1
 	for i, artifact := range artifacts {
 		rank, ok := ranks[artifact.TaskID]
 		if !ok || rank < lastRank {
@@ -184,9 +192,18 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 		if artifact.ID == shared.ID && artifact.TaskID == dependencies[1].ID {
 			sharedFar = i
 		}
+		if artifact.ID == roleArtifact.ID && artifact.Role == core.ArtifactRoleGeneratedOutput {
+			outputRole = i
+		}
+		if artifact.ID == roleArtifact.ID && artifact.Role == core.ArtifactRoleTaskContext {
+			contextRole = i
+		}
 	}
 	if sharedNear < 0 || sharedFar < 0 || sharedNear >= sharedFar {
 		t.Fatalf("deduplicated artifact relation order near=%d farther=%d artifacts=%+v", sharedNear, sharedFar, artifacts)
+	}
+	if outputRole < 0 || contextRole < 0 || outputRole >= contextRole {
+		t.Fatalf("same-owner role order output=%d context=%d artifacts=%+v", outputRole, contextRole, artifacts)
 	}
 }
 

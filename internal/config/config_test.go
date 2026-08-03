@@ -37,14 +37,14 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 	}
 	planning := normalized.ExecutionSettings.ControlPlane.Planning
 	if planning.Model != "gpt" || planning.ExplorationOutputTokens != DefaultPlanningExplorationOutputTokens ||
-		planning.Context != (LineageContextSettings{Depth: DefaultLineageContextDepth, Nodes: DefaultLineageContextNodes, RenderableBytes: DefaultLineageContextRenderableBytes, ArtifactRefs: DefaultLineageContextArtifactRefs}) ||
+		planning.Context != (LineageContextSettings{Depth: DefaultLineageContextDepth, Nodes: DefaultLineageContextNodes, RenderableBytes: DefaultLineageContextRenderableBytes, ArtifactRefs: DefaultLineageContextArtifactRefs, AuthorityNodes: DefaultServedRequirementAuthorityNodes}) ||
 		!reflect.DeepEqual(normalized.PlanningModels, []string{"gpt"}) {
 		t.Fatalf("planning defaults=%+v allowlist=%v", planning, normalized.PlanningModels)
 	}
 
 	document := normalized.WorkspaceDocument()
 	planning = PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "15m", ExplorationOutputTokens: 2048,
-		Context: LineageContextSettings{Depth: 4, Nodes: 48, RenderableBytes: 128 << 10, ArtifactRefs: 24}}
+		Context: LineageContextSettings{Depth: 4, Nodes: 48, RenderableBytes: 128 << 10, ArtifactRefs: 24, AuthorityNodes: 96}}
 	document.ExecutionSettings.ControlPlane.Planning = planning
 	document.Setups[0].ExecutionSettings.ControlPlane.Planning = planning
 	document.PlanningModels = []string{"planner", "planner-alt"}
@@ -73,6 +73,9 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 		},
 		"non-positive context bytes": func(value *WorkspaceDocument) {
 			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.RenderableBytes = -1
+		},
+		"unsafe authority nodes": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.AuthorityNodes = MinServedRequirementAuthorityNodes - 1
 		},
 		"non-positive artifact refs": func(value *WorkspaceDocument) {
 			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.ArtifactRefs = -1

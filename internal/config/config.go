@@ -156,8 +156,10 @@ type ModelTimeoutSettings struct {
 
 const (
 	DefaultPlanningExplorationOutputTokens = 10_000
-	// Five edges cover requirement -> blueprint -> version -> child -> review
-	// evidence with one hop of margin for delivery context.
+	DefaultServedRequirementAuthorityNodes = 256
+	MinServedRequirementAuthorityNodes     = 8
+	// Depth is a reachability ceiling; the independent node cap remains the
+	// conservative fan-out bound and may truncate wide graphs before depth five.
 	DefaultLineageContextDepth           = 5
 	DefaultLineageContextNodes           = 32
 	DefaultLineageContextRenderableBytes = 256 << 10
@@ -173,6 +175,7 @@ type LineageContextSettings struct {
 	Nodes           int `yaml:"nodes" json:"nodes"`
 	RenderableBytes int `yaml:"renderable_bytes" json:"renderable_bytes"`
 	ArtifactRefs    int `yaml:"artifact_refs" json:"artifact_refs"`
+	AuthorityNodes  int `yaml:"authority_nodes" json:"authority_nodes"`
 }
 
 type PlanningSettings struct {
@@ -1008,6 +1011,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if planning.Context.ArtifactRefs <= 0 {
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.artifact_refs must be positive")
 	}
+	if planning.Context.AuthorityNodes < MinServedRequirementAuthorityNodes {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.authority_nodes must be at least %d", MinServedRequirementAuthorityNodes)
+	}
 	normalizedSettings.ControlPlane.Planning = planning
 	c.ExecutionSettings = normalizedSettings
 	repoNames := make(map[string]struct{}, len(c.Repos))
@@ -1083,6 +1089,18 @@ func defaultLineageContextSettings(settings *LineageContextSettings) {
 	if settings.ArtifactRefs == 0 {
 		settings.ArtifactRefs = DefaultLineageContextArtifactRefs
 	}
+	if settings.AuthorityNodes == 0 {
+		settings.AuthorityNodes = DefaultServedRequirementAuthorityNodes
+	}
+}
+
+func ServedRequirementAuthorityNodes(cfg *Config) int {
+	if cfg != nil && cfg.ExecutionSettings != nil {
+		if limit := cfg.ExecutionSettings.ControlPlane.Planning.Context.AuthorityNodes; limit > 0 {
+			return limit
+		}
+	}
+	return DefaultServedRequirementAuthorityNodes
 }
 
 func (c *Config) WorkspaceDocument() WorkspaceDocument {

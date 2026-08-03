@@ -219,6 +219,9 @@ func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage c
 }
 
 func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+	if _, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg)); err != nil {
+		return d.failAuthorityBudget(ctx, task, err)
+	}
 	prior, err := d.Store.ListTaskWorkOrders(ctx, task.ID)
 	if err != nil {
 		return err
@@ -388,6 +391,9 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute, reasonCode string) error {
+	if _, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg)); err != nil {
+		return d.failAuthorityBudget(ctx, task, err)
+	}
 	prior, err := d.Store.ListJobs(ctx, task.ID)
 	if err != nil {
 		return err
@@ -543,9 +549,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	if stage == core.StageReview {
 		role = pack.InProcessReviewRole(role)
 	}
-	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {
-		return inprocess.Input{}, fmt.Errorf("resolve served requirements for task %s: %w", task.ID, err)
+		return inprocess.Input{}, d.failAuthorityBudget(ctx, task, err)
 	}
 	servedRequirements := servedAuthority.Requirements
 	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
@@ -935,9 +941,9 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, invalid func(error) error) error {
-	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {
-		return fmt.Errorf("resolve served requirements for review: %w", err)
+		return d.failAuthorityBudget(ctx, task, err)
 	}
 	servedRequirements := servedAuthority.Requirements
 	if err = validateReviewCitations(&result, servedRequirements); err != nil {
@@ -1102,6 +1108,31 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 		d.Enqueue(ctx, taskID)
 	}
 	return nil
+}
+
+func (d *Dispatcher) failAuthorityBudget(ctx context.Context, task core.Task, cause error) error {
+	var budgetErr *store.AuthorityBudgetError
+	if !errors.As(cause, &budgetErr) {
+		return cause
+	}
+	_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "context.authority_budget_exceeded", Payload: core.JSONPayload(map[string]any{
+		"reason_code": "authority_budget_exceeded", "budget": "authority_nodes", "limit": budgetErr.Limit,
+		"remediation": "raise execution_settings.control_plane.planning.context.authority_nodes and redispatch",
+	})})
+	current, getErr := d.Store.GetTask(ctx, task.ID)
+	if getErr != nil {
+		return cause
+	}
+	if current.State == core.TaskQueued {
+		if _, transitionErr := taskops.New(d.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); transitionErr != nil {
+			return cause
+		}
+		current.State = core.TaskRunning
+	}
+	if current.State == core.TaskRunning {
+		_, _ = taskops.New(d.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskJobFail, RecoveryStage: current.NextStage, ProjectStages: true})
+	}
+	return cause
 }
 
 func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {

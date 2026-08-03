@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -530,8 +531,19 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
-	servedAuthority, err := store.ServedRequirementsForTask(ctx, s.Store, task.ID)
+	var cfg *config.Config
+	if s.ConfigProvider != nil {
+		cfg, err = s.config(ctx)
+		if err != nil {
+			return Context{}, err
+		}
+	}
+	servedAuthority, err := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {
+		var budgetErr *store.AuthorityBudgetError
+		if errors.As(err, &budgetErr) {
+			s.markAuthorityBudgetAttention(ctx, task, order.ID, budgetErr)
+		}
 		return Context{}, fmt.Errorf("resolve served requirements for task %s: %w", task.ID, err)
 	}
 	servedRequirements := servedAuthority.Requirements
@@ -617,6 +629,26 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) markAuthorityBudgetAttention(ctx context.Context, task core.Task, orderID string, budgetErr *store.AuthorityBudgetError) {
+	_ = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "context.authority_budget_exceeded", Payload: core.JSONPayload(map[string]any{
+		"reason_code": "authority_budget_exceeded", "budget": "authority_nodes", "limit": budgetErr.Limit,
+		"work_order_id": orderID, "remediation": "raise execution_settings.control_plane.planning.context.authority_nodes and redispatch",
+	})})
+	current, err := s.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return
+	}
+	if current.State == core.TaskQueued {
+		if _, err = taskops.New(s.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+			return
+		}
+		current.State = core.TaskRunning
+	}
+	if current.State == core.TaskRunning {
+		_, _ = taskops.New(s.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskJobFail, RecoveryStage: current.NextStage, ProjectStages: true})
+	}
 }
 
 func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID string) (ArtifactContent, error) {
