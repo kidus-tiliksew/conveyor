@@ -2685,13 +2685,16 @@ func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.Linea
 			}
 			if matched {
 				out = append(out, link)
-				artifactRanks[link.ID+"\x00"+string(link.Role)] = matchedRank
+				key := artifactLineageLinkKey(link)
+				if prior, exists := artifactRanks[key]; !exists || matchedRank < prior {
+					artifactRanks[key] = matchedRank
+				}
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		leftRank := artifactRanks[out[i].ID+"\x00"+string(out[i].Role)]
-		rightRank := artifactRanks[out[j].ID+"\x00"+string(out[j].Role)]
+		leftRank := artifactRanks[artifactLineageLinkKey(out[i])]
+		rightRank := artifactRanks[artifactLineageLinkKey(out[j])]
 		if leftRank != rightRank {
 			return leftRank < rightRank
 		}
@@ -2701,6 +2704,10 @@ func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.Linea
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+func artifactLineageLinkKey(artifact core.Artifact) string {
+	return strings.Join([]string{artifact.ID, string(artifact.Role), artifact.TaskID, artifact.FeatureID, artifact.RequirementID, artifact.PlanningSessionID}, "\x00")
 }
 
 func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {

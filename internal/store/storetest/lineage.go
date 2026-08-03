@@ -3,6 +3,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -54,6 +56,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertAbandonedDraftSupersession(t, st, ctx)
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "in-process")
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "external-mcp")
+	assertLineageArtifactOrderingAndBounds(t, st, ctx, fixture.Workspace)
 	wantExisting := 0
 	var assertLegacy func(*testing.T)
 	if fixture.SeedLegacy != nil {
@@ -88,6 +91,86 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		if after[key] != eventID {
 			t.Fatalf("edge %s provenance before=%d after=%d", key, eventID, after[key])
 		}
+	}
+}
+
+func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	now := time.Now().UTC()
+	rootID := core.NewTaskID()
+	root := core.Task{ID: rootID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + rootID, State: core.TaskRunning, CreatedAt: now}
+	if err := st.CreateTask(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	dependencies := make([]core.Task, 36)
+	for i := range dependencies {
+		id := core.NewTaskID()
+		dependencies[i] = core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: now.Add(time.Duration(i) * time.Second)}
+		if err := st.CreateTask(ctx, dependencies[i]); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AppendEvent(ctx, core.Event{TaskID: rootID, At: now.Add(time.Duration(i) * time.Second), Kind: "task.dependency_added", Payload: core.JSONPayload(map[string]any{
+			"task_id": rootID, "depends_on_task_id": id,
+		})}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("artifact-%02d.txt", i), ContentType: "text/plain", TaskID: id}, []byte(fmt.Sprintf("unique-%02d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sharedContent := []byte("content-deduplicated-artifact")
+	shared, err := st.CreateArtifact(ctx, core.Artifact{Name: "shared-near.txt", ContentType: "text/plain", TaskID: dependencies[0].ID}, sharedContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated, repeatErr := st.CreateArtifact(ctx, core.Artifact{Name: "shared-farther.txt", ContentType: "text/plain", TaskID: dependencies[1].ID}, sharedContent); repeatErr != nil || repeated.ID != shared.ID {
+		t.Fatalf("deduplicated artifact=%+v err=%v, want id %s", repeated, repeatErr, shared.ID)
+	}
+	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: config.DefaultLineageContextNodes, MaxLinks: config.DefaultLineageContextNodes * config.DefaultLineageContextLinksPerNode, Workspace: workspace}
+	links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := core.TraverseLineage(links, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.Truncated || len(graph.Nodes) != config.DefaultLineageContextNodes {
+		t.Fatalf("over-budget graph=%+v", graph)
+	}
+	invalid := core.LineageNode{Type: core.LineageNodeType("invalid"), ID: "must-not-match"}
+	withInvalid := append(append([]core.LineageNode(nil), graph.Nodes...), invalid)
+	artifacts, err := st.ListArtifactsForLineage(ctx, graph.Nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidArtifacts, err := st.ListArtifactsForLineage(ctx, withInvalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(artifacts, invalidArtifacts) {
+		t.Fatalf("invalid node changed artifact ordering:\nvalid=%+v\ninvalid=%+v", artifacts, invalidArtifacts)
+	}
+	ranks := make(map[string]int, len(graph.Nodes))
+	for i, node := range graph.Nodes {
+		ranks[node.ID] = i
+	}
+	lastRank, sharedNear, sharedFar := -1, -1, -1
+	for i, artifact := range artifacts {
+		rank, ok := ranks[artifact.TaskID]
+		if !ok || rank < lastRank {
+			t.Fatalf("artifact order diverged at %d (%+v), rank=%d after %d", i, artifact, rank, lastRank)
+		}
+		lastRank = rank
+		if artifact.ID == shared.ID && artifact.TaskID == dependencies[0].ID {
+			sharedNear = i
+		}
+		if artifact.ID == shared.ID && artifact.TaskID == dependencies[1].ID {
+			sharedFar = i
+		}
+	}
+	if sharedNear < 0 || sharedFar < 0 || sharedNear >= sharedFar {
+		t.Fatalf("deduplicated artifact relation order near=%d farther=%d artifacts=%+v", sharedNear, sharedFar, artifacts)
 	}
 }
 

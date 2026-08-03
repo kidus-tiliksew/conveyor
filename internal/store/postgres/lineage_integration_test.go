@@ -3,6 +3,7 @@ package postgres
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,42 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestListArtifactsForLineagePlanUsesTypedIndexes(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	conn, err := st.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err = conn.Exec(ctx, "SET enable_seqscan=off"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := conn.Query(ctx, "EXPLAIN (COSTS OFF) "+listArtifactsForLineageSQL, workspace,
+		[]string{"task", "requirement", "planning_session", "evidence"}, []string{"task-id", "req-id", "session-id", "artifact-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var planLines []string
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		planLines = append(planLines, line)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Join(planLines, "\n")
+	for _, index := range []string{"artifact_links_task_unique", "artifact_links_requirement_unique", "artifact_links_planning_session_unique", "artifact_links_lineage_evidence_idx"} {
+		if !strings.Contains(plan, index) {
+			t.Fatalf("lineage artifact plan omitted %s:\n%s", index, plan)
+		}
+	}
+}
 
 func TestPostgresLineageRebuildPreservesLiveShapedUnregenerableLinks(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
