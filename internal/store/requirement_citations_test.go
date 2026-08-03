@@ -1,8 +1,8 @@
 package store
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,15 +16,17 @@ func TestServedRequirementsForTaskReportsAuthorityTruncation(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < ServedRequirementAuthorityMaxNodes; i++ {
+	const authorityNodes = 8
+	for i := 0; i < authorityNodes; i++ {
 		if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{
 			"requirement_id": fmt.Sprintf("req-%03d", i),
 		})}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	result, err := ServedRequirementsForTask(ctx, st, task.ID)
-	if err == nil || !result.Truncated || result.Omitted == 0 || !strings.Contains(err.Error(), "authority") {
-		t.Fatalf("result=%+v err=%v", result, err)
+	_, err := ServedRequirementsForTask(ctx, st, task.ID, authorityNodes)
+	var budgetErr *AuthorityBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.Limit != authorityNodes || budgetErr.TaskID != task.ID {
+		t.Fatalf("budget error=%+v err=%v", budgetErr, err)
 	}
 }

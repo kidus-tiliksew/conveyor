@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	DefaultContextArtifactMaxRefs       = 64
-	ContextArtifactProtectedTierMaxRefs = 16
+	DefaultContextArtifactMaxRefs        = 64
+	ContextArtifactProtectedTierMaxRefs  = 16
+	DefaultContextArtifactTraversalDepth = 5
+	DefaultContextArtifactTraversalNodes = 32
 )
 
 // LineageNodeType names a durable node class in the Phase 6 knowledge graph
@@ -148,7 +150,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	}
 	budget := opts.Budget
 	if budget.MaxDepth == 0 && budget.MaxNodes == 0 {
-		budget.MaxDepth, budget.MaxNodes = 5, 32
+		budget.MaxDepth, budget.MaxNodes = DefaultContextArtifactTraversalDepth, DefaultContextArtifactTraversalNodes
 	}
 	budget.Workspace = opts.Workspace
 	traversal, err := TraverseLineage(links, roots, budget)

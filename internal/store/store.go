@@ -2692,14 +2692,14 @@ func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.Linea
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		leftRank := artifactRanks[artifactLineageLinkKey(out[i])]
 		rightRank := artifactRanks[artifactLineageLinkKey(out[j])]
 		if leftRank != rightRank {
 			return leftRank < rightRank
 		}
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return artifactLineageLinkKey(out[i]) < artifactLineageLinkKey(out[j])
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})

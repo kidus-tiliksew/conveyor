@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,9 +18,59 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+func TestGetWorkOrderSurfacesAuthorityBudgetAsNeedsAttention(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "authority-attention", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < config.MinServedRequirementAuthorityNodes; index++ {
+		if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": fmt.Sprintf("req-%02d", index)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := core.Job{ID: "authority-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: "authority-order", TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "authority-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{AuthorityNodes: config.MinServedRequirementAuthorityNodes}}}}}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	if _, err = service.Get(ctx, order.ID, "authority-session"); err == nil || !strings.Contains(err.Error(), "authority_nodes=8") {
+		t.Fatalf("get error=%v", err)
+	}
+	updated, err := st.GetTask(ctx, task.ID)
+	if err != nil || updated.State != core.TaskAwaiting || updated.RecoveryStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", updated, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		found = found || event.Kind == "context.authority_budget_exceeded" && strings.Contains(string(event.Payload), `"reason_code":"authority_budget_exceeded"`) && strings.Contains(string(event.Payload), `"limit":8`)
+	}
+	if !found {
+		t.Fatalf("authority attention event missing: %+v", events)
+	}
+}
 
 type blockingObservationStore struct {
 	store.Store
