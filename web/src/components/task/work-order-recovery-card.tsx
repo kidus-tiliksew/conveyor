@@ -9,11 +9,28 @@ import { Button } from '../ui/button'
 
 export function hasWorkerRecovery(item: ActivityItem) {
   const state = deriveCurrentExecutionState(item)
-  return state != null && state.kind !== 'running' && state.kind !== 'dependency_waiting' && state.kind !== 'dependency_attention'
+  return (
+    state != null &&
+    state.kind !== 'running' &&
+    state.kind !== 'dependency_waiting' &&
+    state.kind !== 'dependency_attention'
+  )
 }
 
-export function WorkOrderRecoveryCard({ item, state = deriveCurrentExecutionState(item) }: { item: ActivityItem; state?: CurrentExecutionState }) {
-  if (!state || state.kind === 'running' || state.kind === 'dependency_waiting' || state.kind === 'dependency_attention') return null
+export function WorkOrderRecoveryCard({
+  item,
+  state = deriveCurrentExecutionState(item),
+}: {
+  item: ActivityItem
+  state?: CurrentExecutionState
+}) {
+  if (
+    !state ||
+    state.kind === 'running' ||
+    state.kind === 'dependency_waiting' ||
+    state.kind === 'dependency_attention'
+  )
+    return null
   return <RecoveryState item={item} state={state} />
 }
 
@@ -52,13 +69,17 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
           <Clock3 className="size-4 text-primary" aria-hidden />
           {order.next_retry_at ? `Retrying in ${retryCountdown(order.next_retry_at, now)}` : 'Retrying automatically'}
         </p>
-        <p>Conveyor will start the next attempt automatically. No recovery action is available while this retry is pending.</p>
+        <p>
+          Conveyor will start the next attempt automatically. No recovery action is available while this retry is
+          pending.
+        </p>
       </div>
     )
   }
 
   const checkoutBlocked = state.kind === 'checkout_blocked'
-  const actionLabel = state.action === 'retry_implementation' || checkoutBlocked ? 'Retry implementation' : 'Recover work order'
+  const actionLabel =
+    state.action === 'retry_implementation' || checkoutBlocked ? 'Retry implementation' : 'Recover work order'
   const canRecover = Boolean(token) && !mutation.isPending && (!checkoutBlocked || checkoutResolved)
   return (
     <div className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3">
@@ -71,15 +92,27 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
       </div>
       {order.last_failure_detail && (
         <details className="text-xs text-muted">
-          <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical details</summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">{order.last_failure_detail}</pre>
+          <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+            Show technical details
+          </summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">
+            {order.last_failure_detail}
+          </pre>
         </details>
       )}
       {checkoutBlocked && (
         <div className="space-y-2 text-xs leading-5 text-muted">
-          <p>Review the affected files, then commit, stash, or otherwise resolve those changes in the primary checkout. Conveyor will not clean, commit, stash, or discard them.</p>
+          <p>
+            Review the affected files, then commit, stash, or otherwise resolve those changes in the primary checkout.
+            Conveyor will not clean, commit, stash, or discard them.
+          </p>
           <label className="flex cursor-pointer items-start gap-2 rounded border border-attention/30 bg-surface/60 p-2 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-            <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={checkoutResolved} onChange={(event) => setCheckoutResolved(event.target.checked)} />
+            <input
+              type="checkbox"
+              className="mt-0.5 size-4 accent-primary"
+              checked={checkoutResolved}
+              onChange={(event) => setCheckoutResolved(event.target.checked)}
+            />
             <span>I resolved the primary checkout changes.</span>
           </label>
         </div>

@@ -24,7 +24,7 @@ export function readThemeChoice(storage?: Pick<Storage, 'getItem'>): ThemeChoice
 
 export function persistThemeChoice(choice: ThemeChoice, storage?: Pick<Storage, 'setItem'>) {
   try {
-    (storage ?? window.localStorage).setItem(THEME_STORAGE_KEY, choice)
+    ;(storage ?? window.localStorage).setItem(THEME_STORAGE_KEY, choice)
   } catch {
     // Local preferences are best-effort; an unavailable store must not break the dashboard.
   }

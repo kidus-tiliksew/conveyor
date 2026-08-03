@@ -15,7 +15,7 @@ export function useTaskDetail(taskId: string) {
     queryFn: () => fetchTaskActivity(taskId),
     // A dependency can merge without emitting an event on this task. Poll only
     // while the task reports active blockers; SSE remains the fast path.
-    refetchInterval: (current) => (current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false,
+    refetchInterval: (current) => ((current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false),
   })
   useTaskStream(taskId, workspace)
   return query

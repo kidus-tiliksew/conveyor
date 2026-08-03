@@ -61,7 +61,11 @@ export function BoardColumn({
         <Icon className="size-3.5 shrink-0 text-muted" />
         <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
         <span className="font-mono text-[11px] text-faint">{items.length}</span>
-        {attention > 0 && groupKey !== 'human' && <Badge variant="attention" className="ml-auto">{attention}</Badge>}
+        {attention > 0 && groupKey !== 'human' && (
+          <Badge variant="attention" className="ml-auto">
+            {attention}
+          </Badge>
+        )}
       </header>
       {!idle && (
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
@@ -69,7 +73,9 @@ export function BoardColumn({
             <TaskCard key={item.task.id} item={item} selected={item.task.id === selectedId} />
           ))}
           {items.length > visible.length && (
-            <p className="px-2 py-1.5 text-center text-xs text-faint">+{items.length - visible.length} more completed</p>
+            <p className="px-2 py-1.5 text-center text-xs text-faint">
+              +{items.length - visible.length} more completed
+            </p>
           )}
         </div>
       )}

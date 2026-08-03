@@ -1,6 +1,14 @@
 import { cn } from '../../lib/utils'
 
-export function Switch({ checked, onChange, 'aria-label': ariaLabel }: { checked: boolean; onChange: (value: boolean) => void; 'aria-label'?: string }) {
+export function Switch({
+  checked,
+  onChange,
+  'aria-label': ariaLabel,
+}: {
+  checked: boolean
+  onChange: (value: boolean) => void
+  'aria-label'?: string
+}) {
   return (
     <button
       type="button"
@@ -13,7 +21,12 @@ export function Switch({ checked, onChange, 'aria-label': ariaLabel }: { checked
         checked ? 'bg-primary' : 'bg-edge',
       )}
     >
-      <span className={cn('absolute left-0.5 top-0.5 size-3.5 rounded-full bg-white shadow-sm transition-transform', checked && 'translate-x-3.5')} />
+      <span
+        className={cn(
+          'absolute left-0.5 top-0.5 size-3.5 rounded-full bg-white shadow-sm transition-transform',
+          checked && 'translate-x-3.5',
+        )}
+      />
     </button>
   )
 }

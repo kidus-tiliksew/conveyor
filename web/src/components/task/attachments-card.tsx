@@ -30,7 +30,9 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
     const created: string[] = []
     setUrls({})
     setFailed({})
-    for (const attachment of attachments.filter((entry) => isImage(entry.content_type) || isVideo(entry.content_type))) {
+    for (const attachment of attachments.filter(
+      (entry) => isImage(entry.content_type) || isVideo(entry.content_type),
+    )) {
       void fetchArtifactObjectURL(token, attachment)
         .then((url) => {
           if (!active) {
@@ -145,12 +147,7 @@ function AttachmentTile({
 
 function TileIcon({ image, video, loading }: { image: boolean; video: boolean; loading: boolean }) {
   const Icon = image ? ImageIcon : video ? Video : FileText
-  return (
-    <Icon
-      className={cn('size-6 text-faint', loading && 'animate-pulse')}
-      aria-hidden="true"
-    />
-  )
+  return <Icon className={cn('size-6 text-faint', loading && 'animate-pulse')} aria-hidden="true" />
 }
 
 function AttachmentDialog({
@@ -177,7 +174,8 @@ function AttachmentDialog({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-foreground">{attachment.name}</p>
           <p className="font-mono text-[11px] text-faint">
-            {attachment.content_type || 'unknown'} · {formatBytes(attachment.size_bytes)} · {absoluteTime(attachment.created_at)}
+            {attachment.content_type || 'unknown'} · {formatBytes(attachment.size_bytes)} ·{' '}
+            {absoluteTime(attachment.created_at)}
           </p>
         </div>
         <Button
@@ -199,7 +197,13 @@ function AttachmentDialog({
           <img src={previewURL} alt={attachment.name} className="max-h-[70vh] w-auto rounded-md object-contain" />
         ) : showVideo ? (
           /* biome-ignore lint/a11y/useMediaCaption: uploaded evidence may not include a caption track; download remains available */
-          <video src={previewURL} aria-label={attachment.name} controls preload="metadata" className="max-h-[70vh] w-full rounded-md" />
+          <video
+            src={previewURL}
+            aria-label={attachment.name}
+            controls
+            preload="metadata"
+            className="max-h-[70vh] w-full rounded-md"
+          />
         ) : (
           <div className="flex flex-col items-center gap-3 py-8 text-center">
             <FileText className="size-10 text-faint" aria-hidden="true" />

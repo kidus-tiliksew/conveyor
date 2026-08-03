@@ -32,16 +32,31 @@ export function MermaidBlock({ source }: { source: string }) {
     let active = true
     setSvg(undefined)
     setFailed(false)
-    mermaid.render(id, source).then(({ svg: rendered }) => {
-      if (active) setSvg(rendered)
-    }).catch(() => {
-      if (active) setFailed(true)
-    })
-    return () => { active = false }
+    mermaid
+      .render(id, source)
+      .then(({ svg: rendered }) => {
+        if (active) setSvg(rendered)
+      })
+      .catch(() => {
+        if (active) setFailed(true)
+      })
+    return () => {
+      active = false
+    }
   }, [id, source])
 
-  if (failed) return <pre><code className="language-mermaid">{source}</code></pre>
-  if (!svg) return <pre><code className="language-mermaid">{source}</code></pre>
+  if (failed)
+    return (
+      <pre>
+        <code className="language-mermaid">{source}</code>
+      </pre>
+    )
+  if (!svg)
+    return (
+      <pre>
+        <code className="language-mermaid">{source}</code>
+      </pre>
+    )
   return <div className="my-4 overflow-x-auto" data-mermaid dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
@@ -119,7 +134,9 @@ export function SpecCard({
         )}
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-faint">
-            {spec.approved && spec.approved_at ? `approved ${absoluteTime(spec.approved_at)}` : `drafted ${absoluteTime(spec.created_at)}`}
+            {spec.approved && spec.approved_at
+              ? `approved ${absoluteTime(spec.approved_at)}`
+              : `drafted ${absoluteTime(spec.created_at)}`}
           </span>
           <Badge variant={spec.approved ? 'positive' : 'attention'}>
             {spec.approved ? 'Approved' : 'Awaiting approval'}
@@ -140,10 +157,16 @@ export function SpecCard({
                     code({ className, children, ...props }) {
                       const source = String(children).replace(/\n$/, '')
                       if (className === 'language-mermaid') return <MermaidBlock source={source} />
-                      return <code className={className} {...props}>{children}</code>
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      )
                     },
                   }}
-                >{prose}</MarkdownProse>
+                >
+                  {prose}
+                </MarkdownProse>
                 {criteria.length > 0 && (
                   <div className="mt-5 border-t border-border pt-4">
                     <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
@@ -165,14 +188,24 @@ export function SpecCard({
                         <li key={item.id} className="flex items-baseline gap-2 text-sm">
                           <Badge variant="mono">{item.id}</Badge>
                           {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) ? (
-                            <Link to={relatedRoute} params={{ taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!.id }} className="text-primary hover:underline">
+                            <Link
+                              to={relatedRoute}
+                              params={{
+                                taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!
+                                  .id,
+                              }}
+                              className="text-primary hover:underline"
+                            >
                               {item.summary}
                             </Link>
-                          ) : <span className="text-foreground/85">{item.summary}</span>}
+                          ) : (
+                            <span className="text-foreground/85">{item.summary}</span>
+                          )}
                           <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
                             {item.repo}
                             {item.depends_on?.length ? ` ← ${item.depends_on.join(', ')}` : ''}
-                            {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) && ` · ${taskStateLabels[spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state] ?? spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state}`}
+                            {spec.materialized_children?.find((child) => child.origin_sub_id === item.id) &&
+                              ` · ${taskStateLabels[spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state] ?? spec.materialized_children.find((child) => child.origin_sub_id === item.id)!.state}`}
                           </span>
                         </li>
                       ))}
@@ -198,7 +231,11 @@ export function SpecCard({
                 className="flex w-full items-center justify-center gap-1.5 rounded-b-md py-2 text-xs font-medium text-primary hover:bg-primary-soft focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                 onClick={() => setContentExpanded((value) => !value)}
               >
-                {overflowExpanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+                {overflowExpanded ? (
+                  <ChevronUp aria-hidden="true" className="size-3.5" />
+                ) : (
+                  <ChevronDown aria-hidden="true" className="size-3.5" />
+                )}
                 {overflowExpanded ? 'Show less' : 'Show more'}
               </button>
             </div>
@@ -213,7 +250,12 @@ function CriterionRow({ criterion }: { criterion: AcceptanceCriterion }) {
   const Icon = verifyIcons[criterion.verify] ?? FlaskConical
   const human = criterion.verify === 'human'
   return (
-    <li className={cn('flex items-start gap-2.5 rounded-md border px-3 py-2', human ? 'border-edge bg-raised/40' : 'border-border')}>
+    <li
+      className={cn(
+        'flex items-start gap-2.5 rounded-md border px-3 py-2',
+        human ? 'border-edge bg-raised/40' : 'border-border',
+      )}
+    >
       <Icon className={cn('mt-0.5 size-4 shrink-0', human ? 'text-foreground' : 'text-faint')} />
       <div className="min-w-0">
         <p className="text-sm leading-6 text-foreground/90">{criterion.criterion}</p>

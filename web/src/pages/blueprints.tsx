@@ -34,7 +34,9 @@ export function BlueprintsPage() {
 
         {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
         {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
-        {error != null && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>}
+        {error != null && (
+          <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
+        )}
 
         {blueprints?.length === 0 && (
           <Card className="mt-8 border-dashed">
@@ -45,7 +47,9 @@ export function BlueprintsPage() {
                 A blueprint appears here once an approved plan fans out into child tasks. Plan one to get started.
               </p>
               <Link to="/planning" className="mt-5 inline-block">
-                <Button tabIndex={-1}>Plan a blueprint <ArrowRight /></Button>
+                <Button tabIndex={-1}>
+                  Plan a blueprint <ArrowRight />
+                </Button>
               </Link>
             </CardContent>
           </Card>
@@ -83,13 +87,22 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
         <p className="mt-1.5 text-xs text-muted">{childRollup(view.delivery)}</p>
         {view.planning_session?.model && (
           <p className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-faint">
-            <Badge variant="mono">{view.planning_session.model}{view.planning_session.effort ? ` · ${view.planning_session.effort}` : ''}</Badge>
-            {view.planning_session.exploration_output_tokens
-              ? <Badge variant="mono">{view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
-              : null}
-            {Object.entries(view.planning_session.pinned_revisions ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([repo, revision]) => (
-              <Badge key={repo} variant="mono">{repo}@{revision.slice(0, 12)}</Badge>
-            ))}
+            <Badge variant="mono">
+              {view.planning_session.model}
+              {view.planning_session.effort ? ` · ${view.planning_session.effort}` : ''}
+            </Badge>
+            {view.planning_session.exploration_output_tokens ? (
+              <Badge variant="mono">
+                {view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call
+              </Badge>
+            ) : null}
+            {Object.entries(view.planning_session.pinned_revisions ?? {})
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([repo, revision]) => (
+                <Badge key={repo} variant="mono">
+                  {repo}@{revision.slice(0, 12)}
+                </Badge>
+              ))}
           </p>
         )}
         {view.serves.length > 0 && (
@@ -97,7 +110,9 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
             <FileText className="size-3 shrink-0" aria-hidden="true" />
             <span>Serves</span>
             {view.serves.map((requirement) => (
-              <Badge key={requirement.id} variant="accent">{requirement.title}</Badge>
+              <Badge key={requirement.id} variant="accent">
+                {requirement.title}
+              </Badge>
             ))}
           </p>
         )}
@@ -108,5 +123,11 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
 }
 
 function EmptyMessage({ children, tone = 'muted' }: { children: string; tone?: 'muted' | 'failure' }) {
-  return <p className={`mt-8 rounded-md border border-border p-4 text-sm ${tone === 'failure' ? 'text-failure' : 'text-muted'}`}>{children}</p>
+  return (
+    <p
+      className={`mt-8 rounded-md border border-border p-4 text-sm ${tone === 'failure' ? 'text-failure' : 'text-muted'}`}
+    >
+      {children}
+    </p>
+  )
 }

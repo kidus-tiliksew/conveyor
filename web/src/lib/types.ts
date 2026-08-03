@@ -11,21 +11,9 @@ export type TaskState =
   | 'closed'
   | 'parked'
 
-export type Stage =
-  | 'triage'
-  | 'spec'
-  | 'implement'
-  | 'review'
-  | 'verify'
-  | 'gate'
-  | 'merge'
-  | 'monitor'
+export type Stage = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'gate' | 'merge' | 'monitor'
 
-export type JobState =
-  | 'pending'
-  | 'running'
-  | 'done'
-  | 'failed'
+export type JobState = 'pending' | 'running' | 'done' | 'failed'
 
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
 
@@ -124,11 +112,23 @@ export interface TaskEvent {
 }
 
 export type LineageNodeType =
-  | 'planning_session' | 'requirement' | 'requirement_version'
-  | 'blueprint' | 'blueprint_version' | 'task' | 'work_order'
-  | 'pull_request' | 'commit_range' | 'evidence' | 'verdict'
+  | 'planning_session'
+  | 'requirement'
+  | 'requirement_version'
+  | 'blueprint'
+  | 'blueprint_version'
+  | 'task'
+  | 'work_order'
+  | 'pull_request'
+  | 'commit_range'
+  | 'evidence'
+  | 'verdict'
 
-export interface LineageNode { type: LineageNodeType; id: string; label?: string }
+export interface LineageNode {
+  type: LineageNodeType
+  id: string
+  label?: string
+}
 export interface LineageLink {
   workspace: string
   src_type: LineageNodeType
@@ -201,16 +201,16 @@ export interface ActivitySummary {
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
-	stalled?: StalledState
+  stalled?: StalledState
 }
 
 export interface StalledState {
-	needed: boolean
-	reason: string
-	work_order: WorkOrder
-	last_failure?: string
-	blocking_task_ids?: string[]
-	unsatisfiable_edge?: boolean
+  needed: boolean
+  reason: string
+  work_order: WorkOrder
+  last_failure?: string
+  blocking_task_ids?: string[]
+  unsatisfiable_edge?: boolean
 }
 
 export interface ForgeFailure {
@@ -347,36 +347,36 @@ export interface ExecutionPolicy {
 }
 
 export interface WorkspaceExecutionSettings {
-    control_plane: {
-      triage: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
-      planning: {
-        model: string
-        effort?: 'minimal' | 'low' | 'medium' | 'high'
-        timeout: string
-        exploration_output_tokens: number
-        context?: { depth: number; nodes: number; renderable_bytes: number }
-      }
-    }
-    spec: {
-      harness: string
-      model?: string
-      model_policy: 'explicit' | 'harness_default'
-      effort?: 'low' | 'medium' | 'high'
+  control_plane: {
+    triage: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
+    planning: {
+      model: string
+      effort?: 'minimal' | 'low' | 'medium' | 'high'
       timeout: string
+      exploration_output_tokens: number
+      context?: { depth: number; nodes: number; renderable_bytes: number }
     }
-    implementation: {
-      harness: string
-      model?: string
-      model_policy: 'explicit' | 'harness_default'
-	  effort?: 'low' | 'medium' | 'high'
-      timeout: string
-    }
-    review: {
-      execution: 'in_process' | 'mcp'
-      timeout: string
-      fallback_model?: string
-      fallback_harness?: string
-    }
+  }
+  spec: {
+    harness: string
+    model?: string
+    model_policy: 'explicit' | 'harness_default'
+    effort?: 'low' | 'medium' | 'high'
+    timeout: string
+  }
+  implementation: {
+    harness: string
+    model?: string
+    model_policy: 'explicit' | 'harness_default'
+    effort?: 'low' | 'medium' | 'high'
+    timeout: string
+  }
+  review: {
+    execution: 'in_process' | 'mcp'
+    timeout: string
+    fallback_model?: string
+    fallback_harness?: string
+  }
 }
 
 export interface ExecutionSetup {
@@ -443,14 +443,63 @@ export interface MonitorStatus {
   activity: Array<{ id: number; workspace_id: string; kind: string; payload: Record<string, unknown>; at: string }>
 }
 
-export interface HarnessProbe { harness: string; healthy: boolean; message?: string; checked_at: string }
-export interface Worker { id: string; workspace: string; name: string; lease_expires_at?: string; last_seen_at?: string; revoked_at?: string; probes: HarnessProbe[]; created_at: string }
-export interface RateLimitStatus { status: string; limit?: number; remaining?: number; reset_at?: string }
-export interface RateLimitHealth { work_order_id: string; worker_id?: string; harness: string; model?: string; rate_limit: RateLimitStatus; observed_at: string }
-export interface HarnessModelFailure { harness: string; model: string; detail: string; work_order_id: string; observed_at: string }
-export interface SetupServiceability { auto_available: boolean; auto_unavailable_reason?: string; model_failures?: HarnessModelFailure[] }
-export interface WorkerList { workers: Worker[]; auto_available: boolean; auto_unavailable_reason?: string; setup_serviceability?: Record<string, SetupServiceability>; rate_limits?: RateLimitHealth[] }
-export interface TaskWorkerStatus { available: boolean; required_harnesses: string[]; reason: string; last_heartbeat_at?: string; last_heartbeat_age?: string; queue_context: 'never_started' | 'interrupted' }
+export interface HarnessProbe {
+  harness: string
+  healthy: boolean
+  message?: string
+  checked_at: string
+}
+export interface Worker {
+  id: string
+  workspace: string
+  name: string
+  lease_expires_at?: string
+  last_seen_at?: string
+  revoked_at?: string
+  probes: HarnessProbe[]
+  created_at: string
+}
+export interface RateLimitStatus {
+  status: string
+  limit?: number
+  remaining?: number
+  reset_at?: string
+}
+export interface RateLimitHealth {
+  work_order_id: string
+  worker_id?: string
+  harness: string
+  model?: string
+  rate_limit: RateLimitStatus
+  observed_at: string
+}
+export interface HarnessModelFailure {
+  harness: string
+  model: string
+  detail: string
+  work_order_id: string
+  observed_at: string
+}
+export interface SetupServiceability {
+  auto_available: boolean
+  auto_unavailable_reason?: string
+  model_failures?: HarnessModelFailure[]
+}
+export interface WorkerList {
+  workers: Worker[]
+  auto_available: boolean
+  auto_unavailable_reason?: string
+  setup_serviceability?: Record<string, SetupServiceability>
+  rate_limits?: RateLimitHealth[]
+}
+export interface TaskWorkerStatus {
+  available: boolean
+  required_harnesses: string[]
+  reason: string
+  last_heartbeat_at?: string
+  last_heartbeat_age?: string
+  queue_context: 'never_started' | 'interrupted'
+}
 
 export interface VersionedWorkspaceConfig {
   document: WorkspaceConfigDocument
@@ -476,14 +525,19 @@ export interface ActivityItem {
   spec?: SpecVersion
   attachments?: Artifact[]
   verification_evidence?: Artifact[]
-	lineage_graph?: LineageGraph
+  lineage_graph?: LineageGraph
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
-	stalled?: StalledState
+  stalled?: StalledState
   worker_status?: TaskWorkerStatus
-  merge_readiness?: { state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'; head_sha?: string; url?: string; number?: number }
+  merge_readiness?: {
+    state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'
+    head_sha?: string
+    url?: string
+    number?: number
+  }
 }
 
 export interface WorkOrder {
@@ -544,7 +598,19 @@ export interface WorkOrder {
   updated_at?: string
 }
 
-export interface Artifact { id: string; workspace: string; name: string; content_type: string; size_bytes: number; role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'; task_id?: string; requirement_id?: string; planning_session_id?: string; download_url?: string; created_at: string }
+export interface Artifact {
+  id: string
+  workspace: string
+  name: string
+  content_type: string
+  size_bytes: number
+  role: 'task_context' | 'generated_audit' | 'generated_output' | 'verification_evidence'
+  task_id?: string
+  requirement_id?: string
+  planning_session_id?: string
+  download_url?: string
+  created_at: string
+}
 
 export interface RequirementStatement {
   id: string

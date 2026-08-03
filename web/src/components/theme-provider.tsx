@@ -38,14 +38,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyResolvedTheme(resolvedTheme)
   }, [resolvedTheme])
 
-  const value = useMemo<ThemeContextValue>(() => ({
-    choice,
-    resolvedTheme,
-    setChoice: (nextChoice) => {
-      persistThemeChoice(nextChoice)
-      setChoiceState(nextChoice)
-    },
-  }), [choice, resolvedTheme])
+  const value = useMemo<ThemeContextValue>(
+    () => ({
+      choice,
+      resolvedTheme,
+      setChoice: (nextChoice) => {
+        persistThemeChoice(nextChoice)
+        setChoiceState(nextChoice)
+      },
+    }),
+    [choice, resolvedTheme],
+  )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

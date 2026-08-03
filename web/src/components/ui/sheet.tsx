@@ -27,7 +27,11 @@ export function Sheet({ onClose, label, children }: { onClose: () => void; label
 
   return createPortal(
     <div className="fixed inset-0 z-40">
-      <div aria-hidden className="absolute inset-0 animate-overlay-in bg-foreground/25" onClick={() => onCloseRef.current()} />
+      <div
+        aria-hidden
+        className="absolute inset-0 animate-overlay-in bg-foreground/25"
+        onClick={() => onCloseRef.current()}
+      />
       <aside
         ref={panelRef}
         role="dialog"

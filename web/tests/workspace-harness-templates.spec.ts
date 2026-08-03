@@ -7,22 +7,29 @@ const codexEffortArgs = {
 }
 
 const codexHarness = {
-  name: 'codex', mcp_transport: 'toml_override',
+  name: 'codex',
+  mcp_transport: 'toml_override',
   command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'],
-  model_args: ['--model', '{model}'], effort_args: codexEffortArgs,
-  probe_command: ['codex', '--version'], probe_timeout: '10s',
+  model_args: ['--model', '{model}'],
+  effort_args: codexEffortArgs,
+  probe_command: ['codex', '--version'],
+  probe_timeout: '10s',
 }
 
 const claudeHarness = {
-  name: 'claude', mcp_transport: 'json_file',
+  name: 'claude',
+  mcp_transport: 'json_file',
   command: ['claude', '-p', '{prompt}', '--mcp-config', '{mcp_config}'],
   model_args: ['--model', '{model}'],
   effort_args: { low: ['--effort', 'low'], medium: ['--effort', 'medium'], high: ['--effort', 'high'] },
-  probe_command: ['claude', '--version'], probe_timeout: '10s',
+  probe_command: ['claude', '--version'],
+  probe_timeout: '10s',
 }
 
 const grokHarness = {
-  name: 'grok', mcp_transport: 'environment', mcp_attachment: 'conveyor',
+  name: 'grok',
+  mcp_transport: 'environment',
+  mcp_attachment: 'conveyor',
   command: ['grok', '--single', '{prompt}'],
   model_args: ['--model', '{model}'],
   effort_args: {
@@ -30,7 +37,8 @@ const grokHarness = {
     medium: ['--reasoning-effort', 'medium'],
     high: ['--reasoning-effort', 'high'],
   },
-  probe_command: ['grok', '--version'], probe_timeout: '30s',
+  probe_command: ['grok', '--version'],
+  probe_timeout: '30s',
 }
 
 const harnessTemplates = [
@@ -40,16 +48,27 @@ const harnessTemplates = [
 ]
 
 const document = {
-  workspace: 'demo', max_bounces: 2, work_order_queue_timeout: '24h',
+  workspace: 'demo',
+  max_bounces: 2,
+  work_order_queue_timeout: '24h',
   execution_settings: {
     control_plane: { triage: { model: 'gpt', timeout: '20m' } },
     spec: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '30m' },
     implementation: { model: 'gpt', model_policy: 'explicit', harness: 'codex', timeout: '2h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'gpt', fallback_harness: 'codex' },
   },
-  routing: { stages: {} }, harnesses: [codexHarness, claudeHarness, grokHarness], review: { seats: [{ model: 'gpt', harness: 'codex' }] },
-  setups: [], default_setup: '',
-  execution: { spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
+  routing: { stages: {} },
+  harnesses: [codexHarness, claudeHarness, grokHarness],
+  review: { seats: [{ model: 'gpt', harness: 'codex' }] },
+  setups: [],
+  default_setup: '',
+  execution: {
+    spec_approval: true,
+    merge_approval: true,
+    implement_concurrency: 1,
+    review_concurrency: 1,
+    first_activity_timeout: '2m',
+  },
   repos: [],
 }
 
@@ -67,7 +86,8 @@ async function mockAPIs(page: Page, templatesFail = false) {
       return route.fulfill({ json: { templates: harnessTemplates } })
     }
     if (path === '/v1/workers') return route.fulfill({ json: { workers: [], auto_available: false } })
-    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
+    if (path === '/v1/workspace')
+      return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })
   })
 }
@@ -78,7 +98,9 @@ async function expectArgv(card: Locator, label: string, args: string[]) {
   for (const arg of args) await expect(editor.getByTitle(`Edit ${arg}`, { exact: true })).toBeVisible()
 }
 
-test('harness picker preserves complete template efforts in editable unique drafts and keeps Custom blank', async ({ page }) => {
+test('harness picker preserves complete template efforts in editable unique drafts and keeps Custom blank', async ({
+  page,
+}) => {
   await mockAPIs(page)
   await page.goto('/workspace')
   await page.getByRole('tab', { name: 'Harnesses' }).click()
@@ -108,7 +130,10 @@ test('harness picker preserves complete template efforts in editable unique draf
 
   await page.getByRole('button', { name: 'Add harness' }).click()
   await page.getByRole('menuitem', { name: /Custom/ }).click()
-  const customCard = page.getByRole('button', { name: /Toggle harness \d+/ }).last().locator('..')
+  const customCard = page
+    .getByRole('button', { name: /Toggle harness \d+/ })
+    .last()
+    .locator('..')
   await expect(customCard.getByLabel(/^Harness \d+ name$/)).toHaveValue('')
   await expect(customCard.getByLabel('MCP transport')).toHaveValue('json_file')
   await expectArgv(customCard, 'Command argv', [])

@@ -54,7 +54,8 @@ test('workspace rail uses Slack-like tiles and preserves switching and creation'
       radius: inactiveStyle.borderRadius,
       inactiveSize: [inactiveBox.width, inactiveBox.height],
       faceGap: activeBox.top - inactiveBox.bottom,
-      addBelowWorkspaces: addBox.top > Array.from(node.querySelectorAll('button')).at(-1)!.getBoundingClientRect().bottom,
+      addBelowWorkspaces:
+        addBox.top > Array.from(node.querySelectorAll('button')).at(-1)!.getBoundingClientRect().bottom,
     }
   })
 
