@@ -185,6 +185,31 @@ func TestSelectContextArtifactsKeepsEvidenceAndPrefersNearerOlder(t *testing.T) 
 	}
 }
 
+func TestSelectContextArtifactsReservesTaskLocalContextUnderEvidenceFanout(t *testing.T) {
+	now := time.Now().UTC()
+	artifacts := []Artifact{{ID: "local-context", Role: ArtifactRoleTaskContext, TaskID: "local", CreatedAt: now.Add(-time.Hour)}}
+	for i := 0; i < DefaultContextArtifactMaxRefs+8; i++ {
+		artifacts = append(artifacts, Artifact{ID: fmt.Sprintf("evidence-%02d", i), Role: ArtifactRoleVerificationEvidence, TaskID: "local", ContentType: "image/png", SizeBytes: 1, CreatedAt: now.Add(time.Duration(i) * time.Second)})
+	}
+	selection, err := SelectContextArtifacts(nil, []LineageNode{{Type: LineageTask, ID: "local"}}, artifacts, ContextArtifactSelectionOptions{
+		LocalTaskID: "local", IncludeLocalVerificationEvidence: true,
+		Budget: LineageTraversalBudget{MaxDepth: 1, MaxNodes: 2}, MaxArtifactRefs: DefaultContextArtifactMaxRefs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenLocal, evidence := false, 0
+	for _, artifact := range selection.Artifacts {
+		seenLocal = seenLocal || artifact.ID == "local-context"
+		if artifact.EligibleVerificationEvidence() {
+			evidence++
+		}
+	}
+	if len(selection.Artifacts) != DefaultContextArtifactMaxRefs || !seenLocal || evidence == 0 || !selection.Truncated || selection.Omitted != 9 {
+		t.Fatalf("protected selection count=%d local=%t evidence=%d truncated=%t omitted=%d", len(selection.Artifacts), seenLocal, evidence, selection.Truncated, selection.Omitted)
+	}
+}
+
 func lineageTestLink(id int64, srcType LineageNodeType, srcID string, dstType LineageNodeType, dstID, kind string) LineageLink {
 	return LineageLink{
 		Workspace: "demo", SrcType: srcType, SrcID: srcID,

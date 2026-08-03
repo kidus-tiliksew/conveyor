@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const DefaultContextArtifactMaxRefs = 64
+const (
+	DefaultContextArtifactMaxRefs       = 64
+	ContextArtifactProtectedTierMaxRefs = 16
+)
 
 // LineageNodeType names a durable node class in the Phase 6 knowledge graph
 // (spec §4.2 item 4, §16). IDs remain opaque to the graph.
@@ -181,14 +184,42 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	if maxRefs <= 0 {
 		maxRefs = DefaultContextArtifactMaxRefs
 	}
+	// Reserve a bounded share for each protected local tier before filling the
+	// remaining global budget. This prevents high evidence fan-out from evicting
+	// ordinary task-local context (and vice versa) without making either tier
+	// an unbounded authorization escape hatch.
+	protectedAllowance := maxRefs / 4
+	if protectedAllowance < 1 {
+		protectedAllowance = 1
+	}
+	if protectedAllowance > ContextArtifactProtectedTierMaxRefs {
+		protectedAllowance = ContextArtifactProtectedTierMaxRefs
+	}
+	selected := make(map[string]bool, maxRefs)
+	appendTier := func(match func(contextArtifactCandidate) bool) {
+		added := 0
+		for _, item := range ordered {
+			if len(selection.Artifacts) >= maxRefs || added >= protectedAllowance || selected[item.artifact.ID] || !match(item) {
+				continue
+			}
+			selection.Artifacts = append(selection.Artifacts, item.artifact)
+			selected[item.artifact.ID] = true
+			added++
+		}
+	}
+	appendTier(func(item contextArtifactCandidate) bool { return item.evidence })
+	appendTier(func(item contextArtifactCandidate) bool { return item.local && !item.evidence })
 	for _, item := range ordered {
-		if len(selection.Artifacts) >= maxRefs {
-			selection.Truncated = true
-			selection.Omitted++
+		if selected[item.artifact.ID] {
 			continue
 		}
-		selection.Artifacts = append(selection.Artifacts, item.artifact)
+		if len(selection.Artifacts) < maxRefs {
+			selection.Artifacts = append(selection.Artifacts, item.artifact)
+			selected[item.artifact.ID] = true
+		}
 	}
+	selection.Omitted = len(ordered) - len(selection.Artifacts)
+	selection.Truncated = selection.Truncated || selection.Omitted > 0
 	return selection, nil
 }
 
