@@ -132,6 +132,88 @@ func (f *phase62Fixture) upgradeTo(t *testing.T, version int) {
 	}
 }
 
+func TestMigration058CanonicalizesOnlyDerivablePullRequestIdentitiesIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	taskID := f.task(t, "", "")
+	f.upgradeTo(t, 57)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE repos SET github_slug='acme/repo' WHERE workspace_id=$1 AND name='repo'`, f.workspace); err != nil {
+		t.Fatal(err)
+	}
+	var eventRepository, eventTask int64
+	if err := f.pool.QueryRow(f.ctx, `INSERT INTO events
+		(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+		VALUES ($1,$2,'pull_request.opened','legacy','system',$3,now()) RETURNING id`,
+		f.workspace, taskID, core.JSONPayload(map[string]any{"repository": "event/repo", "number": 41})).Scan(&eventRepository); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(f.ctx, `INSERT INTO events
+		(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+		VALUES ($1,$2,'pull_request.opened','legacy','system',$3,now()) RETURNING id`,
+		f.workspace, taskID, core.JSONPayload(map[string]any{"number": 42})).Scan(&eventTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `INSERT INTO repos
+		(workspace_id,name,url,github_slug,default_base) VALUES ($1,'second','https://example.test/second','acme/second','main')`, f.workspace); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		src, dst, legacy string
+		event            any
+	}{
+		{taskID, "41", "", eventRepository}, {taskID, "42", "", eventTask},
+		{"missing-task", "43", "migration-057", nil}, {taskID, "not-a-number", "", eventTask},
+	} {
+		if _, err := f.pool.Exec(f.ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,legacy_created_by_event,created_at)
+			VALUES ($1,'task',$2,'pull_request',$3,'submitted_as',$4,NULLIF($5,''),now())`, f.workspace, row.src, row.dst, row.event, row.legacy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.upgradeTo(t, 58)
+	var canonical, excluded, retained int
+	if err := f.pool.QueryRow(f.ctx, `SELECT
+		count(*) FILTER (WHERE dst_id IN ('event/repo#41','acme/repo#42')),
+		count(*) FILTER (WHERE dst_id IN ('43','not-a-number')),
+		(SELECT count(*) FROM lineage_repair_exclusions WHERE workspace_id=$1 AND kind='submitted_as')
+		FROM links WHERE workspace_id=$1 AND kind='submitted_as'`, f.workspace).Scan(&canonical, &retained, &excluded); err != nil {
+		t.Fatal(err)
+	}
+	if canonical != 2 || retained != 2 || excluded != 2 {
+		t.Fatalf("canonical=%d retained=%d excluded=%d", canonical, retained, excluded)
+	}
+}
+
+func TestLineageRepairRemoves054VocabularyWithExactExclusionsIntegration(t *testing.T) {
+	f := newPhase62MigrationFixture(t)
+	taskID := f.task(t, "", "")
+	f.upgradeTo(t, 54)
+	for _, row := range []struct{ srcType, srcID, dstType, dstID, kind string }{
+		{"task", taskID, "work_order", taskID + "-implement-1", "executes_as"},
+		{"pull_request", "7", "commit", "head-sha", "head"},
+		{"task", taskID, "commit", "head-sha", "implemented_by"},
+		{"task", taskID, "evidence", "unknown", "produces"},
+	} {
+		if _, err := f.pool.Exec(f.ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,'migration-054',now())`, f.workspace, row.srcType, row.srcID, row.dstType, row.dstID, row.kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.upgradeTo(t, 58)
+	var oldKinds, commitNodes, exclusions, dispatches int
+	if err := f.pool.QueryRow(f.ctx, `SELECT
+		count(*) FILTER (WHERE kind IN ('executes_as','delivered_by','produces','head','implemented_by')),
+		count(*) FILTER (WHERE src_type='commit' OR dst_type='commit'),
+		(SELECT count(*) FROM lineage_repair_exclusions WHERE workspace_id=$1),
+		count(*) FILTER (WHERE kind='dispatches' AND src_id=$2)
+		FROM links WHERE workspace_id=$1`, f.workspace, taskID).Scan(&oldKinds, &commitNodes, &exclusions, &dispatches); err != nil {
+		t.Fatal(err)
+	}
+	if oldKinds != 0 || commitNodes != 0 || exclusions != 3 || dispatches != 1 {
+		t.Fatalf("old_kinds=%d commit_nodes=%d exclusions=%d dispatches=%d", oldKinds, commitNodes, exclusions, dispatches)
+	}
+}
+
 func TestPendingLineageMigrationSurvivesMalformedNumericPayloadsIntegration(t *testing.T) {
 	f := newPhase62MigrationFixture(t)
 	taskID := f.task(t, "", "")

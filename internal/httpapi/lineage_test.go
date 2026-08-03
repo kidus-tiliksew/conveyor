@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+type failingLineageStore struct {
+	store.Store
+	err error
+}
+
+func (s failingLineageStore) RebuildLineage(context.Context, core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
+	return core.LineageRebuildResult{}, s.err
+}
 
 func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
@@ -123,6 +133,21 @@ func TestLineageRebuildRequiresOperatorAndAuditInput(t *testing.T) {
 	var result core.LineageRebuildResult
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
+	}
+	conflict := call("operator-token", `{"reason":"different","request_id":"lineage-1"}`)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+
+	broken := NewServer(failingLineageStore{Store: st, err: errors.New("database unavailable")})
+	broken.Workspace, broken.BearerToken = "demo", "operator-token"
+	internal := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/lineage/rebuild", strings.NewReader(`{"reason":"repair","request_id":"lineage-2"}`))
+	request.Header.Set("X-Workspace-ID", "demo")
+	request.Header.Set("Authorization", "Bearer operator-token")
+	broken.Handler().ServeHTTP(internal, request)
+	if internal.Code != http.StatusInternalServerError {
+		t.Fatalf("internal status=%d body=%s", internal.Code, internal.Body.String())
 	}
 }
 

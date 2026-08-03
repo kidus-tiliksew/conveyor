@@ -185,7 +185,10 @@ SELECT w.id,'lineage.historical_fabrication_recorded','system','system',jsonb_bu
   'reason','migration 054 fabricated backdated dependency events; records remain immutable'
 ),now()
 FROM workspaces w
-WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.historical_fabrication_recorded')`)
+WHERE EXISTS (SELECT 1 FROM events historical
+  WHERE historical.workspace_id=w.id AND historical.kind='task.dependency_added'
+    AND historical.id BETWEEN 74871 AND 74888)
+  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.historical_fabrication_recorded')`)
 	return err
 }
 

@@ -64,10 +64,11 @@ type LineageLink struct {
 // LineageRebuildResult reports projection reconciliation without treating
 // retained, non-derived legacy links as event-derived graph state.
 type LineageRebuildResult struct {
-	Projected   int `json:"projected"`
-	Existing    int `json:"existing"`
-	Unsupported int `json:"unsupported"`
-	Ambiguous   int `json:"ambiguous"`
+	Projected              int `json:"projected"`
+	Existing               int `json:"existing"`
+	PreservedUnregenerable int `json:"preserved_unregenerable"`
+	Unsupported            int `json:"unsupported"`
+	Ambiguous              int `json:"ambiguous"`
 }
 
 type LineageRebuildRequest struct {

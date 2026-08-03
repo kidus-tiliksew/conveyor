@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -26,7 +27,14 @@ func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.Store.RebuildLineage(r.Context(), request)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrLineageRebuildValidation) {
+			status = http.StatusBadRequest
+		}
+		if errors.Is(err, store.ErrLineageRebuildConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

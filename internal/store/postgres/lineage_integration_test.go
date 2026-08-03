@@ -1,13 +1,124 @@
 package postgres
 
 import (
+	"fmt"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestPostgresLineageRebuildPreservesLiveShapedUnregenerableLinks(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	taskID := core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+		Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	sibling := workspace + "-sibling"
+	siblingCtx := store.WithWorkspace(t.Context(), sibling)
+	if _, err := st.BootstrapWorkspaceConfig(siblingCtx, &config.Config{Workspace: sibling, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	siblingID := core.NewTaskID()
+	siblingTask := core.Task{ID: siblingID, Workspace: sibling, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + siblingID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(siblingCtx, siblingTask); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(siblingCtx, core.Event{TaskID: siblingTask.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": siblingTask.ID + "-implement-1"})}); err != nil {
+		t.Fatal(err)
+	}
+	var siblingBefore int
+	if err := st.pool.QueryRow(siblingCtx, `SELECT count(*) FROM links WHERE workspace_id=$1`, sibling).Scan(&siblingBefore); err != nil {
+		t.Fatal(err)
+	}
+	for number := 1; number <= 53; number++ {
+		var eventID int64
+		if err := st.pool.QueryRow(ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,'pull_request.opened','legacy','system',$3,now()) RETURNING id`,
+			workspace, taskID, core.JSONPayload(map[string]any{"number": number})).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.pool.Exec(ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at)
+			VALUES ($1,'task',$2,'pull_request',$3,'submitted_as',$4,now())`, workspace, taskID, fmt.Sprint(number), eventID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := core.LineageRebuildRequest{Reason: "live-shaped repair", RequestID: "postgres-preserve-53"}
+	result, err := st.RebuildLineage(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PreservedUnregenerable != 53 || result.Unsupported != 53 || result.Projected == 53 {
+		t.Fatalf("result=%+v", result)
+	}
+	var count int
+	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND kind='submitted_as' AND dst_id !~ '#'`, workspace).Scan(&count); err != nil || count != 53 {
+		t.Fatalf("preserved count=%d err=%v", count, err)
+	}
+	if repeated, err := st.RebuildLineage(ctx, request); err != nil || repeated != result {
+		t.Fatalf("idempotent result=%+v err=%v want=%+v", repeated, err, result)
+	}
+	var siblingAfter int
+	if err := st.pool.QueryRow(siblingCtx, `SELECT count(*) FROM links WHERE workspace_id=$1`, sibling).Scan(&siblingAfter); err != nil || siblingAfter != siblingBefore || siblingAfter == 0 {
+		t.Fatalf("populated sibling before=%d after=%d err=%v", siblingBefore, siblingAfter, err)
+	}
+}
+
+func TestLineageRebuildCrossStoreParityIntegration(t *testing.T) {
+	pg, ctx, workspace := newPhase61IntegrationStore(t)
+	defer pg.Close()
+	memory := store.NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	stores := []store.Store{pg, memory}
+	for _, st := range stores {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []core.Event{
+			{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": task.ID + "-implement-1"})},
+			{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "number": 7, "base_sha": "base", "head_sha": "head"})},
+		} {
+			if err := st.AppendEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	request := core.LineageRebuildRequest{Reason: "cross-store parity", RequestID: "cross-store-1"}
+	results := make([]core.LineageRebuildResult, 0, 2)
+	snapshots := make([][]string, 0, 2)
+	for _, st := range stores {
+		result, err := st.RebuildLineage(ctx, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repeated, err := st.RebuildLineage(ctx, request)
+		if err != nil || repeated != result {
+			t.Fatalf("idempotent result=%+v repeated=%+v err=%v", result, repeated, err)
+		}
+		links, err := st.ListLineageLinks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := make([]string, 0, len(links))
+		for _, link := range links {
+			keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%s", link.SrcType, link.SrcID, link.Kind, link.DstType, link.DstID))
+		}
+		sort.Strings(keys)
+		results, snapshots = append(results, result), append(snapshots, keys)
+	}
+	if results[0] != results[1] || fmt.Sprint(snapshots[0]) != fmt.Sprint(snapshots[1]) {
+		t.Fatalf("postgres result=%+v links=%v; memory result=%+v links=%v", results[0], snapshots[0], results[1], snapshots[1])
+	}
+}
 
 func TestPostgresLineageConformance(t *testing.T) {
 	storetest.RunLineageConformance(t, func(t *testing.T, _ []config.Repo) storetest.LineageFixture {
