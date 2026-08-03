@@ -63,7 +63,7 @@ func TestParseRequirementDocumentRejectsInvalidBodies(t *testing.T) {
 		},
 		{
 			name:     "malformed yaml",
-			document: requirementProseFixture + "\n\n" + requirementBlock(`- id: REQ-1` + "\n  statement: \"unterminated"),
+			document: requirementProseFixture + "\n\n" + requirementBlock(`- id: REQ-1`+"\n  statement: \"unterminated"),
 			want:     "requirements block:",
 		},
 		{

@@ -8,9 +8,10 @@ POLL_GITHUB ?= 60s
 TEST_POSTGRES_PORT ?= 5433
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
 PLAYWRIGHT_ARGS ?=
+PLAYWRIGHT_INSTALL_ARGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-postgres test-db-up test-db-down vet plugin-check fmt tidy clean db-up db-down run build-run dev
+.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -29,7 +30,7 @@ test: compose-check dashboard-fresh
 	$(MAKE) test-web
 
 test-web:
-	cd web && npm ci && npx playwright install chromium && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+	cd web && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui: ui
 	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
@@ -43,6 +44,10 @@ compose-check:
 test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+
+test-integration-ci: compose-check
+	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
+	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -62,6 +67,9 @@ plugin-check:
 
 fmt:
 	gofmt -l -w .
+
+fmt-check:
+	@files="$$(gofmt -l .)"; test -z "$$files" || (echo "$$files"; exit 1)
 
 tidy:
 	go mod tidy
