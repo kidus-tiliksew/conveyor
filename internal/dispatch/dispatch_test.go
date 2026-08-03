@@ -2022,6 +2022,89 @@ func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 	}
 }
 
+func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.T) {
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "citation-bounce", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-citation", Title: "Citation contract"}, core.RequirementVersion{
+		Content: "Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Review cites confirmed intent."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "planning-citation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(human, task.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "citation-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "review", StartedAt: now}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.DisableMemoryQueueForTest()
+	result := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "looks good"}
+	if err = d.ApplyExternalReview(ctx, task, job, result, job.ID, "external-session", "review"); err == nil || !strings.Contains(err.Error(), "assessment is required") {
+		t.Fatalf("external review error=%v, want retryable validation error", err)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "review.output_invalid"); count != 0 {
+		t.Fatalf("external validation created %d in-process bounce events", count)
+	}
+	output := "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"looks good\",\"feedback\":\"\"}\n```"
+	if err = d.completeOutput(ctx, cfg, task, job, output, "in-process"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetTask(ctx, task.ID)
+	if err != nil || updated.State != core.TaskQueued || updated.NextStage != core.StageReview {
+		t.Fatalf("citation bounce task=%+v err=%v", updated, err)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "review.output_invalid"); count != 1 {
+		t.Fatalf("in-process citation validation bounce events=%d, want 1", count)
+	}
+}
+
+func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
+	served := []core.ServedRequirementContext{{ID: "req-runtime"}}
+	tests := []struct {
+		name   string
+		served []core.ServedRequirementContext
+		value  *core.RequirementCitationAssessment
+		want   string
+	}{
+		{name: "linked missing", served: served, want: "assessment is required"},
+		{name: "linked applicability mismatch", served: served, value: &core.RequirementCitationAssessment{}, want: "does not match"},
+		{name: "unlinked applicability mismatch", value: &core.RequirementCitationAssessment{Applicable: true}, want: "does not match"},
+		{name: "unlinked cited finding", value: &core.RequirementCitationAssessment{CitedIDs: []string{"REQ-1"}}, want: "findings must be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := pipeline.Review{RequirementCitations: tt.value}
+			err := validateReviewCitations(&result, tt.served)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validation error=%v, want %q", err, tt.want)
+			}
+		})
+	}
+	t.Run("unlinked omission auto fills", func(t *testing.T) {
+		result := pipeline.Review{}
+		if err := validateReviewCitations(&result, nil); err != nil || result.RequirementCitations == nil || result.RequirementCitations.Applicable {
+			t.Fatalf("auto-fill result=%+v err=%v", result.RequirementCitations, err)
+		}
+	})
+}
+
 func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

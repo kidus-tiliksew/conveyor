@@ -75,7 +75,7 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	}
 
 	inProcess := InProcessReviewRole(role)
-	for _, required := range []string{"End your answer with exactly one machine-owned block", "```conveyor:review", `"verdict":"approve|changes_requested"`} {
+	for _, required := range []string{"End your answer with exactly one machine-owned block", "```conveyor:review", `"verdict":"approve|changes_requested"`, `"requirement_citations"`, `"applicable":true`, `"cited_ids"`, `"unknown_ids"`, `"unserved_ids"`, `"conflicts"`} {
 		if !strings.Contains(inProcess, required) {
 			t.Fatalf("in-process review role is missing %q: %s", required, inProcess)
 		}
@@ -119,6 +119,18 @@ func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 			if !strings.Contains(normalized, required) {
 				t.Errorf("%s role is missing %q", stage, required)
 			}
+		}
+	}
+}
+
+func TestReviewRoleCarriesDurableRequirementCitationGuidance(t *testing.T) {
+	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"requirement_citations", "applicable=true", "applicable=false", "cited_ids", "unknown_ids", "unserved_ids", "conflicts"} {
+		if !strings.Contains(role, required) {
+			t.Fatalf("review role is missing %q: %s", required, role)
 		}
 	}
 }

@@ -141,7 +141,7 @@ func (m *memory) GetRequirement(ctx context.Context, id string) (core.Requiremen
 	defer m.mu.RUnlock()
 	requirement, ok := m.requirements[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}]
 	if !ok {
-		return core.Requirement{}, fmt.Errorf("requirement %s not found", id)
+		return core.Requirement{}, fmt.Errorf("%w: requirement %s", ErrNotFound, id)
 	}
 	return requirement, nil
 }
@@ -277,7 +277,7 @@ func (m *memory) GetRequirementVersion(ctx context.Context, requirementID string
 	defer m.mu.RUnlock()
 	versions := m.requirementVersions[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: requirementID}]
 	if version < 1 || version > len(versions) {
-		return core.RequirementVersion{}, fmt.Errorf("requirement %s has no version %d", requirementID, version)
+		return core.RequirementVersion{}, fmt.Errorf("%w: requirement %s has no version %d", ErrNotFound, requirementID, version)
 	}
 	return versions[version-1], nil
 }

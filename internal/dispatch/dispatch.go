@@ -660,13 +660,26 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 		totalBytes += len(content)
 		if totalBytes > maxModelFileBytes {
-			return inprocess.Input{}, fmt.Errorf("context artifacts for task %s exceed the %d-byte combined model input limit", task.ID, maxModelFileBytes)
+			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) from %s makes task %s exceed the %d-byte combined model input limit", artifact.ID, artifact.Name, contextArtifactSource(artifact), task.ID, maxModelFileBytes)
 		}
 		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, artifact.Name, artifact.ContentType, len(content), artifact.ID)
 		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind, Content: content})
 	}
 	input.Prompt = prompt.String()
 	return input, nil
+}
+
+func contextArtifactSource(artifact core.Artifact) string {
+	switch {
+	case artifact.TaskID != "":
+		return "task " + artifact.TaskID
+	case artifact.RequirementID != "":
+		return "requirement " + artifact.RequirementID
+	case artifact.PlanningSessionID != "":
+		return "planning session " + artifact.PlanningSessionID
+	default:
+		return "its lineage source"
+	}
 }
 
 func (d *Dispatcher) contextArtifacts(ctx context.Context, taskID string) ([]core.Artifact, error) {
@@ -761,7 +774,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
-		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier)
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier, invalid)
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
@@ -772,7 +785,7 @@ func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, jo
 	if err != nil {
 		return err
 	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model)
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, nil)
 }
 
 // ApplyExternalSpec validates an MCP-authored structured specification and
@@ -912,22 +925,16 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	return version, nil
 }
 
-func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string) error {
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, invalid func(error) error) error {
 	servedRequirements, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
 	if err != nil {
 		return fmt.Errorf("resolve served requirements for review: %w", err)
 	}
-	if len(servedRequirements) == 0 && result.RequirementCitations == nil {
-		result.RequirementCitations = &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}}
-	}
-	if result.RequirementCitations == nil {
-		return fmt.Errorf("review requirement_citations assessment is required for a task with confirmed served requirements")
-	}
-	if result.RequirementCitations.Applicable != (len(servedRequirements) > 0) {
-		return fmt.Errorf("review requirement_citations applicable=%t does not match confirmed served requirements=%t", result.RequirementCitations.Applicable, len(servedRequirements) > 0)
-	}
-	if len(servedRequirements) == 0 && (len(result.RequirementCitations.CitedIDs) > 0 || len(result.RequirementCitations.UnknownIDs) > 0 || len(result.RequirementCitations.UnservedIDs) > 0 || len(result.RequirementCitations.Conflicts) > 0) {
-		return fmt.Errorf("review requirement_citations findings must be empty when no confirmed serves relation exists")
+	if err = validateReviewCitations(&result, servedRequirements); err != nil {
+		if invalid != nil {
+			return invalid(err)
+		}
+		return err
 	}
 	if reviewWorkOrderID == "" {
 		reviewWorkOrderID = job.ID
@@ -1008,6 +1015,22 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		if err := d.MergeApprovedTask(ctx, current); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateReviewCitations(result *pipeline.Review, servedRequirements []core.ServedRequirementContext) error {
+	if len(servedRequirements) == 0 && result.RequirementCitations == nil {
+		result.RequirementCitations = &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}}
+	}
+	if result.RequirementCitations == nil {
+		return fmt.Errorf("review requirement_citations assessment is required for a task with confirmed served requirements")
+	}
+	if result.RequirementCitations.Applicable != (len(servedRequirements) > 0) {
+		return fmt.Errorf("review requirement_citations applicable=%t does not match confirmed served requirements=%t", result.RequirementCitations.Applicable, len(servedRequirements) > 0)
+	}
+	if len(servedRequirements) == 0 && (len(result.RequirementCitations.CitedIDs) > 0 || len(result.RequirementCitations.UnknownIDs) > 0 || len(result.RequirementCitations.UnservedIDs) > 0 || len(result.RequirementCitations.Conflicts) > 0) {
+		return fmt.Errorf("review requirement_citations findings must be empty when no confirmed serves relation exists")
 	}
 	return nil
 }

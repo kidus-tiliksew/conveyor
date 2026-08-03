@@ -623,14 +623,20 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			}
 		}
 
-		if _, err = st.GetRequirement(ctx, "req-does-not-exist"); err == nil {
-			t.Fatal("reading an unknown requirement succeeded")
+		if _, err = st.GetRequirement(ctx, "req-does-not-exist"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown requirement error=%v, want ErrNotFound", err)
 		}
-		if _, err = st.GetRequirementVersion(ctx, "req-a-inserted-first", 2); err == nil {
-			t.Fatal("reading an unwritten version succeeded")
+		if _, err = st.GetRequirementVersion(ctx, "req-a-inserted-first", 2); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unwritten version error=%v, want ErrNotFound", err)
 		}
-		if _, err = st.GetRequirementVersion(ctx, "req-does-not-exist", 1); err == nil {
-			t.Fatal("reading a version of an unknown requirement succeeded")
+		if _, err = st.GetRequirementVersion(ctx, "req-does-not-exist", 1); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown requirement version error=%v, want ErrNotFound", err)
+		}
+		if _, err = st.GetTask(ctx, "task-does-not-exist"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown task error=%v, want ErrNotFound", err)
+		}
+		if _, _, err = st.GetArtifact(ctx, "artifact-does-not-exist"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown artifact error=%v, want ErrNotFound", err)
 		}
 		// Listing versions of an unknown document is empty rather than an
 		// error: it is a projection, not an identity lookup.

@@ -32,3 +32,9 @@ choose the precise one, not the convenient one.
 Do not edit files or commit. Keep prose brief. Conveyor adds the execution
 environment and terminal completion contract for the active execution path
 after this shared role.
+
+Requirement citations are a required part of every verdict. When confirmed
+served requirements are supplied, set `requirement_citations.applicable=true`
+and assess their stable REQ-n identifiers in `cited_ids`, `unknown_ids`,
+`unserved_ids`, and `conflicts`. When none are supplied, set `applicable=false`
+and leave all four lists empty.

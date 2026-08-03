@@ -35,8 +35,8 @@ export function Attachment({ name, contentType }: { name: string; contentType?: 
   )
 }
 
-export function Marker({ name, state, children }: { name: string; state: 'pending' | 'complete' | 'failed'; children?: ReactNode }) {
-  const stateLabel = state === 'pending' ? 'in progress' : state === 'complete' ? 'complete' : 'failed'
+export function Marker({ name, state, children }: { name: string; state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'failed'; children?: ReactNode }) {
+	const stateLabel = state === 'pending' ? 'in progress' : state
   return (
     <span
 	  role="img"
@@ -44,9 +44,11 @@ export function Marker({ name, state, children }: { name: string; state: 'pendin
       className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-muted"
     >
       {state === 'pending' && <LoaderCircle className="size-3 animate-spin text-primary" aria-hidden="true" />}
-      {state === 'complete' && <CheckCircle2 className="size-3 text-positive" aria-hidden="true" />}
-      {state === 'failed' && <TriangleAlert className="size-3 text-failure" aria-hidden="true" />}
-      <span className="truncate">{name}</span>
+		  {state === 'complete' && <CheckCircle2 className="size-3 text-positive" aria-hidden="true" />}
+		  {state === 'corrected' && <TriangleAlert className="size-3 text-warning" aria-hidden="true" />}
+		  {state === 'deferred' && <LoaderCircle className="size-3 text-muted" aria-hidden="true" />}
+		  {state === 'failed' && <TriangleAlert className="size-3 text-failure" aria-hidden="true" />}
+		  <span className="truncate">{name} {stateLabel}</span>
       {children}
     </span>
   )

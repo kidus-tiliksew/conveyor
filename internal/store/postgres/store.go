@@ -4545,7 +4545,7 @@ func nullableText(value string) pgtype.Text {
 
 func notFound(err error, format string, args ...any) error {
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf(format+" not found", args...)
+		return fmt.Errorf("%w: "+format, append([]any{store.ErrNotFound}, args...)...)
 	}
 	return err
 }

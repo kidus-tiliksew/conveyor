@@ -23,7 +23,11 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired           = errors.New("workspace context is required")
+	ErrWorkspaceRequired = errors.New("workspace context is required")
+	// ErrNotFound classifies a missing durable planning resource independently
+	// of the backing store, so callers can distinguish model-supplied bad IDs
+	// from unavailable infrastructure.
+	ErrNotFound                    = errors.New("resource not found")
 	ErrWorkspaceConflict           = errors.New("workspace id or name already exists")
 	ErrRequirementSlugConflict     = errors.New("requirement slug already exists")
 	ErrRequirementServesTransition = errors.New("invalid requirement serves-link transition")
@@ -2605,7 +2609,7 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 	defer m.mu.RUnlock()
 	artifact, ok := m.artifactForRead(ctx, id)
 	if !ok {
-		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
+		return core.Artifact{}, nil, fmt.Errorf("%w: artifact %s", ErrNotFound, id)
 	}
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
 }
@@ -3195,7 +3199,7 @@ func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
 	defer m.mu.RUnlock()
 	t, ok := m.tasks[id]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", id)
+		return core.Task{}, fmt.Errorf("%w: task %s", ErrNotFound, id)
 	}
 	if lifecycle, exists := m.github[id]; exists {
 		copy := lifecycle
