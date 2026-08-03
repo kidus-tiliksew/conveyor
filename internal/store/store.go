@@ -38,6 +38,8 @@ var (
 	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
 	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
 	ErrTaskTerminal                = errors.New("task is already terminal")
+	ErrLineageRebuildValidation    = errors.New("invalid lineage rebuild request")
+	ErrLineageRebuildConflict      = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
@@ -3909,7 +3911,7 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
-		return core.LineageRebuildResult{}, fmt.Errorf("lineage rebuild reason and request_id are required")
+		return core.LineageRebuildResult{}, fmt.Errorf("%w: reason and request_id are required", ErrLineageRebuildValidation)
 	}
 	workspace := workspaceOrDefault(ctx, "")
 	result := core.LineageRebuildResult{}
@@ -3920,19 +3922,17 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		var payload struct {
 			WorkspaceID string                    `json:"workspace_id"`
 			RequestID   string                    `json:"request_id"`
+			Reason      string                    `json:"reason"`
 			Result      core.LineageRebuildResult `json:"result"`
 		}
 		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkspaceID == workspace && payload.RequestID == request.RequestID {
+			if payload.Reason != request.Reason {
+				return core.LineageRebuildResult{}, fmt.Errorf("%w: request_id %s was already used for a different reason", ErrLineageRebuildConflict, request.RequestID)
+			}
 			return payload.Result, nil
 		}
 	}
-	for key, link := range m.lineage {
-		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
-			delete(m.lineage, key)
-		} else if link.Workspace == workspace {
-			result.Existing++
-		}
-	}
+	replayable := map[string]core.LineageLink{}
 	for _, events := range m.events {
 		for _, event := range events {
 			if event.TaskID != "" {
@@ -3960,18 +3960,32 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 			}
 			for _, link := range links {
 				key := lineageLinkKey(link)
-				if _, exists := m.lineage[key]; !exists {
-					m.lineage[key] = link
+				if prior, ok := replayable[key]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
+					replayable[key] = link
 				}
 			}
 		}
 	}
-	result.Projected = 0
-	for _, link := range m.lineage {
+	preserved := map[string]core.LineageLink{}
+	for key, link := range m.lineage {
 		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
-			result.Projected++
+			if _, regenerable := replayable[key]; !regenerable {
+				preserved[key] = link
+			}
+			delete(m.lineage, key)
+		} else if link.Workspace == workspace {
+			result.Existing++
 		}
 	}
+	for key, link := range replayable {
+		m.lineage[key] = link
+	}
+	for key, link := range preserved {
+		m.lineage[key] = link
+	}
+	result.Projected = len(replayable)
+	result.PreservedUnregenerable = len(preserved)
+	result.Unsupported = len(preserved)
 	m.appendEventLocked(ctx, core.Event{Kind: "lineage.rebuilt", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "reason": request.Reason, "request_id": request.RequestID, "result": result,
 	})})

@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"io/fs"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -40,16 +42,80 @@ func TestFutureMigrationsDoNotWriteEvents(t *testing.T) {
 
 func TestLineageMigrationVocabularyAgreesWithProjector(t *testing.T) {
 	canonical := controlstore.CanonicalLineageKinds()
-	for _, kind := range []string{"dispatches", "submitted_as", "produced_requirement", "produced_blueprint", "produced_verdict", "submitted_range"} {
+	emitted := map[string]bool{}
+	files, err := fs.Glob(migrationFiles, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emittedLiteral := regexp.MustCompile(`(?i)THEN\s+'([a-z][a-z0-9_]*)'|'([a-z][a-z0-9_]*)'\s*,\s*(?:e|event)\.id`)
+	for _, name := range files {
+		version, err := migrationVersion(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version < 57 {
+			continue
+		}
+		raw, err := migrationFiles.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range emittedLiteral.FindAllStringSubmatch(string(raw), -1) {
+			literal := match[1]
+			if literal == "" {
+				literal = match[2]
+			}
+			emitted[literal] = true
+		}
+	}
+	if len(emitted) == 0 {
+		t.Fatal("parsed no emitted lineage kinds from repair migrations")
+	}
+	for kind := range emitted {
 		if _, ok := canonical[kind]; !ok {
-			t.Fatalf("migration emits non-projector kind %q", kind)
+			t.Errorf("migration emits non-canonical projector kind %q", kind)
 		}
 	}
-	for _, legacy := range []string{"executes_as", "produces", "delivered_by", "head", "implemented_by"} {
-		if _, ok := canonical[legacy]; ok {
-			t.Fatalf("legacy kind %q entered canonical vocabulary", legacy)
+}
+
+func TestDeleteLineageLinksSQLSourceMatchesRuntimeSafetyContract(t *testing.T) {
+	query, err := os.ReadFile("queries/control_plane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := os.ReadFile("db/lineage_manual.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryDelete := strings.Split(strings.Split(string(query), "-- name: DeleteLineageLinks")[1], "-- name: ListWorkspaceEvents")[0]
+	runtimeDelete := strings.Split(strings.Split(string(runtime), "func (q *Queries) DeleteLineageLinks")[1], "func (q *Queries) ListLineageLinks")[0]
+	for label, text := range map[string]string{"sqlc source": queryDelete, "runtime helper": runtimeDelete} {
+		for _, predicate := range []string{"workspace_id", "created_by_event_id IS NOT NULL", "kind = ANY"} {
+			if !strings.Contains(text, predicate) {
+				t.Errorf("%s omits %q", label, predicate)
+			}
+		}
+		literals := map[string]bool{}
+		for _, literal := range quotedSQLLiterals(text) {
+			literals[literal] = true
+		}
+		for kind := range controlstore.CanonicalLineageKinds() {
+			if !literals[kind] {
+				t.Errorf("%s omits canonical kind %q", label, kind)
+			}
 		}
 	}
+}
+
+var sqlQuotedLiteral = regexp.MustCompile(`'([a-z][a-z0-9_]*)'`)
+
+func quotedSQLLiterals(sql string) []string {
+	matches := sqlQuotedLiteral.FindAllStringSubmatch(sql, -1)
+	result := make([]string, 0, len(matches))
+	for _, match := range matches {
+		result = append(result, match[1])
+	}
+	return result
 }
 
 func TestMigrationVersion(t *testing.T) {

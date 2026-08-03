@@ -1850,7 +1850,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
 	var result core.LineageRebuildResult
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
-		return result, fmt.Errorf("lineage rebuild reason and request_id are required")
+		return result, fmt.Errorf("%w: reason and request_id are required", store.ErrLineageRebuildValidation)
 	}
 	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		var prior []byte
@@ -1858,9 +1858,13 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			AND payload_json->>'request_id'=$2 ORDER BY id DESC LIMIT 1`, workspace(ctx), request.RequestID).Scan(&prior)
 		if err == nil {
 			var payload struct {
+				Reason string                    `json:"reason"`
 				Result core.LineageRebuildResult `json:"result"`
 			}
 			if json.Unmarshal(prior, &payload) == nil {
+				if payload.Reason != request.Reason {
+					return fmt.Errorf("%w: request_id %s was already used for a different reason", store.ErrLineageRebuildConflict, request.RequestID)
+				}
 				result = payload.Result
 				return nil
 			}
@@ -1868,22 +1872,14 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1
-			AND NOT (created_by_event_id IS NOT NULL AND kind = ANY($2::text[]))`, workspace(ctx), []string{"dispatches", "produced_requirement", "produced_blueprint", "serves", "versions", "supersedes", "submitted_as", "submitted_range", "merged_range", "produced_verdict", "supports", "depends_on", "materializes"}).Scan(&result.Existing); err != nil {
-			return err
-		}
-		if err = q.QueryRow(ctx, `SELECT count(*) FILTER (WHERE reason='ambiguous relationship'),
-			count(*) FILTER (WHERE reason<>'ambiguous relationship')
-			FROM lineage_repair_exclusions WHERE workspace_id=$1`, workspace(ctx)).Scan(&result.Ambiguous, &result.Unsupported); err != nil {
-			return err
-		}
-		if _, err := q.DeleteLineageLinks(ctx, workspace(ctx)); err != nil {
-			return err
-		}
 		events, err := q.ListWorkspaceEvents(ctx, workspace(ctx))
 		if err != nil {
 			return err
 		}
+		key := func(link core.LineageLink) string {
+			return strings.Join([]string{link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
+		}
+		replayable := map[string]core.LineageLink{}
 		for _, row := range events {
 			event := eventFromDB(row)
 			links := store.LineageLinksForEvent(workspace(ctx), event)
@@ -1901,19 +1897,58 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 				links = store.LineageLinksForHistoricalConfirmation(workspace(ctx), event, predecessorVersion)
 			}
 			for _, link := range links {
-				if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
-					WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
-					DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
-					CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
-				}); err != nil {
-					return err
+				linkKey := key(link)
+				if prior, ok := replayable[linkKey]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
+					replayable[linkKey] = link
 				}
 			}
 		}
-		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND created_by_event_id IS NOT NULL
-			AND kind = ANY($2::text[])`, workspace(ctx), []string{"dispatches", "produced_requirement", "produced_blueprint", "serves", "versions", "supersedes", "submitted_as", "submitted_range", "merged_range", "produced_verdict", "supports", "depends_on", "materializes"}).Scan(&result.Projected); err != nil {
+		stored, err := q.ListLineageLinks(ctx, workspace(ctx))
+		if err != nil {
 			return err
 		}
+		canonical := store.CanonicalLineageKinds()
+		preserved := map[string]core.LineageLink{}
+		for _, row := range stored {
+			link := core.LineageLink{
+				Workspace: row.WorkspaceID, SrcType: core.LineageNodeType(row.SrcType), SrcID: row.SrcID,
+				DstType: core.LineageNodeType(row.DstType), DstID: row.DstID, Kind: row.Kind,
+				CreatedByEventID: row.CreatedByEventID.Int64, LegacyCreatedByEvent: row.LegacyCreatedByEvent.String,
+				CreatedAt: row.CreatedAt.Time,
+			}
+			_, owned := canonical[link.Kind]
+			if !row.CreatedByEventID.Valid || !owned {
+				result.Existing++
+				continue
+			}
+			linkKey := key(link)
+			if _, regenerable := replayable[linkKey]; !regenerable {
+				preserved[linkKey] = link
+			}
+		}
+		if _, err = q.DeleteLineageLinks(ctx, workspace(ctx)); err != nil {
+			return err
+		}
+		insert := func(link core.LineageLink) error {
+			return q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
+				WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+				DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+				CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
+			})
+		}
+		for _, link := range replayable {
+			if err = insert(link); err != nil {
+				return err
+			}
+		}
+		for _, link := range preserved {
+			if err = insert(link); err != nil {
+				return err
+			}
+		}
+		result.Projected = len(replayable)
+		result.PreservedUnregenerable = len(preserved)
+		result.Unsupported = len(preserved)
 		actor := store.ActorFromContext(ctx)
 		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),

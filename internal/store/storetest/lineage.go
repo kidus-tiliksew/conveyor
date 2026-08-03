@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -153,6 +154,15 @@ func assertAbandonedDraftSupersession(t *testing.T, st store.Store, ctx context.
 	}
 	wantSrc, wantDst := core.RequirementVersionLineageID(requirementID, 3), core.RequirementVersionLineageID(requirementID, 1)
 	_ = findLineageLink(t, st, ctx, "supersedes", wantSrc, wantDst)
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirementID, 2); err == nil {
+		t.Fatal("late confirmation of superseded version 2 succeeded after version 3")
+	} else {
+		var conflict *store.RequirementVersionConflict
+		if !errors.As(err, &conflict) {
+			t.Fatalf("late confirmation error=%v, want RequirementVersionConflict", err)
+		}
+	}
+	assertNoLineageLink(t, st, ctx, "supersedes", core.RequirementVersionLineageID(requirementID, 2), core.RequirementVersionLineageID(requirementID, 3))
 }
 
 func workspaceForFixture(ctx context.Context) string {

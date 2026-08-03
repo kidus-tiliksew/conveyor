@@ -36,11 +36,6 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 	workOrderStates := map[string]core.WorkOrderState{}
 	var violations []LifecycleAuditViolation
 	for _, event := range ordered {
-		// Dependency assertions are graph history, not lifecycle transitions.
-		// This explicit case also documents migration 054's immutable backfill.
-		if event.Kind == "task.dependency_added" {
-			continue
-		}
 		if event.Kind == "task.created" {
 			var task core.Task
 			if json.Unmarshal(event.Payload, &task) == nil && task.State != "" {

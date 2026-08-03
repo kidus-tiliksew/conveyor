@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -103,6 +105,45 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 		t.Fatalf("rebuild omitted retained legacy links: %+v", result)
 	}
 	assertMemoryLineage(t, st, ctx, 4)
+}
+
+func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) {
+	const workspace = "lineage-preservation"
+	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
+	ctx := WithWorkspace(t.Context(), workspace)
+	task := core.Task{ID: "historical-task", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for number := 1; number <= 53; number++ {
+		if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": number})}); err != nil {
+			t.Fatal(err)
+		}
+		events := st.events[task.ID]
+		event := events[len(events)-1]
+		link := core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: task.ID,
+			DstType: core.LineagePullRequest, DstID: strconv.Itoa(number), Kind: "submitted_as",
+			CreatedByEventID: event.ID, CreatedAt: event.At}
+		st.lineage[lineageLinkKey(link)] = link
+	}
+	request := core.LineageRebuildRequest{Reason: "live-shaped repair", RequestID: "preserve-53"}
+	result, err := st.RebuildLineage(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PreservedUnregenerable != 53 || result.Unsupported != 53 || result.Projected != 0 {
+		t.Fatalf("rebuild result=%+v", result)
+	}
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil || len(links) != 53 {
+		t.Fatalf("links=%d err=%v", len(links), err)
+	}
+	if repeated, err := st.RebuildLineage(ctx, request); err != nil || repeated != result {
+		t.Fatalf("idempotent result=%+v err=%v want=%+v", repeated, err, result)
+	}
+	if _, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "different", RequestID: request.RequestID}); !errors.Is(err, ErrLineageRebuildConflict) {
+		t.Fatalf("request id conflict error=%v", err)
+	}
 }
 
 func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) {

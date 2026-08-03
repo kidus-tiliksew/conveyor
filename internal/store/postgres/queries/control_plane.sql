@@ -203,7 +203,13 @@ WHERE workspace_id = $1
 ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
 
 -- name: DeleteLineageLinks :execrows
-DELETE FROM links WHERE workspace_id = $1;
+DELETE FROM links WHERE workspace_id = $1
+  AND created_by_event_id IS NOT NULL
+  AND kind = ANY(ARRAY[
+    'depends_on','dispatches','materializes','merged_range','produced_blueprint',
+    'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
+    'supersedes','supports','versions'
+  ]::text[]);
 
 -- name: ListWorkspaceEvents :many
 SELECT * FROM events

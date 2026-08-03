@@ -42,10 +42,11 @@ func (q *Queries) InsertLineageLink(ctx context.Context, arg InsertLineageLinkPa
 
 func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (int64, error) {
 	tag, err := q.db.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
-		AND created_by_event_id IS NOT NULL AND kind = ANY($2::text[])`, workspaceID, []string{
-		"dispatches", "produced_requirement", "produced_blueprint", "serves", "versions", "supersedes",
-		"submitted_as", "submitted_range", "merged_range", "produced_verdict", "supports", "depends_on", "materializes",
-	})
+		AND created_by_event_id IS NOT NULL AND kind = ANY(ARRAY[
+		'depends_on','dispatches','materializes','merged_range','produced_blueprint',
+		'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
+		'supersedes','supports','versions'
+	]::text[])`, workspaceID)
 	return tag.RowsAffected(), err
 }
 
