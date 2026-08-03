@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -833,8 +834,10 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		return "", &planningContextOverflowError{limit: maxBytes}
 	}
 	repositories := []string{}
+	var cfg *config.Config
 	if s.ConfigProvider != nil {
-		cfg, configErr := s.ConfigProvider(ctx)
+		var configErr error
+		cfg, configErr = s.ConfigProvider(ctx)
 		if configErr != nil {
 			return "", configErr
 		}
@@ -862,10 +865,28 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		maxCalls = DefaultMaxCallsPerStep
 	}
 	role = strings.ReplaceAll(role, "{{MAX_CALLS_PER_STEP}}", strconv.Itoa(maxCalls))
+	lineagePrompt := ""
+	roots := []core.LineageNode{{Type: core.LineagePlanningSession, ID: session.ID}}
+	localTaskID := ""
+	if session.RequirementContextID != "" {
+		roots = append(roots, core.LineageNode{Type: core.LineageRequirement, ID: session.RequirementContextID})
+	}
+	if session.ProducedTaskID != "" {
+		localTaskID = session.ProducedTaskID
+		roots = append(roots, core.LineageNode{Type: core.LineageTask, ID: localTaskID})
+	}
+	if len(roots) > 1 || localTaskID != "" {
+		lineage, lineageErr := lineagecontext.Assemble(ctx, s.Store, cfg, roots, localTaskID, false)
+		if lineageErr != nil {
+			return "", fmt.Errorf("assemble planning lineage context: %w", lineageErr)
+		}
+		lineagePrompt = lineagecontext.RenderUntrusted(lineage)
+	}
 	return role +
 		"\n\nConfigured workspace repositories: " + strings.Join(repositories, ", ") + "." +
 		"\n" + snapshotStatement +
 		"\n" + goalStatement(session) +
+		lineagePrompt +
 		"\nStrict exploration tool schemas:\n" + string(explorationSchemas) +
 		"\n\nDurable conversation context:\n" + string(contextJSON), nil
 }

@@ -927,8 +927,13 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	effectiveLineage, err := s.effectiveLineageBudget(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	lineageGraph, err := s.lineageGraph(r, core.LineageNode{Type: core.LineageTask, ID: id}, core.LineageTraversalBudget{
-		MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes,
+		MaxDepth: effectiveLineage.Depth, MaxNodes: effectiveLineage.Nodes, MaxLinks: effectiveLineage.Links,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

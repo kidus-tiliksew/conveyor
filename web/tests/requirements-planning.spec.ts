@@ -41,8 +41,7 @@ const requirement = {
     }],
     truncated: false,
   },
-  staleness: { stale: true, latest_delivery: 'blueprint-task', active_drift: [] },
-  shipped_past_intent: 'blueprint-task',
+  staleness: { delivery_after_intent: true, latest_delivery: 'blueprint-task', active_drift: [] },
   migrated_seed: false,
   confirmation_eligible: true,
 }
@@ -316,13 +315,13 @@ test('requirements deep-link exact versions, render statements, diff pending int
 test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({ page }) => {
 	await initShell(page)
 	const seedVersion = { ...requirement.pending_versions[0], origin: 'feature_migration', origin_session_id: undefined }
-	const migrated = { ...requirement, requirement: { ...requirement.requirement, title: 'Migrated intent' }, pending_versions: [seedVersion], migrated_seed: true, confirmation_eligible: false, shipped_past_intent: undefined }
+	const migrated = { ...requirement, requirement: { ...requirement.requirement, title: 'Migrated intent' }, pending_versions: [seedVersion], migrated_seed: true, confirmation_eligible: false, staleness: { delivery_after_intent: false, active_drift: [] } }
 	const secondV1 = { ...requirement.pending_versions[0], requirement_id: 'req-second', version: 1, content: 'Earlier second document.' }
 	const secondV2 = { ...secondV1, version: 2, content: 'Latest second document.' }
 	const second = {
 	  ...requirement,
 	  requirement: { ...requirement.requirement, id: 'req-second', slug: 'second-intent', title: 'Second intent' },
-	  pending_versions: [secondV1, secondV2], migrated_seed: false, confirmation_eligible: true, shipped_past_intent: undefined,
+	  pending_versions: [secondV1, secondV2], migrated_seed: false, confirmation_eligible: true, staleness: { delivery_after_intent: false, active_drift: [] },
 	}
 	await page.route('**/v1/**', async (route) => {
 	  const shell = shellResponse(route)

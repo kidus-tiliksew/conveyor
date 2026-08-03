@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +52,46 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	handler.ServeHTTP(overBudget, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil))
 	if overBudget.Code != http.StatusBadRequest {
 		t.Fatalf("over-budget status=%d body=%s", overBudget.Code, overBudget.Body.String())
+	}
+}
+
+func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	root := core.Task{ID: "large-root", Workspace: "demo", Title: "Human root title", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	call := func(path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+	unlinked := call("/v1/lineage/task/" + root.ID)
+	if unlinked.Code != http.StatusOK {
+		t.Fatalf("unlinked status=%d body=%s", unlinked.Code, unlinked.Body.String())
+	}
+	var empty core.LineageTraversal
+	if json.Unmarshal(unlinked.Body.Bytes(), &empty) != nil || len(empty.Links) != 0 || empty.Nodes[0].Label != root.Title {
+		t.Fatalf("unlinked graph=%+v", empty)
+	}
+	if absent := call("/v1/lineage/task/absent"); absent.Code != http.StatusNotFound {
+		t.Fatalf("absent status=%d", absent.Code)
+	}
+	for index := 0; index < 140; index++ {
+		if err := st.AppendEvent(ctx, core.Event{TaskID: root.ID, Kind: "task.dependency_added", Payload: core.JSONPayload(map[string]any{"task_id": root.ID, "depends_on_task_id": fmt.Sprintf("neighbor-%03d", index)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bounded := call("/v1/lineage/task/" + root.ID)
+	var graph core.LineageTraversal
+	if bounded.Code != http.StatusOK || json.Unmarshal(bounded.Body.Bytes(), &graph) != nil {
+		t.Fatalf("large status=%d body=%s", bounded.Code, bounded.Body.String())
+	}
+	if len(graph.Nodes) > core.ContextLineageMaxNodes || len(graph.Links) > core.ContextLineageMaxLinks || !graph.Truncated || graph.OmittedNodes == 0 || graph.Budget.MaxNodes != core.ContextLineageMaxNodes {
+		t.Fatalf("large graph not honestly bounded: %+v", graph)
 	}
 }
 
@@ -117,6 +159,9 @@ func TestLineageHTTPQueriesPlanningThroughDeliveryEvidenceEndToEnd(t *testing.T)
 
 	server := NewServer(st)
 	server.Workspace = "demo"
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 8, Nodes: 32, RenderableBytes: 256 << 10}}}}}, nil
+	}
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/requirement/requirement-e2e", nil))
 	if response.Code != http.StatusOK {

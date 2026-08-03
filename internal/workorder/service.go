@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -45,11 +46,14 @@ type Context struct {
 	BounceHistory      []json.RawMessage               `json:"bounce_history,omitempty"`
 	PriorFeedback      []string                        `json:"prior_feedback,omitempty"`
 	Artifacts          []ArtifactReference             `json:"artifacts,omitempty"`
+	LineageContext     lineagecontext.Result           `json:"lineage_context"`
 	// ContextTruncated tells a client that the explicit lineage/node or
 	// artifact-reference budget was reached. Authorization uses the identical
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
-	ContextTruncated        bool `json:"context_truncated,omitempty"`
-	ContextOmittedArtifacts int  `json:"context_omitted_artifacts,omitempty"`
+	ContextTruncated         bool     `json:"context_truncated,omitempty"`
+	ContextOmittedArtifacts  int      `json:"context_omitted_artifacts,omitempty"`
+	ContextOmittedCount      int      `json:"context_omitted_count,omitempty"`
+	ContextExhaustionReasons []string `json:"context_exhaustion_reasons,omitempty"`
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
 	// capability without treating an artifact id as a bearer token.
@@ -584,13 +588,17 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			result.PriorFeedback = append(result.PriorFeedback, item.Comment)
 		}
 	}
-	artifacts, truncated, omitted, err := s.artifactsForOrder(ctx, order)
+	lineage, err := s.lineageForOrder(ctx, order)
 	if err != nil {
 		return Context{}, err
 	}
+	result.LineageContext = lineage
+	artifacts := artifactReferences(order.ID, lineage.Artifacts)
 	result.Artifacts = artifacts
-	result.ContextTruncated = truncated
-	result.ContextOmittedArtifacts = omitted
+	result.ContextTruncated = lineage.Traversal.Truncated || lineage.OmittedCount > 0
+	result.ContextOmittedArtifacts = lineage.OmittedCount
+	result.ContextOmittedCount = lineage.OmittedCount
+	result.ContextExhaustionReasons = append([]string(nil), lineage.ExhaustionReasons...)
 	for _, reference := range artifacts {
 		// Verification evidence intentionally remains direct-task only even when
 		// other context arrives through lineage (spec §12, §21.44 change 2).
@@ -641,33 +649,41 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 }
 
 func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, bool, int, error) {
-	workspace, _ := store.WorkspaceFromContext(ctx)
-	root := core.LineageNode{Type: core.LineageWorkOrder, ID: order.ID}
-	budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
-	links, err := s.Store.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+	lineage, err := s.lineageForOrder(ctx, order)
 	if err != nil {
-		return nil, false, 0, fmt.Errorf("list lineage for work order %s: %w", order.ID, err)
+		return nil, false, 0, err
 	}
-	traversal, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+	return artifactReferences(order.ID, lineage.Artifacts), lineage.Traversal.Truncated || lineage.OmittedCount > 0, lineage.OmittedCount, nil
+}
+
+func (s *Service) lineageForOrder(ctx context.Context, order core.WorkOrder) (lineagecontext.Result, error) {
+	var cfg *config.Config
+	if s.ConfigProvider != nil {
+		var err error
+		cfg, err = s.config(ctx)
+		if err != nil {
+			return lineagecontext.Result{}, err
+		}
+	}
+	result, err := lineagecontext.Assemble(ctx, s.Store, cfg, []core.LineageNode{
+		{Type: core.LineageTask, ID: order.TaskID},
+		{Type: core.LineageWorkOrder, ID: order.ID},
+	}, order.TaskID, true)
 	if err != nil {
-		return nil, false, 0, fmt.Errorf("traverse lineage for work order %s: %w", order.ID, err)
+		return lineagecontext.Result{}, fmt.Errorf("assemble lineage context for work order %s: %w", order.ID, err)
 	}
-	artifacts, err := s.Store.ListArtifactsForLineage(ctx, traversal.Nodes)
-	if err != nil {
-		return nil, false, 0, fmt.Errorf("list artifacts for work order %s: %w", order.ID, err)
-	}
-	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: order.TaskID, IncludeLocalVerificationEvidence: true})
-	if err != nil {
-		return nil, false, 0, fmt.Errorf("assemble context artifacts for work order %s: %w", order.ID, err)
-	}
-	references := make([]ArtifactReference, 0, len(selection.Artifacts))
-	for _, artifact := range selection.Artifacts {
+	return result, nil
+}
+
+func artifactReferences(workOrderID string, artifacts []core.Artifact) []ArtifactReference {
+	references := make([]ArtifactReference, 0, len(artifacts))
+	for _, artifact := range artifacts {
 		artifact.DownloadURL = ""
 		references = append(references, ArtifactReference{
-			Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact",
+			Artifact: artifact, WorkOrderID: workOrderID, ReadTool: "read_artifact",
 		})
 	}
-	return references, selection.Truncated, selection.Omitted, nil
+	return references
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {

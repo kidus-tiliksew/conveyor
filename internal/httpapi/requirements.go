@@ -31,16 +31,15 @@ type requirementView struct {
 	Lineage              []core.Event                 `json:"lineage"`
 	LineageGraph         core.LineageTraversal        `json:"lineage_graph"`
 	Staleness            requirementStaleness         `json:"staleness"`
-	ShippedPastIntent    string                       `json:"shipped_past_intent,omitempty"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
 }
 
 type requirementStaleness struct {
-	Stale            bool            `json:"stale"`
-	LatestDelivery   string          `json:"latest_delivery,omitempty"`
-	LatestDeliveryAt time.Time       `json:"latest_delivery_at,omitempty"`
-	ActiveDrift      []monitor.Drift `json:"active_drift"`
+	DeliveryAfterIntent bool            `json:"delivery_after_intent"`
+	LatestDelivery      string          `json:"latest_delivery,omitempty"`
+	LatestDeliveryAt    *time.Time      `json:"latest_delivery_at,omitempty"`
+	ActiveDrift         []monitor.Drift `json:"active_drift"`
 }
 
 type blueprintLineage struct {
@@ -153,7 +152,11 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		return nil, err
 	}
 	workspace, _ := store.WorkspaceFromContext(r.Context())
-	lineageBudget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+	effective, err := s.effectiveLineageBudget(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	lineageBudget := core.LineageTraversalBudget{MaxDepth: effective.Depth, MaxNodes: effective.Nodes, MaxLinks: effective.Links, Workspace: workspace}
 	lineageRoots := make([]core.LineageNode, 0, len(requirements))
 	for _, requirement := range requirements {
 		lineageRoots = append(lineageRoots, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID})
@@ -292,12 +295,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			return nil, graphErr
 		}
 		view.LineageGraph = graph
-		reachableTasks := map[string]bool{}
-		for _, node := range graph.Nodes {
-			if node.Type == core.LineageTask || node.Type == core.LineageBlueprint {
-				reachableTasks[node.ID] = true
-			}
-		}
+		reachableTasks := deliveryReachableTasks(sharedLineage, requirement.ID)
 		if !confirmedAt.IsZero() {
 			for taskID := range reachableTasks {
 				events, eventsErr := loadTaskEvents(taskID)
@@ -305,8 +303,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 					return nil, eventsErr
 				}
 				label, at := mergedAfter(events, confirmedAt)
-				if label != "" && at.After(view.Staleness.LatestDeliveryAt) {
-					view.Staleness.LatestDelivery, view.Staleness.LatestDeliveryAt = label, at
+				if label != "" && (view.Staleness.LatestDeliveryAt == nil || at.After(*view.Staleness.LatestDeliveryAt)) {
+					atCopy := at
+					view.Staleness.LatestDelivery, view.Staleness.LatestDeliveryAt = label, &atCopy
 				}
 			}
 		}
@@ -315,8 +314,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
 			}
 		}
-		view.Staleness.Stale = view.Staleness.LatestDelivery != "" || len(view.Staleness.ActiveDrift) > 0
-		view.ShippedPastIntent = view.Staleness.LatestDelivery
+		view.Staleness.DeliveryAfterIntent = view.Staleness.LatestDelivery != ""
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID
@@ -326,6 +324,37 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+// deliveryReachableTasks is the single staleness predicate. It follows only
+// confirmed requirement service into blueprint versions and their materialized
+// children; planning-session and dependency hops cannot import unrelated merges.
+func deliveryReachableTasks(links []core.LineageLink, requirementID string) map[string]bool {
+	reachable := map[core.LineageNode]bool{{Type: core.LineageRequirement, ID: requirementID}: true}
+	tasks := map[string]bool{}
+	changed := true
+	for changed {
+		changed = false
+		for _, link := range links {
+			src := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+			dst := core.LineageNode{Type: link.DstType, ID: link.DstID}
+			if !reachable[src] {
+				continue
+			}
+			allowed := (link.Kind == "serves" && link.SrcType == core.LineageRequirement && link.DstType == core.LineageBlueprint) ||
+				(link.Kind == "versions" && link.SrcType == core.LineageBlueprint && link.DstType == core.LineageBlueprintVersion) ||
+				(link.Kind == "materializes" && link.SrcType == core.LineageBlueprintVersion && link.DstType == core.LineageTask)
+			if !allowed || reachable[dst] {
+				continue
+			}
+			reachable[dst] = true
+			changed = true
+			if dst.Type == core.LineageBlueprint || dst.Type == core.LineageTask {
+				tasks[dst.ID] = true
+			}
+		}
+	}
+	return tasks
 }
 
 func mergedAfter(events []core.Event, at time.Time) (string, time.Time) {

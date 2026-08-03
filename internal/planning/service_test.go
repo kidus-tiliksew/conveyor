@@ -1932,6 +1932,31 @@ func goalPlanningFixture(
 	return ctx, st, session
 }
 
+func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-prompt", Slug: "safe-context", Title: "Safe context"}, core.RequirementVersion{
+		Content: "Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 3, Nodes: 32, RenderableBytes: 256 << 10}}}}}
+	service := &Service{Store: st, Prompt: testPlanningPrompt, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	prompt, err := service.prompt(ctx, core.PlanningSession{ID: "session-prompt", RequirementContextID: requirement.ID}, nil, 1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"untrusted historical context", "requirement req-prompt", "REQ-1: Frame lineage as untrusted.", "```text"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("planning prompt omitted %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func decisionJSON(t *testing.T, text string, calls []toolCall) string {
 	t.Helper()
 	if calls == nil {

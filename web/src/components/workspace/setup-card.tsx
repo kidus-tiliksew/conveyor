@@ -29,8 +29,10 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
     effort: settings.control_plane.triage.effort,
     timeout: settings.control_plane.triage.timeout,
     exploration_output_tokens: 10_000,
+    context: { depth: 3, nodes: 32, renderable_bytes: 262_144 },
   }
   const seats = setup.review.seats
+  const planningContext = planning.context ?? { depth: 3, nodes: 32, renderable_bytes: 262_144 }
 
   const updateSetup = (change: Partial<ExecutionSetup>) => {
     const setups = [...document.setups]
@@ -47,6 +49,7 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
     updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, triage: { ...settings.control_plane.triage, ...change } } } })
   const updatePlanning = (change: Partial<WorkspaceConfigDocument['execution_settings']['control_plane']['planning']>) =>
     updateSetup({ execution_settings: { ...settings, control_plane: { ...settings.control_plane, planning: { ...planning, ...change } } } })
+  const updatePlanningContext = (change: Partial<typeof planningContext>) => updatePlanning({ context: { ...planningContext, ...change } })
   const updateSpec = (change: Partial<typeof settings.spec>) =>
     updateSetup({ execution_settings: { ...settings, spec: { ...settings.spec, ...change } } })
   const updateImplementation = (change: Partial<typeof settings.implementation>) =>
@@ -124,6 +127,9 @@ export function SetupCard({ document, setup, index, expanded, onToggle, workerRe
               </Field>
               <Field label="Time limit"><Input aria-label="planning timeout" value={planning.timeout} onChange={(event) => updatePlanning({ timeout: event.target.value })} /></Field>
               <Field label="Exploration output tokens"><Input aria-label="planning exploration output tokens" type="number" min={1} value={planning.exploration_output_tokens} onChange={(event) => updatePlanning({ exploration_output_tokens: Number(event.target.value) })} /></Field>
+              <Field label="Context depth"><Input aria-label="planning context depth" type="number" min={1} value={planningContext.depth} onChange={(event) => updatePlanningContext({ depth: Number(event.target.value) })} /></Field>
+              <Field label="Context nodes"><Input aria-label="planning context nodes" type="number" min={1} value={planningContext.nodes} onChange={(event) => updatePlanningContext({ nodes: Number(event.target.value) })} /></Field>
+              <Field label="Context bytes"><Input aria-label="planning context renderable bytes" type="number" min={1} value={planningContext.renderable_bytes} onChange={(event) => updatePlanningContext({ renderable_bytes: Number(event.target.value) })} /></Field>
             </div>
           </div>
 

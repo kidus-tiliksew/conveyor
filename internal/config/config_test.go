@@ -37,12 +37,14 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 	}
 	planning := normalized.ExecutionSettings.ControlPlane.Planning
 	if planning.Model != "gpt" || planning.ExplorationOutputTokens != DefaultPlanningExplorationOutputTokens ||
+		planning.Context != (LineageContextSettings{Depth: DefaultLineageContextDepth, Nodes: DefaultLineageContextNodes, RenderableBytes: DefaultLineageContextRenderableBytes}) ||
 		!reflect.DeepEqual(normalized.PlanningModels, []string{"gpt"}) {
 		t.Fatalf("planning defaults=%+v allowlist=%v", planning, normalized.PlanningModels)
 	}
 
 	document := normalized.WorkspaceDocument()
-	planning = PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "15m", ExplorationOutputTokens: 2048}
+	planning = PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "15m", ExplorationOutputTokens: 2048,
+		Context: LineageContextSettings{Depth: 4, Nodes: 48, RenderableBytes: 128 << 10}}
 	document.ExecutionSettings.ControlPlane.Planning = planning
 	document.Setups[0].ExecutionSettings.ControlPlane.Planning = planning
 	document.PlanningModels = []string{"planner", "planner-alt"}
@@ -62,6 +64,15 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 		},
 		"off-allowlist default": func(value *WorkspaceDocument) {
 			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Model = "missing"
+		},
+		"non-positive context depth": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.Depth = -1
+		},
+		"non-positive context nodes": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.Nodes = -1
+		},
+		"non-positive context bytes": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.RenderableBytes = -1
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

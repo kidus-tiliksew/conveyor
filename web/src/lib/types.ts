@@ -128,7 +128,7 @@ export type LineageNodeType =
   | 'blueprint' | 'blueprint_version' | 'task' | 'work_order'
   | 'pull_request' | 'commit_range' | 'evidence' | 'verdict'
 
-export interface LineageNode { type: LineageNodeType; id: string }
+export interface LineageNode { type: LineageNodeType; id: string; label?: string }
 export interface LineageLink {
   workspace: string
   src_type: LineageNodeType
@@ -139,7 +139,16 @@ export interface LineageLink {
   created_by_event_id: number
   created_at: string
 }
-export interface LineageGraph { roots: LineageNode[]; nodes: LineageNode[]; links: LineageLink[]; truncated: boolean }
+export interface LineageGraph {
+  roots: LineageNode[]
+  nodes: LineageNode[]
+  links: LineageLink[]
+  truncated: boolean
+  budget?: { max_depth: number; max_nodes: number; max_links?: number }
+  omitted_nodes?: number
+  omitted_links?: number
+  exhaustion_reasons?: string[]
+}
 
 export type InterventionAction = 'approve' | 'reject' | 'redirect' | 'pull_to_local' | 'cancel'
 
@@ -345,6 +354,7 @@ export interface WorkspaceExecutionSettings {
         effort?: 'minimal' | 'low' | 'medium' | 'high'
         timeout: string
         exploration_output_tokens: number
+        context?: { depth: number; nodes: number; renderable_bytes: number }
       }
     }
     spec: {
@@ -668,12 +678,11 @@ export interface RequirementView {
   lineage: TaskEvent[]
   lineage_graph?: LineageGraph
   staleness?: {
-    stale: boolean
+    delivery_after_intent: boolean
     latest_delivery?: string
     latest_delivery_at?: string
     active_drift: RepositoryDrift[]
   }
-  shipped_past_intent?: string
   migrated_seed: boolean
   confirmation_eligible: boolean
 }
