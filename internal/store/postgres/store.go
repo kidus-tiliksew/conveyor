@@ -1764,16 +1764,71 @@ func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error
 	}
 	links := make([]core.LineageLink, 0, len(rows))
 	for _, row := range rows {
-		if !row.CreatedByEventID.Valid {
-			continue
-		}
 		links = append(links, core.LineageLink{
 			Workspace: row.WorkspaceID, SrcType: core.LineageNodeType(row.SrcType), SrcID: row.SrcID,
 			DstType: core.LineageNodeType(row.DstType), DstID: row.DstID, Kind: row.Kind,
-			CreatedByEventID: row.CreatedByEventID.Int64, CreatedAt: row.CreatedAt.Time,
+			CreatedByEventID: row.CreatedByEventID.Int64, LegacyCreatedByEvent: row.LegacyCreatedByEvent.String, CreatedAt: row.CreatedAt.Time,
 		})
 	}
 	return links, nil
+}
+
+func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
+		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
+	}
+	types, ids := make([]string, 0, len(roots)), make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root.Valid() {
+			types = append(types, string(root.Type))
+			ids = append(ids, root.ID)
+		}
+	}
+	if len(types) == 0 {
+		return []core.LineageLink{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `WITH RECURSIVE seeds(root_no,node_type,node_id) AS (
+		SELECT ord::int, node_type, node_id FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS r(node_type,node_id,ord)
+	), walk(root_no,node_type,node_id,depth) AS (
+		SELECT root_no,node_type,node_id,0 FROM seeds
+		UNION
+		SELECT w.root_no,
+			CASE WHEN l.src_type=w.node_type AND l.src_id=w.node_id THEN l.dst_type ELSE l.src_type END,
+			CASE WHEN l.src_type=w.node_type AND l.src_id=w.node_id THEN l.dst_id ELSE l.src_id END,
+			w.depth+1
+		FROM walk w JOIN links l ON l.workspace_id=$1 AND
+			((l.src_type=w.node_type AND l.src_id=w.node_id) OR (l.dst_type=w.node_type AND l.dst_id=w.node_id))
+		WHERE w.depth < $4
+	), nearest AS (
+		SELECT root_no,node_type,node_id,min(depth) AS depth FROM walk GROUP BY root_no,node_type,node_id
+	), bounded AS (
+		SELECT root_no,node_type,node_id FROM (
+			SELECT nearest.*,row_number() OVER (PARTITION BY root_no ORDER BY depth,node_type,node_id) AS n FROM nearest
+		) ranked WHERE n <= $5
+	), chosen AS (
+		SELECT DISTINCT l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+		FROM links l JOIN bounded b ON l.workspace_id=$1 AND
+			((l.src_type=b.node_type AND l.src_id=b.node_id) OR (l.dst_type=b.node_type AND l.dst_id=b.node_id))
+	)
+	SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
+	FROM chosen ORDER BY src_type,src_id,dst_type,dst_id,kind`, workspace(ctx), types, ids, budget.MaxDepth, budget.MaxNodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.LineageLink
+	for rows.Next() {
+		var link core.LineageLink
+		var legacy pgtype.Text
+		var createdAt pgtype.Timestamptz
+		var eventID pgtype.Int8
+		if err = rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+			return nil, err
+		}
+		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+		result = append(result, link)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
@@ -4275,33 +4330,6 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 	return artifact, content, nil
 }
 
-func (s *Store) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
-	var artifact core.Artifact
-	var content []byte
-	// A requirement-attached link is in this task's context when migration 046
-	// re-homed it from the feature the task was assigned to: the conversion
-	// recorded that assignment as a historical_feature_assignment edge, so
-	// resolving through it keeps a migrated attachment exactly as reachable as
-	// it was before the feature tree retired (spec §21.46 changes 5 and 7).
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,'')
-		FROM artifacts a
-		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
-		WHERE a.workspace_id=$1 AND a.id=$2
-		  AND (($3 <> '' AND l.task_id=$3)
-		       OR ($3 <> '' AND l.requirement_id IS NOT NULL AND EXISTS (
-		           SELECT 1 FROM links edge
-		           WHERE edge.workspace_id=a.workspace_id
-		             AND edge.kind='historical_feature_assignment'
-		             AND edge.src_type='requirement' AND edge.src_id=l.requirement_id
-		             AND edge.dst_type='task' AND edge.dst_id=$3)))
-		ORDER BY l.role
-		LIMIT 1`, workspace(ctx), id, taskID).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID)
-	if err != nil {
-		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
-	}
-	return artifact, content, nil
-}
-
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
@@ -4330,6 +4358,42 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	for rows.Next() {
 		var artifact core.Artifact
 		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
+			return nil, err
+		}
+		result = append(result, artifact)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	types, ids := make([]string, 0, len(nodes)), make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Valid() {
+			types = append(types, string(node.Type))
+			ids = append(ids, node.ID)
+		}
+	}
+	if len(types) == 0 {
+		return []core.Artifact{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `WITH wanted(node_type,node_id) AS (SELECT * FROM unnest($2::text[],$3::text[]))
+		SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,
+		COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
+		FROM artifacts a JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
+		WHERE a.workspace_id=$1 AND EXISTS (SELECT 1 FROM wanted w WHERE
+			(w.node_type='task' AND w.node_id=l.task_id) OR
+			(w.node_type='requirement' AND w.node_id=l.requirement_id) OR
+			(w.node_type='planning_session' AND w.node_id=l.planning_session_id) OR
+			(w.node_type='evidence' AND w.node_id=a.id AND l.role='verification_evidence'))
+		ORDER BY a.created_at,a.id,l.role`, workspace(ctx), types, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.Artifact
+	for rows.Next() {
+		var artifact core.Artifact
+		if err = rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
 			return nil, err
 		}
 		result = append(result, artifact)

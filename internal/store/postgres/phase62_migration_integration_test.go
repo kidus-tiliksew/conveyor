@@ -12,6 +12,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // Migration 046 retires the curated feature tree into the flat requirement
@@ -445,25 +447,64 @@ func TestPhase62MigratedAttachmentStaysInTaskContextIntegration(t *testing.T) {
 	attachment := f.artifact(t, "feat-shared", "task_context")
 
 	f.upgrade(t)
+	// Exercise the live scoped context APIs on the current schema after the
+	// feature-era migration has produced its legacy lineage rows.
+	f.upgradeTo(t, 0)
 
-	artifact, content, err := f.store.GetArtifactForContext(f.ctx, attachment, taskID)
-	if err != nil {
-		t.Fatalf("migrated attachment left the task's context: %v", err)
+	assertReachable := func(t *testing.T, candidateTask string, want bool) {
+		root := core.LineageNode{Type: core.LineageTask, ID: candidateTask}
+		budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: f.workspace}
+		links, err := f.store.ListLineageNeighborhood(f.ctx, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifacts, err := f.store.ListArtifactsForLineage(f.ctx, graph.Nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: f.workspace, LocalTaskID: candidateTask})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, artifact := range selection.Artifacts {
+			found = found || artifact.ID == attachment
+		}
+		if found != want {
+			t.Fatalf("task %s reachable=%v want %v selection=%+v", candidateTask, found, want, selection)
+		}
 	}
-	if artifact.RequirementID != "req-feat-shared" {
-		t.Errorf("resolved artifact requirement = %q, want req-feat-shared", artifact.RequirementID)
+	assertReachable(t, taskID, true)
+	order := core.WorkOrder{ID: taskID + "-implement-1", TaskID: taskID, JobID: taskID + "-implement-1", Stage: core.StageImplement}
+	if err := f.store.CreateJob(f.ctx, core.Job{ID: order.JobID, TaskID: taskID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "feat-shared") {
-		t.Errorf("resolved unexpected content %q", content)
+	if err := storetest.For(f.store).CreateWorkOrder(f.ctx, order); err != nil {
+		t.Fatal(err)
 	}
-	// The task no longer needs to know the retired feature id to reach it.
-	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, taskID); err != nil {
-		t.Errorf("attachment unreachable without a feature id: %v", err)
+	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, order.ID, core.WorkOrderClaim{SessionID: "migrated-reader", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
 	}
-	// An unrelated task must not gain access through the requirement.
+	service := &workorder.Service{Store: f.store}
+	if _, err := service.ReadArtifact(f.ctx, order.ID, "migrated-reader", attachment); err != nil {
+		t.Fatalf("MCP read before rebuild: %v", err)
+	}
+	artifact, content, err := f.store.GetArtifact(f.ctx, attachment)
+	if err != nil || artifact.RequirementID != "req-feat-shared" || !strings.Contains(string(content), "feat-shared") {
+		t.Fatalf("migrated artifact=%+v content=%q err=%v", artifact, content, err)
+	}
 	other := f.task(t, "", "")
-	if _, _, err = f.store.GetArtifactForContext(f.ctx, attachment, other); err == nil {
-		t.Error("an unrelated task resolved a requirement-scoped attachment")
+	assertReachable(t, other, false)
+	if _, err = f.store.RebuildLineage(f.ctx, core.LineageRebuildRequest{Reason: "migration reachability regression", RequestID: core.NewTaskID()}); err != nil {
+		t.Fatal(err)
+	}
+	assertReachable(t, taskID, true)
+	if _, err := service.ReadArtifact(f.ctx, order.ID, "migrated-reader", attachment); err != nil {
+		t.Fatalf("MCP read after rebuild: %v", err)
 	}
 }
 

@@ -152,7 +152,31 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	if err != nil {
 		return nil, err
 	}
-	artifacts, err := s.Store.ListArtifacts(r.Context())
+	workspace, _ := store.WorkspaceFromContext(r.Context())
+	lineageBudget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+	lineageRoots := make([]core.LineageNode, 0, len(requirements))
+	for _, requirement := range requirements {
+		lineageRoots = append(lineageRoots, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID})
+	}
+	sharedLineage, err := s.Store.ListLineageNeighborhood(r.Context(), lineageRoots, lineageBudget)
+	if err != nil {
+		return nil, err
+	}
+	artifactNodes := map[core.LineageNode]bool{}
+	for _, root := range lineageRoots {
+		graph, graphErr := core.TraverseLineage(sharedLineage, []core.LineageNode{root}, lineageBudget)
+		if graphErr != nil {
+			return nil, graphErr
+		}
+		for _, node := range graph.Nodes {
+			artifactNodes[node] = true
+		}
+	}
+	nodes := make([]core.LineageNode, 0, len(artifactNodes))
+	for node := range artifactNodes {
+		nodes = append(nodes, node)
+	}
+	artifacts, err := s.Store.ListArtifactsForLineage(r.Context(), nodes)
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +287,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
 			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
 		}
-		graph, graphErr := s.lineageGraph(r, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}, core.LineageTraversalBudget{
-			MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes,
-		})
+		graph, graphErr := core.TraverseLineage(sharedLineage, []core.LineageNode{{Type: core.LineageRequirement, ID: requirement.ID}}, lineageBudget)
 		if graphErr != nil {
 			return nil, graphErr
 		}

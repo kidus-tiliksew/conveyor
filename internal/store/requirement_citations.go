@@ -15,7 +15,12 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	links, err := st.ListLineageLinks(ctx)
+	roots := []core.LineageNode{{Type: core.LineageBlueprint, ID: task.ID}}
+	if task.ParentTaskID != "" {
+		roots = append(roots, core.LineageNode{Type: core.LineageBlueprint, ID: task.ParentTaskID})
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace})
 	if err != nil {
 		return nil, err
 	}

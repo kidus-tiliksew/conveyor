@@ -56,7 +56,10 @@ type LineageLink struct {
 	DstID            string          `json:"dst_id"`
 	Kind             string          `json:"kind"`
 	CreatedByEventID int64           `json:"created_by_event_id"`
-	CreatedAt        time.Time       `json:"created_at"`
+	// LegacyCreatedByEvent records the pre-event-ledger provenance retained by
+	// feature migration. Only historical_feature_assignment may use it.
+	LegacyCreatedByEvent string    `json:"legacy_created_by_event,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 // LineageRebuildResult reports projection reconciliation without treating
@@ -91,15 +94,20 @@ func (node LineageNode) Valid() bool {
 type LineageTraversalBudget struct {
 	MaxDepth int
 	MaxNodes int
+	// Workspace makes the trust boundary explicit even when a caller supplies
+	// mixed link input. Empty preserves compatibility for pure in-memory walks.
+	Workspace string
 }
 
 // LineageTraversal is deterministic for the same roots, links, and budget.
 // Truncated reports that a reachable node was omitted by either bound.
 type LineageTraversal struct {
-	Roots     []LineageNode `json:"roots"`
-	Nodes     []LineageNode `json:"nodes"`
-	Links     []LineageLink `json:"links"`
-	Truncated bool          `json:"truncated"`
+	Roots                   []LineageNode       `json:"roots"`
+	Nodes                   []LineageNode       `json:"nodes"`
+	Links                   []LineageLink       `json:"links"`
+	Truncated               bool                `json:"truncated"`
+	ForeignWorkspaceDropped int                 `json:"foreign_workspace_dropped,omitempty"`
+	Depths                  map[LineageNode]int `json:"-"`
 }
 
 // ContextArtifactSelection is the common bounded artifact view used by both
@@ -110,12 +118,30 @@ type ContextArtifactSelection struct {
 	Nodes     []LineageNode
 	Artifacts []Artifact
 	Truncated bool
+	Omitted   int
 }
 
-func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts []Artifact) (ContextArtifactSelection, error) {
+type ContextArtifactSelectionOptions struct {
+	Workspace                        string
+	LocalTaskID                       string
+	IncludeLocalVerificationEvidence bool
+}
+
+type contextArtifactCandidate struct {
+	artifact Artifact
+	local    bool
+	depth    int
+}
+
+func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts []Artifact, options ...ContextArtifactSelectionOptions) (ContextArtifactSelection, error) {
+	var opts ContextArtifactSelectionOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	traversal, err := TraverseLineage(links, roots, LineageTraversalBudget{
-		MaxDepth: ContextLineageMaxDepth,
-		MaxNodes: ContextLineageMaxNodes,
+		MaxDepth:  ContextLineageMaxDepth,
+		MaxNodes:  ContextLineageMaxNodes,
+		Workspace: opts.Workspace,
 	})
 	if err != nil {
 		return ContextArtifactSelection{}, err
@@ -124,31 +150,64 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	for _, node := range traversal.Nodes {
 		reachable[node] = true
 	}
-	ordered := append([]Artifact(nil), artifacts...)
-	sort.Slice(ordered, func(i, j int) bool {
-		if !ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
-			return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	byID := map[string]contextArtifactCandidate{}
+	for _, artifact := range artifacts {
+		local := opts.LocalTaskID != "" && artifact.TaskID == opts.LocalTaskID
+		if (!artifact.Role.ModelInputEligible() && !(opts.IncludeLocalVerificationEvidence && local && artifact.EligibleVerificationEvidence())) || !artifactReachableFromContext(artifact, reachable) {
+			continue
 		}
-		left := strings.Join([]string{ordered[i].ID, string(ordered[i].Role), ordered[i].TaskID, ordered[i].RequirementID, ordered[i].PlanningSessionID}, "\x00")
-		right := strings.Join([]string{ordered[j].ID, string(ordered[j].Role), ordered[j].TaskID, ordered[j].RequirementID, ordered[j].PlanningSessionID}, "\x00")
-		return left < right
-	})
+		depth := artifactContextDepth(artifact, traversal.Depths)
+		item := contextArtifactCandidate{artifact: artifact, local: local, depth: depth}
+		prior, exists := byID[artifact.ID]
+		if !exists || contextArtifactCandidateLess(item, prior) {
+			byID[artifact.ID] = item
+		}
+	}
+	ordered := make([]contextArtifactCandidate, 0, len(byID))
+	for _, item := range byID {
+		ordered = append(ordered, item)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return contextArtifactCandidateLess(ordered[i], ordered[j]) })
 	selection := ContextArtifactSelection{
 		Nodes:     append([]LineageNode(nil), traversal.Nodes...),
 		Artifacts: make([]Artifact, 0, min(len(ordered), ContextArtifactMaxRefs)),
 		Truncated: traversal.Truncated,
 	}
-	for _, artifact := range ordered {
-		if !artifactReachableFromContext(artifact, reachable) {
-			continue
-		}
-		if len(selection.Artifacts) == ContextArtifactMaxRefs {
+	for _, item := range ordered {
+		if !item.local && len(selection.Artifacts) >= ContextArtifactMaxRefs {
 			selection.Truncated = true
+			selection.Omitted++
 			continue
 		}
-		selection.Artifacts = append(selection.Artifacts, artifact)
+		selection.Artifacts = append(selection.Artifacts, item.artifact)
 	}
 	return selection, nil
+}
+
+func contextArtifactCandidateLess(left, right contextArtifactCandidate) bool {
+	if left.local != right.local {
+		return left.local
+	}
+	if left.depth != right.depth {
+		return left.depth < right.depth
+	}
+	if !left.artifact.CreatedAt.Equal(right.artifact.CreatedAt) {
+		return left.artifact.CreatedAt.After(right.artifact.CreatedAt)
+	}
+	return strings.Join([]string{left.artifact.ID, string(left.artifact.Role), left.artifact.TaskID, left.artifact.RequirementID, left.artifact.PlanningSessionID}, "\x00") <
+		strings.Join([]string{right.artifact.ID, string(right.artifact.Role), right.artifact.TaskID, right.artifact.RequirementID, right.artifact.PlanningSessionID}, "\x00")
+}
+
+func artifactContextDepth(artifact Artifact, depths map[LineageNode]int) int {
+	best := ContextLineageMaxDepth + 1
+	for _, node := range []LineageNode{{Type: LineageTask, ID: artifact.TaskID}, {Type: LineageRequirement, ID: artifact.RequirementID}, {Type: LineagePlanningSession, ID: artifact.PlanningSessionID}, {Type: LineageEvidence, ID: artifact.ID}} {
+		if node.ID != "" {
+			if depth, ok := depths[node]; ok && depth < best {
+				best = depth
+			}
+		}
+	}
+	return best
 }
 
 func artifactReachableFromContext(artifact Artifact, reachable map[LineageNode]bool) bool {
@@ -178,6 +237,9 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	}
 	adjacent := map[LineageNode][]neighbor{}
 	for _, link := range links {
+		if budget.Workspace != "" && link.Workspace != budget.Workspace {
+			continue
+		}
 		if link.Validate() != nil {
 			continue
 		}
@@ -207,9 +269,17 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	queue := make([]queuedNode, 0, budget.MaxNodes)
 	seen := map[LineageNode]bool{}
 	result := LineageTraversal{
-		Roots: []LineageNode{},
-		Nodes: make([]LineageNode, 0, budget.MaxNodes),
-		Links: []LineageLink{},
+		Roots:  []LineageNode{},
+		Nodes:  make([]LineageNode, 0, budget.MaxNodes),
+		Links:  []LineageLink{},
+		Depths: map[LineageNode]int{},
+	}
+	if budget.Workspace != "" {
+		for _, link := range links {
+			if link.Workspace != budget.Workspace {
+				result.ForeignWorkspaceDropped++
+			}
+		}
 	}
 	for _, root := range sortedRoots {
 		if !root.Valid() || seen[root] {
@@ -222,6 +292,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		seen[root] = true
 		result.Roots = append(result.Roots, root)
 		result.Nodes = append(result.Nodes, root)
+		result.Depths[root] = 0
 		queue = append(queue, queuedNode{node: root})
 	}
 	for len(queue) > 0 {
@@ -247,6 +318,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 			}
 			seen[next.node] = true
 			result.Nodes = append(result.Nodes, next.node)
+			result.Depths[next.node] = current.depth + 1
 			queue = append(queue, queuedNode{node: next.node, depth: current.depth + 1})
 		}
 	}
@@ -255,7 +327,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		reachable[node] = true
 	}
 	for _, link := range links {
-		if link.Validate() != nil || !reachable[LineageNode{Type: link.SrcType, ID: link.SrcID}] ||
+		if (budget.Workspace != "" && link.Workspace != budget.Workspace) || link.Validate() != nil || !reachable[LineageNode{Type: link.SrcType, ID: link.SrcID}] ||
 			!reachable[LineageNode{Type: link.DstType, ID: link.DstID}] {
 			continue
 		}
@@ -285,7 +357,7 @@ func (link LineageLink) Validate() error {
 		strings.TrimSpace(link.DstID) == "" || strings.TrimSpace(link.Kind) == "" {
 		return fmt.Errorf("lineage workspace, endpoints, and kind are required")
 	}
-	if link.CreatedByEventID <= 0 {
+	if link.CreatedByEventID <= 0 && !(link.Kind == "historical_feature_assignment" && strings.TrimSpace(link.LegacyCreatedByEvent) != "") {
 		return fmt.Errorf("lineage event provenance is required")
 	}
 	if !link.SrcType.Valid() || !link.DstType.Valid() {

@@ -90,6 +90,10 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
+	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
+	// for all roots. Callers may derive several per-root traversals from it
+	// without repeating a workspace-wide scan.
+	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
 	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
@@ -208,9 +212,9 @@ type Store interface {
 
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
-	GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error)
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
+	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
 }
 
 // RequirementVersionConflict is returned when an operator confirmation was
@@ -2614,21 +2618,6 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
 }
 
-func (m *memory) GetArtifactForContext(ctx context.Context, id, taskID string) (core.Artifact, []byte, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	artifact, ok := m.artifactForRead(ctx, id)
-	if !ok {
-		return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
-	}
-	for _, link := range artifact.links {
-		if taskID != "" && link.TaskID == taskID {
-			return link, append([]byte(nil), artifact.content...), nil
-		}
-	}
-	return core.Artifact{}, nil, fmt.Errorf("artifact %s not found", id)
-}
-
 func (m *memory) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -2656,6 +2645,37 @@ func (m *memory) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 		out = append(out, artifact.links...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	wanted := make(map[core.LineageNode]bool, len(nodes))
+	for _, node := range nodes {
+		wanted[node] = true
+	}
+	workspace, scoped := WorkspaceFromContext(ctx)
+	var out []core.Artifact
+	for key, artifact := range m.artifacts {
+		if scoped && workspace != "" && key.workspace != workspace {
+			continue
+		}
+		for _, link := range artifact.links {
+			if wanted[core.LineageNode{Type: core.LineageTask, ID: link.TaskID}] ||
+				wanted[core.LineageNode{Type: core.LineageRequirement, ID: link.RequirementID}] ||
+				wanted[core.LineageNode{Type: core.LineagePlanningSession, ID: link.PlanningSessionID}] ||
+				(link.EligibleVerificationEvidence() && wanted[core.LineageNode{Type: core.LineageEvidence, ID: link.ID}]) {
+				out = append(out, link)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 	return out, nil
 }
 
@@ -3854,6 +3874,35 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 		return lineageLinkKey(links[i]) < lineageLinkKey(links[j])
 	})
 	return links, nil
+}
+
+func (m *memory) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	links, err := m.ListLineageLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	selected := map[string]core.LineageLink{}
+	for _, root := range roots {
+		walk, walkErr := core.TraverseLineage(links, []core.LineageNode{root}, core.LineageTraversalBudget{MaxDepth: budget.MaxDepth, MaxNodes: budget.MaxNodes, Workspace: workspaceOrDefault(ctx, "")})
+		if walkErr != nil {
+			return nil, walkErr
+		}
+		nodes := make(map[core.LineageNode]bool, len(walk.Nodes))
+		for _, node := range walk.Nodes {
+			nodes[node] = true
+		}
+		for _, link := range links {
+			if nodes[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || nodes[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
+				selected[lineageLinkKey(link)] = link
+			}
+		}
+	}
+	result := make([]core.LineageLink, 0, len(selected))
+	for _, link := range selected {
+		result = append(result, link)
+	}
+	sort.Slice(result, func(i, j int) bool { return lineageLinkKey(result[i]) < lineageLinkKey(result[j]) })
+	return result, nil
 }
 
 func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {

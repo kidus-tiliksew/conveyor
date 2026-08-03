@@ -133,10 +133,14 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{Store: st}
+	guard := &scopedContextStore{Store: st}
+	service := &Service{Store: guard}
 	read, err := service.ReadArtifact(ctx, "order-a", "order-a-session", artifactA.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood == 0 || guard.scopedArtifacts == 0 {
+		t.Fatalf("artifact authorization queries full_lineage=%d full_artifacts=%d neighborhood=%d scoped_artifacts=%d", guard.fullLineage, guard.fullArtifacts, guard.neighborhood, guard.scopedArtifacts)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(read.Data)
 	if err != nil || string(decoded) != "pdf-a" || read.Artifact.TaskID != "task-a" {
@@ -157,6 +161,31 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	}
 }
 
+type scopedContextStore struct {
+	store.Store
+	fullLineage, fullArtifacts, neighborhood, scopedArtifacts int
+}
+
+func (st *scopedContextStore) ListLineageLinks(context.Context) ([]core.LineageLink, error) {
+	st.fullLineage++
+	return nil, errors.New("whole-workspace lineage scan forbidden")
+}
+
+func (st *scopedContextStore) ListArtifacts(context.Context) ([]core.Artifact, error) {
+	st.fullArtifacts++
+	return nil, errors.New("whole-workspace artifact scan forbidden")
+}
+
+func (st *scopedContextStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	st.neighborhood++
+	return st.Store.ListLineageNeighborhood(ctx, roots, budget)
+}
+
+func (st *scopedContextStore) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	st.scopedArtifacts++
+	return st.Store.ListArtifactsForLineage(ctx, nodes)
+}
+
 func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScoped(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
@@ -174,8 +203,8 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		t.Fatal(err)
 	}
 	for _, task := range []core.Task{
-		{ID: "child-a", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
-		{ID: "child-b", Workspace: "demo", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
+		{ID: "child-a", Workspace: "demo", Repo: "repo-a", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
+		{ID: "child-b", Workspace: "demo", Repo: "repo-b", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
 		{ID: "unrelated", Workspace: "demo", State: core.TaskRunning, CreatedAt: now},
 	} {
 		if err = st.CreateTask(ctx, task); err != nil {
@@ -212,6 +241,10 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		t.Fatal(err)
 	}
 	sibling, err := st.CreateArtifact(ctx, core.Artifact{Name: "sibling.md", ContentType: "text/markdown", TaskID: "child-b"}, []byte("sibling outcome"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, err := st.CreateArtifact(ctx, core.Artifact{Name: "sibling-transcript.json", ContentType: "application/json", Role: core.ArtifactRoleGeneratedAudit, TaskID: "child-b"}, []byte("audit"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +287,14 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 	}
 	if _, err = service.ReadArtifact(ctx, order.ID, "child-a-session", unrelated.ID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unrelated artifact authorization error=%v", err)
+	}
+	if _, err = service.ReadArtifact(ctx, order.ID, "child-a-session", audit.ID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("reachable audit artifact authorization error=%v", err)
+	}
+	for _, reference := range workOrderContext.Artifacts {
+		if reference.ID == audit.ID {
+			t.Fatalf("reachable audit entered work-order context: %+v", reference)
+		}
 	}
 	if _, err = service.ReadArtifact(ctx, order.ID, "wrong-session", sibling.ID); err == nil || !strings.Contains(err.Error(), "another session") {
 		t.Fatalf("wrong-session lineage read error=%v", err)

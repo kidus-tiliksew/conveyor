@@ -239,8 +239,13 @@ func (agent *failingTranscriptAgent) Run(_ context.Context, model string, input 
 
 type artifactContextFailureStore struct {
 	store.Store
-	listErr bool
-	readErr bool
+	listErr, readErr                       bool
+	neighborhoodCalls, scopedArtifactCalls int
+}
+
+func (st *artifactContextFailureStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	st.neighborhoodCalls++
+	return st.Store.ListLineageNeighborhood(ctx, roots, budget)
 }
 
 func (st *artifactContextFailureStore) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
@@ -248,6 +253,14 @@ func (st *artifactContextFailureStore) ListArtifacts(ctx context.Context) ([]cor
 		return nil, errors.New("artifact list unavailable")
 	}
 	return st.Store.ListArtifacts(ctx)
+}
+
+func (st *artifactContextFailureStore) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	st.scopedArtifactCalls++
+	if st.listErr {
+		return nil, errors.New("artifact list unavailable")
+	}
+	return st.Store.ListArtifactsForLineage(ctx, nodes)
 }
 
 func (st *artifactContextFailureStore) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
@@ -590,6 +603,9 @@ func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 			err = dispatcher.DispatchNow(ctx, task.ID)
 			if err == nil || !strings.Contains(err.Error(), test.want) || agent.calls != 0 {
 				t.Fatalf("error=%v calls=%d", err, agent.calls)
+			}
+			if wrapped.neighborhoodCalls != 2 || wrapped.scopedArtifactCalls != 1 {
+				t.Fatalf("context queries neighborhood=%d artifacts=%d, want one citation query plus one shared artifact traversal", wrapped.neighborhoodCalls, wrapped.scopedArtifactCalls)
 			}
 			current, getErr := base.GetTask(ctx, task.ID)
 			events, eventErr := base.ListEvents(ctx, task.ID)
@@ -1965,7 +1981,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			if reviewPath == "external-mcp" {
 				err = d.ApplyExternalReview(ctx, task, job, review, job.ID, "review-session", "review")
 			} else {
-				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review")
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -2086,9 +2102,9 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 		t.Fatal(err)
 	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-citation", Title: "Citation contract"}, core.RequirementVersion{
-		Content: "Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
+		Content:    "Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Review cites confirmed intent."}},
-		Origin: core.RequirementOriginChat, OriginSessionID: "planning-citation",
+		Origin:     core.RequirementOriginChat, OriginSessionID: "planning-citation",
 	})
 	if err != nil {
 		t.Fatal(err)
