@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -62,7 +63,8 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := NewServer(st)
+	guard := &requirementsScopedStore{Store: st}
+	server := NewServer(guard)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
 
@@ -81,6 +83,9 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		views[0].Artifacts[0].ID != artifact.ID ||
 		len(views[0].PlanningSessions) != 1 || len(views[0].Lineage) != 2 {
 		t.Fatalf("requirement view=%+v", views)
+	}
+	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
+		t.Fatalf("requirements queries full_lineage=%d full_artifacts=%d neighborhood=%d scoped_artifacts=%d", guard.fullLineage, guard.fullArtifacts, guard.neighborhood, guard.scopedArtifacts)
 	}
 
 	unauthorized := httptest.NewRecorder()
@@ -111,6 +116,31 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		strings.Contains(detail.Body.String(), `"pending_versions":[{`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
+}
+
+type requirementsScopedStore struct {
+	store.Store
+	fullLineage, fullArtifacts, neighborhood, scopedArtifacts int
+}
+
+func (st *requirementsScopedStore) ListLineageLinks(context.Context) ([]core.LineageLink, error) {
+	st.fullLineage++
+	return nil, fmt.Errorf("whole-workspace lineage scan forbidden")
+}
+
+func (st *requirementsScopedStore) ListArtifacts(context.Context) ([]core.Artifact, error) {
+	st.fullArtifacts++
+	return nil, fmt.Errorf("whole-workspace artifact scan forbidden")
+}
+
+func (st *requirementsScopedStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	st.neighborhood++
+	return st.Store.ListLineageNeighborhood(ctx, roots, budget)
+}
+
+func (st *requirementsScopedStore) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	st.scopedArtifacts++
+	return st.Store.ListArtifactsForLineage(ctx, nodes)
 }
 
 func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {

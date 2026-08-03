@@ -48,7 +48,8 @@ type Context struct {
 	// ContextTruncated tells a client that the explicit lineage/node or
 	// artifact-reference budget was reached. Authorization uses the identical
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
-	ContextTruncated bool `json:"context_truncated,omitempty"`
+	ContextTruncated        bool `json:"context_truncated,omitempty"`
+	ContextOmittedArtifacts int  `json:"context_omitted_artifacts,omitempty"`
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
 	// capability without treating an artifact id as a bearer token.
@@ -583,12 +584,13 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			result.PriorFeedback = append(result.PriorFeedback, item.Comment)
 		}
 	}
-	artifacts, truncated, err := s.artifactsForOrder(ctx, order)
+	artifacts, truncated, omitted, err := s.artifactsForOrder(ctx, order)
 	if err != nil {
 		return Context{}, err
 	}
 	result.Artifacts = artifacts
 	result.ContextTruncated = truncated
+	result.ContextOmittedArtifacts = omitted
 	for _, reference := range artifacts {
 		// Verification evidence intentionally remains direct-task only even when
 		// other context arrives through lineage (spec §12, §21.44 change 2).
@@ -614,7 +616,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	references, _, err := s.artifactsForOrder(ctx, order)
+	references, _, _, err := s.artifactsForOrder(ctx, order)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -638,20 +640,25 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	return ArtifactContent{Artifact: *authorized, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
 }
 
-func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, bool, error) {
-	links, err := s.Store.ListLineageLinks(ctx)
+func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, bool, int, error) {
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	root := core.LineageNode{Type: core.LineageWorkOrder, ID: order.ID}
+	budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+	links, err := s.Store.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
 	if err != nil {
-		return nil, false, fmt.Errorf("list lineage for work order %s: %w", order.ID, err)
+		return nil, false, 0, fmt.Errorf("list lineage for work order %s: %w", order.ID, err)
 	}
-	artifacts, err := s.Store.ListArtifacts(ctx)
+	traversal, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
 	if err != nil {
-		return nil, false, fmt.Errorf("list artifacts for work order %s: %w", order.ID, err)
+		return nil, false, 0, fmt.Errorf("traverse lineage for work order %s: %w", order.ID, err)
 	}
-	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{{
-		Type: core.LineageWorkOrder, ID: order.ID,
-	}}, artifacts)
+	artifacts, err := s.Store.ListArtifactsForLineage(ctx, traversal.Nodes)
 	if err != nil {
-		return nil, false, fmt.Errorf("assemble context artifacts for work order %s: %w", order.ID, err)
+		return nil, false, 0, fmt.Errorf("list artifacts for work order %s: %w", order.ID, err)
+	}
+	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: order.TaskID, IncludeLocalVerificationEvidence: true})
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("assemble context artifacts for work order %s: %w", order.ID, err)
 	}
 	references := make([]ArtifactReference, 0, len(selection.Artifacts))
 	for _, artifact := range selection.Artifacts {
@@ -660,7 +667,7 @@ func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) (
 			Artifact: artifact, WorkOrderID: order.ID, ReadTool: "read_artifact",
 		})
 	}
-	return references, selection.Truncated, nil
+	return references, selection.Truncated, selection.Omitted, nil
 }
 
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {
@@ -894,7 +901,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 }
 
 func (s *Service) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
-	artifacts, err := s.Store.ListArtifacts(ctx)
+	artifacts, err := s.Store.ListArtifactsForLineage(ctx, []core.LineageNode{{Type: core.LineageTask, ID: taskID}})
 	if err != nil {
 		return nil, fmt.Errorf("list verification evidence: %w", err)
 	}

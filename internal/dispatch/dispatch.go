@@ -469,6 +469,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	}
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
+	ctx = context.WithValue(ctx, artifactContextMemoKey{}, map[string]artifactContextMemoEntry{})
 	input, err := d.buildStageInput(ctx, cfg, task.NextStage, task)
 	if err != nil {
 		attachmentCount, attachmentTypes := d.modelInputArtifactSummary(ctx, task)
@@ -682,20 +683,40 @@ func contextArtifactSource(artifact core.Artifact) string {
 	}
 }
 
-func (d *Dispatcher) contextArtifacts(ctx context.Context, taskID string) ([]core.Artifact, error) {
-	links, err := d.Store.ListLineageLinks(ctx)
+func (d *Dispatcher) contextArtifacts(ctx context.Context, taskID string) (result []core.Artifact, resultErr error) {
+	memo, memoized := ctx.Value(artifactContextMemoKey{}).(map[string]artifactContextMemoEntry)
+	if memoized {
+		if cached, exists := memo[taskID]; exists {
+			return cached.artifacts, cached.err
+		}
+		defer func() { memo[taskID] = artifactContextMemoEntry{artifacts: result, err: resultErr} }()
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	root := core.LineageNode{Type: core.LineageTask, ID: taskID}
+	budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+	links, err := d.Store.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
 	if err != nil {
 		return nil, err
 	}
-	artifacts, err := d.Store.ListArtifacts(ctx)
+	traversal, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
 	if err != nil {
 		return nil, err
 	}
-	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{{Type: core.LineageTask, ID: taskID}}, artifacts)
+	artifacts, err := d.Store.ListArtifactsForLineage(ctx, traversal.Nodes)
+	if err != nil {
+		return nil, err
+	}
+	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: taskID})
 	if err != nil {
 		return nil, err
 	}
 	return selection.Artifacts, nil
+}
+
+type artifactContextMemoKey struct{}
+type artifactContextMemoEntry struct {
+	artifacts []core.Artifact
+	err       error
 }
 
 // modelAttachmentKind is the provider boundary for in-process pipeline context:
@@ -943,7 +964,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		model = job.ModelTier
 	}
 	var evidenceIDs []string
-	if artifacts, artifactErr := d.Store.ListArtifacts(ctx); artifactErr == nil {
+	if artifacts, artifactErr := d.Store.ListArtifactsForLineage(ctx, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}); artifactErr == nil {
 		for _, artifact := range artifacts {
 			if artifact.TaskID == task.ID && artifact.EligibleVerificationEvidence() {
 				evidenceIDs = append(evidenceIDs, artifact.ID)

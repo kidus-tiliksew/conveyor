@@ -44,9 +44,30 @@ func TestPostgresLineageConformance(t *testing.T) {
 					t.Fatal(err)
 				}
 				assert := func(t *testing.T) {
-					resolved, content, err := st.GetArtifactForContext(ctx, artifact.ID, taskID)
-					if err != nil || resolved.RequirementID != requirementID || string(content) != "migrated context" {
-						t.Fatalf("migrated artifact resolved=%+v content=%q err=%v", resolved, content, err)
+					root := core.LineageNode{Type: core.LineageTask, ID: taskID}
+					budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+					links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+					if err != nil {
+						t.Fatal(err)
+					}
+					graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+					if err != nil {
+						t.Fatal(err)
+					}
+					artifacts, err := st.ListArtifactsForLineage(ctx, graph.Nodes)
+					if err != nil {
+						t.Fatal(err)
+					}
+					selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: taskID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, selected := range selection.Artifacts {
+						found = found || selected.ID == artifact.ID
+					}
+					if !found {
+						t.Fatalf("migrated artifact absent from selection: %+v", selection)
 					}
 					var count int
 					if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND kind IN ('historical_feature_assignment','legacy_event_note')`, workspace).Scan(&count); err != nil || count != 2 {

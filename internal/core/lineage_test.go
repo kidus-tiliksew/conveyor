@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -26,6 +27,53 @@ func TestLineageLinkRequiresEventProvenanceAndDistinctEndpoints(t *testing.T) {
 	link.DstID, link.DstType = "task-b", LineageNodeType("unknown")
 	if err := link.Validate(); err == nil {
 		t.Fatal("unknown lineage node type was accepted")
+	}
+}
+
+func TestTraverseLineageKeepsLegacyHistoryAndDropsForeignWorkspace(t *testing.T) {
+	legacy := LineageLink{Workspace: "demo", SrcType: LineageRequirement, SrcID: "req", DstType: LineageTask, DstID: "task", Kind: "historical_feature_assignment", LegacyCreatedByEvent: "feature.migrated", CreatedAt: time.Now().UTC()}
+	foreign := lineageTestLink(2, LineageTask, "task", LineageTask, "foreign", "depends_on")
+	foreign.Workspace = "other"
+	got, err := TraverseLineage([]LineageLink{legacy, foreign}, []LineageNode{{Type: LineageRequirement, ID: "req"}}, LineageTraversalBudget{MaxDepth: 3, MaxNodes: 8, Workspace: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 2 || got.Nodes[1].ID != "task" || len(got.Links) != 1 || got.ForeignWorkspaceDropped != 1 {
+		t.Fatalf("mixed traversal=%+v", got)
+	}
+}
+
+func TestSelectContextArtifactsTiersDeduplicatesFiltersAndReportsOmitted(t *testing.T) {
+	now := time.Now().UTC()
+	links := []LineageLink{lineageTestLink(1, LineageTask, "local", LineageTask, "derived", "depends_on")}
+	artifacts := []Artifact{
+		{ID: "local-context", Role: ArtifactRoleTaskContext, TaskID: "local", CreatedAt: now.Add(-time.Hour)},
+		{ID: "evidence", Role: ArtifactRoleVerificationEvidence, TaskID: "local", ContentType: "image/png", SizeBytes: 1, CreatedAt: now},
+		{ID: "audit", Role: ArtifactRoleGeneratedAudit, TaskID: "local", CreatedAt: now},
+	}
+	for i := 0; i < 70; i++ {
+		artifact := Artifact{ID: fmt.Sprintf("derived-%02d", i), Role: ArtifactRoleTaskContext, TaskID: "derived", CreatedAt: now.Add(time.Duration(i) * time.Second)}
+		artifacts = append(artifacts, artifact)
+		if i == 69 {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	selection, err := SelectContextArtifacts(links, []LineageNode{{Type: LineageTask, ID: "local"}}, artifacts, ContextArtifactSelectionOptions{Workspace: "demo", LocalTaskID: "local", IncludeLocalVerificationEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Artifacts) != ContextArtifactMaxRefs || !selection.Truncated || selection.Omitted != 8 {
+		t.Fatalf("selection count=%d truncated=%v omitted=%d", len(selection.Artifacts), selection.Truncated, selection.Omitted)
+	}
+	seen := map[string]bool{}
+	for _, artifact := range selection.Artifacts {
+		if seen[artifact.ID] {
+			t.Fatalf("duplicate %s", artifact.ID)
+		}
+		seen[artifact.ID] = true
+	}
+	if !seen["local-context"] || !seen["evidence"] || seen["audit"] || !seen["derived-69"] || seen["derived-00"] {
+		t.Fatalf("tiered IDs=%v", seen)
 	}
 }
 
@@ -89,7 +137,7 @@ func TestSelectContextArtifactsUsesBoundedReachabilityAndStableOrder(t *testing.
 	for _, artifact := range selection.Artifacts {
 		ids = append(ids, artifact.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{"sibling", "requirement"}) || selection.Truncated {
+	if !reflect.DeepEqual(ids, []string{"requirement", "sibling"}) || selection.Truncated {
 		t.Fatalf("selection=%+v ids=%v", selection, ids)
 	}
 }

@@ -703,7 +703,7 @@ func TestMemoryArtifactsScopeIdenticalContentByWorkspace(t *testing.T) {
 		{name: "workspace B", ctx: ctxB, artifact: artifactB, taskID: "task-b", workspace: "workspace-b"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			resolved, got, err := st.GetArtifactForContext(test.ctx, test.artifact.ID, test.taskID)
+			resolved, got, err := st.GetArtifact(test.ctx, test.artifact.ID)
 			if err != nil || resolved.Workspace != test.workspace || resolved.TaskID != test.taskID || string(got) != string(content) {
 				t.Fatalf("resolved=%+v content=%q err=%v", resolved, got, err)
 			}
@@ -717,12 +717,6 @@ func TestMemoryArtifactsScopeIdenticalContentByWorkspace(t *testing.T) {
 		})
 	}
 
-	if _, _, err := st.GetArtifactForContext(ctxA, artifactB.ID, "task-b"); err == nil {
-		t.Fatal("workspace A resolved workspace B link")
-	}
-	if _, _, err := st.GetArtifactForContext(ctxB, artifactA.ID, "task-a"); err == nil {
-		t.Fatal("workspace B resolved workspace A link")
-	}
 	if _, _, err := st.GetArtifact(context.Background(), artifactA.ID); err == nil {
 		t.Fatal("unscoped read of cross-workspace digest was not rejected as ambiguous")
 	}

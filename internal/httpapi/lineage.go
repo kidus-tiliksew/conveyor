@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +81,9 @@ func boundedLineageQueryValue(r *http.Request, name string, fallback int) (int, 
 }
 
 func (s *Server) lineageGraph(r *http.Request, root core.LineageNode, budget core.LineageTraversalBudget) (core.LineageTraversal, error) {
-	links, err := s.Store.ListLineageLinks(r.Context())
+	workspace, _ := store.WorkspaceFromContext(r.Context())
+	budget.Workspace = workspace
+	links, err := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, budget)
 	if err != nil {
 		return core.LineageTraversal{}, err
 	}
