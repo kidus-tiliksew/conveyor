@@ -78,9 +78,13 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 	case "requirement.version_confirmed":
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
+			_, predecessorRecorded := payload["supersedes_version"]
 			predecessor := number("supersedes_version")
-			if predecessor == 0 {
+			if !predecessorRecorded {
 				predecessor = version - 1
+			}
+			if predecessor <= 0 {
+				return nil
 			}
 			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
@@ -125,6 +129,36 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 // LineageLinksForEvent exposes the canonical projector to durable store
 // adapters without duplicating event interpretation.
 func LineageLinksForEvent(workspace string, event core.Event) []core.LineageLink {
+	return lineageLinksForEvent(workspace, event)
+}
+
+// HistoricalRequirementConfirmation identifies confirmation events written
+// before supersedes_version was recorded explicitly.
+func HistoricalRequirementConfirmation(event core.Event) (string, int, bool) {
+	if event.Kind != "requirement.version_confirmed" {
+		return "", 0, false
+	}
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return "", 0, false
+	}
+	if _, recorded := payload["supersedes_version"]; recorded {
+		return "", 0, false
+	}
+	requirementID, _ := payload["requirement_id"].(string)
+	version, _ := payload["version"].(float64)
+	return strings.TrimSpace(requirementID), int(version), requirementID != "" && version > 1
+}
+
+// LineageLinksForHistoricalConfirmation supplies the durable confirmed
+// predecessor for an event that predates supersedes_version.
+func LineageLinksForHistoricalConfirmation(workspace string, event core.Event, predecessor int) []core.LineageLink {
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return nil
+	}
+	payload["supersedes_version"] = predecessor
+	event.Payload = core.JSONPayload(payload)
 	return lineageLinksForEvent(workspace, event)
 }
 

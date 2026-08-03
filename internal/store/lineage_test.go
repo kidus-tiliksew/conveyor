@@ -54,6 +54,16 @@ func TestLineageProjectorDoesNotInventCommitRanges(t *testing.T) {
 	}
 }
 
+func TestRequirementConfirmationWithoutPredecessorDoesNotSupersedeDraft(t *testing.T) {
+	t.Parallel()
+	event := core.Event{ID: 1, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
+		"requirement_id": "req-1", "version": 3, "supersedes_version": 0,
+	})}
+	if links := lineageLinksForEvent("demo", event); len(links) != 0 {
+		t.Fatalf("first confirmed version superseded an unconfirmed draft: %+v", links)
+	}
+}
+
 func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	const workspace = "lineage-memory"
 	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}})

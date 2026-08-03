@@ -59,6 +59,58 @@ func TestPostgresLineageConformance(t *testing.T) {
 	})
 }
 
+func TestLineageRebuildRepairsHistoricalRequirementSupersession(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	requirementID := "req-" + core.NewTaskID()
+	// Seed the durable state and immutable event payloads exactly as they
+	// existed before supersedes_version was recorded by the writer.
+	if _, err := st.pool.Exec(ctx, `INSERT INTO requirements
+		(workspace_id,id,slug,title,current_version) VALUES ($1,$2,$2,'Historical supersession',NULL)`, workspace, requirementID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO requirement_versions
+		(workspace_id,requirement_id,version,content,origin,confirmed,confirmed_by,confirmed_at)
+		VALUES ($1,$2,1,'confirmed v1','feature_migration',true,'legacy',now()-interval '2 minutes'),
+		       ($1,$2,2,'abandoned v2','feature_migration',false,'',NULL),
+		       ($1,$2,3,'confirmed v3','feature_migration',true,'legacy',now()-interval '1 minute')`, workspace, requirementID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE requirements SET current_version=3 WHERE workspace_id=$1 AND id=$2`, workspace, requirementID); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []int{1, 3} {
+		if _, err := st.pool.Exec(ctx, `INSERT INTO events
+			(workspace_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,'requirement.version_confirmed','legacy','system',$2,now())`, workspace,
+			core.JSONPayload(map[string]any{"workspace_id": workspace, "requirement_id": requirementID, "version": version})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "repair historical requirement lineage", RequestID: core.NewTaskID()}); err != nil {
+		t.Fatal(err)
+	}
+	wantSrc := core.RequirementVersionLineageID(requirementID, 3)
+	wantDst := core.RequirementVersionLineageID(requirementID, 1)
+	badDst := core.RequirementVersionLineageID(requirementID, 2)
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range links {
+		if link.Kind != "supersedes" || link.SrcID != wantSrc {
+			continue
+		}
+		if link.DstID == badDst {
+			t.Fatalf("historical rebuild linked abandoned draft: %+v", link)
+		}
+		if link.DstID == wantDst {
+			return
+		}
+	}
+	t.Fatalf("historical supersession %s -> %s missing: %+v", wantSrc, wantDst, links)
+}
+
 func TestLineageProjectionRebuildIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()

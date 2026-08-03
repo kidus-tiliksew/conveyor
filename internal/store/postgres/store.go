@@ -1815,7 +1815,21 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		}
 		for _, row := range events {
 			event := eventFromDB(row)
-			for _, link := range store.LineageLinksForEvent(workspace(ctx), event) {
+			links := store.LineageLinksForEvent(workspace(ctx), event)
+			if requirementID, version, historical := store.HistoricalRequirementConfirmation(event); historical {
+				var predecessor pgtype.Int4
+				if err = q.QueryRow(ctx, `SELECT max(version) FROM requirement_versions
+					WHERE workspace_id=$1 AND requirement_id=$2 AND confirmed=true AND version<$3`,
+					workspace(ctx), requirementID, version).Scan(&predecessor); err != nil {
+					return err
+				}
+				predecessorVersion := 0
+				if predecessor.Valid {
+					predecessorVersion = int(predecessor.Int32)
+				}
+				links = store.LineageLinksForHistoricalConfirmation(workspace(ctx), event, predecessorVersion)
+			}
+			for _, link := range links {
 				if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
 					WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
 					DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,

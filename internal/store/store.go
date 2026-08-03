@@ -3895,7 +3895,17 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 					continue
 				}
 			}
-			for _, link := range lineageLinksForEvent(workspace, event) {
+			links := lineageLinksForEvent(workspace, event)
+			if requirementID, version, historical := HistoricalRequirementConfirmation(event); historical {
+				predecessor := 0
+				for _, candidate := range m.requirementVersions[memoryScopedKey{workspace: workspace, id: requirementID}] {
+					if candidate.Confirmed && candidate.Version < version && candidate.Version > predecessor {
+						predecessor = candidate.Version
+					}
+				}
+				links = LineageLinksForHistoricalConfirmation(workspace, event, predecessor)
+			}
+			for _, link := range links {
 				key := lineageLinkKey(link)
 				if _, exists := m.lineage[key]; !exists {
 					m.lineage[key] = link
