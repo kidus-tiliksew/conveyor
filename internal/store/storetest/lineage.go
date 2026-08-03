@@ -12,9 +12,10 @@ import (
 )
 
 type LineageFixture struct {
-	Store     store.Store
-	Context   context.Context
-	Workspace string
+	Store      store.Store
+	Context    context.Context
+	Workspace  string
+	SeedLegacy func(*testing.T, string) (int, func(*testing.T))
 }
 
 type LineageFactory func(*testing.T, []config.Repo) LineageFixture
@@ -23,6 +24,7 @@ type LineageFactory func(*testing.T, []config.Repo) LineageFixture
 // event projection/rebuild contract for memory and Postgres.
 func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	t.Helper()
+	assertCanonicalVocabulary(t)
 	fixture := factory(t, []config.Repo{{Name: "conveyor", Base: "main"}})
 	st, ctx := fixture.Store, fixture.Context
 	now := time.Now().UTC()
@@ -44,6 +46,19 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	if err := st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {
 		t.Fatal(err)
 	}
+	// Workspace-scoped reads never fall back to another graph.
+	if foreign, err := st.ListLineageLinks(store.WithWorkspace(t.Context(), fixture.Workspace+"-other")); err != nil || len(foreign) != 0 {
+		t.Fatalf("cross-workspace lineage leaked: links=%v err=%v", foreign, err)
+	}
+	assertAbandonedDraftSupersession(t, st, ctx)
+	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "in-process")
+	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "external-mcp")
+	wantExisting := 0
+	var assertLegacy func(*testing.T)
+	if fixture.SeedLegacy != nil {
+		wantExisting, assertLegacy = fixture.SeedLegacy(t, child.ID)
+		assertLegacy(t)
+	}
 	before := lineageSnapshot(t, st, ctx)
 	if !hasLineageKind(before, "depends_on") {
 		t.Fatalf("real dependency writer omitted lineage: %v", before)
@@ -54,6 +69,12 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "conformance", RequestID: core.NewTaskID()})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if result.Existing != wantExisting {
+		t.Fatalf("existing=%d want=%d result=%+v", result.Existing, wantExisting, result)
+	}
+	if assertLegacy != nil {
+		assertLegacy(t)
 	}
 	after := lineageSnapshot(t, st, ctx)
 	if result.Projected != len(after) {
@@ -69,6 +90,144 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	}
 }
 
+func assertCanonicalVocabulary(t *testing.T) {
+	t.Helper()
+	want := []string{"depends_on", "dispatches", "materializes", "merged_range", "produced_blueprint", "produced_requirement", "produced_verdict", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
+	got := store.CanonicalLineageKinds()
+	if len(got) != len(want) {
+		t.Fatalf("canonical lineage vocabulary=%v, want %v", got, want)
+	}
+	for _, kind := range want {
+		if _, ok := got[kind]; !ok {
+			t.Fatalf("canonical lineage vocabulary omitted %q: %v", kind, got)
+		}
+	}
+}
+
+func assertAbandonedDraftSupersession(t *testing.T, st store.Store, ctx context.Context) {
+	t.Helper()
+	blueprintID := core.NewTaskID()
+	blueprint := core.Task{ID: blueprintID, Workspace: workspaceForFixture(ctx), Repo: "conveyor", BaseBranch: "main",
+		Branch: "conveyor/task-" + blueprintID, Title: "Abandoned blueprint draft", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []string{"confirmed v1", "abandoned v2", "proposed v3"} {
+		if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+			TaskID: blueprintID, Content: content,
+			Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{}),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = findLineageLink(t, st, ctx, "supersedes", core.BlueprintVersionLineageID(blueprintID, 3), core.BlueprintVersionLineageID(blueprintID, 2))
+	_ = findLineageLink(t, st, ctx, "supersedes", core.BlueprintVersionLineageID(blueprintID, 2), core.BlueprintVersionLineageID(blueprintID, 1))
+
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Lineage conformance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirementID := "req-" + core.NewTaskID()
+	version := func(content string, statement int) core.RequirementVersion {
+		return core.RequirementVersion{
+			RequirementID: requirementID, Content: content, Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Intent revision " + content}},
+		}
+	}
+	_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Intent"}, version("one", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirementID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementVersion(ctx, version("abandoned", 2)); err != nil {
+		t.Fatal(err)
+	}
+	third, err := st.ProposeRequirementVersion(ctx, version("confirmed", 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirementID, third.Version); err != nil {
+		t.Fatal(err)
+	}
+	wantSrc, wantDst := core.RequirementVersionLineageID(requirementID, 3), core.RequirementVersionLineageID(requirementID, 1)
+	_ = findLineageLink(t, st, ctx, "supersedes", wantSrc, wantDst)
+}
+
+func workspaceForFixture(ctx context.Context) string {
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	return workspace
+}
+
+func assertEligibleReviewSupport(t *testing.T, st store.Store, ctx context.Context, workspace, reviewer string) {
+	t.Helper()
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID,
+		Title: reviewer, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: taskID + "-review-1-seat-1", TaskID: taskID, Stage: core.StageReview, State: core.JobRunning}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: reviewer + ".png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: taskID}, []byte("png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ineligible, err := st.CreateArtifact(ctx, core.Artifact{Name: reviewer + ".txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext, TaskID: taskID}, []byte("context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := core.ReviewDecision{TaskID: taskID, JobID: job.ID, ReviewWorkOrderID: job.ID,
+		ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: reviewer,
+		Reviewer: reviewer, EvidenceIDs: []string{eligible.ID}, MaxBounces: 3}
+	if err = For(st).AcceptReviewDecision(ctx, decision); err != nil {
+		t.Fatal(err)
+	}
+	first := findLineageLink(t, st, ctx, "supports", eligible.ID, core.VerdictLineageID(job.ID))
+	if err = For(st).AcceptReviewDecision(ctx, decision); err != nil {
+		t.Fatalf("idempotent review retry: %v", err)
+	}
+	repeated := findLineageLink(t, st, ctx, "supports", eligible.ID, core.VerdictLineageID(job.ID))
+	if repeated.CreatedByEventID != first.CreatedByEventID {
+		t.Fatalf("repeated review replaced first provenance: before=%+v after=%+v", first, repeated)
+	}
+	assertNoLineageLink(t, st, ctx, "supports", ineligible.ID, core.VerdictLineageID(job.ID))
+}
+
+func findLineageLink(t *testing.T, st store.Store, ctx context.Context, kind, srcID, dstID string) core.LineageLink {
+	t.Helper()
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range links {
+		if link.Kind == kind && link.SrcID == srcID && link.DstID == dstID {
+			return link
+		}
+	}
+	t.Fatalf("missing lineage %s %s -> %s in %+v", kind, srcID, dstID, links)
+	return core.LineageLink{}
+}
+
+func assertNoLineageLink(t *testing.T, st store.Store, ctx context.Context, kind, srcID, dstID string) {
+	t.Helper()
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range links {
+		if link.Kind == kind && link.SrcID == srcID && link.DstID == dstID {
+			t.Fatalf("unexpected lineage %s %s -> %s: %+v", kind, srcID, dstID, link)
+		}
+	}
+}
+
 func lineageSnapshot(t *testing.T, st store.Store, ctx context.Context) map[string]int64 {
 	t.Helper()
 	links, err := st.ListLineageLinks(ctx)
@@ -77,7 +236,11 @@ func lineageSnapshot(t *testing.T, st store.Store, ctx context.Context) map[stri
 	}
 	sort.Slice(links, func(i, j int) bool { return links[i].Kind < links[j].Kind })
 	out := map[string]int64{}
+	canonical := store.CanonicalLineageKinds()
 	for _, link := range links {
+		if _, ok := canonical[link.Kind]; !ok {
+			continue // retained non-projector-owned legacy link
+		}
 		if !link.SrcType.Valid() || !link.DstType.Valid() || link.CreatedByEventID == 0 {
 			t.Fatalf("invalid lineage link: %+v", link)
 		}

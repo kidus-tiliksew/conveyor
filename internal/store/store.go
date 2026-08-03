@@ -3876,7 +3876,7 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 	for key, link := range m.lineage {
 		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
 			delete(m.lineage, key)
-		} else if link.Workspace == workspace && link.CreatedByEventID == 0 {
+		} else if link.Workspace == workspace {
 			result.Existing++
 		}
 	}

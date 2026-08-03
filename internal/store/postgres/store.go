@@ -1797,7 +1797,8 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND created_by_event_id IS NULL`, workspace(ctx)).Scan(&result.Existing); err != nil {
+		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1
+			AND NOT (created_by_event_id IS NOT NULL AND kind = ANY($2::text[]))`, workspace(ctx), []string{"dispatches", "produced_requirement", "produced_blueprint", "serves", "versions", "supersedes", "submitted_as", "submitted_range", "merged_range", "produced_verdict", "supports", "depends_on", "materializes"}).Scan(&result.Existing); err != nil {
 			return err
 		}
 		if err = q.QueryRow(ctx, `SELECT count(*) FILTER (WHERE reason='ambiguous relationship'),

@@ -80,10 +80,19 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	}
 	// The operational edge is gone, but the immutable historical lineage stays.
 	assertMemoryLineage(t, st, ctx, 2)
+	memoryStore := st.(*memory)
+	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note"})] = core.LineageLink{
+		Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note", CreatedByEventID: 1,
+	}
+	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment"})] = core.LineageLink{
+		Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment",
+	}
 	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 2 {
 		t.Fatalf("rebuild result=%+v err=%v", result, err)
+	} else if result.Existing != 2 {
+		t.Fatalf("rebuild omitted retained legacy links: %+v", result)
 	}
-	assertMemoryLineage(t, st, ctx, 2)
+	assertMemoryLineage(t, st, ctx, 4)
 }
 
 func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) {
@@ -93,6 +102,9 @@ func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) 
 		t.Fatalf("lineage links=%+v err=%v, want %d", links, err, want)
 	}
 	for _, link := range links {
+		if !projectorOwnsLineageKind(link.Kind) {
+			continue
+		}
 		if err := link.Validate(); err != nil {
 			t.Fatalf("invalid projected link %+v: %v", link, err)
 		}
