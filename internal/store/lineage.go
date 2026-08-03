@@ -8,9 +8,16 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// lineageLinksForEvent is the single event-to-edge contract shared by both
-// stores. Unknown or malformed events project no edges (spec §16).
-func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink {
+// LineageEventProjection is the single replay contract shared by both stores.
+// Unknown or malformed events project no edges (spec §16).
+type LineageEventProjection struct {
+	Links       []core.LineageLink
+	Suppresses  []core.LineageLink
+	Unsupported int
+}
+
+func projectLineageEvent(workspace string, event core.Event) LineageEventProjection {
+	var result LineageEventProjection
 	link := func(srcType core.LineageNodeType, srcID string, dstType core.LineageNodeType, dstID, kind string) core.LineageLink {
 		return core.LineageLink{Workspace: workspace, SrcType: srcType, SrcID: srcID,
 			DstType: dstType, DstID: dstID, Kind: kind,
@@ -18,7 +25,7 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 	}
 	var payload map[string]any
 	if json.Unmarshal(event.Payload, &payload) != nil {
-		return nil
+		return result
 	}
 	text := func(key string) string {
 		value, _ := payload[key].(string)
@@ -40,29 +47,35 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 		for _, item := range items {
 			if item.Validate() == nil {
 				out = append(out, item)
+			} else {
+				result.Unsupported++
 			}
 		}
 		return out
+	}
+	emit := func(items ...core.LineageLink) LineageEventProjection {
+		result.Links = append(result.Links, valid(items...)...)
+		return result
 	}
 
 	switch event.Kind {
 	case "task.created":
 		parent, version := text("parent_task_id"), number("origin_spec_version")
 		if parent != "" && version > 0 && event.TaskID != "" {
-			return valid(link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(parent, version), core.LineageTask, event.TaskID, "materializes"))
+			return emit(link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(parent, version), core.LineageTask, event.TaskID, "materializes"))
 		}
 	case "task.dependency_added":
 		taskID, dependencyID := text("task_id"), text("depends_on_task_id")
 		if taskID == "" {
 			taskID = event.TaskID
 		}
-		return valid(link(core.LineageTask, taskID, core.LineageTask, dependencyID, "depends_on"))
+		return emit(link(core.LineageTask, taskID, core.LineageTask, dependencyID, "depends_on"))
 	case "work_order.created":
 		id := text("id")
 		if id == "" {
 			id = text("work_order_id")
 		}
-		return valid(link(core.LineageTask, event.TaskID, core.LineageWorkOrder, id, "dispatches"))
+		return emit(link(core.LineageTask, event.TaskID, core.LineageWorkOrder, id, "dispatches"))
 	case "planning_session.finalized":
 		sessionID := text("session_id")
 		var links []core.LineageLink
@@ -72,9 +85,12 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 		if taskID := text("produced_task_id"); taskID != "" {
 			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageBlueprint, taskID, "produced_blueprint"))
 		}
-		return valid(links...)
+		return emit(links...)
 	case "requirement.serves_confirmed":
-		return valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
+		return emit(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
+	case "requirement.serves_dismissed":
+		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
+		return result
 	case "requirement.version_confirmed":
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
@@ -84,9 +100,9 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 				predecessor = version - 1
 			}
 			if predecessor <= 0 {
-				return nil
+				return result
 			}
-			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
+			return emit(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
@@ -94,21 +110,25 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 			if version > 1 {
 				links = append(links, link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version-1), "supersedes"))
 			}
-			return valid(links...)
+			return emit(links...)
 		}
 	case "pull_request.opened":
 		repository, prNumber := text("repository"), number("number")
 		var links []core.LineageLink
 		if repository != "" && prNumber > 0 {
 			links = append(links, link(core.LineageTask, event.TaskID, core.LineagePullRequest, core.PullRequestLineageID(repository, prNumber), "submitted_as"))
+		} else if repository != "" || payload["number"] != nil {
+			result.Unsupported++
 		}
 		if baseSHA, headSHA := text("base_sha"), text("head_sha"); repository != "" && baseSHA != "" && headSHA != "" {
 			links = append(links, link(core.LineageTask, event.TaskID, core.LineageCommitRange, core.CommitRangeLineageID(repository, baseSHA, headSHA), "submitted_range"))
+		} else if baseSHA != "" || headSHA != "" {
+			result.Unsupported++
 		}
-		return valid(links...)
+		return emit(links...)
 	case "merge.confirmed", "merge.reconciled":
 		if repository, baseSHA, headSHA := text("repository"), text("base_sha"), text("head_sha"); repository != "" && baseSHA != "" && headSHA != "" {
-			return valid(link(core.LineageTask, event.TaskID, core.LineageCommitRange, core.CommitRangeLineageID(repository, baseSHA, headSHA), "merged_range"))
+			return emit(link(core.LineageTask, event.TaskID, core.LineageCommitRange, core.CommitRangeLineageID(repository, baseSHA, headSHA), "merged_range"))
 		}
 	case "review.completed":
 		workOrderID := text("review_work_order_id")
@@ -121,15 +141,25 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 				}
 			}
 		}
-		return valid(links...)
+		return emit(links...)
 	}
-	return nil
+	return result
+}
+
+func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink {
+	return projectLineageEvent(workspace, event).Links
 }
 
 // LineageLinksForEvent exposes the canonical projector to durable store
 // adapters without duplicating event interpretation.
 func LineageLinksForEvent(workspace string, event core.Event) []core.LineageLink {
 	return lineageLinksForEvent(workspace, event)
+}
+
+// ProjectLineageEvent exposes replay-only suppression and rejection metadata
+// alongside the canonical event-derived links.
+func ProjectLineageEvent(workspace string, event core.Event) LineageEventProjection {
+	return projectLineageEvent(workspace, event)
 }
 
 // HistoricalRequirementConfirmation identifies confirmation events written

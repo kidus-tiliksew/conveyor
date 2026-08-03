@@ -146,6 +146,33 @@ func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) 
 	}
 }
 
+func TestMemoryLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *testing.T) {
+	const workspace = "lineage-overlap"
+	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
+	ctx := WithWorkspace(t.Context(), workspace)
+	task := core.Task{ID: "overlap-task", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "overlap-order"})}); err != nil {
+		t.Fatal(err)
+	}
+	key := lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: task.ID,
+		DstType: core.LineageWorkOrder, DstID: "overlap-order", Kind: "dispatches"})
+	legacy := st.lineage[key]
+	legacy.CreatedByEventID = 0
+	legacy.LegacyCreatedByEvent = "legacy.dispatch"
+	st.lineage[key] = legacy
+
+	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "overlap classification", RequestID: core.NewTaskID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Projected != 1 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
+		t.Fatalf("overlapping legacy key was double-classified: %+v", result)
+	}
+}
+
 func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) {
 	t.Helper()
 	links, err := st.ListLineageLinks(ctx)

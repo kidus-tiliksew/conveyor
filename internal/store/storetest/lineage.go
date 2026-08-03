@@ -57,6 +57,19 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "in-process")
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "external-mcp")
 	assertLineageArtifactOrderingAndBounds(t, st, ctx, fixture.Workspace)
+	for _, event := range []core.Event{
+		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
+		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
+		{TaskID: child.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 99})},
+		// Initial projection knows the historical default predecessor. Rebuild
+		// cannot prove it from durable requirement versions, so it must retain
+		// the event-provenanced row as unregenerable.
+		{TaskID: child.ID, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": "historical-conformance", "version": 2})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
 	wantExisting := 0
 	var assertLegacy func(*testing.T)
 	if fixture.SeedLegacy != nil {
@@ -77,11 +90,14 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	if result.Existing != wantExisting {
 		t.Fatalf("existing=%d want=%d result=%+v", result.Existing, wantExisting, result)
 	}
+	if result.PreservedUnregenerable != 1 || result.Unsupported != 1 || result.Ambiguous != 1 {
+		t.Fatalf("rebuild classification=%+v, want preserved=1 unsupported=1 ambiguous=1", result)
+	}
 	if assertLegacy != nil {
 		assertLegacy(t)
 	}
 	after := lineageSnapshot(t, st, ctx)
-	if result.Projected != len(after) {
+	if result.Projected+result.PreservedUnregenerable != len(after) {
 		t.Fatalf("result=%+v links=%v", result, after)
 	}
 	if len(before) != len(after) {

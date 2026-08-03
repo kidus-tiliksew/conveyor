@@ -54,7 +54,7 @@ func lineageCmd() *cobra.Command {
 	command := &cobra.Command{Use: "lineage", Short: "Operate the workspace lineage projection"}
 	var reason, requestID string
 	rebuild := &cobra.Command{Use: "rebuild", Short: "Repair lineage while preserving non-regenerable history", Args: cobra.NoArgs,
-		Long: "Repair the event-derived lineage projection. The repair preserves event-provenanced links that immutable historical events cannot regenerate and reports them as preserved_unregenerable.",
+		Long: "Repair the event-derived lineage projection by replaying every workspace event in memory within one transaction. Rebuild never deletes rows it cannot regenerate; those rows are reported as preserved_unregenerable. Stale identity cleanup requires a migration.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(workspaceFlag) == "" {
 				return fmt.Errorf("--workspace is required")
