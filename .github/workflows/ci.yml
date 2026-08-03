@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION_FILE: go.mod
+  NODE_VERSION: 22
+
+jobs:
+  build-and-static:
+    name: Build, vet, and formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: make build
+      - run: make vet
+      - run: make fmt-check
+
+  test:
+    name: Go, web, and Playwright tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: make test
+        env:
+          PLAYWRIGHT_INSTALL_ARGS: --with-deps
+
+  postgres-integration:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: conveyor
+          POSTGRES_PASSWORD: conveyor
+          POSTGRES_DB: conveyor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U conveyor -d conveyor_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      CONVEYOR_TEST_DATABASE_URL: postgres://conveyor:conveyor@127.0.0.1:5432/conveyor_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - run: make test-integration-ci

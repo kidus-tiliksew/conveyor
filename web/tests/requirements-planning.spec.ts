@@ -2,46 +2,93 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 
 const requirement = {
   requirement: {
-    id: 'req-retries', slug: 'retry-behavior', title: 'Retry behavior',
-    statement_high_water_mark: 1, workspace: 'demo',
-    created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    id: 'req-retries',
+    slug: 'retry-behavior',
+    title: 'Retry behavior',
+    statement_high_water_mark: 1,
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:00:00Z',
   },
-  pending_versions: [{
-    requirement_id: 'req-retries', version: 1,
-    content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
-    statements: [{ id: 'REQ-1', statement: 'Retries stop after a finite limit.' }],
-    origin: 'chat', origin_session_id: 'session-requirement', confirmed: false,
-    workspace: 'demo', created_at: '2026-07-30T10:05:00Z',
-  }],
-  serving_blueprints: [{
-    task: { id: 'blueprint-task', title: 'Ship bounded retries', state: 'awaiting_human' },
-    spec: { task_id: 'blueprint-task', version: 1, approved: false },
-    events: [],
-  }],
-  planning_sessions: [{
-    id: 'session-requirement', title: 'Plan retry behavior', status: 'finalized',
-    produced_requirement_id: 'req-retries',
-    model: 'gpt-plan', effort: 'high', exploration_output_tokens: 12000,
-    primary_repo: 'conveyor', pinned_revisions: { conveyor: '0123456789abcdef' },
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z',
-    updated_at: '2026-07-30T10:05:00Z', finalized_at: '2026-07-30T10:05:00Z',
-  }],
+  pending_versions: [
+    {
+      requirement_id: 'req-retries',
+      version: 1,
+      content:
+        'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
+      statements: [{ id: 'REQ-1', statement: 'Retries stop after a finite limit.' }],
+      origin: 'chat',
+      origin_session_id: 'session-requirement',
+      confirmed: false,
+      workspace: 'demo',
+      created_at: '2026-07-30T10:05:00Z',
+    },
+  ],
+  serving_blueprints: [
+    {
+      task: {
+        id: 'blueprint-task',
+        title: 'Ship bounded retries',
+        state: 'awaiting_human',
+      },
+      spec: { task_id: 'blueprint-task', version: 1, approved: false },
+      events: [],
+    },
+  ],
+  planning_sessions: [
+    {
+      id: 'session-requirement',
+      title: 'Plan retry behavior',
+      status: 'finalized',
+      produced_requirement_id: 'req-retries',
+      model: 'gpt-plan',
+      effort: 'high',
+      exploration_output_tokens: 12000,
+      primary_repo: 'conveyor',
+      pinned_revisions: { conveyor: '0123456789abcdef' },
+      workspace: 'demo',
+      created_at: '2026-07-30T10:00:00Z',
+      updated_at: '2026-07-30T10:05:00Z',
+      finalized_at: '2026-07-30T10:05:00Z',
+    },
+  ],
   artifacts: [],
-  lineage: [{
-    id: 1, task_id: '', kind: 'requirement.version_proposed',
-    actor_id: 'planner', actor_role: 'system', payload: {},
-    at: '2026-07-30T10:05:00Z',
-  }],
+  lineage: [
+    {
+      id: 1,
+      task_id: '',
+      kind: 'requirement.version_proposed',
+      actor_id: 'planner',
+      actor_role: 'system',
+      payload: {},
+      at: '2026-07-30T10:05:00Z',
+    },
+  ],
   lineage_graph: {
     roots: [{ type: 'requirement', id: 'req-retries' }],
-    nodes: [{ type: 'requirement', id: 'req-retries' }, { type: 'blueprint', id: 'blueprint-task' }],
-    links: [{
-      workspace: 'demo', src_type: 'requirement', src_id: 'req-retries', dst_type: 'blueprint', dst_id: 'blueprint-task',
-      kind: 'serves', created_by_event_id: 2, created_at: '2026-07-30T10:05:00Z',
-    }],
+    nodes: [
+      { type: 'requirement', id: 'req-retries' },
+      { type: 'blueprint', id: 'blueprint-task' },
+    ],
+    links: [
+      {
+        workspace: 'demo',
+        src_type: 'requirement',
+        src_id: 'req-retries',
+        dst_type: 'blueprint',
+        dst_id: 'blueprint-task',
+        kind: 'serves',
+        created_by_event_id: 2,
+        created_at: '2026-07-30T10:05:00Z',
+      },
+    ],
     truncated: false,
   },
-  staleness: { delivery_after_intent: true, latest_delivery: 'blueprint-task', active_drift: [] },
+  staleness: {
+    delivery_after_intent: true,
+    latest_delivery: 'blueprint-task',
+    active_drift: [],
+  },
   migrated_seed: false,
   confirmation_eligible: true,
 }
@@ -54,7 +101,12 @@ const planningConfig = {
     execution_settings: {
       control_plane: {
         triage: { model: 'gpt-triage', timeout: '20m' },
-        planning: { model: 'gpt-plan', effort: 'high', timeout: '30m', exploration_output_tokens: 12000 },
+        planning: {
+          model: 'gpt-plan',
+          effort: 'high',
+          timeout: '30m',
+          exploration_output_tokens: 12000,
+        },
       },
     },
     routing: { stages: { review: {} } },
@@ -64,8 +116,18 @@ const planningConfig = {
     execution: {},
     harnesses: [],
     repos: [
-      { name: 'conveyor', url: 'https://github.com/kidus-tiliksew/conveyor', github: 'kidus-tiliksew/conveyor', base: 'main' },
-      { name: 'companion', url: 'https://github.com/example/companion', github: 'example/companion', base: 'main' },
+      {
+        name: 'conveyor',
+        url: 'https://github.com/kidus-tiliksew/conveyor',
+        github: 'kidus-tiliksew/conveyor',
+        base: 'main',
+      },
+      {
+        name: 'companion',
+        url: 'https://github.com/example/companion',
+        github: 'example/companion',
+        base: 'main',
+      },
     ],
   },
 }
@@ -79,13 +141,18 @@ async function initShell(page: Page) {
 
 function shellResponse(route: Route) {
   const path = new URL(route.request().url()).pathname
-  if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
+  if (path === '/v1/workspaces')
+    return route.fulfill({
+      json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
+    })
   if (path === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
 
-test('requirements renders living intent as the canvas, confirms a revision, and docks the assistant', async ({ page }) => {
+test('requirements renders living intent as the canvas, confirms a revision, and docks the assistant', async ({
+  page,
+}) => {
   await initShell(page)
   let confirmed = false
   await page.route('**/v1/**', async (route) => {
@@ -94,10 +161,16 @@ test('requirements renders living intent as the canvas, confirms a revision, and
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [requirement] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/requirements/req-retries/versions/1/confirm') {
       confirmed = true
-      return route.fulfill({ json: { requirement: requirement.requirement, version: requirement.pending_versions[0] } })
+      return route.fulfill({
+        json: {
+          requirement: requirement.requirement,
+          version: requirement.pending_versions[0],
+        },
+      })
     }
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
@@ -108,7 +181,10 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   await expect(page.getByText('Retry behavior', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Needs confirmation')).toBeVisible()
   await expect(page.getByText('Feature tree')).toHaveCount(0)
-  await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute('href', '/blueprints/blueprint-task')
+  await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
+    'href',
+    '/blueprints/blueprint-task',
+  )
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
@@ -123,7 +199,9 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   // to that document — no detached chat page (spec §21.57 change 1).
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const assistant = page.getByRole('complementary', {
+    name: 'Planning assistant',
+  })
   await expect(assistant.getByText('Retry behavior')).toBeVisible()
   for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work']) {
     await expect(assistant.getByRole('button', { name: action })).toBeVisible()
@@ -143,10 +221,18 @@ test('planning starts with an allowlisted model and sends that choice', async ({
       createdWith = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
       return route.fulfill({
         json: {
-          id: 'session-new', title: 'Planning work…', status: 'active', goal: createdWith.goal,
-          model: createdWith.model, effort: 'high', exploration_output_tokens: 12000,
-          primary_repo: 'conveyor', pinned_revisions: { conveyor: '0123456789abcdef' },
-          workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+          id: 'session-new',
+          title: 'Planning work…',
+          status: 'active',
+          goal: createdWith.goal,
+          model: createdWith.model,
+          effort: 'high',
+          exploration_output_tokens: 12000,
+          primary_repo: 'conveyor',
+          pinned_revisions: { conveyor: '0123456789abcdef' },
+          workspace: 'demo',
+          created_at: '2026-07-30T10:00:00Z',
+          updated_at: '2026-07-30T10:00:00Z',
         },
       })
     }
@@ -162,59 +248,135 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   await page.getByRole('button', { name: 'New session' }).click()
   // The goal and model are the only creation inputs: no caller title reaches
   // the server, which names the session itself (spec §21.57 change 3).
-  await expect.poll(() => createdWith).toEqual({
-    goal: 'blueprint',
-    model: 'gpt-plan-fast',
-  })
+  await expect
+    .poll(() => createdWith)
+    .toEqual({
+      goal: 'blueprint',
+      model: 'gpt-plan-fast',
+    })
 })
 
 test('planning restores durable messages, tool markers, and streams a new turn', async ({ page }) => {
   await initShell(page)
   let posted = ''
   const session = {
-    id: 'session-retries', title: 'Plan retry behavior', status: 'active',
-    model: 'gpt-plan', effort: 'high', exploration_output_tokens: 12000,
-    primary_repo: 'conveyor', pinned_revisions: { conveyor: '0123456789abcdef' },
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:10:00Z',
+    id: 'session-retries',
+    title: 'Plan retry behavior',
+    status: 'active',
+    model: 'gpt-plan',
+    effort: 'high',
+    exploration_output_tokens: 12000,
+    primary_repo: 'conveyor',
+    pinned_revisions: { conveyor: '0123456789abcdef' },
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:10:00Z',
   }
   const messages = [
     {
-      session_id: session.id, seq: 1, role: 'user', content: 'Plan bounded retries.',
-      workspace: 'demo', created_at: '2026-07-30T10:01:00Z',
+      session_id: session.id,
+      seq: 1,
+      role: 'user',
+      content: 'Plan bounded retries.',
+      workspace: 'demo',
+      created_at: '2026-07-30T10:01:00Z',
     },
     {
-      session_id: session.id, seq: 2, role: 'assistant', content: 'I found the approved queue contract.',
-      parts: [{ type: 'tool-input-available', toolName: 'read_approved_spec', toolCallId: 'call-1', input: { task_id: 'task-1' } }],
-      workspace: 'demo', created_at: '2026-07-30T10:02:00Z',
+      session_id: session.id,
+      seq: 2,
+      role: 'assistant',
+      content: 'I found the approved queue contract.',
+      parts: [
+        {
+          type: 'tool-input-available',
+          toolName: 'read_approved_spec',
+          toolCallId: 'call-1',
+          input: { task_id: 'task-1' },
+        },
+      ],
+      workspace: 'demo',
+      created_at: '2026-07-30T10:02:00Z',
     },
-	{
-	  session_id: session.id, seq: 3, role: 'tool', content: '',
-	  parts: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { title: 'Queue contract' } }],
-	  workspace: 'demo', created_at: '2026-07-30T10:02:01Z',
-	},
-	{
-	  session_id: session.id, seq: 4, role: 'system', content: 'planning_step parse detail',
-	  parts: [{ type: 'system-correction', text: "The assistant's response needed correction — retrying.", detail: 'planning_step parse detail' }],
-	  workspace: 'demo', created_at: '2026-07-30T10:02:02Z',
-	},
-	{
-	  session_id: session.id, seq: 5, role: 'assistant', content: '',
-	  parts: [
-		{ type: 'tool-input-available', toolName: 'finalize_blueprint', toolCallId: 'call-corrected' },
-		{ type: 'tool-input-available', toolName: 'read_artifact', toolCallId: 'call-deferred' },
-		{ type: 'tool-input-available', toolName: 'read_requirement', toolCallId: 'call-failed' },
-	  ],
-	  workspace: 'demo', created_at: '2026-07-30T10:02:03Z',
-	},
-	{
-	  session_id: session.id, seq: 6, role: 'tool', content: '',
-	  parts: [
-		{ type: 'tool-output-error', toolCallId: 'call-corrected', output: { status: 'invalid' } },
-		{ type: 'tool-output-error', toolCallId: 'call-deferred', output: { status: 'deferred' } },
-		{ type: 'tool-output-error', toolCallId: 'call-failed', output: { status: 'failed' } },
-	  ],
-	  workspace: 'demo', created_at: '2026-07-30T10:02:04Z',
-	},
+    {
+      session_id: session.id,
+      seq: 3,
+      role: 'tool',
+      content: '',
+      parts: [
+        {
+          type: 'tool-output-available',
+          toolCallId: 'call-1',
+          output: { title: 'Queue contract' },
+        },
+      ],
+      workspace: 'demo',
+      created_at: '2026-07-30T10:02:01Z',
+    },
+    {
+      session_id: session.id,
+      seq: 4,
+      role: 'system',
+      content: 'planning_step parse detail',
+      parts: [
+        {
+          type: 'system-correction',
+          text: "The assistant's response needed correction — retrying.",
+          detail: 'planning_step parse detail',
+        },
+      ],
+      workspace: 'demo',
+      created_at: '2026-07-30T10:02:02Z',
+    },
+    {
+      session_id: session.id,
+      seq: 5,
+      role: 'assistant',
+      content: '',
+      parts: [
+        {
+          type: 'tool-input-available',
+          toolName: 'finalize_blueprint',
+          toolCallId: 'call-corrected',
+        },
+        {
+          type: 'tool-input-available',
+          toolName: 'read_artifact',
+          toolCallId: 'call-deferred',
+        },
+        {
+          type: 'tool-input-available',
+          toolName: 'read_requirement',
+          toolCallId: 'call-failed',
+        },
+      ],
+      workspace: 'demo',
+      created_at: '2026-07-30T10:02:03Z',
+    },
+    {
+      session_id: session.id,
+      seq: 6,
+      role: 'tool',
+      content: '',
+      parts: [
+        {
+          type: 'tool-output-error',
+          toolCallId: 'call-corrected',
+          output: { status: 'invalid' },
+        },
+        {
+          type: 'tool-output-error',
+          toolCallId: 'call-deferred',
+          output: { status: 'deferred' },
+        },
+        {
+          type: 'tool-output-error',
+          toolCallId: 'call-failed',
+          output: { status: 'failed' },
+        },
+      ],
+      workspace: 'demo',
+      created_at: '2026-07-30T10:02:04Z',
+    },
   ]
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -229,7 +391,10 @@ test('planning restores durable messages, tool markers, and streams a new turn',
       posted = route.request().postData() ?? ''
       return route.fulfill({
         status: 200,
-        headers: { 'Content-Type': 'text/event-stream', 'X-Vercel-AI-UI-Message-Stream': 'v1' },
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'X-Vercel-AI-UI-Message-Stream': 'v1',
+        },
         body: [
           'data: {"type":"start"}',
           '',
@@ -250,12 +415,12 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect(page.getByText('Plan bounded retries.')).toBeVisible()
   await expect(page.getByText('I found the approved queue contract.')).toBeVisible()
   await expect(page.getByText('read_approved_spec')).toBeVisible()
-	await expect(page.getByText("The assistant's response needed correction — retrying.")).toBeVisible()
-	await page.getByText('Technical details').click()
-	await expect(page.getByText('planning_step parse detail')).toBeVisible()
-	await expect(page.getByText('finalize_blueprint corrected')).toBeVisible()
-	await expect(page.getByText('read_artifact deferred')).toBeVisible()
-	await expect(page.getByText('read_requirement failed')).toBeVisible()
+  await expect(page.getByText("The assistant's response needed correction — retrying.")).toBeVisible()
+  await page.getByText('Technical details').click()
+  await expect(page.getByText('planning_step parse detail')).toBeVisible()
+  await expect(page.getByText('finalize_blueprint corrected')).toBeVisible()
+  await expect(page.getByText('read_artifact deferred')).toBeVisible()
+  await expect(page.getByText('read_requirement failed')).toBeVisible()
   await expect(page.getByLabel('read_approved_spec: complete')).toHaveCount(1)
   await expect(page.getByText(/Queue contract/)).toHaveCount(0)
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
@@ -267,19 +432,38 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect.poll(() => JSON.parse(posted).message.content).toBe('Draft a requirement with stable statements.')
 })
 
-test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({ page }) => {
+test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({
+  page,
+}) => {
   await initShell(page)
   const confirmed = {
-    ...requirement.pending_versions[0], version: 1, confirmed: true,
-    confirmed_at: '2026-07-30T10:06:00Z', content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop.\n```',
+    ...requirement.pending_versions[0],
+    version: 1,
+    confirmed: true,
+    confirmed_at: '2026-07-30T10:06:00Z',
+    content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop.\n```',
     statements: [{ id: 'REQ-1', statement: 'Retries stop.' }],
   }
   const pending2 = {
-    ...requirement.pending_versions[0], version: 2,
-    content: 'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
+    ...requirement.pending_versions[0],
+    version: 2,
+    content:
+      'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
   }
-  const pending3 = { ...pending2, version: 3, origin: 'drift_amendment', origin_session_id: undefined, origin_drift_id: 'drift-1' }
-  const view = { ...requirement, current_version: confirmed, pending_versions: [pending2, pending3], migrated_seed: false, confirmation_eligible: true }
+  const pending3 = {
+    ...pending2,
+    version: 3,
+    origin: 'drift_amendment',
+    origin_session_id: undefined,
+    origin_drift_id: 'drift-1',
+  }
+  const view = {
+    ...requirement,
+    current_version: confirmed,
+    pending_versions: [pending2, pending3],
+    migrated_seed: false,
+    confirmation_eligible: true,
+  }
   let ifMatch = ''
   let confirmedVersion = 0
   await page.route('**/v1/**', async (route) => {
@@ -288,12 +472,15 @@ test('requirements deep-link exact versions, render statements, diff pending int
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [confirmed, pending2, pending3] })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: [confirmed, pending2, pending3] })
     const confirmation = /\/versions\/(\d+)\/confirm$/.exec(url.pathname)
     if (confirmation) {
       confirmedVersion = Number(confirmation[1])
       ifMatch = route.request().headers()['if-match'] ?? ''
-      return route.fulfill({ json: { requirement: view.requirement, version: pending2 } })
+      return route.fulfill({
+        json: { requirement: view.requirement, version: pending2 },
+      })
     }
     return route.fulfill({ json: [] })
   })
@@ -303,8 +490,10 @@ test('requirements deep-link exact versions, render statements, diff pending int
   await expect(page.getByRole('button', { name: /Version 2/ })).toBeVisible()
   await page.getByRole('button', { name: /Version 2/ }).click()
   await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
-	await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
-	await expect(page.locator('.bg-positive-soft').filter({ hasText: 'Keep retries bounded and observable.' })).toBeVisible()
+  await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
+  await expect(
+    page.locator('.bg-positive-soft').filter({ hasText: 'Keep retries bounded and observable.' }),
+  ).toBeVisible()
   await expect(page.getByRole('region', { name: 'Requirement statements' }).getByText('REQ-1')).toBeVisible()
   await expect(page.getByText('conveyor:requirements')).toHaveCount(0)
   await page.getByRole('button', { name: 'Confirm version 2' }).click()
@@ -312,42 +501,78 @@ test('requirements deep-link exact versions, render statements, diff pending int
   expect(ifMatch).toBe('"1"')
 })
 
-test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({ page }) => {
-	await initShell(page)
-	const seedVersion = { ...requirement.pending_versions[0], origin: 'feature_migration', origin_session_id: undefined }
-	const migrated = { ...requirement, requirement: { ...requirement.requirement, title: 'Migrated intent' }, pending_versions: [seedVersion], migrated_seed: true, confirmation_eligible: false, staleness: { delivery_after_intent: false, active_drift: [] } }
-	const secondV1 = { ...requirement.pending_versions[0], requirement_id: 'req-second', version: 1, content: 'Earlier second document.' }
-	const secondV2 = { ...secondV1, version: 2, content: 'Latest second document.' }
-	const second = {
-	  ...requirement,
-	  requirement: { ...requirement.requirement, id: 'req-second', slug: 'second-intent', title: 'Second intent' },
-	  pending_versions: [secondV1, secondV2], migrated_seed: false, confirmation_eligible: true, staleness: { delivery_after_intent: false, active_drift: [] },
-	}
-	await page.route('**/v1/**', async (route) => {
-	  const shell = shellResponse(route)
-	  if (shell) return await shell
-	  const path = new URL(route.request().url()).pathname
-	  if (path === '/v1/requirements') return route.fulfill({ json: [migrated, second] })
-	  if (path === '/v1/requirements/req-retries') return route.fulfill({ json: migrated })
-	  if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [seedVersion] })
-	  if (path === '/v1/requirements/req-second') return route.fulfill({ json: second })
-	  if (path === '/v1/requirements/req-second/versions') return route.fulfill({ json: [secondV1, secondV2] })
-	  return route.fulfill({ json: [] })
-	})
-	await page.goto('/requirements?requirement=req-retries')
-	const disabled = page.getByRole('button', { name: 'Confirm version 1' })
-	await expect(disabled).toBeDisabled()
-	await expect(disabled).toHaveAttribute('title', /Revise this migrated seed/)
-	await expect(page.getByText(/needs its first deliberate revision/)).toBeVisible()
-	await page.getByRole('button', { name: 'Second intent', exact: false }).click()
-	await expect(page.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-pressed', 'true')
+test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({
+  page,
+}) => {
+  await initShell(page)
+  const seedVersion = {
+    ...requirement.pending_versions[0],
+    origin: 'feature_migration',
+    origin_session_id: undefined,
+  }
+  const migrated = {
+    ...requirement,
+    requirement: { ...requirement.requirement, title: 'Migrated intent' },
+    pending_versions: [seedVersion],
+    migrated_seed: true,
+    confirmation_eligible: false,
+    staleness: { delivery_after_intent: false, active_drift: [] },
+  }
+  const secondV1 = {
+    ...requirement.pending_versions[0],
+    requirement_id: 'req-second',
+    version: 1,
+    content: 'Earlier second document.',
+  }
+  const secondV2 = {
+    ...secondV1,
+    version: 2,
+    content: 'Latest second document.',
+  }
+  const second = {
+    ...requirement,
+    requirement: {
+      ...requirement.requirement,
+      id: 'req-second',
+      slug: 'second-intent',
+      title: 'Second intent',
+    },
+    pending_versions: [secondV1, secondV2],
+    migrated_seed: false,
+    confirmation_eligible: true,
+    staleness: { delivery_after_intent: false, active_drift: [] },
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: [migrated, second] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: migrated })
+    if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [seedVersion] })
+    if (path === '/v1/requirements/req-second') return route.fulfill({ json: second })
+    if (path === '/v1/requirements/req-second/versions') return route.fulfill({ json: [secondV1, secondV2] })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/requirements?requirement=req-retries')
+  const disabled = page.getByRole('button', { name: 'Confirm version 1' })
+  await expect(disabled).toBeDisabled()
+  await expect(disabled).toHaveAttribute('title', /Revise this migrated seed/)
+  await expect(page.getByText(/needs its first deliberate revision/)).toBeVisible()
+  await page.getByRole('button', { name: 'Second intent', exact: false }).click()
+  await expect(page.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-pressed', 'true')
 })
 
-test('planning keeps partial text through malformed and error stream frames and resolves pending markers', async ({ page }) => {
+test('planning keeps partial text through malformed and error stream frames and resolves pending markers', async ({
+  page,
+}) => {
   await initShell(page)
   const session = {
-    id: 'session-stream-error', title: 'Stream recovery', status: 'active',
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    id: 'session-stream-error',
+    title: 'Stream recovery',
+    status: 'active',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:00:00Z',
   }
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -362,10 +587,14 @@ test('planning keeps partial text through malformed and error stream frames and 
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
         body: [
-          'data: not-json', '',
-          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"read_requirement"}', '',
-          'data: {"type":"text-delta","delta":"I found part of the answer."}', '',
-          'data: {"type":"error","errorText":"Planning request failed. Please retry."}', '',
+          'data: not-json',
+          '',
+          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"read_requirement"}',
+          '',
+          'data: {"type":"text-delta","delta":"I found part of the answer."}',
+          '',
+          'data: {"type":"error","errorText":"Planning request failed. Please retry."}',
+          '',
         ].join('\n'),
       })
     }
@@ -381,23 +610,49 @@ test('planning keeps partial text through malformed and error stream frames and 
   await expect(page.getByLabel('Planning message')).toBeEnabled()
 })
 
-test('planning explains run conflicts, uses a disabled default model fallback, and surfaces abandon failures', async ({ page }) => {
+test('planning explains run conflicts, uses a disabled default model fallback, and surfaces abandon failures', async ({
+  page,
+}) => {
   await initShell(page)
   const session = {
-    id: 'session-conflict', title: 'Conflict recovery', status: 'active',
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    id: 'session-conflict',
+    title: 'Conflict recovery',
+    status: 'active',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:00:00Z',
   }
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-    if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: { ...planningConfig, document: { ...planningConfig.document, planning_models: [] } } })
-    if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (url.pathname === '/v1/workspaces')
+      return route.fulfill({
+        json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
+      })
+    if (url.pathname === '/v1/workspace/config')
+      return route.fulfill({
+        json: {
+          ...planningConfig,
+          document: { ...planningConfig.document, planning_models: [] },
+        },
+      })
+    if (url.pathname === '/v1/workspace')
+      return route.fulfill({
+        json: { workspace: 'demo', repos: ['conveyor'] },
+      })
     if (url.pathname === '/v1/activity' || url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session] })
-    if (url.pathname === `/v1/planning-sessions/${session.id}/abandon`) return route.fulfill({ status: 409, body: 'The session was finalized elsewhere.' })
+    if (url.pathname === `/v1/planning-sessions/${session.id}/abandon`)
+      return route.fulfill({
+        status: 409,
+        body: 'The session was finalized elsewhere.',
+      })
     if (url.pathname === `/v1/planning-sessions/${session.id}`) return route.fulfill({ json: session })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
-    if (url.pathname.endsWith('/messages')) return route.fulfill({ status: 409, body: 'planning session already has a message in progress' })
+    if (url.pathname.endsWith('/messages'))
+      return route.fulfill({
+        status: 409,
+        body: 'planning session already has a message in progress',
+      })
     return route.fulfill({ json: [] })
   })
 
@@ -422,10 +677,16 @@ test('planning explains run conflicts, uses a disabled default model fallback, a
 test('planning sends attachments as file parts without smuggling them into message text', async ({ page }) => {
   await initShell(page)
   const session = {
-    id: 'session-attachment', title: 'Attachment planning', status: 'active',
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    id: 'session-attachment',
+    title: 'Attachment planning',
+    status: 'active',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:00:00Z',
   }
-  let posted: { message?: { content?: string; parts?: Array<Record<string, unknown>> } } = {}
+  let posted: {
+    message?: { content?: string; parts?: Array<Record<string, unknown>> }
+  } = {}
   let uploadBody = ''
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -434,20 +695,40 @@ test('planning sends attachments as file parts without smuggling them into messa
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/artifacts') {
       uploadBody = route.request().postData() ?? ''
-      return route.fulfill({ status: 201, json: { id: 'artifact-1', workspace: 'demo', name: 'context.txt', content_type: 'text/plain', size_bytes: 7, role: 'task_context', planning_session_id: session.id, created_at: '2026-07-30T10:00:00Z' } })
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: 'artifact-1',
+          workspace: 'demo',
+          name: 'context.txt',
+          content_type: 'text/plain',
+          size_bytes: 7,
+          role: 'task_context',
+          planning_session_id: session.id,
+          created_at: '2026-07-30T10:00:00Z',
+        },
+      })
     }
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session] })
     if (url.pathname === `/v1/planning-sessions/${session.id}`) return route.fulfill({ json: session })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
     if (url.pathname.endsWith('/messages')) {
       posted = JSON.parse(route.request().postData() ?? '{}') as typeof posted
-      return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'data: [DONE]\n\n' })
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: 'data: [DONE]\n\n',
+      })
     }
     return route.fulfill({ json: [] })
   })
 
   await page.goto('/planning')
-  await page.locator('input[type=file]').setInputFiles({ name: 'context.txt', mimeType: 'text/plain', buffer: Buffer.from('context') })
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'context.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('context'),
+  })
   await expect(page.getByText('context.txt')).toBeVisible()
   expect(uploadBody).toContain('planning_session_id')
   expect(uploadBody).toContain(session.id)
@@ -456,7 +737,11 @@ test('planning sends attachments as file parts without smuggling them into messa
   await expect.poll(() => posted.message?.parts?.length ?? 0).toBe(2)
   expect(posted.message?.content).toBe('Use this context.')
   expect(posted.message?.content).not.toContain('Attached context')
-  expect(posted.message?.parts?.[1]).toMatchObject({ type: 'file', artifactId: 'artifact-1', filename: 'context.txt' })
+  expect(posted.message?.parts?.[1]).toMatchObject({
+    type: 'file',
+    artifactId: 'artifact-1',
+    filename: 'context.txt',
+  })
 })
 
 test('planning restores the selected session independently in each workspace', async ({ page }) => {
@@ -467,16 +752,47 @@ test('planning restores the selected session independently in each workspace', a
     sessionStorage.setItem('conveyor-token', 'test-token')
   })
   const sessions = {
-    demo: [{ id: 'session-demo', title: 'Demo session', status: 'active', workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z' }],
-    beta: [{ id: 'session-beta', title: 'Beta session', status: 'active', workspace: 'beta', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z' }],
+    demo: [
+      {
+        id: 'session-demo',
+        title: 'Demo session',
+        status: 'active',
+        workspace: 'demo',
+        created_at: '2026-07-30T10:00:00Z',
+        updated_at: '2026-07-30T10:00:00Z',
+      },
+    ],
+    beta: [
+      {
+        id: 'session-beta',
+        title: 'Beta session',
+        status: 'active',
+        workspace: 'beta',
+        created_at: '2026-07-30T10:00:00Z',
+        updated_at: '2026-07-30T10:00:00Z',
+      },
+    ],
   }
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     const workspace = url.searchParams.get('workspace_id') === 'beta' ? 'beta' : 'demo'
-    if (url.pathname === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }, { id: 'beta', name: 'Beta', config_version: 1 }] })
-    if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: { ...planningConfig, document: { ...planningConfig.document, workspace } } })
+    if (url.pathname === '/v1/workspaces')
+      return route.fulfill({
+        json: [
+          { id: 'demo', name: 'Demo', config_version: 1 },
+          { id: 'beta', name: 'Beta', config_version: 1 },
+        ],
+      })
+    if (url.pathname === '/v1/workspace/config')
+      return route.fulfill({
+        json: {
+          ...planningConfig,
+          document: { ...planningConfig.document, workspace },
+        },
+      })
     if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace, repos: ['conveyor'] } })
-    if (url.pathname === '/v1/activity' || url.pathname === '/v1/blueprints' || url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/activity' || url.pathname === '/v1/blueprints' || url.pathname === '/v1/requirements')
+      return route.fulfill({ json: [] })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: sessions[workspace] })
     if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
     if (url.pathname.includes('/planning-sessions/')) return route.fulfill({ json: sessions[workspace][0] })
@@ -498,8 +814,16 @@ test('requirements and planning render fetch failures instead of indefinite load
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ status: 500, body: 'Requirement service is unavailable.' })
-    if (path === '/v1/planning-sessions') return route.fulfill({ status: 500, body: 'Planning history is unavailable.' })
+    if (path === '/v1/requirements')
+      return route.fulfill({
+        status: 500,
+        body: 'Requirement service is unavailable.',
+      })
+    if (path === '/v1/planning-sessions')
+      return route.fulfill({
+        status: 500,
+        body: 'Planning history is unavailable.',
+      })
     return route.fulfill({ json: [] })
   })
   await page.goto('/requirements')
@@ -512,10 +836,15 @@ test('requirements and planning render fetch failures instead of indefinite load
 test('a finalized blueprint session hands off to the ordinary spec gate', async ({ page }) => {
   await initShell(page)
   const session = {
-    id: 'session-blueprint', title: 'Plan delivery', status: 'finalized',
-    produced_task_id: 'blueprint-task', transcript_artifact_id: 'artifact-1',
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z',
-    updated_at: '2026-07-30T10:10:00Z', finalized_at: '2026-07-30T10:10:00Z',
+    id: 'session-blueprint',
+    title: 'Plan delivery',
+    status: 'finalized',
+    produced_task_id: 'blueprint-task',
+    transcript_artifact_id: 'artifact-1',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:10:00Z',
+    finalized_at: '2026-07-30T10:10:00Z',
   }
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -546,24 +875,36 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
       created.push(body)
       return route.fulfill({
         json: {
-          id: `session-${created.length}`, title: 'Drafting requirement…', status: 'active',
-          goal: body.goal, requirement_context_id: body.requirement_context_id,
-          workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+          id: `session-${created.length}`,
+          title: 'Drafting requirement…',
+          status: 'active',
+          goal: body.goal,
+          requirement_context_id: body.requirement_context_id,
+          workspace: 'demo',
+          created_at: '2026-07-30T10:00:00Z',
+          updated_at: '2026-07-30T10:00:00Z',
         },
       })
     }
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [requirement] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
-    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages'))
+      return route.fulfill({ json: [] })
     if (url.pathname.startsWith('/v1/planning-sessions/')) {
       const id = url.pathname.split('/')[3]
       const body = created[Number(id.split('-')[1]) - 1] ?? {}
       return route.fulfill({
         json: {
-          id, title: 'Drafting requirement…', status: 'active',
-          goal: body.goal, requirement_context_id: body.requirement_context_id,
-          workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+          id,
+          title: 'Drafting requirement…',
+          status: 'active',
+          goal: body.goal,
+          requirement_context_id: body.requirement_context_id,
+          workspace: 'demo',
+          created_at: '2026-07-30T10:00:00Z',
+          updated_at: '2026-07-30T10:00:00Z',
         },
       })
     }
@@ -571,7 +912,9 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
   })
 
   await page.goto('/requirements?requirement=req-retries')
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const assistant = page.getByRole('complementary', {
+    name: 'Planning assistant',
+  })
   const expected = [
     { action: 'Revise', goal: 'requirement', context: 'req-retries' },
     { action: 'Q&A', goal: 'open', context: 'req-retries' },
@@ -600,26 +943,45 @@ test('finalizing in the sidebar refreshes the canvas without leaving the view', 
   await initShell(page)
   const drafted = {
     requirement: {
-      id: 'req-drafted', slug: 'drafted-intent', title: 'Drafted intent',
-      statement_high_water_mark: 1, workspace: 'demo',
-      created_at: '2026-07-30T11:00:00Z', updated_at: '2026-07-30T11:00:00Z',
+      id: 'req-drafted',
+      slug: 'drafted-intent',
+      title: 'Drafted intent',
+      statement_high_water_mark: 1,
+      workspace: 'demo',
+      created_at: '2026-07-30T11:00:00Z',
+      updated_at: '2026-07-30T11:00:00Z',
     },
-    pending_versions: [{
-      requirement_id: 'req-drafted', version: 1,
-      content: 'The drafted intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Drafted statements are stable.\n```',
-      statements: [{ id: 'REQ-1', statement: 'Drafted statements are stable.' }],
-      origin: 'chat', origin_session_id: 'session-draft', confirmed: false,
-      workspace: 'demo', created_at: '2026-07-30T11:05:00Z',
-    }],
-    serving_blueprints: [], planning_sessions: [], artifacts: [], lineage: [],
-    migrated_seed: false, confirmation_eligible: true,
+    pending_versions: [
+      {
+        requirement_id: 'req-drafted',
+        version: 1,
+        content:
+          'The drafted intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Drafted statements are stable.\n```',
+        statements: [{ id: 'REQ-1', statement: 'Drafted statements are stable.' }],
+        origin: 'chat',
+        origin_session_id: 'session-draft',
+        confirmed: false,
+        workspace: 'demo',
+        created_at: '2026-07-30T11:05:00Z',
+      },
+    ],
+    serving_blueprints: [],
+    planning_sessions: [],
+    artifacts: [],
+    lineage: [],
+    migrated_seed: false,
+    confirmation_eligible: true,
   }
   let finalized = false
   const session = () => ({
-    id: 'session-draft', title: finalized ? 'Drafted intent' : 'Drafting requirement…',
-    status: finalized ? 'finalized' : 'active', goal: 'requirement',
+    id: 'session-draft',
+    title: finalized ? 'Drafted intent' : 'Drafting requirement…',
+    status: finalized ? 'finalized' : 'active',
+    goal: 'requirement',
     produced_requirement_id: finalized ? 'req-drafted' : undefined,
-    workspace: 'demo', created_at: '2026-07-30T11:00:00Z', updated_at: '2026-07-30T11:05:00Z',
+    workspace: 'demo',
+    created_at: '2026-07-30T11:00:00Z',
+    updated_at: '2026-07-30T11:05:00Z',
   })
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -627,8 +989,10 @@ test('finalizing in the sidebar refreshes the canvas without leaving the view', 
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: finalized ? [drafted] : [] })
     if (url.pathname === '/v1/requirements/req-drafted') return route.fulfill({ json: drafted })
-    if (url.pathname === '/v1/requirements/req-drafted/versions') return route.fulfill({ json: drafted.pending_versions })
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/requirements/req-drafted/versions')
+      return route.fulfill({ json: drafted.pending_versions })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
+      return route.fulfill({ json: session() })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
     if (url.pathname === '/v1/planning-sessions/session-draft') return route.fulfill({ json: session() })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
@@ -638,9 +1002,12 @@ test('finalizing in the sidebar refreshes the canvas without leaving the view', 
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
         body: [
-          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"finalize_requirement"}', '',
-          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}', '',
-          'data: {"type":"finish","finishReason":"tool-calls"}', '',
+          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
+          '',
+          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
+          '',
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          '',
         ].join('\n'),
       })
     }
@@ -648,7 +1015,9 @@ test('finalizing in the sidebar refreshes the canvas without leaving the view', 
   })
 
   await page.goto('/requirements')
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const assistant = page.getByRole('complementary', {
+    name: 'Planning assistant',
+  })
   await assistant.getByRole('button', { name: 'Draft' }).click()
   await assistant.getByLabel('Planning message').fill('Capture the drafted intent.')
   await assistant.getByRole('button', { name: 'Send' }).click()
@@ -679,14 +1048,21 @@ test('finalizing contextual plan work refreshes the proposed serves link', async
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     const planned = {
-      id: 'session-plan', title: served ? 'Ship bounded retries' : 'Planning work…',
-      status: served ? 'finalized' : 'active', goal: 'blueprint',
-      requirement_context_id: 'req-retries', produced_task_id: served ? 'blueprint-task' : undefined,
-      workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+      id: 'session-plan',
+      title: served ? 'Ship bounded retries' : 'Planning work…',
+      status: served ? 'finalized' : 'active',
+      goal: 'blueprint',
+      requirement_context_id: 'req-retries',
+      produced_task_id: served ? 'blueprint-task' : undefined,
+      workspace: 'demo',
+      created_at: '2026-07-30T10:00:00Z',
+      updated_at: '2026-07-30T10:00:00Z',
     }
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: planned })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
+      return route.fulfill({ json: planned })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [planned] })
     if (url.pathname === '/v1/planning-sessions/session-plan') return route.fulfill({ json: planned })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
@@ -704,11 +1080,16 @@ test('finalizing contextual plan work refreshes the proposed serves link', async
   await page.goto('/requirements?requirement=req-retries')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const assistant = page.getByRole('complementary', {
+    name: 'Planning assistant',
+  })
   await assistant.getByRole('button', { name: 'Plan work' }).click()
   await assistant.getByLabel('Planning message').fill('Plan the delivery.')
   await assistant.getByRole('button', { name: 'Send' }).click()
-  await expect(canvas.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute('href', '/blueprints/blueprint-task')
+  await expect(canvas.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
+    'href',
+    '/blueprints/blueprint-task',
+  )
   await expect(page).toHaveURL(/requirement=req-retries/)
 })
 
@@ -719,27 +1100,45 @@ test('session lists label goals and the requirements surface has no freehand edi
   await initShell(page)
   const sessions = [
     {
-      id: 'session-drafting', title: 'Drafting requirement…', status: 'active', goal: 'requirement',
-      workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:02:00Z',
+      id: 'session-drafting',
+      title: 'Drafting requirement…',
+      status: 'active',
+      goal: 'requirement',
+      workspace: 'demo',
+      created_at: '2026-07-30T10:00:00Z',
+      updated_at: '2026-07-30T10:02:00Z',
     },
     {
-      id: 'session-shipped', title: 'Ship bounded retries', status: 'finalized', goal: 'blueprint',
+      id: 'session-shipped',
+      title: 'Ship bounded retries',
+      status: 'finalized',
+      goal: 'blueprint',
       produced_task_id: 'blueprint-task',
-      workspace: 'demo', created_at: '2026-07-30T09:00:00Z', updated_at: '2026-07-30T09:30:00Z',
+      workspace: 'demo',
+      created_at: '2026-07-30T09:00:00Z',
+      updated_at: '2026-07-30T09:30:00Z',
     },
     {
-      id: 'session-legacy', title: 'Exploring…', status: 'active',
-      workspace: 'demo', created_at: '2026-07-30T08:00:00Z', updated_at: '2026-07-30T08:30:00Z',
+      id: 'session-legacy',
+      title: 'Exploring…',
+      status: 'active',
+      workspace: 'demo',
+      created_at: '2026-07-30T08:00:00Z',
+      updated_at: '2026-07-30T08:30:00Z',
     },
   ]
-  const withSession = { ...requirement, planning_sessions: [{ ...requirement.planning_sessions[0], goal: 'requirement' }] }
+  const withSession = {
+    ...requirement,
+    planning_sessions: [{ ...requirement.planning_sessions[0], goal: 'requirement' }],
+  }
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [withSession] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: withSession })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: sessions })
     if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
     if (url.pathname.startsWith('/v1/planning-sessions/')) return route.fulfill({ json: sessions[0] })
@@ -752,9 +1151,15 @@ test('session lists label goals and the requirements surface has no freehand edi
   await expect(page.getByRole('button', { name: /Ship bounded retries/ })).toBeVisible()
   await expect(page.getByText('New requirement', { exact: true })).toHaveCount(0)
   // Human-readable goals, never the raw enum. Pre-goal rows read as open.
-  await expect(page.getByRole('button', { name: /Drafting requirement…/ }).getByText('Requirement', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: /Ship bounded retries/ }).getByText('Blueprint', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: /Exploring…/ }).getByText('Open exploration', { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /Drafting requirement…/ }).getByText('Requirement', { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /Ship bounded retries/ }).getByText('Blueprint', { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /Exploring…/ }).getByText('Open exploration', { exact: true }),
+  ).toBeVisible()
   // The standalone surface keeps only the goals with no document context.
   await expect(page.getByLabel('Planning goal').locator('option')).toHaveText(['Open exploration', 'Blueprint'])
   // Requirement drafting moved beside the document, so it is not offered here.
@@ -768,7 +1173,9 @@ test('session lists label goals and the requirements surface has no freehand edi
   await expect(page.locator('textarea:not([aria-label="Planning message"])')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Requirement document' }).locator('textarea')).toHaveCount(0)
   // The assistant sidebar is that only authoring path.
-  await expect(page.getByRole('complementary', { name: 'Planning assistant' }).getByRole('button', { name: 'Revise' })).toBeVisible()
+  await expect(
+    page.getByRole('complementary', { name: 'Planning assistant' }).getByRole('button', { name: 'Revise' }),
+  ).toBeVisible()
 })
 
 // AC-5 regression: with a non-empty corpus, the "fall back to the first
@@ -779,31 +1186,48 @@ test('a sidebar revision opens its new version on the canvas over an existing co
   await initShell(page)
   const other = {
     ...requirement,
-    requirement: { ...requirement.requirement, id: 'req-other', slug: 'other-intent', title: 'Other intent' },
-    serving_blueprints: [], planning_sessions: [], lineage_graph: undefined,
+    requirement: {
+      ...requirement.requirement,
+      id: 'req-other',
+      slug: 'other-intent',
+      title: 'Other intent',
+    },
+    serving_blueprints: [],
+    planning_sessions: [],
+    lineage_graph: undefined,
   }
   const confirmedV1 = {
-    ...requirement.pending_versions[0], version: 1, confirmed: true,
+    ...requirement.pending_versions[0],
+    version: 1,
+    confirmed: true,
     content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop.\n```',
     statements: [{ id: 'REQ-1', statement: 'Retries stop.' }],
   }
   const pendingV2 = {
-    ...requirement.pending_versions[0], version: 2,
-    content: 'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: Retries are explainable.\n```',
+    ...requirement.pending_versions[0],
+    version: 2,
+    content:
+      'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: Retries are explainable.\n```',
     statements: [{ id: 'REQ-2', statement: 'Retries are explainable.' }],
   }
   let revised = false
   const retries = () => ({
-    ...requirement, current_version: confirmedV1,
+    ...requirement,
+    current_version: confirmedV1,
     pending_versions: revised ? [pendingV2] : [],
-    planning_sessions: [], confirmation_eligible: true,
+    planning_sessions: [],
+    confirmation_eligible: true,
   })
   const session = () => ({
-    id: 'session-revise', title: revised ? 'Retry behavior' : 'Drafting requirement…',
-    status: revised ? 'finalized' : 'active', goal: 'requirement',
+    id: 'session-revise',
+    title: revised ? 'Retry behavior' : 'Drafting requirement…',
+    status: revised ? 'finalized' : 'active',
+    goal: 'requirement',
     requirement_context_id: 'req-retries',
     produced_requirement_id: revised ? 'req-retries' : undefined,
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z', updated_at: '2026-07-30T10:00:00Z',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:00:00Z',
   })
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -815,9 +1239,12 @@ test('a sidebar revision opens its new version on the canvas over an existing co
     if (url.pathname === '/v1/requirements/req-other/versions') return route.fulfill({ json: [confirmedV1] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: retries() })
     if (url.pathname === '/v1/requirements/req-retries/versions') {
-      return route.fulfill({ json: revised ? [confirmedV1, pendingV2] : [confirmedV1] })
+      return route.fulfill({
+        json: revised ? [confirmedV1, pendingV2] : [confirmedV1],
+      })
     }
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
+      return route.fulfill({ json: session() })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
     if (url.pathname === '/v1/planning-sessions/session-revise') return route.fulfill({ json: session() })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
@@ -835,7 +1262,9 @@ test('a sidebar revision opens its new version on the canvas over an existing co
   await page.goto('/requirements?requirement=req-retries')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  const assistant = page.getByRole('complementary', {
+    name: 'Planning assistant',
+  })
   await assistant.getByRole('button', { name: 'Revise' }).click()
   await assistant.getByLabel('Planning message').fill('Add the observability statement.')
   await assistant.getByRole('button', { name: 'Send' }).click()
@@ -855,14 +1284,27 @@ test('a deep link to a finalized session keeps the document the URL asked for', 
   await initShell(page)
   const other = {
     ...requirement,
-    requirement: { ...requirement.requirement, id: 'req-other', slug: 'other-intent', title: 'Other intent' },
-    serving_blueprints: [], planning_sessions: [], lineage_graph: undefined,
+    requirement: {
+      ...requirement.requirement,
+      id: 'req-other',
+      slug: 'other-intent',
+      title: 'Other intent',
+    },
+    serving_blueprints: [],
+    planning_sessions: [],
+    lineage_graph: undefined,
   }
   const finished = {
-    id: 'session-done', title: 'Retry behavior', status: 'finalized', goal: 'requirement',
-    produced_requirement_id: 'req-retries', transcript_artifact_id: 'artifact-1',
-    workspace: 'demo', created_at: '2026-07-30T10:00:00Z',
-    updated_at: '2026-07-30T10:10:00Z', finalized_at: '2026-07-30T10:10:00Z',
+    id: 'session-done',
+    title: 'Retry behavior',
+    status: 'finalized',
+    goal: 'requirement',
+    produced_requirement_id: 'req-retries',
+    transcript_artifact_id: 'artifact-1',
+    workspace: 'demo',
+    created_at: '2026-07-30T10:00:00Z',
+    updated_at: '2026-07-30T10:10:00Z',
+    finalized_at: '2026-07-30T10:10:00Z',
   }
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -870,9 +1312,11 @@ test('a deep link to a finalized session keeps the document the URL asked for', 
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [other, requirement] })
     if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
-    if (url.pathname === '/v1/requirements/req-other/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-other/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [finished] })
     if (url.pathname === '/v1/planning-sessions/session-done') return route.fulfill({ json: finished })
     if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
@@ -882,8 +1326,9 @@ test('a deep link to a finalized session keeps the document the URL asked for', 
   await page.goto('/requirements?requirement=req-other&session=session-done')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Other intent' })).toBeVisible()
-  await expect(page.getByRole('complementary', { name: 'Planning assistant' })
-    .getByText('Planning artifact finalized')).toBeVisible()
+  await expect(
+    page.getByRole('complementary', { name: 'Planning assistant' }).getByText('Planning artifact finalized'),
+  ).toBeVisible()
   // The already-finalized session is history, not news: the canvas stays put.
   await expect(page).toHaveURL(/requirement=req-other/)
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toHaveCount(0)

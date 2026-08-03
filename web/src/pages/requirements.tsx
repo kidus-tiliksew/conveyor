@@ -42,7 +42,11 @@ export function RequirementsPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
   const search = useSearch({ from: '/requirements' })
-  const { data: requirements, isLoading, error } = useQuery({
+  const {
+    data: requirements,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ['requirements', workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
@@ -55,11 +59,14 @@ export function RequirementsPage() {
   // unknown and bounces to the first document, so the operator never reaches
   // the version they have to confirm.
   const adopting = useRef('')
-	const adoptingTimer = useRef<number | undefined>(undefined)
-	const [adoptionError, setAdoptionError] = useState('')
-	useEffect(() => () => {
-	  if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-	}, [])
+  const adoptingTimer = useRef<number | undefined>(undefined)
+  const [adoptionError, setAdoptionError] = useState('')
+  useEffect(
+    () => () => {
+      if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+    },
+    [],
+  )
   // Falling back to the first document must not close an open conversation
   // either: the corpus refetches while the sidebar is mid-session, so the
   // session parameter has to survive the redirect.
@@ -67,15 +74,18 @@ export function RequirementsPage() {
     if (!requirements?.length) return
     const adopted = adopting.current !== '' && adopting.current === selectedId
     if (requirements.some((item) => item.requirement.id === selectedId)) {
-	  if (adopted) adopting.current = ''
-	  if (adopted && adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-	  if (adopted) setAdoptionError('')
+      if (adopted) adopting.current = ''
+      if (adopted && adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+      if (adopted) setAdoptionError('')
       return
     }
     if (adopted) return
     void navigate({
       to: '/requirements',
-      search: { requirement: requirements[0].requirement.id, session: sessionId || undefined },
+      search: {
+        requirement: requirements[0].requirement.id,
+        session: sessionId || undefined,
+      },
       replace: true,
     })
   }, [navigate, requirements, selectedId, sessionId])
@@ -84,18 +94,29 @@ export function RequirementsPage() {
   // Opening another document ends the sidebar's scope: its session belonged to
   // the document it was started from.
   const selectRequirement = (requirement: string) => {
-    void navigate({ to: '/requirements', search: { requirement }, replace: true })
+    void navigate({
+      to: '/requirements',
+      search: { requirement },
+      replace: true,
+    })
   }
   const openSession = (session: string) => {
-    void navigate({ to: '/requirements', search: { requirement: selectedId || undefined, session }, replace: true })
+    void navigate({
+      to: '/requirements',
+      search: { requirement: selectedId || undefined, session },
+      replace: true,
+    })
   }
   const start = useMutation({
-    mutationFn: (action: GuidedAction) => createPlanningSession(token, {
-      goal: action.goal,
-      requirement_context_id: action.contextual ? selectedId || undefined : undefined,
-    }),
+    mutationFn: (action: GuidedAction) =>
+      createPlanningSession(token, {
+        goal: action.goal,
+        requirement_context_id: action.contextual ? selectedId || undefined : undefined,
+      }),
     onSuccess: (session) => {
-      void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
+      void client.invalidateQueries({
+        queryKey: ['planning-sessions', workspace],
+      })
       openSession(session.id)
     },
   })
@@ -106,21 +127,30 @@ export function RequirementsPage() {
     void client.invalidateQueries({ queryKey: ['requirements', workspace] })
     const produced = session.produced_requirement_id ?? session.requirement_context_id ?? selectedId
     if (produced) {
-      void client.invalidateQueries({ queryKey: ['requirement', workspace, produced] })
-      void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, produced] })
+      void client.invalidateQueries({
+        queryKey: ['requirement', workspace, produced],
+      })
+      void client.invalidateQueries({
+        queryKey: ['requirement-versions', workspace, produced],
+      })
     }
-	if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
-	  adopting.current = session.produced_requirement_id
-	  setAdoptionError('')
-	  if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-	  adoptingTimer.current = window.setTimeout(() => {
-		if (adopting.current !== session.produced_requirement_id) return
-		adopting.current = ''
-		setAdoptionError(`The new requirement ${session.produced_requirement_id} did not appear in the corpus. Refresh or reopen the planning session.`)
-	  }, 10_000)
+    if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
+      adopting.current = session.produced_requirement_id
+      setAdoptionError('')
+      if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
+      adoptingTimer.current = window.setTimeout(() => {
+        if (adopting.current !== session.produced_requirement_id) return
+        adopting.current = ''
+        setAdoptionError(
+          `The new requirement ${session.produced_requirement_id} did not appear in the corpus. Refresh or reopen the planning session.`,
+        )
+      }, 10_000)
       void navigate({
         to: '/requirements',
-        search: { requirement: session.produced_requirement_id, session: session.id },
+        search: {
+          requirement: session.produced_requirement_id,
+          session: session.id,
+        },
         replace: true,
       })
     }
@@ -134,7 +164,9 @@ export function RequirementsPage() {
             <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
             <Badge variant="mono">{requirements?.length ?? 0}</Badge>
           </div>
-          <p className="mt-0.5 text-xs text-muted">Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.</p>
+          <p className="mt-0.5 text-xs text-muted">
+            Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.
+          </p>
         </div>
         <Button disabled={!token || !workspace || start.isPending} onClick={() => start.mutate(draftAction)}>
           <Sparkles /> {start.isPending ? 'Starting…' : 'New requirement'}
@@ -142,7 +174,10 @@ export function RequirementsPage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside aria-label="Requirement corpus" className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-surface/40">
+        <aside
+          aria-label="Requirement corpus"
+          className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-surface/40"
+        >
           <div className="flex items-baseline justify-between px-4 py-3">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Living documents</p>
             <span className="text-[10px] text-faint">Flat corpus</span>
@@ -157,37 +192,54 @@ export function RequirementsPage() {
                 className={`block w-full px-4 py-3.5 text-left transition-colors ${selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
               >
                 <span className="flex items-start gap-3">
-                  <FileText className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`} />
+                  <FileText
+                    className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`}
+                  />
                   <span className="min-w-0 flex-1">
                     <strong className="block truncate text-sm font-medium">{item.requirement.title}</strong>
                     <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                      {item.current_version
-                        ? <Badge variant="positive"><Check /> Confirmed v{item.current_version.version}</Badge>
-                        : <Badge variant="attention">Needs confirmation</Badge>}
+                      {item.current_version ? (
+                        <Badge variant="positive">
+                          <Check /> Confirmed v{item.current_version.version}
+                        </Badge>
+                      ) : (
+                        <Badge variant="attention">Needs confirmation</Badge>
+                      )}
                       <RequirementStateBadges item={item} compact />
-                      {item.serving_blueprints.length > 0 && <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>}
+                      {item.serving_blueprints.length > 0 && (
+                        <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>
+                      )}
                     </span>
                   </span>
                 </span>
               </button>
             ))}
           </div>
-          {requirements?.length === 0 && <p className="px-4 text-xs leading-5 text-muted">No requirement documents yet.</p>}
+          {requirements?.length === 0 && (
+            <p className="px-4 text-xs leading-5 text-muted">No requirement documents yet.</p>
+          )}
         </aside>
 
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-4xl px-6 py-6">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
             {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
-			{error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
-			{adoptionError && <EmptyMessage tone="failure">{adoptionError}</EmptyMessage>}
+            {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
+            {adoptionError && <EmptyMessage tone="failure">{adoptionError}</EmptyMessage>}
             {requirements?.length === 0 && (
               <Card className="mt-2 border-dashed">
                 <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
                   <Sparkles className="size-7 text-primary" />
                   <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
-                  <p className="mt-2 max-w-md text-sm leading-6 text-muted">Describe what the system should do. The assistant beside this canvas turns the conversation into a structured requirement for you to confirm.</p>
-                  <Button className="mt-5" disabled={!token || !workspace || start.isPending} onClick={() => start.mutate(draftAction)}>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                    Describe what the system should do. The assistant beside this canvas turns the conversation into a
+                    structured requirement for you to confirm.
+                  </p>
+                  <Button
+                    className="mt-5"
+                    disabled={!token || !workspace || start.isPending}
+                    onClick={() => start.mutate(draftAction)}
+                  >
                     Draft a requirement <ArrowRight />
                   </Button>
                 </CardContent>
@@ -241,35 +293,47 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
       setSelectedVersion(latest)
     }
   }, [orderedVersions, selectedVersion])
-  const displayed = orderedVersions.find((version) => version.version === selectedVersion)
-    ?? item.pending_versions.at(-1)
-    ?? item.current_version
+  const displayed =
+    orderedVersions.find((version) => version.version === selectedVersion) ??
+    item.pending_versions.at(-1) ??
+    item.current_version
   const currentVersion = item.current_version?.version ?? 0
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
-        client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
-        client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+        client.invalidateQueries({
+          queryKey: ['requirement', workspace, item.requirement.id],
+        }),
+        client.invalidateQueries({
+          queryKey: ['requirement-versions', workspace, item.requirement.id],
+        }),
       ])
     },
     onError: () => {
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
-      void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
-      void client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] })
+      void client.invalidateQueries({
+        queryKey: ['requirement', workspace, item.requirement.id],
+      })
+      void client.invalidateQueries({
+        queryKey: ['requirement-versions', workspace, item.requirement.id],
+      })
     },
   })
   const upload = useMutation({
     mutationFn: (file: File) => uploadArtifact(token, file, undefined, item.requirement.id),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
-      void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
+      void client.invalidateQueries({
+        queryKey: ['requirement', workspace, item.requirement.id],
+      })
       void client.invalidateQueries({ queryKey: ['artifacts', workspace] })
     },
   })
 
-  if (detailError) return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
+  if (detailError)
+    return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
   return (
     <div className="min-w-0 space-y-4">
       <Card>
@@ -281,11 +345,15 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
         </CardHeader>
         <CardContent className="space-y-4">
           <RequirementStateNotices item={item} />
-          {versionsError && <p className="rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">{errorMessage(versionsError, 'Could not load version history.')}</p>}
+          {versionsError && (
+            <p className="rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
+              {errorMessage(versionsError, 'Could not load version history.')}
+            </p>
+          )}
           {orderedVersions.length > 0 && (
             <div>
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Version history</p>
-			  <section className="flex flex-wrap gap-2" aria-label="Requirement versions">
+              <section className="flex flex-wrap gap-2" aria-label="Requirement versions">
                 {orderedVersions.map((version) => (
                   <button
                     key={version.version}
@@ -297,57 +365,90 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
                   >
                     <span className="font-medium">Version {version.version}</span>
                     <span className="mt-1 flex gap-1">
-                      <Badge variant={version.confirmed ? 'positive' : 'attention'}>{version.confirmed ? 'Confirmed' : 'Pending'}</Badge>
+                      <Badge variant={version.confirmed ? 'positive' : 'attention'}>
+                        {version.confirmed ? 'Confirmed' : 'Pending'}
+                      </Badge>
                       <Badge variant="mono">{originLabels[version.origin]}</Badge>
                     </span>
                   </button>
                 ))}
-			  </section>
+              </section>
             </div>
           )}
           {displayed ? (
             <>
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>{displayed.confirmed ? `Confirmed v${displayed.version}` : `Pending v${displayed.version}`}</Badge>
+                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>
+                  {displayed.confirmed ? `Confirmed v${displayed.version}` : `Pending v${displayed.version}`}
+                </Badge>
                 <Badge variant="mono">{originLabels[displayed.origin]}</Badge>
                 <time className="ml-auto text-[11px] text-faint">{formatDate(displayed.created_at)}</time>
               </div>
               <RequirementDocument version={displayed} />
-              {!displayed.confirmed && item.current_version && <RequirementDiff current={item.current_version} pending={displayed} />}
+              {!displayed.confirmed && item.current_version && (
+                <RequirementDiff current={item.current_version} pending={displayed} />
+              )}
               {!displayed.confirmed && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
-                  <p className="text-xs leading-5 text-attention">This revision is not current intent until an operator confirms it.</p>
+                  <p className="text-xs leading-5 text-attention">
+                    This revision is not current intent until an operator confirms it.
+                  </p>
                   <Button
                     size="sm"
                     disabled={!token || confirm.isPending || !item.confirmation_eligible}
                     title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
                     onClick={() => confirm.mutate(displayed.version)}
                   >
-                    <Check /> {confirm.isPending && confirm.variables === displayed.version ? 'Confirming…' : `Confirm version ${displayed.version}`}
+                    <Check />{' '}
+                    {confirm.isPending && confirm.variables === displayed.version
+                      ? 'Confirming…'
+                      : `Confirm version ${displayed.version}`}
                   </Button>
-                  {!item.confirmation_eligible && <p className="basis-full text-xs text-muted">A migrated seed needs its first deliberate revision before it can be confirmed.</p>}
+                  {!item.confirmation_eligible && (
+                    <p className="basis-full text-xs text-muted">
+                      A migrated seed needs its first deliberate revision before it can be confirmed.
+                    </p>
+                  )}
                   {confirm.error && confirm.variables === displayed.version && (
-                    <p className="basis-full text-xs text-failure">{errorMessage(confirm.error, 'Could not confirm this version.')}</p>
+                    <p className="basis-full text-xs text-failure">
+                      {errorMessage(confirm.error, 'Could not confirm this version.')}
+                    </p>
                   )}
                 </div>
               )}
             </>
-          ) : <p className="text-sm text-muted">No requirement version has been proposed yet.</p>}
+          ) : (
+            <p className="text-sm text-muted">No requirement version has been proposed yet.</p>
+          )}
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Serving blueprints</CardTitle><Badge variant="mono">{item.serving_blueprints.length}</Badge></CardHeader>
+        <CardHeader>
+          <CardTitle>Serving blueprints</CardTitle>
+          <Badge variant="mono">{item.serving_blueprints.length}</Badge>
+        </CardHeader>
         <CardContent className="space-y-2">
-          {item.serving_blueprints.length === 0 && <p className="text-sm text-muted">No blueprint has been planned in this requirement’s context yet.</p>}
+          {item.serving_blueprints.length === 0 && (
+            <p className="text-sm text-muted">No blueprint has been planned in this requirement’s context yet.</p>
+          )}
           {item.serving_blueprints.map(({ task, spec }) => (
-            <Link key={task.id} to="/blueprints/$taskId" params={{ taskId: task.id }} className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface">
+            <Link
+              key={task.id}
+              to="/blueprints/$taskId"
+              params={{ taskId: task.id }}
+              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+            >
               <GitBranch className="size-4 shrink-0 text-primary" />
               <span className="min-w-0 flex-1">
                 <strong className="block truncate text-sm">{task.title}</strong>
                 <span className="mt-1 flex gap-1.5">
                   <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-                  {spec && <Badge variant={spec.approved ? 'positive' : 'attention'}>Spec v{spec.version} {spec.approved ? 'approved' : 'at gate'}</Badge>}
+                  {spec && (
+                    <Badge variant={spec.approved ? 'positive' : 'attention'}>
+                      Spec v{spec.version} {spec.approved ? 'approved' : 'at gate'}
+                    </Badge>
+                  )}
                 </span>
               </span>
               <ArrowRight className="size-4 text-faint" />
@@ -358,20 +459,34 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
 
       {item.planning_sessions.length > 0 && (
         <Card>
-          <CardHeader><CardTitle>Planning provenance</CardTitle><Badge variant="mono">{item.planning_sessions.length}</Badge></CardHeader>
+          <CardHeader>
+            <CardTitle>Planning provenance</CardTitle>
+            <Badge variant="mono">{item.planning_sessions.length}</Badge>
+          </CardHeader>
           <CardContent className="space-y-2">
             {item.planning_sessions.map((session) => (
               <div key={session.id} className="rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="text-sm">{session.title || session.id}</strong>
                   <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
-                  {session.model && <Badge variant="mono">{session.model}{session.effort ? ` · ${session.effort}` : ''}</Badge>}
-                  {session.exploration_output_tokens && <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>}
+                  {session.model && (
+                    <Badge variant="mono">
+                      {session.model}
+                      {session.effort ? ` · ${session.effort}` : ''}
+                    </Badge>
+                  )}
+                  {session.exploration_output_tokens && (
+                    <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
+                  )}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {Object.entries(session.pinned_revisions ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([repo, revision]) => (
-                    <Badge key={repo} variant="mono">{repo}@{revision.slice(0, 12)}</Badge>
-                  ))}
+                  {Object.entries(session.pinned_revisions ?? {})
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([repo, revision]) => (
+                      <Badge key={repo} variant="mono">
+                        {repo}@{revision.slice(0, 12)}
+                      </Badge>
+                    ))}
                 </div>
               </div>
             ))}
@@ -381,45 +496,71 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardHeader><CardTitle>Context artifacts</CardTitle><Badge variant="mono">{item.artifacts.length}</Badge></CardHeader>
+          <CardHeader>
+            <CardTitle>Context artifacts</CardTitle>
+            <Badge variant="mono">{item.artifacts.length}</Badge>
+          </CardHeader>
           <CardContent className="space-y-2">
             {item.artifacts.map((artifact) => (
-			  <button type="button" key={`${artifact.id}-${artifact.role}`} onClick={() => void downloadArtifact(token, artifact)} className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface">
-                <Download className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
+              <button
+                type="button"
+                key={`${artifact.id}-${artifact.role}`}
+                onClick={() => void downloadArtifact(token, artifact)}
+                className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface"
+              >
+                <Download className="size-3.5 text-primary" />
+                <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
                 <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
               </button>
             ))}
-            <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}>
+            <label
+              className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}
+            >
               <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
-              <input className="hidden" type="file" disabled={!token || upload.isPending} onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) upload.mutate(file)
-                event.currentTarget.value = ''
-              }} />
+              <input
+                className="hidden"
+                type="file"
+                disabled={!token || upload.isPending}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) upload.mutate(file)
+                  event.currentTarget.value = ''
+                }}
+              />
             </label>
-            {upload.error && <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>}
+            {upload.error && (
+              <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>
+            )}
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>Lineage</CardTitle><Badge variant="mono">{item.lineage.length}</Badge></CardHeader>
+          <CardHeader>
+            <CardTitle>Lineage</CardTitle>
+            <Badge variant="mono">{item.lineage.length}</Badge>
+          </CardHeader>
           <CardContent>
-            {item.lineage.length === 0 && <p className="text-sm text-muted">Lineage appears as planning and delivery advance.</p>}
+            {item.lineage.length === 0 && (
+              <p className="text-sm text-muted">Lineage appears as planning and delivery advance.</p>
+            )}
             {item.lineage.length > 0 && (
               <details>
                 <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
                 <ol className="mt-3 space-y-3">
-                  {item.lineage.slice(-8).reverse().map((event) => (
-                    <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
-                      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
-                      <span className="min-w-0 flex-1">
-                        <strong className="font-medium">{eventLabel(event)}</strong>
-                        <span className="mt-0.5 flex items-center gap-2">
-                          <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
-                          {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                  {item.lineage
+                    .slice(-8)
+                    .reverse()
+                    .map((event) => (
+                      <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                        <span className="min-w-0 flex-1">
+                          <strong className="font-medium">{eventLabel(event)}</strong>
+                          <span className="mt-0.5 flex items-center gap-2">
+                            <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                            {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                          </span>
                         </span>
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    ))}
                 </ol>
               </details>
             )}
@@ -440,8 +581,12 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
           <h3 className="text-sm font-semibold">Requirement statements</h3>
           <ol className="mt-2 space-y-2">
             {version.statements.map((statement) => (
-              <li key={statement.id} className="flex gap-3 rounded-md border border-border bg-surface px-3 py-2.5 text-sm">
-                <Badge variant="mono">{statement.id}</Badge><span>{statement.statement}</span>
+              <li
+                key={statement.id}
+                className="flex gap-3 rounded-md border border-border bg-surface px-3 py-2.5 text-sm"
+              >
+                <Badge variant="mono">{statement.id}</Badge>
+                <span>{statement.statement}</span>
               </li>
             ))}
           </ol>
@@ -455,10 +600,36 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
   const [currentLines, pendingLines] = lineChanges(documentText(current), documentText(pending))
   return (
     <details className="rounded-lg border border-border bg-surface/40" open>
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Compared with confirmed v{current.version}</summary>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+        Compared with confirmed v{current.version}
+      </summary>
       <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
-        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">{currentLines.map((line, index) => <span key={`${index}-${line.text}`} className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}>{line.text || ' '}</span>)}</pre></div>
-        <div className="bg-card p-4"><p className="mb-2 text-xs font-medium text-positive">Pending revision</p><pre className="whitespace-pre-wrap font-sans text-xs leading-5">{pendingLines.map((line, index) => <span key={`${index}-${line.text}`} className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}>{line.text || ' '}</span>)}</pre></div>
+        <div className="bg-card p-4">
+          <p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p>
+          <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">
+            {currentLines.map((line, index) => (
+              <span
+                key={`${index}-${line.text}`}
+                className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}
+              >
+                {line.text || ' '}
+              </span>
+            ))}
+          </pre>
+        </div>
+        <div className="bg-card p-4">
+          <p className="mb-2 text-xs font-medium text-positive">Pending revision</p>
+          <pre className="whitespace-pre-wrap font-sans text-xs leading-5">
+            {pendingLines.map((line, index) => (
+              <span
+                key={`${index}-${line.text}`}
+                className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}
+              >
+                {line.text || ' '}
+              </span>
+            ))}
+          </pre>
+        </div>
       </div>
     </details>
   )
@@ -467,25 +638,50 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
 function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
   const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
   const drift = item.staleness?.active_drift.length ?? 0
-  return <>
-    {shipped && <Badge variant="attention"><span title={shipped}>Code ahead of intent</span></Badge>}
-    {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
-    {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
-    {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
-    {!compact && item.pending_versions.length === 0 && !shipped && drift === 0 && !item.migrated_seed && <Badge variant="positive">Intent aligned</Badge>}
-  </>
+  return (
+    <>
+      {shipped && (
+        <Badge variant="attention">
+          <span title={shipped}>Code ahead of intent</span>
+        </Badge>
+      )}
+      {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
+      {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
+      {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
+      {!compact && item.pending_versions.length === 0 && !shipped && drift === 0 && !item.migrated_seed && (
+        <Badge variant="positive">Intent aligned</Badge>
+      )}
+    </>
+  )
 }
 
 function RequirementStateNotices({ item }: { item: RequirementView }) {
   const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
   const activeDrift = item.staleness?.active_drift ?? []
   return (
-	<section className="space-y-2" aria-label="Requirement alignment">
-      {shipped && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span></p>}
-      {activeDrift.length > 0 && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">{activeDrift.length} unreconciled repository change{activeDrift.length === 1 ? '' : 's'} affect this requirement through its delivery lineage.</p>}
-      {item.pending_versions.length > 0 && !item.migrated_seed && <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">A revision is pending operator confirmation.</p>}
-      {item.migrated_seed && <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">This migrated seed is awaiting its first deliberate revision.</p>}
-	</section>
+    <section className="space-y-2" aria-label="Requirement alignment">
+      {shipped && (
+        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
+          Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span>
+        </p>
+      )}
+      {activeDrift.length > 0 && (
+        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
+          {activeDrift.length} unreconciled repository change
+          {activeDrift.length === 1 ? '' : 's'} affect this requirement through its delivery lineage.
+        </p>
+      )}
+      {item.pending_versions.length > 0 && !item.migrated_seed && (
+        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
+          A revision is pending operator confirmation.
+        </p>
+      )}
+      {item.migrated_seed && (
+        <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
+          This migrated seed is awaiting its first deliberate revision.
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -542,9 +738,18 @@ function humanize(value: string) {
 }
 
 function EmptyMessage({ children, tone = 'muted' }: { children: string; tone?: 'muted' | 'failure' }) {
-  return <p className={`mt-8 rounded-md border border-border p-4 text-sm ${tone === 'failure' ? 'text-failure' : 'text-muted'}`}>{children}</p>
+  return (
+    <p
+      className={`mt-8 rounded-md border border-border p-4 text-sm ${tone === 'failure' ? 'text-failure' : 'text-muted'}`}
+    >
+      {children}
+    </p>
+  )
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
 }

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-	"lint": "biome lint --max-diagnostics=100 ./src ./tests ./playwright.config.ts",
+    "lint": "biome lint --max-diagnostics=100 ./src ./tests ./playwright.config.ts && biome format --max-diagnostics=100 ./src/components/planning/planning-chat.tsx ./src/components/ui/chat.tsx ./src/pages/requirements.tsx ./tests/requirements-planning.spec.ts",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit --pretty false"
   },
