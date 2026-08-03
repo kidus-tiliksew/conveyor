@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
+	var request core.LineageRebuildRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
+		http.Error(w, "lineage rebuild reason and request_id are required", http.StatusBadRequest)
+		return
+	}
+	result, err := s.Store.RebuildLineage(r.Context(), request)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 // getLineage exposes the same bounded, deterministic graph walk used for
 // agent context. The graph remains a read-only projection of events; callers

@@ -1776,9 +1776,35 @@ func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error
 	return links, nil
 }
 
-func (s *Store) RebuildLineage(ctx context.Context) (int, error) {
-	count := 0
+func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
+	var result core.LineageRebuildResult
+	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
+		return result, fmt.Errorf("lineage rebuild reason and request_id are required")
+	}
 	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		var prior []byte
+		err := q.QueryRow(ctx, `SELECT payload_json FROM events WHERE workspace_id=$1 AND kind='lineage.rebuilt'
+			AND payload_json->>'request_id'=$2 ORDER BY id DESC LIMIT 1`, workspace(ctx), request.RequestID).Scan(&prior)
+		if err == nil {
+			var payload struct {
+				Result core.LineageRebuildResult `json:"result"`
+			}
+			if json.Unmarshal(prior, &payload) == nil {
+				result = payload.Result
+				return nil
+			}
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND created_by_event_id IS NULL`, workspace(ctx)).Scan(&result.Existing); err != nil {
+			return err
+		}
+		if err = q.QueryRow(ctx, `SELECT count(*) FILTER (WHERE reason='ambiguous relationship'),
+			count(*) FILTER (WHERE reason<>'ambiguous relationship')
+			FROM lineage_repair_exclusions WHERE workspace_id=$1`, workspace(ctx)).Scan(&result.Ambiguous, &result.Unsupported); err != nil {
+			return err
+		}
 		if _, err := q.DeleteLineageLinks(ctx, workspace(ctx)); err != nil {
 			return err
 		}
@@ -1798,14 +1824,19 @@ func (s *Store) RebuildLineage(ctx context.Context) (int, error) {
 				}
 			}
 		}
-		links, err := q.ListLineageLinks(ctx, workspace(ctx))
-		if err != nil {
+		if err = q.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND created_by_event_id IS NOT NULL
+			AND kind = ANY($2::text[])`, workspace(ctx), []string{"dispatches", "produced_requirement", "produced_blueprint", "serves", "versions", "supersedes", "submitted_as", "submitted_range", "merged_range", "produced_verdict", "supports", "depends_on", "materializes"}).Scan(&result.Projected); err != nil {
 			return err
 		}
-		count = len(links)
-		return nil
+		actor := store.ActorFromContext(ctx)
+		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
+			PayloadJson: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "reason": request.Reason, "request_id": request.RequestID, "result": result}),
+			At:          timestamp(time.Now().UTC()),
+		})
+		return err
 	})
-	return count, err
+	return result, err
 }
 
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {

@@ -80,8 +80,8 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	}
 	// The operational edge is gone, but the immutable historical lineage stays.
 	assertMemoryLineage(t, st, ctx, 2)
-	if count, err := st.RebuildLineage(ctx); err != nil || count != 2 {
-		t.Fatalf("rebuild count=%d err=%v", count, err)
+	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 2 {
+		t.Fatalf("rebuild result=%+v err=%v", result, err)
 	}
 	assertMemoryLineage(t, st, ctx, 2)
 }

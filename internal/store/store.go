@@ -86,7 +86,7 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
-	RebuildLineage(ctx context.Context) (int, error)
+	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
@@ -3826,7 +3826,10 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 		}
 	}
 	for _, link := range lineageLinksForEvent(workspace, event) {
-		m.lineage[lineageLinkKey(link)] = link
+		key := lineageLinkKey(link)
+		if _, exists := m.lineage[key]; !exists {
+			m.lineage[key] = link
+		}
 	}
 }
 
@@ -3849,13 +3852,32 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 	return links, nil
 }
 
-func (m *memory) RebuildLineage(ctx context.Context) (int, error) {
+func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
+		return core.LineageRebuildResult{}, fmt.Errorf("lineage rebuild reason and request_id are required")
+	}
 	workspace := workspaceOrDefault(ctx, "")
+	result := core.LineageRebuildResult{}
+	for _, event := range m.events[""] {
+		if event.Kind != "lineage.rebuilt" {
+			continue
+		}
+		var payload struct {
+			WorkspaceID string                    `json:"workspace_id"`
+			RequestID   string                    `json:"request_id"`
+			Result      core.LineageRebuildResult `json:"result"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkspaceID == workspace && payload.RequestID == request.RequestID {
+			return payload.Result, nil
+		}
+	}
 	for key, link := range m.lineage {
-		if link.Workspace == workspace {
+		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
 			delete(m.lineage, key)
+		} else if link.Workspace == workspace && link.CreatedByEventID == 0 {
+			result.Existing++
 		}
 	}
 	for _, events := range m.events {
@@ -3874,17 +3896,23 @@ func (m *memory) RebuildLineage(ctx context.Context) (int, error) {
 				}
 			}
 			for _, link := range lineageLinksForEvent(workspace, event) {
-				m.lineage[lineageLinkKey(link)] = link
+				key := lineageLinkKey(link)
+				if _, exists := m.lineage[key]; !exists {
+					m.lineage[key] = link
+				}
 			}
 		}
 	}
-	count := 0
+	result.Projected = 0
 	for _, link := range m.lineage {
-		if link.Workspace == workspace {
-			count++
+		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
+			result.Projected++
 		}
 	}
-	return count, nil
+	m.appendEventLocked(ctx, core.Event{Kind: "lineage.rebuilt", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "reason": request.Reason, "request_id": request.RequestID, "result": result,
+	})})
+	return result, nil
 }
 
 func (m *memory) findJobLocked(id string) (core.Job, int, bool) {

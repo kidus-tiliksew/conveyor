@@ -148,6 +148,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == 57 {
+			if err := recordLineageRepairAudit(ctx, tx); err != nil {
+				return fmt.Errorf("record lineage repair audit: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO conveyor_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
 			version, filepath.Base(name), checksum,
@@ -159,6 +164,29 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
 	return nil
+}
+
+// recordLineageRepairAudit deliberately lives in application code: schema
+// migrations may repair projections but never manufacture ledger events.
+func recordLineageRepairAudit(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT w.id,'lineage.vocabulary_repaired','system','system',jsonb_build_object(
+  'reason','migration 057 canonicalized the lineage projection',
+  'excluded_count',count(x.*),
+  'excluded',COALESCE(jsonb_agg(jsonb_build_object('src_type',x.src_type,'src_id',x.src_id,'dst_type',x.dst_type,'dst_id',x.dst_id,'kind',x.kind,'reason',x.reason)) FILTER (WHERE x.workspace_id IS NOT NULL),'[]'::jsonb)
+),now()
+FROM workspaces w LEFT JOIN lineage_repair_exclusions x ON x.workspace_id=w.id
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.vocabulary_repaired')
+GROUP BY w.id;
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT w.id,'lineage.historical_fabrication_recorded','system','system',jsonb_build_object(
+  'migration',54,'event_kind','task.dependency_added','known_ids','74871-74888',
+  'reason','migration 054 fabricated backdated dependency events; records remain immutable'
+),now()
+FROM workspaces w
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.historical_fabrication_recorded')`)
+	return err
 }
 
 // repairPendingMigration overlays safety repairs only while an affected

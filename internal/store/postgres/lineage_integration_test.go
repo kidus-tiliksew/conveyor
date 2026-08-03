@@ -4,8 +4,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestPostgresLineageConformance(t *testing.T) {
+	storetest.RunLineageConformance(t, func(t *testing.T, _ []config.Repo) storetest.LineageFixture {
+		st, ctx, workspace := newPhase61IntegrationStore(t)
+		t.Cleanup(st.Close)
+		return storetest.LineageFixture{Store: st, Context: ctx, Workspace: workspace}
+	})
+}
 
 func TestLineageProjectionRebuildIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
@@ -51,8 +61,19 @@ func TestLineageProjectionRebuildIntegration(t *testing.T) {
 	if _, err = st.pool.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1`, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if count, rebuildErr := st.RebuildLineage(ctx); rebuildErr != nil || count < 3 {
-		t.Fatalf("rebuild count=%d err=%v", count, rebuildErr)
+	if _, err = st.pool.Exec(ctx, `INSERT INTO links
+		(workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event)
+		VALUES ($1,'requirement','legacy-requirement','task',$2,'historical_feature_assignment','feature.migrated')`, workspace, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if result, rebuildErr := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "postgres-1"}); rebuildErr != nil || result.Projected < 3 {
+		t.Fatalf("rebuild result=%+v err=%v", result, rebuildErr)
+	} else if result.Existing != 1 {
+		t.Fatalf("rebuild did not report preserved legacy link: %+v", result)
+	}
+	var preserved int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND kind='historical_feature_assignment'`, workspace).Scan(&preserved); err != nil || preserved != 1 {
+		t.Fatalf("legacy link preserved=%d err=%v", preserved, err)
 	}
 	links, err = st.ListLineageLinks(ctx)
 	if err != nil || len(links) < 3 {

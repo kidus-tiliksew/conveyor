@@ -938,7 +938,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	var evidenceIDs []string
 	if artifacts, artifactErr := d.Store.ListArtifacts(ctx); artifactErr == nil {
 		for _, artifact := range artifacts {
-			if artifact.TaskID == task.ID && artifact.Role == core.ArtifactRoleVerificationEvidence {
+			if artifact.TaskID == task.ID && artifact.EligibleVerificationEvidence() {
 				evidenceIDs = append(evidenceIDs, artifact.ID)
 			}
 		}

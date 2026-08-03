@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -48,6 +50,37 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	handler.ServeHTTP(overBudget, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil))
 	if overBudget.Code != http.StatusBadRequest {
 		t.Fatalf("over-budget status=%d body=%s", overBudget.Code, overBudget.Body.String())
+	}
+}
+
+func TestLineageRebuildRequiresOperatorAndAuditInput(t *testing.T) {
+	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo"})
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.BearerToken = "operator-token"
+	call := func(token, body string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/lineage/rebuild", strings.NewReader(body))
+		request.Header.Set("X-Workspace-ID", "demo")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if got := call("", `{}`).Code; got != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", got)
+	}
+	if got := call("operator-token", `{}`).Code; got != http.StatusBadRequest {
+		t.Fatalf("missing input status=%d", got)
+	}
+	response := call("operator-token", `{"reason":"repair","request_id":"lineage-1"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result core.LineageRebuildResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -36,7 +36,7 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 		}
 	}
 	valid := func(items ...core.LineageLink) []core.LineageLink {
-		out := items[:0]
+		out := make([]core.LineageLink, 0, len(items))
 		for _, item := range items {
 			if item.Validate() == nil {
 				out = append(out, item)
@@ -78,7 +78,11 @@ func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 	case "requirement.version_confirmed":
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
-			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version-1), "supersedes"))
+			predecessor := number("supersedes_version")
+			if predecessor == 0 {
+				predecessor = version - 1
+			}
+			return valid(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
@@ -126,4 +130,20 @@ func LineageLinksForEvent(workspace string, event core.Event) []core.LineageLink
 
 func lineageLinkKey(link core.LineageLink) string {
 	return strings.Join([]string{link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
+}
+
+var projectorOwnedLineageKinds = map[string]struct{}{
+	"dispatches": {}, "produced_requirement": {}, "produced_blueprint": {}, "serves": {},
+	"versions": {}, "supersedes": {}, "submitted_as": {}, "submitted_range": {},
+	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
+}
+
+func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }
+
+func CanonicalLineageKinds() map[string]struct{} {
+	out := make(map[string]struct{}, len(projectorOwnedLineageKinds))
+	for kind := range projectorOwnedLineageKinds {
+		out[kind] = struct{}{}
+	}
+	return out
 }
