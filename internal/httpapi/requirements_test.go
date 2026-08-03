@@ -219,6 +219,13 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	if !foundMaterialization {
 		t.Fatalf("requirement graph does not reach child: %+v", view.LineageGraph)
 	}
+	labels := map[string]string{}
+	for _, node := range view.LineageGraph.Nodes {
+		labels[string(node.Type)+":"+node.ID] = node.Label
+	}
+	if labels["requirement:"+requirement.ID] != requirement.Title || labels["blueprint:"+blueprint.ID] != blueprint.Title || labels["task:"+child.ID] != child.Title {
+		t.Fatalf("requirement graph labels=%v", labels)
+	}
 }
 
 func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {

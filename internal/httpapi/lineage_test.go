@@ -73,6 +73,21 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	}
 }
 
+func TestLineageHTTPHidesConfigurationProviderDetails(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return nil, errors.New("secret provider address and credentials")
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/anything", nil))
+	if response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "lineage configuration is unavailable" ||
+		strings.Contains(response.Body.String(), "credentials") {
+		t.Fatalf("configuration failure status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

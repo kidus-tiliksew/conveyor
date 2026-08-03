@@ -24,7 +24,7 @@ export function LineageGraphCard({ graph, title = 'Lineage graph' }: { graph: Li
         <CardTitle>{title}</CardTitle>
         <span className="flex items-center gap-1.5">
           {graph.truncated && <Badge variant="attention">Bounded view</Badge>}
-          {(graph.omitted_nodes || graph.omitted_links) && <Badge variant="attention">{(graph.omitted_nodes ?? 0) + (graph.omitted_links ?? 0)} omitted</Badge>}
+          {(graph.omitted_nodes ?? 0) + (graph.omitted_links ?? 0) > 0 && <Badge variant="attention">{(graph.omitted_nodes ?? 0) + (graph.omitted_links ?? 0)} omitted</Badge>}
           <Badge variant="mono">{graph.nodes.length} nodes · {graph.links.length} links</Badge>
         </span>
       </CardHeader>

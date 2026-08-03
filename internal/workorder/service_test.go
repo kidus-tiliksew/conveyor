@@ -3,6 +3,7 @@ package workorder
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
@@ -240,7 +241,7 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "child-a-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	sibling, err := st.CreateArtifact(ctx, core.Artifact{Name: "sibling.md", ContentType: "text/markdown", TaskID: "child-b"}, []byte("sibling outcome"))
+	sibling, err := st.CreateArtifact(ctx, core.Artifact{Name: "sibling.md", ContentType: "text/markdown", Role: core.ArtifactRoleTaskContext, TaskID: "child-b"}, []byte("sibling outcome"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +337,48 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 	}
 	if _, err = service.ReadArtifact(ctx, order.ID, "wrong-session", sibling.ID); err == nil || !strings.Contains(err.Error(), "another session") {
 		t.Fatalf("wrong-session lineage read error=%v", err)
+	}
+}
+
+func TestGetWorkOrderReportsOnlyTheNamedOmittedArtifactCount(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "artifact-cap", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: "artifact-cap-implement-1", TaskID: task.ID, JobID: "artifact-cap-job", Stage: core.StageImplement}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "artifact-cap-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"first.md", "second.md"} {
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: name, ContentType: "text/markdown", Role: core.ArtifactRoleTaskContext, TaskID: task.ID}, []byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 3, Nodes: 32, RenderableBytes: 4096, ArtifactRefs: 1}}}}}, nil
+	}}
+	got, err := service.Get(ctx, order.ID, "artifact-cap-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LineageContext.OmittedArtifacts != 1 || got.ContextOmittedArtifacts != 1 || !strings.Contains(string(encoded), `"context_omitted_artifacts":1`) || strings.Contains(string(encoded), "context_omitted_count") {
+		t.Fatalf("omitted artifact contract=%s", encoded)
 	}
 }
 

@@ -52,7 +52,6 @@ type Context struct {
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
 	ContextTruncated         bool     `json:"context_truncated,omitempty"`
 	ContextOmittedArtifacts  int      `json:"context_omitted_artifacts,omitempty"`
-	ContextOmittedCount      int      `json:"context_omitted_count,omitempty"`
 	ContextExhaustionReasons []string `json:"context_exhaustion_reasons,omitempty"`
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
@@ -599,7 +598,6 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	result.Artifacts = artifacts
 	result.ContextTruncated = lineage.Traversal.Truncated || lineage.OmittedCount > 0
 	result.ContextOmittedArtifacts = lineage.OmittedArtifacts
-	result.ContextOmittedCount = lineage.OmittedCount
 	result.ContextExhaustionReasons = append([]string(nil), lineage.ExhaustionReasons...)
 	for _, reference := range artifacts {
 		// Verification evidence intentionally remains direct-task only even when
@@ -626,7 +624,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	references, _, _, err := s.artifactsForOrder(ctx, order)
+	references, err := s.artifactsForOrder(ctx, order)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -650,12 +648,12 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	return ArtifactContent{Artifact: *authorized, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
 }
 
-func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, bool, int, error) {
+func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, error) {
 	lineage, err := s.lineageForOrder(ctx, order)
 	if err != nil {
-		return nil, false, 0, err
+		return nil, err
 	}
-	return artifactReferences(order.ID, lineage.Artifacts), lineage.Traversal.Truncated || lineage.OmittedCount > 0, lineage.OmittedCount, nil
+	return artifactReferences(order.ID, lineage.Artifacts), nil
 }
 
 func (s *Service) lineageForOrder(ctx context.Context, order core.WorkOrder) (lineagecontext.Result, error) {

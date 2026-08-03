@@ -180,6 +180,10 @@ export function PlanningChat({
   const visibleMessages = optimisticUser ? [...(messages ?? []), optimisticUser] : (messages ?? [])
   const groups = useMemo(() => groupMessages(visibleMessages), [visibleMessages])
   const showLiveReply = send.isPending || streamed.length > 0 || Boolean(send.error)
+  const liveGroups = useMemo(
+    () => groupLiveReply(streamed, send.isPending && streamed.length === 0 ? 'Planning…' : ''),
+    [send.isPending, streamed],
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -274,17 +278,21 @@ export function PlanningChat({
           {groups.map((group) => (
             <ConversationMessage key={group.key} group={group} />
           ))}
-          {showLiveReply && (
+          {showLiveReply &&
+            liveGroups.map((group) => (
+              <Message from={group.role} key={group.key}>
+                {group.role === 'assistant' && <Avatar kind="assistant" />}
+                <div className={group.role === 'system' ? 'contents' : 'min-w-0 flex-1 space-y-2'}>
+                  <RenderedParts parts={group.parts} fallback={group.fallback} role={group.role} />
+                </div>
+              </Message>
+            ))}
+          {showLiveReply && send.error && !(send.error instanceof DOMException && send.error.name === 'AbortError') && (
             <Message from="assistant">
               <Avatar kind="assistant" />
-              <div className="min-w-0 flex-1 space-y-2">
-                <RenderedParts parts={streamed} fallback={send.isPending && streamed.length === 0 ? 'Planning…' : ''} />
-                {send.error && !(send.error instanceof DOMException && send.error.name === 'AbortError') && (
-                  <p className="rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
-                    {errorMessage(send.error, 'Planning stopped before the reply finished. You can retry.')}
-                  </p>
-                )}
-              </div>
+              <p className="min-w-0 flex-1 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
+                {errorMessage(send.error, 'Planning stopped before the reply finished. You can retry.')}
+              </p>
             </Message>
           )}
           <div ref={endRef} />
@@ -421,6 +429,25 @@ function groupMessages(messages: PlanningMessage[]) {
   return groups
 }
 
+type LiveMessageGroup = {
+  key: string
+  role: 'assistant' | 'system'
+  parts: PlanningMessagePart[]
+  fallback: string
+}
+
+function groupLiveReply(parts: PlanningMessagePart[], fallback: string): LiveMessageGroup[] {
+  if (parts.length === 0) return fallback ? [{ key: 'live-assistant-0', role: 'assistant', parts: [], fallback }] : []
+  const groups: LiveMessageGroup[] = []
+  for (const part of parts) {
+    const role = part.type === 'system-correction' ? 'system' : 'assistant'
+    const current = groups.at(-1)
+    if (current?.role === role) current.parts.push(part)
+    else groups.push({ key: `live-${role}-${groups.length}`, role, parts: [part], fallback: '' })
+  }
+  return groups
+}
+
 function ConversationMessage({ group }: { group: MessageGroup }) {
   return (
     <Message from={group.role}>
@@ -450,7 +477,7 @@ type DisplayPart =
       kind: 'tool'
       id: string
       name: string
-      state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'failed'
+      state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'cancelled' | 'failed'
     }
 
 function normalizeParts(parts: PlanningMessagePart[], fallback: string): DisplayPart[] {
@@ -492,15 +519,17 @@ function normalizeParts(parts: PlanningMessagePart[], fallback: string): Display
         ? String((part.output as Record<string, unknown>).status || '')
         : ''
     const nextState =
-      status === 'invalid'
+      status === 'invalid' || status === 'corrected'
         ? 'corrected'
         : status === 'deferred'
           ? 'deferred'
-          : part.type.includes('error') || part.state === 'output-error'
-            ? 'failed'
-            : complete
-              ? 'complete'
-              : 'pending'
+          : status === 'cancelled'
+            ? 'cancelled'
+            : part.type.includes('error') || part.state === 'output-error'
+              ? 'failed'
+              : complete
+                ? 'complete'
+                : 'pending'
     if (previousIndex != null) {
       const previous = output[previousIndex]
       if (previous.kind === 'tool') {

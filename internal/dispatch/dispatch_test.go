@@ -2149,6 +2149,30 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 	if count, _ := st.CountEvents(ctx, task.ID, "review.output_invalid"); count != 1 {
 		t.Fatalf("in-process citation validation bounce events=%d, want 1", count)
 	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Pack = bundle
+	d.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "", nil }
+	input, err := d.buildStageInput(ctx, cfg, core.StageReview, updated)
+	if err != nil || !strings.Contains(input.Prompt, "requirement_citations assessment is required") {
+		t.Fatalf("citation retry prompt error=%v prompt=%s", err, input.Prompt)
+	}
+	if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.completeOutput(ctx, cfg, updated, job, output, "in-process"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = st.GetTask(ctx, task.ID)
+	if err != nil || updated.State != core.TaskAwaiting || updated.RecoveryStage != core.StageReview {
+		t.Fatalf("citation bounce-limit task=%+v err=%v", updated, err)
+	}
 }
 
 func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
@@ -2163,6 +2187,9 @@ func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
 		{name: "linked applicability mismatch", served: served, value: &core.RequirementCitationAssessment{}, want: "does not match"},
 		{name: "unlinked applicability mismatch", value: &core.RequirementCitationAssessment{Applicable: true}, want: "does not match"},
 		{name: "unlinked cited finding", value: &core.RequirementCitationAssessment{CitedIDs: []string{"REQ-1"}}, want: "findings must be empty"},
+		{name: "unlinked unknown finding", value: &core.RequirementCitationAssessment{UnknownIDs: []string{"REQ-X"}}, want: "findings must be empty"},
+		{name: "unlinked unserved finding", value: &core.RequirementCitationAssessment{UnservedIDs: []string{"REQ-2"}}, want: "findings must be empty"},
+		{name: "unlinked conflict finding", value: &core.RequirementCitationAssessment{Conflicts: []string{"REQ-3 changed"}}, want: "findings must be empty"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

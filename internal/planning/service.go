@@ -699,7 +699,7 @@ func deferredToolCallResult(call toolCall, maxCalls int) map[string]any {
 
 func recoverableToolError(toolName string, err error) map[string]any {
 	return map[string]any{
-		"ok": false, "status": "failed", "tool": toolName,
+		"ok": false, "status": "corrected", "tool": toolName,
 		"error":   err.Error(),
 		"message": "The tool request failed; narrow or correct the request and try another planning step.",
 	}

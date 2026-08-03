@@ -637,12 +637,13 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
 
 function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
   const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
+  const shippedTitle = deliveryTitle(item)
   const drift = item.staleness?.active_drift.length ?? 0
   return (
     <>
       {shipped && (
         <Badge variant="attention">
-          <span title={shipped}>Code ahead of intent</span>
+          <span title={shippedTitle}>Code ahead of intent</span>
         </Badge>
       )}
       {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
@@ -657,12 +658,13 @@ function RequirementStateBadges({ item, compact = false }: { item: RequirementVi
 
 function RequirementStateNotices({ item }: { item: RequirementView }) {
   const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
+  const shippedTitle = deliveryTitle(item)
   const activeDrift = item.staleness?.active_drift ?? []
   return (
     <section className="space-y-2" aria-label="Requirement alignment">
       {shipped && (
         <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
-          Code shipped past the confirmed intent. <span title={shipped}>Latest delivery: {shipped}.</span>
+          Code shipped past the confirmed intent. <span title={shippedTitle}>Latest delivery: {shipped}.</span>
         </p>
       )}
       {activeDrift.length > 0 && (
@@ -683,6 +685,12 @@ function RequirementStateNotices({ item }: { item: RequirementView }) {
       )}
     </section>
   )
+}
+
+function deliveryTitle(item: RequirementView) {
+  const label = item.staleness?.latest_delivery
+  const at = item.staleness?.latest_delivery_at
+  return label && at ? `${label} delivered ${formatDate(at)}` : label
 }
 
 function stripStatementsFence(content: string) {
