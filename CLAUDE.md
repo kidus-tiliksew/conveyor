@@ -1,17 +1,18 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.17,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.57
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.18,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.58
 through Phase 5 closure, the accepted Phase 6, the §21.47 dependency
 semantics, §21.48 worktree containment, the §21.49 blueprint
 presentation surface, §21.50–§21.52 planning repo exploration
 across workspace repos with a configurable planning model and
-configurable exploration caps, §21.53 attempt-aware recovery, the
-accepted §21.54 Phase 8 — deployment & multi-user (identity/grants,
-solo/server auth, credential-class boundary, embedded worker, delivery
-tiers making GitHub optional, packaging), and §21.55 rejecting the
-memory store (Phase 7 → demand-triggered recall; Phase 8 follows
-Phase 6 directly); the body
+configurable exploration caps, §21.53 attempt-aware recovery, §21.55
+rejecting the memory store (Phase 7 → demand-triggered recall), the
+accepted **§21.58 Phase 8 — the desired-state document model** (four
+durable document tiers, the spec artifact retired with its functions
+relocated, execution plans on the existing stage machinery,
+task-centric delivery, Tasks view), and the §21.54 deployment &
+multi-user scope resequenced to Phase 9; the body
 §§1–20 is normative, §21 is the change record). When code and spec disagree,
 the spec wins; spec changes go by amendment with a version bump (§21), never
 silent edits.
@@ -99,28 +100,38 @@ epic entity, flat requirement corpus (no hierarchy curation). v1
 dependencies are ordering gates — branch stacking stays deferred
 (§8.3).
 
-**Phase 8 — deployment & multi-user is accepted (§21.54)** and follows
-Phase 6 directly (§21.55), in order: 8.1 embedded worker (same §6.4
-supervisor loop in-process, no pairing — may land earlier, during late
-Phase 6), 8.2 identity
-(users, admin-as-grant, solo/server auth with opaque hashed tokens,
-human/agent/worker credential classes per route), 8.3 delivery tiers
-(per-repo `github`/`remote`/`local` — GitHub optional, ancestry-detected
-completion, primary checkout never mutated), 8.4 packaging (`conveyord
-install`, versioned releases, `conveyor init`). Do not start 8.2–8.4
-while Phase 6 is the active scope.
+**Phase 8 — the desired-state document model is accepted (§21.58)**
+and follows Phase 6 closure (working breakdown in
+[docs/phase8-plan.md](docs/phase8-plan.md)), in order: 8.1
+requirements v2 (REQ→AC nested structure, user-story framing) +
+markdown-only product-overview uploads with promotion; 8.2 System
+Design corpus (factory-resident versioned markdown, propose→confirm,
+freshness-checked) + `DEC-n` decision records; 8.3 task-centric
+delivery — §4.1 fences and decomposition materialization retire; the
+spec stage survives re-contented as the plan stage (dispatched
+stage-typed order, versioned markdown exec plans with done-criteria,
+§13.1 gate/redirect semantics byte-compatible with today's spec
+approval; `submit_plan` succeeds `submit_spec`); tasks carry attached
+context (`serves` at task level), planning finalize proposes
+document-revisions + task-set bundles; 8.4 Tasks view (list-first management — never priority,
+assignee, or declared phases). Nothing retires before 8.3; do not
+start 8.x while Phase 6 is the active scope.
+
+**Phase 9 — deployment & multi-user (§21.54, resequenced §21.58)**
+follows Phase 8: embedded worker (may land earlier), identity/grants,
+delivery tiers making GitHub optional, packaging.
 
 Do NOT build deferred surfaces beyond that: **there is no memory store —
 `store_memory` and memory rows are rejected by §21.55, not deferred**;
 Phase 7 is demand-triggered read-only recall over existing artifacts
 (get-side MCP tools per §21.12, pgvector as secondary index), built
 only on evidence of reachability misses from operating 6.3, and
-knowledge promotes into requirements/hints/pack instead of parking in
-rows; transcript mining /
-self-improvement / eval rig (Phase 9); managed-execution
+knowledge promotes into requirements/design docs/decisions/hints/pack
+instead of parking in rows; transcript mining /
+self-improvement / eval rig (Phase 10); managed-execution
 reintroduction — independent verification agent, K8sRunner, multi-repo
-worktree sets, aggregate cost dashboard (Phase 10, demand-triggered);
-enterprise SSO/SAML/SCIM, RBAC beyond two roles, HA (Phase 11,
+worktree sets, aggregate cost dashboard (Phase 11, demand-triggered);
+enterprise SSO/SAML/SCIM, RBAC beyond two roles, HA (Phase 12,
 demand-triggered). The
 command-policy shim approval cards and environment inference/repair are
 retired (§21.4), not deferred — do not build them at all.
