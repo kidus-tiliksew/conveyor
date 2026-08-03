@@ -204,7 +204,7 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 	}
 	for _, task := range []core.Task{
 		{ID: "child-a", Workspace: "demo", Repo: "repo-a", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
-		{ID: "child-b", Workspace: "demo", Repo: "repo-b", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskRunning, CreatedAt: now},
+		{ID: "child-b", Workspace: "demo", Repo: "repo-b", Title: "Completed sibling", ParentTaskID: blueprint.ID, OriginSpecVersion: spec.Version, State: core.TaskMerged, CreatedAt: now},
 		{ID: "unrelated", Workspace: "demo", State: core.TaskRunning, CreatedAt: now},
 	} {
 		if err = st.CreateTask(ctx, task); err != nil {
@@ -274,6 +274,41 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		!strings.Contains(workOrderContext.RolePrompt, "REQ-1: Sibling outcomes inform later work") ||
 		!strings.Contains(workOrderContext.RolePrompt, "cite the applicable stable REQ-n IDs") {
 		t.Fatalf("served requirement contract=%+v role=%s", workOrderContext.ServedRequirements, workOrderContext.RolePrompt)
+	}
+	reasons := map[string]bool{}
+	positions := map[string]int{}
+	for _, item := range workOrderContext.LineageContext.Items {
+		reasons[item.SelectionReason] = true
+		if _, exists := positions[item.SelectionReason]; !exists {
+			positions[item.SelectionReason] = len(positions)
+		}
+	}
+	for _, want := range []string{"served_requirement", "parent_blueprint_rationale", "sibling_outcome"} {
+		if !reasons[want] {
+			t.Fatalf("lineage context reasons=%v items=%+v", reasons, workOrderContext.LineageContext.Items)
+		}
+	}
+	if !(positions["served_requirement"] < positions["parent_blueprint_rationale"] && positions["parent_blueprint_rationale"] < positions["sibling_outcome"]) {
+		t.Fatalf("priority order=%v items=%+v", positions, workOrderContext.LineageContext.Items)
+	}
+	if got := workOrderContext.LineageContext.Budget; got.Depth != 3 || got.Nodes != 32 || got.RenderableBytes != 256<<10 {
+		t.Fatalf("context budget snapshot=%+v", got)
+	}
+	depth := 2
+	service.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: depth, Nodes: 16, RenderableBytes: 4096}}}}}, nil
+	}
+	firstSnapshot, err := service.Get(ctx, order.ID, "child-a-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	depth = 4
+	secondSnapshot, err := service.Get(ctx, order.ID, "child-a-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstSnapshot.LineageContext.Budget.Depth != 2 || secondSnapshot.LineageContext.Budget.Depth != 4 || firstSnapshot.LineageContext.Budget.Depth == secondSnapshot.LineageContext.Budget.Depth {
+		t.Fatalf("hot reload snapshots first=%+v second=%+v", firstSnapshot.LineageContext.Budget, secondSnapshot.LineageContext.Budget)
 	}
 	for _, artifact := range []core.Artifact{sibling, rationale} {
 		read, readErr := service.ReadArtifact(ctx, order.ID, "child-a-session", artifact.ID)

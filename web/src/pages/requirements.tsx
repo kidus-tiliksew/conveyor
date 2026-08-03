@@ -465,7 +465,7 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
 }
 
 function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
-  const shipped = item.shipped_past_intent
+  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
   const drift = item.staleness?.active_drift.length ?? 0
   return <>
     {shipped && <Badge variant="attention"><span title={shipped}>Code ahead of intent</span></Badge>}
@@ -477,7 +477,7 @@ function RequirementStateBadges({ item, compact = false }: { item: RequirementVi
 }
 
 function RequirementStateNotices({ item }: { item: RequirementView }) {
-  const shipped = item.shipped_past_intent
+  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
   const activeDrift = item.staleness?.active_drift ?? []
   return (
 	<section className="space-y-2" aria-label="Requirement alignment">

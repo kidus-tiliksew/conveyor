@@ -533,7 +533,7 @@ test('task detail headers show the task name while routes and API lookup keep us
 	await expect(fullHeader).not.toContainText(fullTaskID)
 	await expect(page.getByRole('heading', { name: 'Lineage graph' })).toBeVisible()
 	await page.getByText('Trace planning to delivery evidence').click()
-	await expect(page.getByText('dispatches', { exact: true })).toBeVisible()
+	await expect(page.getByText('dispatches as', { exact: true })).toBeVisible()
 	expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
 
 	const sheetTaskID = 'sheet-header-id'

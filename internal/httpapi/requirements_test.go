@@ -15,6 +15,16 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+func TestDeliveryReachabilityDoesNotCrossPlanningSessionBridge(t *testing.T) {
+	links := []core.LineageLink{
+		{Workspace: "demo", SrcType: core.LineagePlanningSession, SrcID: "session", DstType: core.LineageRequirement, DstID: "req", Kind: "produced_requirement", CreatedByEventID: 1},
+		{Workspace: "demo", SrcType: core.LineagePlanningSession, SrcID: "session", DstType: core.LineageBlueprint, DstID: "unrelated", Kind: "produced_blueprint", CreatedByEventID: 2},
+	}
+	if got := deliveryReachableTasks(links, "req"); len(got) != 0 {
+		t.Fatalf("planning bridge reached unrelated delivery: %v", got)
+	}
+}
+
 func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -79,7 +89,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 	if len(views) != 1 || views[0].Requirement.ID != requirement.ID ||
 		views[0].CurrentVersion != nil || len(views[0].PendingVersions) != 1 ||
-		!views[0].ConfirmationEligible || views[0].ShippedPastIntent != "" || len(views[0].Artifacts) != 1 ||
+		!views[0].ConfirmationEligible || views[0].Staleness.DeliveryAfterIntent || len(views[0].Artifacts) != 1 ||
 		views[0].Artifacts[0].ID != artifact.ID ||
 		len(views[0].PlanningSessions) != 1 || len(views[0].Lineage) != 2 {
 		t.Fatalf("requirement view=%+v", views)
@@ -194,9 +204,9 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.Staleness.Stale || view.Staleness.LatestDelivery != child.Title || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) || view.ShippedPastIntent != child.Title ||
+	if !view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != child.Title || view.Staleness.LatestDeliveryAt == nil || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) ||
 		len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
-		t.Fatalf("link-aware staleness=%+v shipped=%q", view.Staleness, view.ShippedPastIntent)
+		t.Fatalf("link-aware staleness=%+v", view.Staleness)
 	}
 	foundMaterialization := false
 	for _, link := range view.LineageGraph.Links {
@@ -281,7 +291,7 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.MigratedSeed || view.ConfirmationEligible || view.ShippedPastIntent != "" ||
+	if !view.MigratedSeed || view.ConfirmationEligible || view.Staleness.DeliveryAfterIntent ||
 		len(view.PendingVersions) != 1 || len(view.Lineage) != 2 {
 		t.Fatalf("migrated seed view=%+v", view)
 	}
@@ -395,8 +405,8 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		view.ServingBlueprints[0].Task.ID != task.ID ||
 		view.ServingBlueprints[0].Spec == nil ||
 		view.ServingBlueprints[0].Spec.Version != spec.Version ||
-		view.ServingBlueprints[0].Spec.Approved ||
-		view.ShippedPastIntent != "Blueprint delivery" {
+		view.ServingBlueprints[0].Spec.Approved || !view.Staleness.DeliveryAfterIntent ||
+		view.Staleness.LatestDelivery != "Blueprint delivery" {
 		t.Fatalf("blueprint handoff=%+v", view.ServingBlueprints)
 	}
 

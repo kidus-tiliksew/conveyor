@@ -155,6 +155,12 @@ context does this work order need" by traversal, not archaeology
    PRs → evidence); per-requirement staleness driven by link-aware
    merge/drift queries.
 
+The Phase 6 closing amendment must enumerate the shipped context surfaces
+(dispatch, planning, work orders, API, and UI), their shared traversal and
+budget contract, and the delivery-only requirement-staleness predicate. This
+operator-plan note records the obligation without silently editing the accepted
+specification.
+
 **Exit criterion:** for a merged Phase-6 task, the full chain —
 planning session → requirement → blueprint version → child task →
 work order → PR

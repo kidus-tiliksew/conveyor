@@ -154,13 +154,28 @@ type ModelTimeoutSettings struct {
 	TimeoutText string `yaml:"timeout" json:"timeout"`
 }
 
-const DefaultPlanningExplorationOutputTokens = 10_000
+const (
+	DefaultPlanningExplorationOutputTokens = 10_000
+	DefaultLineageContextDepth             = 3
+	DefaultLineageContextNodes             = 32
+	DefaultLineageContextRenderableBytes   = 256 << 10
+)
+
+// LineageContextSettings bounds the shared graph context assembled for both
+// planning and delivery agents. Values are snapshotted when context is built;
+// a workspace hot reload therefore cannot mutate an already returned payload.
+type LineageContextSettings struct {
+	Depth           int `yaml:"depth" json:"depth"`
+	Nodes           int `yaml:"nodes" json:"nodes"`
+	RenderableBytes int `yaml:"renderable_bytes" json:"renderable_bytes"`
+}
 
 type PlanningSettings struct {
-	Model                   string `yaml:"model" json:"model"`
-	Effort                  string `yaml:"effort,omitempty" json:"effort,omitempty"`
-	TimeoutText             string `yaml:"timeout" json:"timeout"`
-	ExplorationOutputTokens int    `yaml:"exploration_output_tokens" json:"exploration_output_tokens"`
+	Model                   string                 `yaml:"model" json:"model"`
+	Effort                  string                 `yaml:"effort,omitempty" json:"effort,omitempty"`
+	TimeoutText             string                 `yaml:"timeout" json:"timeout"`
+	ExplorationOutputTokens int                    `yaml:"exploration_output_tokens" json:"exploration_output_tokens"`
+	Context                 LineageContextSettings `yaml:"context" json:"context"`
 }
 
 type ControlPlaneSettings struct {
@@ -434,6 +449,7 @@ func applyContextualExecutionSettings(c *Config) {
 	if settings.ControlPlane.Planning.ExplorationOutputTokens == 0 {
 		settings.ControlPlane.Planning.ExplorationOutputTokens = DefaultPlanningExplorationOutputTokens
 	}
+	defaultLineageContextSettings(&settings.ControlPlane.Planning.Context)
 	if c.Routing.Stages == nil {
 		c.Routing.Stages = map[string]StageRoute{}
 	}
@@ -960,6 +976,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if planning.ExplorationOutputTokens == 0 {
 		planning.ExplorationOutputTokens = DefaultPlanningExplorationOutputTokens
 	}
+	defaultLineageContextSettings(&planning.Context)
 	planning.Model = strings.TrimSpace(planning.Model)
 	planning.Effort = strings.TrimSpace(planning.Effort)
 	if planning.Model == "" {
@@ -973,6 +990,15 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	}
 	if planning.ExplorationOutputTokens <= 0 {
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.exploration_output_tokens must be positive")
+	}
+	if planning.Context.Depth <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.depth must be positive")
+	}
+	if planning.Context.Nodes <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.nodes must be positive")
+	}
+	if planning.Context.RenderableBytes <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.renderable_bytes must be positive")
 	}
 	normalizedSettings.ControlPlane.Planning = planning
 	c.ExecutionSettings = normalizedSettings
@@ -1034,6 +1060,18 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("monitor.repositories is required when monitor is enabled")
 	}
 	return c, nil
+}
+
+func defaultLineageContextSettings(settings *LineageContextSettings) {
+	if settings.Depth == 0 {
+		settings.Depth = DefaultLineageContextDepth
+	}
+	if settings.Nodes == 0 {
+		settings.Nodes = DefaultLineageContextNodes
+	}
+	if settings.RenderableBytes == 0 {
+		settings.RenderableBytes = DefaultLineageContextRenderableBytes
+	}
 }
 
 func (c *Config) WorkspaceDocument() WorkspaceDocument {

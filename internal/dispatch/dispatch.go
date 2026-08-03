@@ -21,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -469,10 +470,10 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	}
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
-	ctx = context.WithValue(ctx, artifactContextMemoKey{}, map[string]artifactContextMemoEntry{})
+	ctx = context.WithValue(ctx, lineageContextMemoKey{}, map[string]lineageContextMemoEntry{})
 	input, err := d.buildStageInput(ctx, cfg, task.NextStage, task)
 	if err != nil {
-		attachmentCount, attachmentTypes := d.modelInputArtifactSummary(ctx, task)
+		attachmentCount, attachmentTypes := d.modelInputArtifactSummary(ctx, cfg, task)
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "artifact.context_failed", Payload: core.JSONPayload(map[string]any{
 			"stage": task.NextStage, "phase": "attachment_preparation", "provider": "openai_responses", "model": route.Model,
 			"attachment_count": attachmentCount, "attachment_types": attachmentTypes, "error": err.Error(),
@@ -517,11 +518,12 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
 }
 
-func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, task core.Task) (int, []string) {
-	artifacts, err := d.contextArtifacts(ctx, task.ID)
+func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, cfg *config.Config, task core.Task) (int, []string) {
+	lineage, err := d.lineageContext(ctx, cfg, task.ID)
 	if err != nil {
 		return 0, nil
 	}
+	artifacts := lineage.Artifacts
 	types := []string{}
 	for _, artifact := range artifacts {
 		if !artifact.Role.ModelInputEligible() {
@@ -631,10 +633,12 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			fmt.Fprintf(&prompt, "\n---\n\n%s\n", item.Comment)
 		}
 	}
-	artifacts, err := d.contextArtifacts(ctx, task.ID)
+	lineage, err := d.lineageContext(ctx, cfg, task.ID)
 	if err != nil {
-		return inprocess.Input{}, fmt.Errorf("assemble context artifacts for task %s: %w", task.ID, err)
+		return inprocess.Input{}, fmt.Errorf("assemble lineage context for task %s: %w", task.ID, err)
 	}
+	prompt.WriteString(lineagecontext.RenderUntrusted(lineage))
+	artifacts := lineage.Artifacts
 	seen := map[string]bool{}
 	totalBytes := 0
 	for _, artifact := range artifacts {
@@ -670,6 +674,22 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	return input, nil
 }
 
+type lineageContextMemoKey struct{}
+type lineageContextMemoEntry struct {
+	result lineagecontext.Result
+	err    error
+}
+
+func (d *Dispatcher) lineageContext(ctx context.Context, cfg *config.Config, taskID string) (result lineagecontext.Result, resultErr error) {
+	if memo, ok := ctx.Value(lineageContextMemoKey{}).(map[string]lineageContextMemoEntry); ok {
+		if cached, exists := memo[taskID]; exists {
+			return cached.result, cached.err
+		}
+		defer func() { memo[taskID] = lineageContextMemoEntry{result: result, err: resultErr} }()
+	}
+	return lineagecontext.Assemble(ctx, d.Store, cfg, []core.LineageNode{{Type: core.LineageTask, ID: taskID}}, taskID, false)
+}
+
 func contextArtifactSource(artifact core.Artifact) string {
 	switch {
 	case artifact.TaskID != "":
@@ -681,42 +701,6 @@ func contextArtifactSource(artifact core.Artifact) string {
 	default:
 		return "its lineage source"
 	}
-}
-
-func (d *Dispatcher) contextArtifacts(ctx context.Context, taskID string) (result []core.Artifact, resultErr error) {
-	memo, memoized := ctx.Value(artifactContextMemoKey{}).(map[string]artifactContextMemoEntry)
-	if memoized {
-		if cached, exists := memo[taskID]; exists {
-			return cached.artifacts, cached.err
-		}
-		defer func() { memo[taskID] = artifactContextMemoEntry{artifacts: result, err: resultErr} }()
-	}
-	workspace, _ := store.WorkspaceFromContext(ctx)
-	root := core.LineageNode{Type: core.LineageTask, ID: taskID}
-	budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
-	links, err := d.Store.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
-	if err != nil {
-		return nil, err
-	}
-	traversal, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
-	if err != nil {
-		return nil, err
-	}
-	artifacts, err := d.Store.ListArtifactsForLineage(ctx, traversal.Nodes)
-	if err != nil {
-		return nil, err
-	}
-	selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: taskID})
-	if err != nil {
-		return nil, err
-	}
-	return selection.Artifacts, nil
-}
-
-type artifactContextMemoKey struct{}
-type artifactContextMemoEntry struct {
-	artifacts []core.Artifact
-	err       error
 }
 
 // modelAttachmentKind is the provider boundary for in-process pipeline context:

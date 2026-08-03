@@ -43,6 +43,26 @@ func TestTraverseLineageKeepsLegacyHistoryAndDropsForeignWorkspace(t *testing.T)
 	}
 }
 
+func TestTraverseLineageUsesRelationPriorityAndIsPermutationStable(t *testing.T) {
+	root := []LineageNode{{Type: LineageTask, ID: "child"}}
+	links := []LineageLink{
+		lineageTestLink(1, LineageTask, "child", LineageEvidence, "evidence", "proved_by"),
+		lineageTestLink(3, LineageRequirement, "req", LineageTask, "child", "serves"),
+		lineageTestLink(2, LineageTask, "child", LineageTask, "dependency", "depends_on"),
+	}
+	want := []LineageNode{{Type: LineageTask, ID: "child"}, {Type: LineageRequirement, ID: "req"}, {Type: LineageTask, ID: "dependency"}, {Type: LineageEvidence, ID: "evidence"}}
+	permuted := []LineageLink{links[2], links[0], links[1]}
+	for _, input := range [][]LineageLink{links, permuted} {
+		got, err := TraverseLineage(input, root, LineageTraversalBudget{MaxDepth: 1, MaxNodes: 4, MaxLinks: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Nodes, want) || len(got.Links) != 2 || got.OmittedLinks != 1 || !got.Truncated || !reflect.DeepEqual(got.ExhaustionReasons, []string{"links"}) {
+			t.Fatalf("priority traversal=%+v", got)
+		}
+	}
+}
+
 func TestSelectContextArtifactsTiersDeduplicatesFiltersAndReportsOmitted(t *testing.T) {
 	now := time.Now().UTC()
 	links := []LineageLink{lineageTestLink(1, LineageTask, "local", LineageTask, "derived", "depends_on")}
@@ -62,7 +82,7 @@ func TestSelectContextArtifactsTiersDeduplicatesFiltersAndReportsOmitted(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(selection.Artifacts) != ContextArtifactMaxRefs || !selection.Truncated || selection.Omitted != 8 {
+	if len(selection.Artifacts) != 72 || selection.Truncated || selection.Omitted != 0 {
 		t.Fatalf("selection count=%d truncated=%v omitted=%d", len(selection.Artifacts), selection.Truncated, selection.Omitted)
 	}
 	seen := map[string]bool{}
@@ -72,7 +92,7 @@ func TestSelectContextArtifactsTiersDeduplicatesFiltersAndReportsOmitted(t *test
 		}
 		seen[artifact.ID] = true
 	}
-	if !seen["local-context"] || !seen["evidence"] || seen["audit"] || !seen["derived-69"] || seen["derived-00"] {
+	if !seen["local-context"] || !seen["evidence"] || seen["audit"] || !seen["derived-69"] || !seen["derived-00"] {
 		t.Fatalf("tiered IDs=%v", seen)
 	}
 }
@@ -105,7 +125,7 @@ func TestTraverseLineageIsDeterministicAndBounded(t *testing.T) {
 	if !reflect.DeepEqual(got.Nodes, want) || !got.Truncated {
 		t.Fatalf("traversal=%+v, want nodes=%+v truncated", got, want)
 	}
-	if !reflect.DeepEqual(got.Roots, root) || len(got.Links) != 2 || got.Links[0].Kind != "depends_on" || got.Links[1].Kind != "executes_as" {
+	if !reflect.DeepEqual(got.Roots, root) || len(got.Links) != 2 || got.Links[0].Kind != "executes_as" || got.Links[1].Kind != "depends_on" {
 		t.Fatalf("graph roots/links=%+v/%+v", got.Roots, got.Links)
 	}
 

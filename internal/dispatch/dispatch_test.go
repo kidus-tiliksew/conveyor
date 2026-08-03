@@ -345,7 +345,7 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	}
 	task := core.Task{ID: "context-child", Workspace: "demo", Repo: "api", Title: "Use sibling context", State: core.TaskQueued, NextStage: core.StageTriage,
 		ParentTaskID: parent.ID, OriginSpecVersion: spec.Version, CreatedAt: now}
-	sibling := core.Task{ID: "context-sibling", Workspace: "demo", State: core.TaskRunning,
+	sibling := core.Task{ID: "context-sibling", Workspace: "demo", Title: "Merged sibling", State: core.TaskMerged,
 		ParentTaskID: parent.ID, OriginSpecVersion: spec.Version, CreatedAt: now}
 	unrelated := core.Task{ID: "context-unrelated", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
 	for _, item := range []core.Task{task, sibling, unrelated} {
@@ -382,6 +382,11 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	}
 	if !names["direct.md"] || !names["sibling.md"] || names["unrelated.md"] || len(names) != 2 {
 		t.Fatalf("lineage-derived attachment names=%v", names)
+	}
+	for _, want := range []string{"untrusted historical context", "sibling_outcome", "Merged sibling [merged]", "```text"} {
+		if !strings.Contains(agent.input.Prompt, want) {
+			t.Fatalf("dispatch prompt omitted %q:\n%s", want, agent.input.Prompt)
+		}
 	}
 }
 
