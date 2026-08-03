@@ -3978,6 +3978,10 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		}
 	}
 	replayable := map[string]core.LineageLink{}
+	suppressed := map[string]struct{}{}
+	candidateEvent := map[string]int64{}
+	ambiguous := map[string]struct{}{}
+	var workspaceEvents []core.Event
 	for _, events := range m.events {
 		for _, event := range events {
 			if event.TaskID != "" {
@@ -3993,33 +3997,53 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 					continue
 				}
 			}
-			links := lineageLinksForEvent(workspace, event)
-			if requirementID, version, historical := HistoricalRequirementConfirmation(event); historical {
-				predecessor := 0
-				for _, candidate := range m.requirementVersions[memoryScopedKey{workspace: workspace, id: requirementID}] {
-					if candidate.Confirmed && candidate.Version < version && candidate.Version > predecessor {
-						predecessor = candidate.Version
-					}
+			workspaceEvents = append(workspaceEvents, event)
+		}
+	}
+	sort.Slice(workspaceEvents, func(i, j int) bool { return workspaceEvents[i].ID < workspaceEvents[j].ID })
+	for _, event := range workspaceEvents {
+		projection := projectLineageEvent(workspace, event)
+		links := projection.Links
+		if requirementID, version, historical := HistoricalRequirementConfirmation(event); historical {
+			predecessor := 0
+			for _, candidate := range m.requirementVersions[memoryScopedKey{workspace: workspace, id: requirementID}] {
+				if candidate.Confirmed && candidate.Version < version && candidate.Version > predecessor {
+					predecessor = candidate.Version
 				}
-				links = LineageLinksForHistoricalConfirmation(workspace, event, predecessor)
 			}
-			for _, link := range links {
-				key := lineageLinkKey(link)
-				if prior, ok := replayable[key]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
-					replayable[key] = link
-				}
+			links = LineageLinksForHistoricalConfirmation(workspace, event, predecessor)
+		}
+		result.Unsupported += projection.Unsupported
+		for _, link := range projection.Suppresses {
+			key := lineageLinkKey(link)
+			delete(replayable, key)
+			suppressed[key] = struct{}{}
+		}
+		for _, link := range links {
+			key := lineageLinkKey(link)
+			delete(suppressed, key)
+			if first, ok := candidateEvent[key]; ok && first != link.CreatedByEventID {
+				ambiguous[key] = struct{}{}
+			} else if !ok {
+				candidateEvent[key] = link.CreatedByEventID
+			}
+			if prior, ok := replayable[key]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
+				replayable[key] = link
 			}
 		}
 	}
 	preserved := map[string]core.LineageLink{}
 	for key, link := range m.lineage {
 		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
-			if _, regenerable := replayable[key]; !regenerable {
+			_, isSuppressed := suppressed[key]
+			if _, regenerable := replayable[key]; !regenerable && !isSuppressed {
 				preserved[key] = link
 			}
 			delete(m.lineage, key)
 		} else if link.Workspace == workspace {
-			result.Existing++
+			if _, regenerated := replayable[key]; !regenerated {
+				result.Existing++
+			}
 		}
 	}
 	for key, link := range replayable {
@@ -4030,7 +4054,7 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 	}
 	result.Projected = len(replayable)
 	result.PreservedUnregenerable = len(preserved)
-	result.Unsupported = len(preserved)
+	result.Ambiguous = len(ambiguous)
 	m.appendEventLocked(ctx, core.Event{Kind: "lineage.rebuilt", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "reason": request.Reason, "request_id": request.RequestID, "result": result,
 	})})

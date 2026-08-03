@@ -153,6 +153,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("record lineage repair audit: %w", err)
 			}
 		}
+		if version == 60 {
+			if err := recordPullRequestIdentityRepairAudit(ctx, tx); err != nil {
+				return fmt.Errorf("record pull request identity repair audit: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO conveyor_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
 			version, filepath.Base(name), checksum,
@@ -189,6 +194,42 @@ WHERE EXISTS (SELECT 1 FROM events historical
   WHERE historical.workspace_id=w.id AND historical.kind='task.dependency_added'
     AND historical.id BETWEEN 74871 AND 74888)
   AND NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='lineage.historical_fabrication_recorded')`)
+	return err
+}
+
+// recordPullRequestIdentityRepairAudit records only workspaces whose migration
+// 060 projection changed or whose exclusion reason was newly established.
+// The SQL migration owns projection repair; application code owns ledger events.
+func recordPullRequestIdentityRepairAudit(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+WITH reason_counts AS (
+  SELECT workspace_id,action,reason,count(*) AS count
+  FROM migration_060_actions
+  GROUP BY workspace_id,action,reason
+), summaries AS (
+  SELECT workspace_id,
+    sum(count) FILTER (WHERE action='canonicalized') AS canonicalized_count,
+    sum(count) FILTER (WHERE action='reverted_name_fallback') AS reverted_name_fallback_count,
+    sum(count) FILTER (WHERE action='excluded') AS excluded_count,
+    jsonb_agg(jsonb_build_object('action',action,'reason',reason,'count',count)
+      ORDER BY action,reason) AS reasons
+  FROM reason_counts GROUP BY workspace_id
+)
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT summary.workspace_id,'lineage.pull_request_identity_repaired','system','system',
+  jsonb_build_object(
+    'migration',60,
+    'canonicalized_count',COALESCE(summary.canonicalized_count,0),
+    'reverted_name_fallback_count',COALESCE(summary.reverted_name_fallback_count,0),
+    'excluded_count',COALESCE(summary.excluded_count,0),
+    'reasons',summary.reasons
+  ),now()
+FROM summaries summary
+WHERE NOT EXISTS (
+  SELECT 1 FROM events event
+  WHERE event.workspace_id=summary.workspace_id
+    AND event.kind='lineage.pull_request_identity_repaired'
+)`)
 	return err
 }
 

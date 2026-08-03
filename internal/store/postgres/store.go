@@ -1894,9 +1894,13 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			return strings.Join([]string{link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
 		}
 		replayable := map[string]core.LineageLink{}
+		suppressed := map[string]struct{}{}
+		candidateEvent := map[string]int64{}
+		ambiguous := map[string]struct{}{}
 		for _, row := range events {
 			event := eventFromDB(row)
-			links := store.LineageLinksForEvent(workspace(ctx), event)
+			projection := store.ProjectLineageEvent(workspace(ctx), event)
+			links := projection.Links
 			if requirementID, version, historical := store.HistoricalRequirementConfirmation(event); historical {
 				var predecessor pgtype.Int4
 				if err = q.QueryRow(ctx, `SELECT max(version) FROM requirement_versions
@@ -1910,8 +1914,20 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 				}
 				links = store.LineageLinksForHistoricalConfirmation(workspace(ctx), event, predecessorVersion)
 			}
+			result.Unsupported += projection.Unsupported
+			for _, link := range projection.Suppresses {
+				linkKey := key(link)
+				delete(replayable, linkKey)
+				suppressed[linkKey] = struct{}{}
+			}
 			for _, link := range links {
 				linkKey := key(link)
+				delete(suppressed, linkKey)
+				if first, ok := candidateEvent[linkKey]; ok && first != link.CreatedByEventID {
+					ambiguous[linkKey] = struct{}{}
+				} else if !ok {
+					candidateEvent[linkKey] = link.CreatedByEventID
+				}
 				if prior, ok := replayable[linkKey]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
 					replayable[linkKey] = link
 				}
@@ -1932,11 +1948,14 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			}
 			_, owned := canonical[link.Kind]
 			if !row.CreatedByEventID.Valid || !owned {
-				result.Existing++
+				if _, regenerated := replayable[key(link)]; !regenerated {
+					result.Existing++
+				}
 				continue
 			}
 			linkKey := key(link)
-			if _, regenerable := replayable[linkKey]; !regenerable {
+			_, isSuppressed := suppressed[linkKey]
+			if _, regenerable := replayable[linkKey]; !regenerable && !isSuppressed {
 				preserved[linkKey] = link
 			}
 		}
@@ -1962,7 +1981,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		}
 		result.Projected = len(replayable)
 		result.PreservedUnregenerable = len(preserved)
-		result.Unsupported = len(preserved)
+		result.Ambiguous = len(ambiguous)
 		actor := store.ActorFromContext(ctx)
 		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
