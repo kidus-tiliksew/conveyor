@@ -31,8 +31,10 @@ silent edits.
 - Build/test: `make build`, `make vet`, `make fmt-check`, `make test`, and
   `make test-integration`. `make test` is the ordinary local aggregate: Go
   tests plus web typecheck, Biome lint/format checking, and Playwright. CI
-  enforces the complete gate on every pull request; its PostgreSQL service
-  uses the CI-only `make test-integration-ci` entrypoint.
+  reports the complete gate on every pull request; blocking merges requires
+  operator-enabled branch protection, which is unavailable on the current
+  GitHub plan. Its PostgreSQL service uses the CI-only
+  `make test-integration-ci` entrypoint.
 
 ## Phase discipline
 

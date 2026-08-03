@@ -302,7 +302,7 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 		t.Fatalf("cycle trigger error=%v", err)
 	}
 	job := core.Job{ID: "phase61-order", TaskID: bySub["SUB-2"].ID, Stage: core.StageImplement, State: core.JobPending}
-	queueEnteredAt := time.Now().UTC()
+	queueEnteredAt := time.Now().UTC().Truncate(time.Microsecond)
 	order := core.WorkOrder{
 		ID: "phase61-order", TaskID: job.TaskID, JobID: job.ID, Stage: job.Stage,
 		State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: queueEnteredAt,

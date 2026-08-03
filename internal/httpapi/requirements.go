@@ -164,6 +164,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		return nil, err
 	}
 	artifactNodes := map[core.LineageNode]bool{}
+	graphs := make(map[string]core.LineageTraversal, len(requirements))
 	for _, root := range lineageRoots {
 		graph, graphErr := core.TraverseLineage(sharedLineage, []core.LineageNode{root}, lineageBudget)
 		if graphErr != nil {
@@ -172,6 +173,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		for _, node := range graph.Nodes {
 			artifactNodes[node] = true
 		}
+		graphs[root.ID] = graph
 	}
 	nodes := make([]core.LineageNode, 0, len(artifactNodes))
 	for node := range artifactNodes {
@@ -181,7 +183,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	if err != nil {
 		return nil, err
 	}
-	lineageLabels, err := s.lineageNodeLabels(r, nodes, artifacts)
+	lineageLabels, err := s.lineageNodeLabels(r, nodes, artifacts, sessions)
 	if err != nil {
 		return nil, err
 	}
@@ -292,10 +294,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
 			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
 		}
-		graph, graphErr := core.TraverseLineage(sharedLineage, []core.LineageNode{{Type: core.LineageRequirement, ID: requirement.ID}}, lineageBudget)
-		if graphErr != nil {
-			return nil, graphErr
-		}
+		graph := graphs[requirement.ID]
 		applyLineageLabels(&graph, lineageLabels)
 		view.LineageGraph = graph
 		reachableTasks := deliveryReachableTasks(sharedLineage, requirement.ID)

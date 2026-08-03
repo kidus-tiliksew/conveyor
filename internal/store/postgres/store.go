@@ -556,6 +556,144 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	return result, nil
 }
 
+func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
+	taskNodes := map[string][]core.LineageNode{}
+	requirementNodes := map[string][]core.LineageNode{}
+	sessionNodes := map[string][]core.LineageNode{}
+	orderNodes := map[string][]core.LineageNode{}
+	for _, node := range nodes {
+		baseID := lineageRecordBaseID(node)
+		switch node.Type {
+		case core.LineageTask, core.LineageBlueprint, core.LineageBlueprintVersion:
+			taskNodes[baseID] = append(taskNodes[baseID], node)
+		case core.LineageRequirement, core.LineageRequirementVersion:
+			requirementNodes[baseID] = append(requirementNodes[baseID], node)
+		case core.LineagePlanningSession:
+			sessionNodes[baseID] = append(sessionNodes[baseID], node)
+		case core.LineageWorkOrder:
+			orderNodes[baseID] = append(orderNodes[baseID], node)
+		}
+	}
+	records := make(map[core.LineageNode]store.LineageNodeRecord, len(nodes))
+	if err := s.queryLineageTaskRecords(ctx, taskNodes, records); err != nil {
+		return nil, err
+	}
+	if err := s.queryLineageRequirementRecords(ctx, requirementNodes, records); err != nil {
+		return nil, err
+	}
+	if err := s.queryLineageSessionRecords(ctx, sessionNodes, records); err != nil {
+		return nil, err
+	}
+	if err := s.queryLineageOrderRecords(ctx, orderNodes, records); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func lineageRecordBaseID(node core.LineageNode) string {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion {
+		return node.ID
+	}
+	index := strings.LastIndex(node.ID, ":v")
+	if index <= 0 {
+		return node.ID
+	}
+	return node.ID[:index]
+}
+
+func lineageRecordIDs(nodes map[string][]core.LineageNode) []string {
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (s *Store) queryLineageTaskRecords(ctx context.Context, nodes map[string][]core.LineageNode, records map[core.LineageNode]store.LineageNodeRecord) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,title FROM tasks WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, title string
+		if err = rows.Scan(&id, &title); err != nil {
+			return err
+		}
+		for _, node := range nodes[id] {
+			records[node] = store.LineageNodeRecord{Title: title}
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) queryLineageRequirementRecords(ctx context.Context, nodes map[string][]core.LineageNode, records map[core.LineageNode]store.LineageNodeRecord) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,title,slug FROM requirements WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, title, slug string
+		if err = rows.Scan(&id, &title, &slug); err != nil {
+			return err
+		}
+		for _, node := range nodes[id] {
+			records[node] = store.LineageNodeRecord{Title: title, Slug: slug}
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) queryLineageSessionRecords(ctx context.Context, nodes map[string][]core.LineageNode, records map[core.LineageNode]store.LineageNodeRecord) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,title FROM planning_sessions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, title string
+		if err = rows.Scan(&id, &title); err != nil {
+			return err
+		}
+		for _, node := range nodes[id] {
+			records[node] = store.LineageNodeRecord{Title: title}
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) queryLineageOrderRecords(ctx context.Context, nodes map[string][]core.LineageNode, records map[core.LineageNode]store.LineageNodeRecord) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,task_id,stage FROM work_orders WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, taskID string
+		var stage core.Stage
+		if err = rows.Scan(&id, &taskID, &stage); err != nil {
+			return err
+		}
+		for _, node := range nodes[id] {
+			records[node] = store.LineageNodeRecord{TaskID: taskID, Stage: stage}
+		}
+	}
+	return rows.Err()
+}
+
 func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error {
 	rows, err := s.pool.Query(ctx, `SELECT dependency.id, dependency.title, dependency.state,
 		dependency.origin_spec_version, dependency.origin_sub_id
@@ -4733,7 +4871,7 @@ func nullableText(value string) pgtype.Text {
 
 func notFound(err error, format string, args ...any) error {
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf(format+" not found: %w", append(args, store.ErrNotFound)...)
+		return fmt.Errorf(format+": %w", append(args, store.ErrNotFound)...)
 	}
 	return err
 }
