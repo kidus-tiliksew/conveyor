@@ -196,6 +196,40 @@ WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=w.id AND e.kind='l
 // 050 repairs their projections; this overlay prevents pre-046 databases from
 // failing before they can reach it.
 func repairPendingMigration(version int, sql []byte) ([]byte, error) {
+	if version == 55 {
+		text := string(sql)
+		const old = "(event.payload_json ->> 'version')::integer"
+		const replacement = "(CASE WHEN event.payload_json ->> 'version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'version')::integer ELSE 0 END)"
+		if found := strings.Count(text, old); found != 1 {
+			return nil, fmt.Errorf("pending-055 repair found %d occurrences of %q, want 1", found, old)
+		}
+		return []byte("-- Pending-055 safety overlay: guard historical numeric payloads.\n" + strings.ReplaceAll(text, old, replacement)), nil
+	}
+	if version == 54 {
+		text := string(sql)
+		for _, replacement := range []struct {
+			old   string
+			new   string
+			count int
+		}{
+			{
+				old:   "(event.payload_json ->> 'origin_spec_version')::integer",
+				new:   "(CASE WHEN event.payload_json ->> 'origin_spec_version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'origin_spec_version')::integer ELSE 0 END)",
+				count: 1,
+			},
+			{
+				old:   "(event.payload_json ->> 'version')::integer",
+				new:   "(CASE WHEN event.payload_json ->> 'version' ~ '^[0-9]{1,9}$' THEN (event.payload_json ->> 'version')::integer ELSE 0 END)",
+				count: 4,
+			},
+		} {
+			if found := strings.Count(text, replacement.old); found != replacement.count {
+				return nil, fmt.Errorf("pending-054 repair found %d occurrences of %q, want %d", found, replacement.old, replacement.count)
+			}
+			text = strings.ReplaceAll(text, replacement.old, replacement.new)
+		}
+		return []byte("-- Pending-054 safety overlay: guard historical numeric payloads.\n" + text), nil
+	}
 	if version != 46 {
 		return sql, nil
 	}

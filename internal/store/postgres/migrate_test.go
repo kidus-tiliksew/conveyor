@@ -259,6 +259,41 @@ func TestPendingPhase62RepairPreservesDeployedMigrationBytes(t *testing.T) {
 	}
 }
 
+func TestPendingLineageProjectionGuardsHistoricalNumericPayloads(t *testing.T) {
+	for _, migration := range []struct {
+		version int
+		name    string
+		marker  string
+	}{
+		{version: 54, name: "migrations/054_lineage_projection.sql", marker: "Pending-054 safety overlay: guard historical numeric payloads"},
+		{version: 55, name: "migrations/055_blueprint_version_lineage.sql", marker: "Pending-055 safety overlay: guard historical numeric payloads"},
+	} {
+		raw, err := migrationFiles.ReadFile(migration.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repaired, err := repairPendingMigration(migration.version, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(repaired)
+		if !strings.Contains(text, migration.marker) {
+			t.Fatalf("pending-%d repair marker missing", migration.version)
+		}
+		for _, unsafe := range []string{
+			"COALESCE((event.payload_json ->> 'origin_spec_version')::integer",
+			"COALESCE((event.payload_json ->> 'version')::integer",
+		} {
+			if strings.Contains(text, unsafe) {
+				t.Fatalf("pending-%d repair retained unsafe cast %q", migration.version, unsafe)
+			}
+		}
+		if migrationChecksum(repaired) == migrationChecksum(raw) {
+			t.Fatalf("pending-%d execution overlay unexpectedly equals immutable ledger bytes", migration.version)
+		}
+	}
+}
+
 func TestCanonicalStateMigrationRendersFromCoreStateSets(t *testing.T) {
 	raw, err := migrationFiles.ReadFile("migrations/035_canonical_lifecycle_states.sql")
 	if err != nil {
