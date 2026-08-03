@@ -65,10 +65,10 @@ const requirement = {
     },
   ],
   lineage_graph: {
-    roots: [{ type: 'requirement', id: 'req-retries' }],
+    roots: [{ type: 'requirement', id: 'req-retries', label: 'Retry behavior' }],
     nodes: [
-      { type: 'requirement', id: 'req-retries' },
-      { type: 'blueprint', id: 'blueprint-task' },
+      { type: 'requirement', id: 'req-retries', label: 'Retry behavior' },
+      { type: 'blueprint', id: 'blueprint-task', label: 'Ship bounded retries' },
     ],
     links: [
       {
@@ -83,10 +83,14 @@ const requirement = {
       },
     ],
     truncated: false,
+    omitted_nodes: 0,
+    omitted_links: 0,
+    budget: { max_depth: 5, max_nodes: 256, max_links: 1024 },
   },
   staleness: {
     delivery_after_intent: true,
     latest_delivery: 'blueprint-task',
+    latest_delivery_at: '2026-07-30T10:05:00Z',
     active_drift: [],
   },
   migrated_seed: false,
@@ -191,6 +195,8 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toBeVisible()
   await page.getByText('Trace planning to delivery evidence').click()
   await expect(page.getByText('serves', { exact: true })).toBeVisible()
+  await expect(page.getByText('Retry behavior', { exact: true }).last()).toBeVisible()
+  await expect(page.getByText('Ship bounded retries', { exact: true }).last()).toBeVisible()
 
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
@@ -258,7 +264,46 @@ test('planning starts with an allowlisted model and sends that choice', async ({
 
 test('planning restores durable messages, tool markers, and streams a new turn', async ({ page }) => {
   await initShell(page)
-  let posted = ''
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/v1/planning-sessions/session-retries/messages') && init?.method === 'POST') {
+        ;(window as Window & { __planningPosted?: string }).__planningPosted = String(init.body ?? '')
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'data: {"type":"start"}',
+                  '',
+                  'data: {"type":"text-delta","delta":"Drafting the requirement."}',
+                  '',
+                  'data: {"type":"system-correction","text":"Live correction row","detail":"live correction detail"}',
+                  '',
+                  'data: {"type":"text-delta","delta":" Continuing safely."}',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            window.setTimeout(() => {
+              controller.enqueue(encoder.encode('data: {"type":"finish"}\n\ndata: [DONE]\n\n'))
+              controller.close()
+            }, 1_500)
+          },
+        })
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'X-Vercel-AI-UI-Message-Stream': 'v1',
+          },
+        })
+      }
+      return originalFetch(input, init)
+    }
+  })
   const session = {
     id: 'session-retries',
     title: 'Plan retry behavior',
@@ -348,6 +393,11 @@ test('planning restores durable messages, tool markers, and streams a new turn',
           toolName: 'read_requirement',
           toolCallId: 'call-failed',
         },
+        {
+          type: 'tool-input-available',
+          toolName: 'read_cancelled',
+          toolCallId: 'call-cancelled',
+        },
       ],
       workspace: 'demo',
       created_at: '2026-07-30T10:02:03Z',
@@ -373,6 +423,11 @@ test('planning restores durable messages, tool markers, and streams a new turn',
           toolCallId: 'call-failed',
           output: { status: 'failed' },
         },
+        {
+          type: 'tool-output-error',
+          toolCallId: 'call-cancelled',
+          output: { status: 'cancelled' },
+        },
       ],
       workspace: 'demo',
       created_at: '2026-07-30T10:02:04Z',
@@ -388,7 +443,6 @@ test('planning restores durable messages, tool markers, and streams a new turn',
       return route.fulfill({ json: messages })
     }
     if (url.pathname === `/v1/planning-sessions/${session.id}/messages`) {
-      posted = route.request().postData() ?? ''
       return route.fulfill({
         status: 200,
         headers: {
@@ -399,6 +453,10 @@ test('planning restores durable messages, tool markers, and streams a new turn',
           'data: {"type":"start"}',
           '',
           'data: {"type":"text-delta","delta":"Drafting the requirement."}',
+          '',
+          'data: {"type":"system-correction","text":"Live correction row","detail":"live correction detail"}',
+          '',
+          'data: {"type":"text-delta","delta":" Continuing safely."}',
           '',
           'data: {"type":"finish"}',
           '',
@@ -421,6 +479,7 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect(page.getByText('finalize_blueprint corrected')).toBeVisible()
   await expect(page.getByText('read_artifact deferred')).toBeVisible()
   await expect(page.getByText('read_requirement failed')).toBeVisible()
+  await expect(page.getByText('read_cancelled cancelled')).toBeVisible()
   await expect(page.getByLabel('read_approved_spec: complete')).toHaveCount(1)
   await expect(page.getByText(/Queue contract/)).toHaveCount(0)
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
@@ -429,7 +488,18 @@ test('planning restores durable messages, tool markers, and streams a new turn',
 
   await page.getByLabel('Planning message').fill('Draft a requirement with stable statements.')
   await page.getByRole('button', { name: 'Send' }).click()
-  await expect.poll(() => JSON.parse(posted).message.content).toBe('Draft a requirement with stable statements.')
+  const liveCorrection = page.getByText('Live correction row')
+  await expect(liveCorrection).toBeVisible()
+  const liveCorrectionRow = liveCorrection.locator('xpath=../../..')
+  await expect(liveCorrectionRow).toHaveClass(/justify-center/)
+  await expect(liveCorrectionRow.locator('svg')).toHaveCount(0)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => JSON.parse((window as Window & { __planningPosted?: string }).__planningPosted ?? '{}').message?.content,
+      ),
+    )
+    .toBe('Draft a requirement with stable statements.')
 })
 
 test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({
@@ -928,6 +998,7 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
     expect(created[index].requirement_context_id).toBe(step.context)
     // The conversation opens in the sidebar; the canvas never navigates away.
     await expect(assistant.getByRole('log', { name: 'Planning conversation' })).toBeVisible()
+    await expect(assistant.getByRole('heading', { name: 'Drafting requirement…' })).toBeVisible()
     await expect(page).toHaveURL(/\/requirements\?/)
     await expect(page).toHaveURL(/requirement=req-retries/)
   }
@@ -1030,6 +1101,58 @@ test('finalizing in the sidebar refreshes the canvas without leaving the view', 
   await expect(canvas.getByRole('button', { name: 'Confirm version 1' })).toBeEnabled()
   await expect(page).toHaveURL(/requirement=req-drafted/)
   await expect(page).toHaveURL(/\/requirements\?/)
+})
+
+test('a produced requirement that never reaches the corpus releases the adoption latch with an actionable error', async ({
+  page,
+}) => {
+  await initShell(page)
+  await page.clock.install()
+  let finalized = false
+  const session = () => ({
+    id: 'session-missing-draft',
+    title: finalized ? 'Missing drafted intent' : 'Drafting requirement…',
+    status: finalized ? 'finalized' : 'active',
+    goal: 'requirement',
+    produced_requirement_id: finalized ? 'req-missing' : undefined,
+    workspace: 'demo',
+    created_at: '2026-07-30T11:00:00Z',
+    updated_at: '2026-07-30T11:05:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
+      return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
+    if (url.pathname === '/v1/planning-sessions/session-missing-draft') return route.fulfill({ json: session() })
+    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/messages')) {
+      finalized = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: [
+          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
+          '',
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          '',
+        ].join('\n'),
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
+  await assistant.getByRole('button', { name: 'Draft' }).click()
+  await assistant.getByLabel('Planning message').fill('Capture missing intent.')
+  await assistant.getByRole('button', { name: 'Send' }).click()
+  await expect(page).toHaveURL(/requirement=req-missing/)
+  await page.clock.fastForward(10_001)
+  await expect(page.getByText(/The new requirement req-missing did not appear in the corpus/)).toBeVisible()
 })
 
 // AC-5 (blueprint half): contextual Plan work refreshes the visible proposed

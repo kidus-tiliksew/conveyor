@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,7 +55,8 @@ func (s *Server) getLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	effective, err := s.effectiveLineageBudget(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("resolve lineage traversal budget: %v", err)
+		http.Error(w, "lineage configuration is unavailable", http.StatusInternalServerError)
 		return
 	}
 	maxDepth, err := boundedLineageQueryValue(r, "max_depth", effective.Depth)
@@ -120,12 +122,11 @@ func (s *Server) lineageGraph(r *http.Request, root core.LineageNode, budget cor
 	if err != nil {
 		return core.LineageTraversal{}, err
 	}
-	for index := range graph.Nodes {
-		graph.Nodes[index].Label = s.lineageNodeLabel(r, graph.Nodes[index])
+	labels, err := s.lineageNodeLabels(r, graph.Nodes)
+	if err != nil {
+		return core.LineageTraversal{}, err
 	}
-	for index := range graph.Roots {
-		graph.Roots[index].Label = s.lineageNodeLabel(r, graph.Roots[index])
-	}
+	applyLineageLabels(&graph, labels)
 	return graph, nil
 }
 
@@ -191,37 +192,100 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 	return false, nil
 }
 
-func (s *Server) lineageNodeLabel(r *http.Request, node core.LineageNode) string {
+// lineageNodeLabels resolves every label with a fixed set of workspace-scoped
+// reads. Requirement and task views can label a whole bounded neighborhood
+// without turning each rendered node into another database round trip.
+func (s *Server) lineageNodeLabels(r *http.Request, nodes []core.LineageNode, preloadedArtifacts ...[]core.Artifact) (map[core.LineageNode]string, error) {
+	tasks, err := s.Store.ListTasks(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	requirements, err := s.Store.ListRequirements(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := s.Store.ListPlanningSessions(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	orders, err := s.Store.ListWorkOrders(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	var artifacts []core.Artifact
+	if len(preloadedArtifacts) > 0 {
+		artifacts = preloadedArtifacts[0]
+	} else {
+		artifacts, err = s.Store.ListArtifactsForLineage(r.Context(), nodes)
+		if err != nil {
+			return nil, err
+		}
+	}
+	taskByID := make(map[string]core.Task, len(tasks))
+	for _, task := range tasks {
+		taskByID[task.ID] = task
+	}
+	requirementByID := make(map[string]core.Requirement, len(requirements))
+	for _, requirement := range requirements {
+		requirementByID[requirement.ID] = requirement
+	}
+	sessionByID := make(map[string]core.PlanningSession, len(sessions))
+	for _, session := range sessions {
+		sessionByID[session.ID] = session
+	}
+	orderByID := make(map[string]core.WorkOrder, len(orders))
+	for _, order := range orders {
+		orderByID[order.ID] = order
+	}
+	artifactByID := make(map[string]core.Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		artifactByID[artifact.ID] = artifact
+	}
+	labels := make(map[core.LineageNode]string, len(nodes))
+	for _, node := range nodes {
+		labels[node] = lineageNodeLabel(node, taskByID, requirementByID, sessionByID, orderByID, artifactByID)
+	}
+	return labels, nil
+}
+
+func lineageNodeLabel(
+	node core.LineageNode,
+	tasks map[string]core.Task,
+	requirements map[string]core.Requirement,
+	sessions map[string]core.PlanningSession,
+	orders map[string]core.WorkOrder,
+	artifacts map[string]core.Artifact,
+) string {
 	switch node.Type {
 	case core.LineageTask, core.LineageBlueprint:
-		if task, err := s.Store.GetTask(r.Context(), node.ID); err == nil {
+		if task, ok := tasks[node.ID]; ok {
 			return firstLabel(task.Title, node.ID)
 		}
 	case core.LineageRequirement:
-		if requirement, err := s.Store.GetRequirement(r.Context(), node.ID); err == nil {
+		if requirement, ok := requirements[node.ID]; ok {
 			return firstLabel(requirement.Title, requirement.Slug, node.ID)
 		}
 	case core.LineagePlanningSession:
-		if session, err := s.Store.GetPlanningSession(r.Context(), node.ID); err == nil {
+		if session, ok := sessions[node.ID]; ok {
 			return firstLabel(session.Title, "Planning session "+node.ID)
 		}
 	case core.LineageWorkOrder:
-		if order, err := s.Store.GetWorkOrder(r.Context(), node.ID); err == nil {
+		if order, ok := orders[node.ID]; ok {
 			return fmt.Sprintf("%s work order for %s", order.Stage, order.TaskID)
 		}
 	case core.LineageEvidence:
-		if artifact, _, err := s.Store.GetArtifact(r.Context(), node.ID); err == nil {
+		if artifact, ok := artifacts[node.ID]; ok {
 			return firstLabel(artifact.Name, "Evidence "+node.ID)
 		}
 	case core.LineageBlueprintVersion:
 		if id, version, ok := versionNodeID(node.ID); ok {
-			if task, err := s.Store.GetTask(r.Context(), id); err == nil {
+			if task, exists := tasks[id]; exists {
 				return fmt.Sprintf("%s blueprint v%d", firstLabel(task.Title, id), version)
 			}
 		}
 	case core.LineageRequirementVersion:
 		if id, version, ok := versionNodeID(node.ID); ok {
-			if requirement, err := s.Store.GetRequirement(r.Context(), id); err == nil {
+			if requirement, exists := requirements[id]; exists {
 				return fmt.Sprintf("%s requirement v%d", firstLabel(requirement.Title, id), version)
 			}
 		}
@@ -233,6 +297,15 @@ func (s *Server) lineageNodeLabel(r *http.Request, node core.LineageNode) string
 		return "Review verdict " + strings.TrimPrefix(node.ID, "review:")
 	}
 	return strings.ReplaceAll(string(node.Type), "_", " ") + " " + node.ID
+}
+
+func applyLineageLabels(graph *core.LineageTraversal, labels map[core.LineageNode]string) {
+	for index := range graph.Nodes {
+		graph.Nodes[index].Label = labels[graph.Nodes[index]]
+	}
+	for index := range graph.Roots {
+		graph.Roots[index].Label = labels[graph.Roots[index]]
+	}
 }
 
 func versionNodeID(value string) (string, int, bool) {

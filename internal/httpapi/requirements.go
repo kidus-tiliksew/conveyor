@@ -181,6 +181,10 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	if err != nil {
 		return nil, err
 	}
+	lineageLabels, err := s.lineageNodeLabels(r, nodes, artifacts)
+	if err != nil {
+		return nil, err
+	}
 	servesLinks, err := s.Store.ListRequirementServes(r.Context())
 	if err != nil {
 		return nil, err
@@ -292,6 +296,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		if graphErr != nil {
 			return nil, graphErr
 		}
+		applyLineageLabels(&graph, lineageLabels)
 		view.LineageGraph = graph
 		reachableTasks := deliveryReachableTasks(sharedLineage, requirement.ID)
 		if !confirmedAt.IsZero() {

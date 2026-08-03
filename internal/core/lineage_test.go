@@ -38,7 +38,7 @@ func TestTraverseLineageKeepsLegacyHistoryAndDropsForeignWorkspace(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Nodes) != 2 || got.Nodes[1].ID != "task" || len(got.Links) != 1 || got.ForeignWorkspaceDropped != 1 {
+	if len(got.Nodes) != 2 || got.Nodes[1].ID != "task" || len(got.Links) != 1 || got.ForeignWorkspaceLinksIgnored != 1 {
 		t.Fatalf("mixed traversal=%+v", got)
 	}
 }

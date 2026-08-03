@@ -715,6 +715,13 @@ func TestServicePersistsSyntheticToolResultAndReleasesRunClaim(t *testing.T) {
 	}
 }
 
+func TestRecoverableToolErrorUsesCorrectedStatus(t *testing.T) {
+	result := recoverableToolError("read_requirement", store.ErrNotFound)
+	if result["status"] != "corrected" || result["ok"] != false {
+		t.Fatalf("recoverable tool result=%+v", result)
+	}
+}
+
 func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -1171,9 +1178,12 @@ func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
 			ID: "AC-1", Criterion: "Retries stop at the configured bound.", Verify: "test",
 		}},
 	}
-	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
-		ID: "call-blueprint", Name: "finalize_blueprint", ArgumentsJSON: jsonString(t, args),
-	}})}}
+	agent := &scriptedAgent{outputs: []string{
+		`This is not a planning_step object.`,
+		decisionJSON(t, "", []toolCall{{
+			ID: "call-blueprint", Name: "finalize_blueprint", ArgumentsJSON: jsonString(t, args),
+		}}),
+	}}
 	var gotModel string
 	service := &Service{
 		Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt,
@@ -1207,12 +1217,15 @@ func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
 		finalized.ProducedTaskID != "260730-b4c5d6" || finalized.ProducedRequirementID != "" {
 		t.Fatalf("model=%q finalized=%+v", gotModel, finalized)
 	}
-	artifact, _, err := st.GetArtifact(ctx, finalized.TranscriptArtifactID)
+	artifact, transcript, err := st.GetArtifact(ctx, finalized.TranscriptArtifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if artifact.TaskID != finalized.ProducedTaskID || artifact.Role != core.ArtifactRoleGeneratedAudit {
 		t.Fatalf("transcript artifact = %+v", artifact)
+	}
+	if !strings.Contains(string(transcript), `"role":"system"`) || !strings.Contains(string(transcript), `"type":"system-correction"`) {
+		t.Fatalf("archived correction attribution=%s", transcript)
 	}
 }
 

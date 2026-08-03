@@ -100,17 +100,17 @@ type LineageTraversalBudget struct {
 // LineageTraversal is deterministic for the same roots, links, and budget.
 // Truncated reports that a reachable node was omitted by either bound.
 type LineageTraversal struct {
-	Roots                   []LineageNode                 `json:"roots"`
-	Nodes                   []LineageNode                 `json:"nodes"`
-	Links                   []LineageLink                 `json:"links"`
-	Truncated               bool                          `json:"truncated"`
-	Budget                  LineageTraversalBudget        `json:"budget"`
-	OmittedNodes            int                           `json:"omitted_nodes,omitempty"`
-	OmittedLinks            int                           `json:"omitted_links,omitempty"`
-	ExhaustionReasons       []string                      `json:"exhaustion_reasons,omitempty"`
-	ForeignWorkspaceDropped int                           `json:"foreign_workspace_dropped,omitempty"`
-	Depths                  map[LineageNode]int           `json:"-"`
-	Paths                   map[LineageNode][]LineageLink `json:"-"`
+	Roots                        []LineageNode                 `json:"roots"`
+	Nodes                        []LineageNode                 `json:"nodes"`
+	Links                        []LineageLink                 `json:"links"`
+	Truncated                    bool                          `json:"truncated"`
+	Budget                       LineageTraversalBudget        `json:"budget"`
+	OmittedNodes                 int                           `json:"omitted_nodes,omitempty"`
+	OmittedLinks                 int                           `json:"omitted_links,omitempty"`
+	ExhaustionReasons            []string                      `json:"exhaustion_reasons,omitempty"`
+	ForeignWorkspaceLinksIgnored int                           `json:"foreign_workspace_links_ignored,omitempty"`
+	Depths                       map[LineageNode]int           `json:"-"`
+	Paths                        map[LineageNode][]LineageLink `json:"-"`
 }
 
 // ContextArtifactSelection is the common bounded artifact view used by both
@@ -330,7 +330,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	if budget.Workspace != "" {
 		for _, link := range links {
 			if link.Workspace != budget.Workspace {
-				result.ForeignWorkspaceDropped++
+				result.ForeignWorkspaceLinksIgnored++
 			}
 		}
 	}

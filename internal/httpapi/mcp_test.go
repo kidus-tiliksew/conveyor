@@ -63,6 +63,15 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	if _, err = server.callMCPTool(workerRequest, "read_artifact", args); err != nil {
 		t.Fatalf("owning worker read: %v", err)
 	}
+	audit, err := st.CreateArtifact(ctx, core.Artifact{Name: "planning-audit.json", ContentType: "application/json", Role: core.ArtifactRoleGeneratedAudit, TaskID: "task-a"}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditArgs := maps.Clone(args)
+	auditArgs["artifact_id"] = audit.ID
+	if _, err = server.callMCPTool(workerRequest, "read_artifact", auditArgs); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("own-task generated audit read error=%v", err)
+	}
 	otherWorkerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-b", Workspace: "demo"}))
 	if _, err = server.callMCPTool(otherWorkerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 		t.Fatalf("other worker read error=%v", err)

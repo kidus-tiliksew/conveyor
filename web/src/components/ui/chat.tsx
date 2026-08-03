@@ -62,7 +62,7 @@ export function Marker({
   children,
 }: {
   name: string
-  state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'failed'
+  state: 'pending' | 'complete' | 'corrected' | 'deferred' | 'cancelled' | 'failed'
   children?: ReactNode
 }) {
   const stateLabel = state === 'pending' ? 'in progress' : state
@@ -74,8 +74,9 @@ export function Marker({
     >
       {state === 'pending' && <LoaderCircle className="size-3 animate-spin text-primary" aria-hidden="true" />}
       {state === 'complete' && <CheckCircle2 className="size-3 text-positive" aria-hidden="true" />}
-      {state === 'corrected' && <TriangleAlert className="size-3 text-warning" aria-hidden="true" />}
+      {state === 'corrected' && <TriangleAlert className="size-3 text-attention" aria-hidden="true" />}
       {state === 'deferred' && <LoaderCircle className="size-3 text-muted" aria-hidden="true" />}
+      {state === 'cancelled' && <TriangleAlert className="size-3 text-muted" aria-hidden="true" />}
       {state === 'failed' && <TriangleAlert className="size-3 text-failure" aria-hidden="true" />}
       <span className="truncate">
         {name} {stateLabel}
