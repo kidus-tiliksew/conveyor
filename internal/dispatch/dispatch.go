@@ -543,10 +543,11 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	if stage == core.StageReview {
 		role = pack.InProcessReviewRole(role)
 	}
-	servedRequirements, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
 	if err != nil {
 		return inprocess.Input{}, fmt.Errorf("resolve served requirements for task %s: %w", task.ID, err)
 	}
+	servedRequirements := servedAuthority.Requirements
 	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	input := inprocess.Input{}
 	var prompt strings.Builder
@@ -675,6 +676,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 }
 
 type lineageContextMemoKey struct{}
+
+// The memo is installed for one synchronous dispatch call and is never shared
+// with worker goroutines; buildStageInput and its summary reads are serial.
 type lineageContextMemoEntry struct {
 	result lineagecontext.Result
 	err    error
@@ -931,10 +935,11 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, invalid func(error) error) error {
-	servedRequirements, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
+	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID)
 	if err != nil {
 		return fmt.Errorf("resolve served requirements for review: %w", err)
 	}
+	servedRequirements := servedAuthority.Requirements
 	if err = validateReviewCitations(&result, servedRequirements); err != nil {
 		if invalid != nil {
 			return invalid(err)

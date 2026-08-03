@@ -92,6 +92,7 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
+	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
 	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
 	// for all roots. Callers may derive several per-root traversals from it
 	// without repeating a workspace-wide scan.
@@ -2654,25 +2655,46 @@ func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.Linea
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	wanted := make(map[core.LineageNode]bool, len(nodes))
-	for _, node := range nodes {
+	rank := make(map[core.LineageNode]int, len(nodes))
+	for index, node := range nodes {
+		if !node.Valid() {
+			continue
+		}
 		wanted[node] = true
+		if _, exists := rank[node]; !exists {
+			rank[node] = index
+		}
 	}
 	workspace, scoped := WorkspaceFromContext(ctx)
 	var out []core.Artifact
+	artifactRanks := map[string]int{}
 	for key, artifact := range m.artifacts {
 		if scoped && workspace != "" && key.workspace != workspace {
 			continue
 		}
 		for _, link := range artifact.links {
-			if wanted[core.LineageNode{Type: core.LineageTask, ID: link.TaskID}] ||
-				wanted[core.LineageNode{Type: core.LineageRequirement, ID: link.RequirementID}] ||
-				wanted[core.LineageNode{Type: core.LineagePlanningSession, ID: link.PlanningSessionID}] ||
-				(link.EligibleVerificationEvidence() && wanted[core.LineageNode{Type: core.LineageEvidence, ID: link.ID}]) {
+			matchedRank := len(nodes)
+			matched := false
+			for _, node := range []core.LineageNode{{Type: core.LineageTask, ID: link.TaskID}, {Type: core.LineageRequirement, ID: link.RequirementID}, {Type: core.LineagePlanningSession, ID: link.PlanningSessionID}, {Type: core.LineageEvidence, ID: link.ID}} {
+				if node.Type == core.LineageEvidence && !link.EligibleVerificationEvidence() {
+					continue
+				}
+				if wanted[node] && rank[node] < matchedRank {
+					matched, matchedRank = true, rank[node]
+				}
+			}
+			if matched {
 				out = append(out, link)
+				artifactRanks[link.ID+"\x00"+string(link.Role)] = matchedRank
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
+		leftRank := artifactRanks[out[i].ID+"\x00"+string(out[i].Role)]
+		rightRank := artifactRanks[out[j].ID+"\x00"+string(out[j].Role)]
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
 		}
@@ -3876,6 +3898,22 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 		return lineageLinkKey(links[i]) < lineageLinkKey(links[j])
 	})
 	return links, nil
+}
+
+func (m *memory) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
+	if !node.Valid() {
+		return false, nil
+	}
+	links, err := m.ListLineageLinks(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, link := range links {
+		if (link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *memory) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {

@@ -419,6 +419,12 @@ func transitionRequirementServesTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 		workspace(ctx), link.BlueprintTaskID, link.RequirementID, string(target), eventID, actor.ID, now); err != nil {
 		return core.RequirementServesLink{}, err
 	}
+	if target == core.RequirementServesDismissed {
+		if _, err = tx.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1 AND src_type='requirement' AND src_id=$2 AND dst_type='blueprint' AND dst_id=$3 AND kind='serves'`,
+			workspace(ctx), link.RequirementID, link.BlueprintTaskID); err != nil {
+			return core.RequirementServesLink{}, err
+		}
+	}
 	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = target, eventID, actor.ID, now
 	return link, nil
 }

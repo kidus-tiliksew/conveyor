@@ -535,7 +535,7 @@ func TestPhase62MigratedAttachmentStaysInTaskContextIntegration(t *testing.T) {
 
 	assertReachable := func(t *testing.T, candidateTask string, want bool) {
 		root := core.LineageNode{Type: core.LineageTask, ID: candidateTask}
-		budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: f.workspace}
+		budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: f.workspace}
 		links, err := f.store.ListLineageNeighborhood(f.ctx, []core.LineageNode{root}, budget)
 		if err != nil {
 			t.Fatal(err)

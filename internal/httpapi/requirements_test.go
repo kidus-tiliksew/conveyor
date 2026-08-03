@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -194,6 +195,9 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 
 	server := NewServer(st)
 	server.Workspace = "demo"
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 1, Nodes: 4, RenderableBytes: 1024, ArtifactRefs: 2}}}}}, nil
+	}
 	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
@@ -214,6 +218,53 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	}
 	if !foundMaterialization {
 		t.Fatalf("requirement graph does not reach child: %+v", view.LineageGraph)
+	}
+}
+
+func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-dismissed-stale", Title: "Dismissed intent"}, core.RequirementVersion{
+		Content: "Dismissed service must not create staleness.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dismissed service is not authority."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-dismissed-stale",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	blueprint := core.Task{ID: "blueprint-dismissed-stale", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-blueprint-dismissed-stale", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, blueprint.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": requirement.ID})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DismissRequirementServes(ctx, blueprint.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "merge.confirmed", At: time.Now().UTC().Add(time.Minute), Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head", "task_title": blueprint.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != "" {
+		t.Fatalf("dismissed service created staleness: %+v", view.Staleness)
 	}
 }
 

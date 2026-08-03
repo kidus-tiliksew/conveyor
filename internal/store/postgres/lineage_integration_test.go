@@ -156,7 +156,7 @@ func TestPostgresLineageConformance(t *testing.T) {
 				}
 				assert := func(t *testing.T) {
 					root := core.LineageNode{Type: core.LineageTask, ID: taskID}
-					budget := core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace}
+					budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace}
 					links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
 					if err != nil {
 						t.Fatal(err)

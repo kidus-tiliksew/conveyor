@@ -173,6 +173,8 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 			_, err := s.Store.GetRequirementVersion(r.Context(), id, version)
 			found = err == nil
 		}
+	case core.LineagePullRequest, core.LineageCommitRange, core.LineageVerdict:
+		return s.Store.LineageNodeExists(r.Context(), node)
 	}
 	if found {
 		return true, nil

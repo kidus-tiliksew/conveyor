@@ -38,6 +38,9 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 
 	server := NewServer(st)
 	server.Workspace = "demo"
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 2, Nodes: 8, RenderableBytes: 4096, ArtifactRefs: 4}}}}}, nil
+	}
 	handler := server.Handler()
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=2&max_nodes=8", nil))
@@ -62,6 +65,11 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	handler.ServeHTTP(overBudget, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil))
 	if overBudget.Code != http.StatusBadRequest {
 		t.Fatalf("over-budget status=%d body=%s", overBudget.Code, overBudget.Body.String())
+	}
+	overDepth := httptest.NewRecorder()
+	handler.ServeHTTP(overDepth, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=3", nil))
+	if overDepth.Code != http.StatusBadRequest {
+		t.Fatalf("configured over-depth status=%d body=%s", overDepth.Code, overDepth.Body.String())
 	}
 }
 
@@ -100,7 +108,7 @@ func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *t
 	if bounded.Code != http.StatusOK || json.Unmarshal(bounded.Body.Bytes(), &graph) != nil {
 		t.Fatalf("large status=%d body=%s", bounded.Code, bounded.Body.String())
 	}
-	if len(graph.Nodes) > core.ContextLineageMaxNodes || len(graph.Links) > core.ContextLineageMaxLinks || !graph.Truncated || graph.OmittedNodes == 0 || graph.Budget.MaxNodes != core.ContextLineageMaxNodes {
+	if len(graph.Nodes) > config.DefaultLineageContextNodes || len(graph.Links) > config.DefaultLineageContextNodes*config.DefaultLineageContextLinksPerNode || !graph.Truncated || graph.OmittedNodes == 0 || graph.Budget.MaxNodes != config.DefaultLineageContextNodes {
 		t.Fatalf("large graph not honestly bounded: %+v", graph)
 	}
 }
