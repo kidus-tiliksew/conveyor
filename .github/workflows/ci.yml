@@ -52,7 +52,9 @@ jobs:
       - name: Resolve Playwright version
         id: playwright-version
         working-directory: web
-        run: echo "version=$(node -p \"require('./package-lock.json').packages['node_modules/@playwright/test'].version\")" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
