@@ -1,6 +1,7 @@
 package lineagecontext
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,25 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func TestRenderUntrustedContainsTripleBacktickContent(t *testing.T) {
+	rendered := RenderUntrusted(Result{Items: []Item{{
+		Node:            core.LineageNode{Type: core.LineageRequirement, ID: "req-fenced"},
+		SelectionReason: "served_requirement",
+		Content:         "before\n```conveyor:requirements\n- id: REQ-1\n```\nafter",
+	}}})
+	if !strings.Contains(rendered, "````text\nbefore\n```conveyor:requirements") ||
+		!strings.Contains(rendered, "```\nafter\n````") {
+		t.Fatalf("nested requirement fence escaped outer boundary:\n%s", rendered)
+	}
+}
+
+func TestBlueprintSectionReturnsOnlyOriginatingSubsection(t *testing.T) {
+	content := "## SUB-1 First\nkeep this\n\n## SUB-2 Second\ndo not include"
+	if got := blueprintSection(content, "SUB-1"); got != "## SUB-1 First\nkeep this" {
+		t.Fatalf("section=%q", got)
+	}
+}
 
 func TestAssembleReportsRenderableByteExhaustion(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")

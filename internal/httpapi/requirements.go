@@ -152,11 +152,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		return nil, err
 	}
 	workspace, _ := store.WorkspaceFromContext(r.Context())
-	effective, err := s.effectiveLineageBudget(r.Context())
-	if err != nil {
-		return nil, err
-	}
-	lineageBudget := core.LineageTraversalBudget{MaxDepth: effective.Depth, MaxNodes: effective.Nodes, MaxLinks: effective.Links, Workspace: workspace}
+	// Staleness is an authority decision, not prompt rendering. Keep enough
+	// fixed delivery-chain depth even when operators tune agent context lower.
+	lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
 	lineageRoots := make([]core.LineageNode, 0, len(requirements))
 	for _, requirement := range requirements {
 		lineageRoots = append(lineageRoots, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID})

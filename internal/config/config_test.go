@@ -37,14 +37,14 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 	}
 	planning := normalized.ExecutionSettings.ControlPlane.Planning
 	if planning.Model != "gpt" || planning.ExplorationOutputTokens != DefaultPlanningExplorationOutputTokens ||
-		planning.Context != (LineageContextSettings{Depth: DefaultLineageContextDepth, Nodes: DefaultLineageContextNodes, RenderableBytes: DefaultLineageContextRenderableBytes}) ||
+		planning.Context != (LineageContextSettings{Depth: DefaultLineageContextDepth, Nodes: DefaultLineageContextNodes, RenderableBytes: DefaultLineageContextRenderableBytes, ArtifactRefs: DefaultLineageContextArtifactRefs}) ||
 		!reflect.DeepEqual(normalized.PlanningModels, []string{"gpt"}) {
 		t.Fatalf("planning defaults=%+v allowlist=%v", planning, normalized.PlanningModels)
 	}
 
 	document := normalized.WorkspaceDocument()
 	planning = PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "15m", ExplorationOutputTokens: 2048,
-		Context: LineageContextSettings{Depth: 4, Nodes: 48, RenderableBytes: 128 << 10}}
+		Context: LineageContextSettings{Depth: 4, Nodes: 48, RenderableBytes: 128 << 10, ArtifactRefs: 24}}
 	document.ExecutionSettings.ControlPlane.Planning = planning
 	document.Setups[0].ExecutionSettings.ControlPlane.Planning = planning
 	document.PlanningModels = []string{"planner", "planner-alt"}
@@ -73,6 +73,9 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 		},
 		"non-positive context bytes": func(value *WorkspaceDocument) {
 			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.RenderableBytes = -1
+		},
+		"non-positive artifact refs": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.ArtifactRefs = -1
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

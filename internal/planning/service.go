@@ -271,6 +271,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 	}
 	runCtx, cancel := context.WithTimeout(ctx, maxDuration)
 	defer cancel()
+	runCtx = context.WithValue(runCtx, planningLineageMemoKey{}, &planningLineageMemo{entries: map[string]planningLineageMemoEntry{}})
 
 	messageID := "message-" + core.NewTaskID()
 	if err = emit(map[string]any{"type": "start", "messageId": messageID}); err != nil {
@@ -876,19 +877,52 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		roots = append(roots, core.LineageNode{Type: core.LineageTask, ID: localTaskID})
 	}
 	if len(roots) > 1 || localTaskID != "" {
-		lineage, lineageErr := lineagecontext.Assemble(ctx, s.Store, cfg, roots, localTaskID, false)
+		lineage, lineageErr := s.lineageContext(ctx, cfg, roots, localTaskID)
 		if lineageErr != nil {
 			return "", fmt.Errorf("assemble planning lineage context: %w", lineageErr)
 		}
 		lineagePrompt = lineagecontext.RenderUntrusted(lineage)
 	}
-	return role +
+	prompt := role +
 		"\n\nConfigured workspace repositories: " + strings.Join(repositories, ", ") + "." +
 		"\n" + snapshotStatement +
 		"\n" + goalStatement(session) +
 		lineagePrompt +
 		"\nStrict exploration tool schemas:\n" + string(explorationSchemas) +
-		"\n\nDurable conversation context:\n" + string(contextJSON), nil
+		"\n\nDurable conversation context:\n" + string(contextJSON)
+	if len(prompt) > maxBytes {
+		return "", &planningContextOverflowError{limit: maxBytes}
+	}
+	return prompt, nil
+}
+
+type planningLineageMemoKey struct{}
+type planningLineageMemoEntry struct {
+	result lineagecontext.Result
+	err    error
+}
+type planningLineageMemo struct {
+	mu      sync.Mutex
+	entries map[string]planningLineageMemoEntry
+}
+
+func (s *Service) lineageContext(ctx context.Context, cfg *config.Config, roots []core.LineageNode, localTaskID string) (lineagecontext.Result, error) {
+	keyBytes, _ := json.Marshal(struct {
+		Roots []core.LineageNode
+		Task  string
+	}{roots, localTaskID})
+	key := string(keyBytes)
+	if memo, ok := ctx.Value(planningLineageMemoKey{}).(*planningLineageMemo); ok {
+		memo.mu.Lock()
+		defer memo.mu.Unlock()
+		if cached, exists := memo.entries[key]; exists {
+			return cached.result, cached.err
+		}
+		result, err := lineagecontext.Assemble(ctx, s.Store, cfg, roots, localTaskID, false)
+		memo.entries[key] = planningLineageMemoEntry{result: result, err: err}
+		return result, err
+	}
+	return lineagecontext.Assemble(ctx, s.Store, cfg, roots, localTaskID, false)
 }
 
 // goalStatement tells the agent which artifact this session exists to produce,

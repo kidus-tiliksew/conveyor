@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -51,7 +52,7 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 	}
 	recorder.reset()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: core.ContextLineageMaxDepth, MaxNodes: core.ContextLineageMaxNodes, Workspace: workspace})
+	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}

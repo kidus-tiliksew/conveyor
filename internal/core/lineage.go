@@ -8,12 +8,8 @@ import (
 )
 
 const (
-	// Defaults are the approved Phase 6.3 context budget. Workspace planning
-	// settings may lower or raise them, but every response echoes its snapshot.
-	ContextLineageMaxDepth = 3
-	ContextLineageMaxNodes = 32
-	ContextLineageMaxLinks = 128
-	ContextRenderableBytes = 256 << 10
+	DefaultContextArtifactMaxRefs       = 64
+	ContextArtifactProtectedTierMaxRefs = 16
 )
 
 // LineageNodeType names a durable node class in the Phase 6 knowledge graph
@@ -133,11 +129,13 @@ type ContextArtifactSelectionOptions struct {
 	LocalTaskID                      string
 	IncludeLocalVerificationEvidence bool
 	Budget                           LineageTraversalBudget
+	MaxArtifactRefs                  int
 }
 
 type contextArtifactCandidate struct {
 	artifact Artifact
 	local    bool
+	evidence bool
 	depth    int
 }
 
@@ -148,7 +146,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	}
 	budget := opts.Budget
 	if budget.MaxDepth == 0 && budget.MaxNodes == 0 {
-		budget.MaxDepth, budget.MaxNodes = ContextLineageMaxDepth, ContextLineageMaxNodes
+		budget.MaxDepth, budget.MaxNodes = 5, 32
 	}
 	budget.Workspace = opts.Workspace
 	traversal, err := TraverseLineage(links, roots, budget)
@@ -166,7 +164,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 			continue
 		}
 		depth := artifactContextDepth(artifact, traversal.Depths)
-		item := contextArtifactCandidate{artifact: artifact, local: local, depth: depth}
+		item := contextArtifactCandidate{artifact: artifact, local: local, evidence: local && artifact.EligibleVerificationEvidence(), depth: depth}
 		prior, exists := byID[artifact.ID]
 		if !exists || contextArtifactCandidateLess(item, prior) {
 			byID[artifact.ID] = item
@@ -182,13 +180,53 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 		Artifacts: make([]Artifact, 0, len(ordered)),
 		Truncated: traversal.Truncated,
 	}
-	for _, item := range ordered {
-		selection.Artifacts = append(selection.Artifacts, item.artifact)
+	maxRefs := opts.MaxArtifactRefs
+	if maxRefs <= 0 {
+		maxRefs = DefaultContextArtifactMaxRefs
 	}
+	// Reserve a bounded share for each protected local tier before filling the
+	// remaining global budget. This prevents high evidence fan-out from evicting
+	// ordinary task-local context (and vice versa) without making either tier
+	// an unbounded authorization escape hatch.
+	protectedAllowance := maxRefs / 4
+	if protectedAllowance < 1 {
+		protectedAllowance = 1
+	}
+	if protectedAllowance > ContextArtifactProtectedTierMaxRefs {
+		protectedAllowance = ContextArtifactProtectedTierMaxRefs
+	}
+	selected := make(map[string]bool, maxRefs)
+	appendTier := func(match func(contextArtifactCandidate) bool) {
+		added := 0
+		for _, item := range ordered {
+			if len(selection.Artifacts) >= maxRefs || added >= protectedAllowance || selected[item.artifact.ID] || !match(item) {
+				continue
+			}
+			selection.Artifacts = append(selection.Artifacts, item.artifact)
+			selected[item.artifact.ID] = true
+			added++
+		}
+	}
+	appendTier(func(item contextArtifactCandidate) bool { return item.evidence })
+	appendTier(func(item contextArtifactCandidate) bool { return item.local && !item.evidence })
+	for _, item := range ordered {
+		if selected[item.artifact.ID] {
+			continue
+		}
+		if len(selection.Artifacts) < maxRefs {
+			selection.Artifacts = append(selection.Artifacts, item.artifact)
+			selected[item.artifact.ID] = true
+		}
+	}
+	selection.Omitted = len(ordered) - len(selection.Artifacts)
+	selection.Truncated = selection.Truncated || selection.Omitted > 0
 	return selection, nil
 }
 
 func contextArtifactCandidateLess(left, right contextArtifactCandidate) bool {
+	if left.evidence != right.evidence {
+		return left.evidence
+	}
 	if left.local != right.local {
 		return left.local
 	}
@@ -203,7 +241,7 @@ func contextArtifactCandidateLess(left, right contextArtifactCandidate) bool {
 }
 
 func artifactContextDepth(artifact Artifact, depths map[LineageNode]int) int {
-	best := ContextLineageMaxDepth + 1
+	best := int(^uint(0) >> 1)
 	for _, node := range []LineageNode{{Type: LineageTask, ID: artifact.TaskID}, {Type: LineageRequirement, ID: artifact.RequirementID}, {Type: LineagePlanningSession, ID: artifact.PlanningSessionID}, {Type: LineageEvidence, ID: artifact.ID}} {
 		if node.ID != "" {
 			if depth, ok := depths[node]; ok && depth < best {

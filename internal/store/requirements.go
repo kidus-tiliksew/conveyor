@@ -389,6 +389,7 @@ func (m *memory) DismissRequirementServes(ctx context.Context, blueprintTaskID, 
 	m.appendEventLocked(ctx, core.Event{TaskID: link.BlueprintTaskID, Kind: "requirement.serves_dismissed", At: now, Payload: core.JSONPayload(map[string]any{
 		"requirement_id": link.RequirementID, "dismissed_by": actor.ID,
 	})})
+	delete(m.lineage, lineageLinkKey(core.LineageLink{Workspace: link.Workspace, SrcType: core.LineageRequirement, SrcID: link.RequirementID, DstType: core.LineageBlueprint, DstID: link.BlueprintTaskID, Kind: "serves"}))
 	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = core.RequirementServesDismissed, m.nextEventID, actor.ID, now
 	m.requirementServes[key] = link
 	return link, nil

@@ -211,6 +211,43 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("dismissing a proposal removes any stale serves projection", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Dismissed intent"},
+			chatVersion("Dismissed service is not delivery authority.", requirementStatement("REQ-1", "Dismissal removes projection.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskID := core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.ProposeRequirementServes(ctx, taskID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate the stale projection this repair must clean up while the
+		// durable proposal is still dismissible.
+		if err = st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": requirement.ID})}); err != nil {
+			t.Fatal(err)
+		}
+		node := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
+		if exists, existsErr := st.LineageNodeExists(ctx, node); existsErr != nil || !exists {
+			t.Fatalf("stale projection exists=%t err=%v", exists, existsErr)
+		}
+		if _, err = st.DismissRequirementServes(ctx, taskID, requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		links, listErr := st.ListLineageLinks(ctx)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, link := range links {
+			if link.Kind == "serves" && link.SrcID == requirement.ID && link.DstID == taskID {
+				t.Fatalf("dismissal retained serves projection: %+v", link)
+			}
+		}
+	})
+
 	t.Run("creation commits a pending document and its first version", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		id := "req-" + core.NewTaskID()

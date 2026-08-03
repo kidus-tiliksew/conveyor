@@ -156,9 +156,13 @@ type ModelTimeoutSettings struct {
 
 const (
 	DefaultPlanningExplorationOutputTokens = 10_000
-	DefaultLineageContextDepth             = 3
-	DefaultLineageContextNodes             = 32
-	DefaultLineageContextRenderableBytes   = 256 << 10
+	// Five edges cover requirement -> blueprint -> version -> child -> review
+	// evidence with one hop of margin for delivery context.
+	DefaultLineageContextDepth           = 5
+	DefaultLineageContextNodes           = 32
+	DefaultLineageContextRenderableBytes = 256 << 10
+	DefaultLineageContextArtifactRefs    = 64
+	DefaultLineageContextLinksPerNode    = 4
 )
 
 // LineageContextSettings bounds the shared graph context assembled for both
@@ -168,6 +172,7 @@ type LineageContextSettings struct {
 	Depth           int `yaml:"depth" json:"depth"`
 	Nodes           int `yaml:"nodes" json:"nodes"`
 	RenderableBytes int `yaml:"renderable_bytes" json:"renderable_bytes"`
+	ArtifactRefs    int `yaml:"artifact_refs" json:"artifact_refs"`
 }
 
 type PlanningSettings struct {
@@ -1000,6 +1005,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if planning.Context.RenderableBytes <= 0 {
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.renderable_bytes must be positive")
 	}
+	if planning.Context.ArtifactRefs <= 0 {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.artifact_refs must be positive")
+	}
 	normalizedSettings.ControlPlane.Planning = planning
 	c.ExecutionSettings = normalizedSettings
 	repoNames := make(map[string]struct{}, len(c.Repos))
@@ -1071,6 +1079,9 @@ func defaultLineageContextSettings(settings *LineageContextSettings) {
 	}
 	if settings.RenderableBytes == 0 {
 		settings.RenderableBytes = DefaultLineageContextRenderableBytes
+	}
+	if settings.ArtifactRefs == 0 {
+		settings.ArtifactRefs = DefaultLineageContextArtifactRefs
 	}
 }
 
