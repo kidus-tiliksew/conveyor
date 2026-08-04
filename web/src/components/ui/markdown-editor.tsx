@@ -91,21 +91,22 @@ export function MarkdownEditor({
       return
     }
 
-    const markers = action === 'bold'
-      ? ['**', '**']
-      : action === 'italic'
-        ? ['_', '_']
-        : action === 'inline-code'
-          ? ['`', '`']
-          : ['```\n', '\n```']
+    const markers =
+      action === 'bold'
+        ? ['**', '**']
+        : action === 'italic'
+          ? ['_', '_']
+          : action === 'inline-code'
+            ? ['`', '`']
+            : ['```\n', '\n```']
     const [open, close] = markers
     if (selected.startsWith(open) && selected.endsWith(close) && selected.length >= open.length + close.length) {
       const unwrapped = selected.slice(open.length, selected.length - close.length)
       commit(value.slice(0, start) + unwrapped + value.slice(end), { start, end: start + unwrapped.length })
       return
     }
-    const alreadyWrapped = value.slice(Math.max(0, start - open.length), start) === open
-      && value.slice(end, end + close.length) === close
+    const alreadyWrapped =
+      value.slice(Math.max(0, start - open.length), start) === open && value.slice(end, end + close.length) === close
     if (alreadyWrapped) {
       const next = value.slice(0, start - open.length) + selected + value.slice(end + close.length)
       commit(next, { start: start - open.length, end: end - open.length })
@@ -125,9 +126,7 @@ export function MarkdownEditor({
     const nextNewline = value.indexOf('\n', end)
     const blockEnd = nextNewline === -1 ? value.length : nextNewline
     const lines = value.slice(blockStart, blockEnd).split('\n')
-    const target = action === 'numbered-list'
-      ? /^\d+\. /
-      : new RegExp(`^${escapeRegExp(linePrefixes[action])}`)
+    const target = action === 'numbered-list' ? /^\d+\. / : new RegExp(`^${escapeRegExp(linePrefixes[action])}`)
     const allTarget = lines.every((line) => target.test(line))
     const knownPrefix = /^(?:#{1,6} |> |- \[[ xX]\] |- |\d+\. )/
     const transformed = lines.map((line, index) => {
@@ -147,13 +146,14 @@ export function MarkdownEditor({
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!(event.metaKey || event.ctrlKey)) return
-    const action = event.key.toLowerCase() === 'b'
-      ? 'bold'
-      : event.key.toLowerCase() === 'i'
-        ? 'italic'
-        : event.key.toLowerCase() === 'k'
-          ? 'link'
-          : undefined
+    const action =
+      event.key.toLowerCase() === 'b'
+        ? 'bold'
+        : event.key.toLowerCase() === 'i'
+          ? 'italic'
+          : event.key.toLowerCase() === 'k'
+            ? 'link'
+            : undefined
     if (!action) return
     event.preventDefault()
     applyInline(action)
@@ -183,8 +183,15 @@ export function MarkdownEditor({
             aria-controls={writePanelID}
             aria-selected={tab === 'write'}
             onClick={() => setTab('write')}
-            className={cn('border-b-2 px-3 text-xs font-medium', tab === 'write' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
-          >Write</button>
+            className={cn(
+              'border-b-2 px-3 text-xs font-medium',
+              tab === 'write'
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted hover:text-foreground',
+            )}
+          >
+            Write
+          </button>
           <button
             id={previewTabID}
             role="tab"
@@ -192,8 +199,15 @@ export function MarkdownEditor({
             aria-controls={previewPanelID}
             aria-selected={tab === 'preview'}
             onClick={() => setTab('preview')}
-            className={cn('border-b-2 px-3 text-xs font-medium', tab === 'preview' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
-          >Preview</button>
+            className={cn(
+              'border-b-2 px-3 text-xs font-medium',
+              tab === 'preview'
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted hover:text-foreground',
+            )}
+          >
+            Preview
+          </button>
         </div>
         {tab === 'write' && (
           <div role="toolbar" aria-label="Markdown formatting" className="flex flex-wrap items-center py-1">
@@ -228,7 +242,11 @@ export function MarkdownEditor({
         </div>
       ) : (
         <div id={previewPanelID} role="tabpanel" aria-labelledby={previewTabID} className="min-h-56 px-3 py-2">
-          {value.trim() ? <MarkdownProse>{value}</MarkdownProse> : <p className="text-sm italic text-faint">Nothing to preview</p>}
+          {value.trim() ? (
+            <MarkdownProse>{value}</MarkdownProse>
+          ) : (
+            <p className="text-sm italic text-faint">Nothing to preview</p>
+          )}
         </div>
       )}
     </div>

@@ -36,7 +36,7 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
       </p>
       <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
         <RotateCcw />
-        {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : (parked ? 'Resume task' : 'Redispatch')}
+        {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : parked ? 'Resume task' : 'Redispatch'}
       </Button>
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
     </div>

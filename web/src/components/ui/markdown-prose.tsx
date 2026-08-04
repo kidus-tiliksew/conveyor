@@ -14,7 +14,9 @@ export function MarkdownProse({
 }) {
   return (
     <div className={`markdown ${className}`.trim()}>
-      <Markdown remarkPlugins={[remarkGfm]} components={components}>{children}</Markdown>
+      <Markdown remarkPlugins={[remarkGfm]} components={components}>
+        {children}
+      </Markdown>
     </div>
   )
 }

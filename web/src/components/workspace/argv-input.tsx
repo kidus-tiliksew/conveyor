@@ -11,7 +11,10 @@ export function splitArgv(text: string): string[] {
   let quote: '"' | "'" | null = null
   for (const ch of text) {
     if (/\s/.test(ch) && !quote) {
-      if (current) { tokens.push(current); current = '' }
+      if (current) {
+        tokens.push(current)
+        current = ''
+      }
       continue
     }
     if (ch === '"' || ch === "'") {
@@ -40,7 +43,17 @@ const PLACEHOLDER = /^\{[a-z_]+\}$/
 // Token-chip editor for argv arrays. Type or paste to append arguments,
 // click a chip to edit it in place, Backspace on an empty input removes the
 // last argument. Placeholders like {prompt} render as accent chips.
-export function ArgvInput({ label, value, onChange, placeholder }: { label: string; value: string[]; onChange: (value: string[]) => void; placeholder?: string }) {
+export function ArgvInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string[]
+  onChange: (value: string[]) => void
+  placeholder?: string
+}) {
   const [text, setText] = useState('')
   const [editing, setEditing] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -65,10 +78,17 @@ export function ArgvInput({ label, value, onChange, placeholder }: { label: stri
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') { event.preventDefault(); commit() }
-    else if (event.key === ' ' && !hasOpenQuote(text)) { event.preventDefault(); commit() }
-    else if (event.key === 'Escape') { setEditing(null); setText('') }
-    else if (event.key === 'Backspace' && text === '' && editing === null && value.length) onChange(value.slice(0, -1))
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commit()
+    } else if (event.key === ' ' && !hasOpenQuote(text)) {
+      event.preventDefault()
+      commit()
+    } else if (event.key === 'Escape') {
+      setEditing(null)
+      setText('')
+    } else if (event.key === 'Backspace' && text === '' && editing === null && value.length)
+      onChange(value.slice(0, -1))
   }
 
   const input = (
@@ -85,28 +105,41 @@ export function ArgvInput({ label, value, onChange, placeholder }: { label: stri
   )
 
   return (
-    <div
-      className="flex min-h-9 w-full flex-wrap items-center gap-1 rounded-md border border-edge bg-background px-2 py-1.5 transition-colors focus-within:border-primary"
-    >
+    <div className="flex min-h-9 w-full flex-wrap items-center gap-1 rounded-md border border-edge bg-background px-2 py-1.5 transition-colors focus-within:border-primary">
       {value.map((token, index) =>
         editing === index ? (
-          <span key={index} className="contents">{input}</span>
+          <span key={index} className="contents">
+            {input}
+          </span>
         ) : (
           <span
             key={index}
             className={cn(
               'inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-xs',
-              PLACEHOLDER.test(token) ? 'border-transparent bg-primary-soft font-semibold text-primary' : 'border-border bg-raised text-foreground',
+              PLACEHOLDER.test(token)
+                ? 'border-transparent bg-primary-soft font-semibold text-primary'
+                : 'border-border bg-raised text-foreground',
             )}
           >
-            <button type="button" className="truncate" title={`Edit ${token}`} onClick={(event) => { event.stopPropagation(); startEdit(index) }}>
+            <button
+              type="button"
+              className="truncate"
+              title={`Edit ${token}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                startEdit(index)
+              }}
+            >
               {token}
             </button>
             <button
               type="button"
               aria-label={`Remove ${token} from ${label}`}
               className="text-faint hover:text-failure"
-              onClick={(event) => { event.stopPropagation(); onChange(value.filter((_, i) => i !== index)) }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onChange(value.filter((_, i) => i !== index))
+              }}
             >
               <X className="size-3" />
             </button>

@@ -26,7 +26,10 @@ export function BlueprintDetail({ view, item }: { view: BlueprintView; item: Act
         <BlueprintHeader view={view} item={item} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
-        <section aria-label="Blueprint" className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r">
+        <section
+          aria-label="Blueprint"
+          className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
+        >
           <BlueprintSpec view={view} />
           <BlueprintChildren view={view} />
           <OriginalRequest body={view.task.body} />
@@ -47,7 +50,9 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        <Badge variant="accent" className="gap-1"><Blocks aria-hidden="true" /> Blueprint</Badge>
+        <Badge variant="accent" className="gap-1">
+          <Blocks aria-hidden="true" /> Blueprint
+        </Badge>
         <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
         {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
         <CancelControl item={item} />
@@ -68,7 +73,12 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
             ) : (
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {view.serves.map((requirement) => (
-                  <Link key={requirement.id} to="/requirements" search={{ requirement: requirement.id }} className="text-primary hover:underline">
+                  <Link
+                    key={requirement.id}
+                    to="/requirements"
+                    search={{ requirement: requirement.id }}
+                    className="text-primary hover:underline"
+                  >
                     {requirement.title}
                   </Link>
                 ))}
@@ -80,8 +90,15 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
           <Fact
             label="GitHub issue"
             value={
-              <a href={view.task.github.issue_url} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-primary hover:underline">
-                <span className="truncate">{view.task.github.repository}#{view.task.github.issue_number}</span>
+              <a
+                href={view.task.github.issue_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
+              >
+                <span className="truncate">
+                  {view.task.github.repository}#{view.task.github.issue_number}
+                </span>
                 <ExternalLink className="size-3 shrink-0" />
               </a>
             }
@@ -98,8 +115,12 @@ function BlueprintSpec({ view }: { view: BlueprintView }) {
   if (!view.spec) {
     return (
       <Card>
-        <CardHeader><CardTitle>Blueprint</CardTitle></CardHeader>
-        <CardContent><p className="text-sm text-muted">This blueprint has no recorded spec version.</p></CardContent>
+        <CardHeader>
+          <CardTitle>Blueprint</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted">This blueprint has no recorded spec version.</p>
+        </CardContent>
       </Card>
     )
   }

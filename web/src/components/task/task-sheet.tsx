@@ -75,10 +75,19 @@ function SheetBody({ item }: { item: ActivityItem }) {
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      {item.spec && <SpecCard key={`${item.spec.task_id}-${item.spec.version}`} spec={item.spec} overflowExpandable routeVariant="sheet" />}
+      {item.spec && (
+        <SpecCard
+          key={`${item.spec.task_id}-${item.spec.version}`}
+          spec={item.spec}
+          overflowExpandable
+          routeVariant="sheet"
+        />
+      )}
       {/* While a gate is open the evidence belongs with the decision, and the
           gate card renders it there — showing it twice on one page does not. */}
-      {!isReviewable(item.task) && <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />}
+      {!isReviewable(item.task) && (
+        <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+      )}
       <AttachmentsCard attachments={item.attachments ?? []} />
       {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} />}
       <Timeline item={item} routeVariant="sheet" />

@@ -12,18 +12,45 @@ const baseDocument = {
     implementation: { model: 'gpt-implement', model_policy: 'explicit', harness: 'codex', timeout: '4h' },
     review: { execution: 'mcp', timeout: '1h', fallback_model: 'fallback', fallback_harness: 'codex' },
   },
-  routing: { stages: {
-    triage: { model: 'gpt', timeout: '20m', execution: 'in_process' },
-    spec: { model: 'gpt', timeout: '30m', execution: 'in_process' },
-    implement: { model: 'gpt-implement', harness: 'codex', timeout: '4h', execution: 'mcp' },
-    review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
-  } },
+  routing: {
+    stages: {
+      triage: { model: 'gpt', timeout: '20m', execution: 'in_process' },
+      spec: { model: 'gpt', timeout: '30m', execution: 'in_process' },
+      implement: { model: 'gpt-implement', harness: 'codex', timeout: '4h', execution: 'mcp' },
+      review: { model: 'fallback', harness: 'codex', timeout: '1h', execution: 'mcp' },
+    },
+  },
   harnesses: [
-    { name: 'codex', mcp_transport: 'toml_override', command: ['codex', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--config', 'model_reasoning_effort="high"'] }, probe_command: ['codex', '--version'], probe_timeout: '5s', stall_timeout: '10m' },
-    { name: 'claude', mcp_transport: 'json_file', command: ['claude', '{prompt}', '{mcp_config}'], model_args: ['--model', '{model}'], effort_args: { high: ['--effort', 'high'] }, probe_command: ['claude', '--version'], probe_timeout: '5s', stall_timeout: '10m' },
+    {
+      name: 'codex',
+      mcp_transport: 'toml_override',
+      command: ['codex', '{prompt}', '{mcp_config}'],
+      model_args: ['--model', '{model}'],
+      effort_args: { high: ['--config', 'model_reasoning_effort="high"'] },
+      probe_command: ['codex', '--version'],
+      probe_timeout: '5s',
+      stall_timeout: '10m',
+    },
+    {
+      name: 'claude',
+      mcp_transport: 'json_file',
+      command: ['claude', '{prompt}', '{mcp_config}'],
+      model_args: ['--model', '{model}'],
+      effort_args: { high: ['--effort', 'high'] },
+      probe_command: ['claude', '--version'],
+      probe_timeout: '5s',
+      stall_timeout: '10m',
+    },
   ],
   review: { seats: [{ model: 'gpt-review' }, { model: 'claude-review', harness: 'claude', effort: 'high' }] },
-  execution: { default_mode: 'manual', spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1, first_activity_timeout: '2m' },
+  execution: {
+    default_mode: 'manual',
+    spec_approval: true,
+    merge_approval: true,
+    implement_concurrency: 1,
+    review_concurrency: 1,
+    first_activity_timeout: '2m',
+  },
   repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }],
 }
 
@@ -37,39 +64,74 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/workspaces') {
-      await route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: version, created_at: '2026-07-17T00:00:00Z' }] })
+      await route.fulfill({
+        json: [{ id: 'demo', name: 'Demo', config_version: version, created_at: '2026-07-17T00:00:00Z' }],
+      })
       return
     }
     if (url.pathname === '/v1/workspace/config') {
       if (route.request().method() === 'PUT') {
         const body = route.request().postDataJSON() as { document: typeof document }
         if (body.document.review.seats.some((seat) => seat.model === 'invalid-model')) {
-          await route.fulfill({ status: 422, json: { error: 'validation_failed', fields: [{ field: 'review.seats[1].model', message: 'model is unavailable' }] } })
+          await route.fulfill({
+            status: 422,
+            json: {
+              error: 'validation_failed',
+              fields: [{ field: 'review.seats[1].model', message: 'model is unavailable' }],
+            },
+          })
           return
         }
         document = structuredClone(body.document)
         version++
-        await route.fulfill({ json: { document, version, event_id: 42, actor_id: 'dashboard-operator', sections: ['review'] } })
+        await route.fulfill({
+          json: { document, version, event_id: 42, actor_id: 'dashboard-operator', sections: ['review'] },
+        })
         return
       }
       await route.fulfill({ headers: { ETag: `"${version}"` }, json: { document, version } })
       return
     }
     if (url.pathname === '/v1/harness-templates') {
-      await route.fulfill({ json: { templates: [{ id: 'codex', label: 'Codex CLI', description: "OpenAI's coding agent", harness: {
-        name: 'codex', mcp_transport: 'toml_override', command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'], model_args: ['--model', '{model}'], probe_command: ['codex', '--version'], probe_timeout: '10s', stall_timeout: '10m',
-      } }] } })
+      await route.fulfill({
+        json: {
+          templates: [
+            {
+              id: 'codex',
+              label: 'Codex CLI',
+              description: "OpenAI's coding agent",
+              harness: {
+                name: 'codex',
+                mcp_transport: 'toml_override',
+                command: ['codex', 'exec', '{prompt}', '--config', '{mcp_config}'],
+                model_args: ['--model', '{model}'],
+                probe_command: ['codex', '--version'],
+                probe_timeout: '10s',
+                stall_timeout: '10m',
+              },
+            },
+          ],
+        },
+      })
       return
     }
     if (url.pathname === '/v1/workers') {
-      await route.fulfill({ json: {
-        workers: [], auto_available: false, auto_unavailable_reason: 'manual test',
-        rate_limits: [{
-          work_order_id: 'order-1', harness: 'codex', model: 'gpt-5',
-          rate_limit: { status: 'limited', limit: 1000, remaining: 125, reset_at: '2026-07-28T12:00:00Z' },
-          observed_at: '2026-07-28T11:55:00Z',
-        }],
-      } })
+      await route.fulfill({
+        json: {
+          workers: [],
+          auto_available: false,
+          auto_unavailable_reason: 'manual test',
+          rate_limits: [
+            {
+              work_order_id: 'order-1',
+              harness: 'codex',
+              model: 'gpt-5',
+              rate_limit: { status: 'limited', limit: 1000, remaining: 125, reset_at: '2026-07-28T12:00:00Z' },
+              observed_at: '2026-07-28T11:55:00Z',
+            },
+          ],
+        },
+      })
       return
     }
     if (url.pathname === '/v1/workspace') {
@@ -155,7 +217,13 @@ test('workspace renders contextual execution settings without generic routing co
   await expect(page.getByLabel('served requirement authority nodes')).toHaveValue('256')
   await expect(page.getByLabel('served requirement authority nodes')).toHaveAttribute('min', '8')
   await expect(page.getByLabel('spec reasoning effort')).toHaveValue('')
-  await expect(page.getByLabel('triage reasoning effort').locator('option')).toHaveText(['Provider default', 'minimal', 'low', 'medium', 'high'])
+  await expect(page.getByLabel('triage reasoning effort').locator('option')).toHaveText([
+    'Provider default',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+  ])
   await page.getByLabel('spec reasoning effort').selectOption('high')
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText(/Recorded config.updated/)).toBeVisible()
@@ -228,12 +296,14 @@ test('legacy null review seats are normalized before setup rendering', async ({ 
   const legacyDocument = {
     ...structuredClone(baseDocument),
     review: { seats: null },
-    setups: [{
-      name: 'default',
-      execution_settings: structuredClone(baseDocument.execution_settings),
-      review: { seats: null },
-      refresh_review: 'delta',
-    }],
+    setups: [
+      {
+        name: 'default',
+        execution_settings: structuredClone(baseDocument.execution_settings),
+        review: { seats: null },
+        refresh_review: 'delta',
+      },
+    ],
     default_setup: 'default',
   } as unknown as typeof baseDocument
   await mockWorkspaceAPIs(page, legacyDocument)

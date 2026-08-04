@@ -1,7 +1,18 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Activity, Blocks, FolderGit2, Kanban, MessageSquare, Plus, Settings, SunMoon, Workflow, type LucideIcon } from 'lucide-react'
+import {
+  Activity,
+  Blocks,
+  FolderGit2,
+  Kanban,
+  MessageSquare,
+  Plus,
+  Settings,
+  SunMoon,
+  Workflow,
+  type LucideIcon,
+} from 'lucide-react'
 import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
@@ -15,9 +26,14 @@ const TokenContext = createContext<{ token: string; setToken: (value: string) =>
   setToken: () => {},
 })
 
-const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({ workspace: '', setWorkspace: () => {} })
+const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({
+  workspace: '',
+  setWorkspace: () => {},
+})
 
-export function useWorkspaceSelection() { return useContext(WorkspaceContext) }
+export function useWorkspaceSelection() {
+  return useContext(WorkspaceContext)
+}
 
 export function useOperatorToken() {
   return useContext(TokenContext).token
@@ -28,21 +44,37 @@ export function useTokenState() {
 }
 
 export function useActivity() {
-	const { workspace } = useWorkspaceSelection()
-	return useQuery({ queryKey: ['activity', workspace], queryFn: fetchActivity, enabled: !!workspace, refetchInterval: 15_000 })
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['activity', workspace],
+    queryFn: fetchActivity,
+    enabled: !!workspace,
+    refetchInterval: 15_000,
+  })
 }
 
 // Blueprint anchors left the activity feed (spec §21.49), so this projection
 // is the only place the dashboard can resolve one — the Blueprints surface,
 // the anchor's own detail, and a child's parent reference all read it.
 export function useBlueprints() {
-	const { workspace } = useWorkspaceSelection()
-	return useQuery({ queryKey: ['blueprints', workspace], queryFn: fetchBlueprints, enabled: !!workspace, refetchInterval: 15_000 })
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['blueprints', workspace],
+    queryFn: fetchBlueprints,
+    enabled: !!workspace,
+    refetchInterval: 15_000,
+  })
 }
 
 export function useWorkspace() {
-	const { workspace } = useWorkspaceSelection()
-	return useQuery({ queryKey: ['workspace', workspace], queryFn: fetchWorkspace, enabled: !!workspace, staleTime: 60_000, retry: 1 })
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['workspace', workspace],
+    queryFn: fetchWorkspace,
+    enabled: !!workspace,
+    staleTime: 60_000,
+    retry: 1,
+  })
 }
 
 export function AppShell() {
@@ -52,39 +84,44 @@ export function AppShell() {
     sessionStorage.setItem('conveyor-token', value)
   }
 
-	return (
-		<ThemeProvider>
-			<TokenContext.Provider value={{ token, setToken: saveToken }}>
-				<WorkspaceProvider token={token}>
-					<div className="flex h-screen overflow-hidden">
-						<IconRail />
-						<NavSidebar />
-						<main className="min-w-0 flex-1 overflow-hidden bg-background">
-							<Outlet />
-						</main>
-					</div>
-				</WorkspaceProvider>
-			</TokenContext.Provider>
-		</ThemeProvider>
-	)
+  return (
+    <ThemeProvider>
+      <TokenContext.Provider value={{ token, setToken: saveToken }}>
+        <WorkspaceProvider token={token}>
+          <div className="flex h-screen overflow-hidden">
+            <IconRail />
+            <NavSidebar />
+            <main className="min-w-0 flex-1 overflow-hidden bg-background">
+              <Outlet />
+            </main>
+          </div>
+        </WorkspaceProvider>
+      </TokenContext.Provider>
+    </ThemeProvider>
+  )
 }
 
 function WorkspaceProvider({ token, children }: { token: string; children: ReactNode }) {
-	const queryClient = useQueryClient()
-	const [workspace, setWorkspaceState] = useState(() => localStorage.getItem('conveyor-workspace') ?? '')
-	const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
-	const setWorkspace = (value: string) => {
-		void queryClient.cancelQueries()
-		if (value) localStorage.setItem('conveyor-workspace', value); else localStorage.removeItem('conveyor-workspace')
-		setWorkspaceState(value)
-		queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'workspaces' })
-	}
-	useEffect(() => {
-		if (!workspaces) return
-		if (workspaces.length === 1 && !workspaces.some((item) => item.id === workspace)) setWorkspace(workspaces[0].id)
-		else if (!workspaces.some((item) => item.id === workspace) && workspace) setWorkspace('')
-	}, [workspaces, workspace])
-	return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
+  const queryClient = useQueryClient()
+  const [workspace, setWorkspaceState] = useState(() => localStorage.getItem('conveyor-workspace') ?? '')
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces', token],
+    queryFn: () => fetchWorkspaces(token),
+    enabled: !!token,
+  })
+  const setWorkspace = (value: string) => {
+    void queryClient.cancelQueries()
+    if (value) localStorage.setItem('conveyor-workspace', value)
+    else localStorage.removeItem('conveyor-workspace')
+    setWorkspaceState(value)
+    queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'workspaces' })
+  }
+  useEffect(() => {
+    if (!workspaces) return
+    if (workspaces.length === 1 && !workspaces.some((item) => item.id === workspace)) setWorkspace(workspaces[0].id)
+    else if (!workspaces.some((item) => item.id === workspace) && workspace) setWorkspace('')
+  }, [workspaces, workspace])
+  return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
 }
 
 // The rail is the workspace switcher (§21.10: workspace context is explicit
@@ -93,7 +130,11 @@ function IconRail() {
   const token = useOperatorToken()
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
-  const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces', token],
+    queryFn: () => fetchWorkspaces(token),
+    enabled: !!token,
+  })
   // Land on the board after a switch so an open task sheet from the previous
   // workspace can't linger pointing at a task the new context can't resolve.
   const switchTo = (id: string) => {
@@ -101,7 +142,10 @@ function IconRail() {
     void navigate({ to: '/' })
   }
   return (
-    <nav aria-label="Workspaces" className="flex w-14 shrink-0 flex-col items-center border-r border-border bg-rail py-3">
+    <nav
+      aria-label="Workspaces"
+      className="flex w-14 shrink-0 flex-col items-center border-r border-border bg-rail py-3"
+    >
       <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-6 overflow-y-auto py-1">
         {(workspaces ?? []).map((item) => (
           <button
@@ -141,10 +185,14 @@ function initials(name: string) {
 }
 
 function NavSidebar() {
-	const token = useOperatorToken()
-	const { workspace: selected } = useWorkspaceSelection()
-	const { data: workspaces } = useQuery({ queryKey: ['workspaces', token], queryFn: () => fetchWorkspaces(token), enabled: !!token })
-	const { data: workspace } = useWorkspace()
+  const token = useOperatorToken()
+  const { workspace: selected } = useWorkspaceSelection()
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces', token],
+    queryFn: () => fetchWorkspaces(token),
+    enabled: !!token,
+  })
+  const { data: workspace } = useWorkspace()
   const { data: activity } = useActivity()
   // This badge counts what the Board will actually show, so it applies the
   // board's own predicate (spec §21.49): an anchor lives on the Blueprints
@@ -156,9 +204,9 @@ function NavSidebar() {
 
   return (
     <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
-		<div className="px-4 py-4">
-			<p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
-			<p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
+      <div className="px-4 py-4">
+        <p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
+        <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
       </div>
       <div className="flex-1 space-y-0.5 px-2">
         <NavItem to="/" icon={Kanban} label="Board">
@@ -171,29 +219,29 @@ function NavSidebar() {
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
-			<ThemeSwitcher />
+      <ThemeSwitcher />
     </nav>
   )
 }
 
 function ThemeSwitcher() {
-	const { choice, setChoice } = useTheme()
-	return (
-		<label className="m-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-muted">
-			<SunMoon className="size-4 shrink-0" aria-hidden="true" />
-			<span className="shrink-0">Theme</span>
-			<select
-				aria-label="Theme"
-				value={choice}
-				onChange={(event) => setChoice(event.target.value as typeof choice)}
-				className="min-w-0 flex-1 cursor-pointer rounded border border-border bg-card px-1.5 py-1 text-xs text-foreground outline-none hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-			>
-				<option value="light">Light</option>
-				<option value="dark">Dark</option>
-				<option value="system">System</option>
-			</select>
-		</label>
-	)
+  const { choice, setChoice } = useTheme()
+  return (
+    <label className="m-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-muted">
+      <SunMoon className="size-4 shrink-0" aria-hidden="true" />
+      <span className="shrink-0">Theme</span>
+      <select
+        aria-label="Theme"
+        value={choice}
+        onChange={(event) => setChoice(event.target.value as typeof choice)}
+        className="min-w-0 flex-1 cursor-pointer rounded border border-border bg-card px-1.5 py-1 text-xs text-foreground outline-none hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      >
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="system">System</option>
+      </select>
+    </label>
+  )
 }
 
 function NavItem({

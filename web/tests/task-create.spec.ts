@@ -2,15 +2,20 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 
 const createdAt = '2026-07-18T00:00:00Z'
 
-async function mockTaskCreateAPIs(page: Page, options: {
-  taskList?: 'success' | 'error' | 'delayed'
-  createDependencyError?: boolean
-  candidates?: Array<Record<string, unknown>>
-} = {}) {
+async function mockTaskCreateAPIs(
+  page: Page,
+  options: {
+    taskList?: 'success' | 'error' | 'delayed'
+    createDependencyError?: boolean
+    candidates?: Array<Record<string, unknown>>
+  } = {},
+) {
   let submitted = ''
   let taskListRequests = 0
   let releaseTaskList = () => {}
-  const taskListGate = new Promise<void>((resolve) => { releaseTaskList = resolve })
+  const taskListGate = new Promise<void>((resolve) => {
+    releaseTaskList = resolve
+  })
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     sessionStorage.setItem('conveyor-token', 'operator-token')
@@ -18,18 +23,54 @@ async function mockTaskCreateAPIs(page: Page, options: {
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/workspaces') {
-      await route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: '2026-07-18T00:00:00Z' }] })
+      await route.fulfill({
+        json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: '2026-07-18T00:00:00Z' }],
+      })
       return
     }
     if (url.pathname === '/v1/workspace') {
-      await route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 2, repos: [{ name: 'conveyor', base: 'main' }, { name: 'api', base: 'develop' }], routing: [], default_setup: 'backend', setups: [
-        { name: 'backend', execution_settings: { implementation: { harness: 'codex', model: 'gpt' }, review: { fallback_harness: 'codex' } }, review: { seats: [{ model: 'gpt-review' }] } },
-        { name: 'frontend', execution_settings: { implementation: { harness: 'claude', model: 'claude-ui' }, review: { fallback_harness: 'claude' } }, review: { seats: [{ model: 'claude-review' }] } },
-      ] } })
+      await route.fulfill({
+        json: {
+          workspace: 'demo',
+          database: 'postgres',
+          max_bounces: 2,
+          repos: [
+            { name: 'conveyor', base: 'main' },
+            { name: 'api', base: 'develop' },
+          ],
+          routing: [],
+          default_setup: 'backend',
+          setups: [
+            {
+              name: 'backend',
+              execution_settings: {
+                implementation: { harness: 'codex', model: 'gpt' },
+                review: { fallback_harness: 'codex' },
+              },
+              review: { seats: [{ model: 'gpt-review' }] },
+            },
+            {
+              name: 'frontend',
+              execution_settings: {
+                implementation: { harness: 'claude', model: 'claude-ui' },
+                review: { fallback_harness: 'claude' },
+              },
+              review: { seats: [{ model: 'claude-review' }] },
+            },
+          ],
+        },
+      })
       return
     }
     if (url.pathname === '/v1/workers') {
-      await route.fulfill({ json: { workers: [], auto_available: false, auto_unavailable_reason: 'manual test', setup_serviceability: { backend: { auto_available: false }, frontend: { auto_available: true } } } })
+      await route.fulfill({
+        json: {
+          workers: [],
+          auto_available: false,
+          auto_unavailable_reason: 'manual test',
+          setup_serviceability: { backend: { auto_available: false }, frontend: { auto_available: true } },
+        },
+      })
       return
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
@@ -42,7 +83,18 @@ async function mockTaskCreateAPIs(page: Page, options: {
         })
         return
       }
-      await route.fulfill({ status: 201, json: { id: 'generated', workspace: 'demo', title: 'Generated title', body: 'Generate this title from context', repo: 'conveyor', state: 'queued', created_at: '2026-07-18T00:00:00Z' } })
+      await route.fulfill({
+        status: 201,
+        json: {
+          id: 'generated',
+          workspace: 'demo',
+          title: 'Generated title',
+          body: 'Generate this title from context',
+          repo: 'conveyor',
+          state: 'queued',
+          created_at: '2026-07-18T00:00:00Z',
+        },
+      })
       return
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'GET') {
@@ -52,11 +104,37 @@ async function mockTaskCreateAPIs(page: Page, options: {
         await route.fulfill({ status: 401, body: 'unauthorized' })
         return
       }
-      await route.fulfill({ json: options.candidates ?? [
-        { id: '260729-dependency', workspace: 'demo', title: 'Finish persistence first', body: '', repo: 'conveyor', state: 'running', created_at: createdAt },
-        { id: '260729-cross-repo', workspace: 'demo', title: 'Publish API contract', body: '', repo: 'api', state: 'running', created_at: createdAt },
-        { id: '260729-terminal', workspace: 'demo', title: 'Already merged', body: '', repo: 'conveyor', state: 'merged', created_at: createdAt },
-      ] })
+      await route.fulfill({
+        json: options.candidates ?? [
+          {
+            id: '260729-dependency',
+            workspace: 'demo',
+            title: 'Finish persistence first',
+            body: '',
+            repo: 'conveyor',
+            state: 'running',
+            created_at: createdAt,
+          },
+          {
+            id: '260729-cross-repo',
+            workspace: 'demo',
+            title: 'Publish API contract',
+            body: '',
+            repo: 'api',
+            state: 'running',
+            created_at: createdAt,
+          },
+          {
+            id: '260729-terminal',
+            workspace: 'demo',
+            title: 'Already merged',
+            body: '',
+            repo: 'conveyor',
+            state: 'merged',
+            created_at: createdAt,
+          },
+        ],
+      })
       return
     }
     await route.fulfill({ json: [] })
@@ -106,7 +184,9 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
   await expect.poll(submitted).toContain('"hold":true')
 })
 
-test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({ page }) => {
+test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({
+  page,
+}) => {
   const { submitted, taskListRequests } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
   expect(taskListRequests()).toBe(0)
@@ -127,7 +207,9 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   await expect.poll(submitted).toContain('"repo":"api"')
 })
 
-test('dependency candidates distinguish loading, request failure, empty results, and bounded results', async ({ page }) => {
+test('dependency candidates distinguish loading, request failure, empty results, and bounded results', async ({
+  page,
+}) => {
   const delayed = await mockTaskCreateAPIs(page, { taskList: 'delayed' })
   await page.goto('/new')
   await page.getByText('Advanced options').click()
@@ -185,7 +267,18 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
 
   const editor = page.locator('textarea')
   const toolbar = page.getByRole('toolbar', { name: 'Markdown formatting' })
-  for (const name of ['Heading', 'Bold', 'Italic', 'Quote', 'Inline code', 'Code block', 'Link', 'Bullet list', 'Numbered list', 'Task list']) {
+  for (const name of [
+    'Heading',
+    'Bold',
+    'Italic',
+    'Quote',
+    'Inline code',
+    'Code block',
+    'Link',
+    'Bullet list',
+    'Numbered list',
+    'Task list',
+  ]) {
     await expect(toolbar.getByRole('button', { name, exact: true })).toBeVisible()
   }
   await expect(editor).toHaveCSS('font-family', /monospace|Mono/i)
@@ -195,7 +288,9 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
   await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
   await expect(editor).toHaveValue('**format** me')
   await expect(editor).toBeFocused()
-  await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([2, 8])
+  await expect
+    .poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd]))
+    .toEqual([2, 8])
   await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
   await expect(editor).toHaveValue('format me')
 
@@ -210,7 +305,13 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
   await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(9, 11))
   await editor.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k')
   await expect(editor).toHaveValue('_format_ [me](url)')
-  await expect.poll(() => editor.evaluate((element: HTMLTextAreaElement) => element.value.slice(element.selectionStart, element.selectionEnd))).toBe('url')
+  await expect
+    .poll(() =>
+      editor.evaluate((element: HTMLTextAreaElement) =>
+        element.value.slice(element.selectionStart, element.selectionEnd),
+      ),
+    )
+    .toBe('url')
 
   for (const [name, expected] of [
     ['Heading', '## first\n## second'],
@@ -226,7 +327,10 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
     await expect(editor).toHaveValue('first\nsecond')
   }
 
-  for (const [name, expected] of [['Inline code', '`code`'], ['Code block', '```\ncode\n```']] as const) {
+  for (const [name, expected] of [
+    ['Inline code', '`code`'],
+    ['Code block', '```\ncode\n```'],
+  ] as const) {
     await editor.fill('code')
     await editor.selectText()
     await toolbar.getByRole('button', { name, exact: true }).click()

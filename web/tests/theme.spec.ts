@@ -4,7 +4,9 @@ async function mockShellAPIs(page: Page) {
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/workspaces') {
-      await route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: '2026-07-17T00:00:00Z' }] })
+      await route.fulfill({
+        json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: '2026-07-17T00:00:00Z' }],
+      })
       return
     }
     await route.fulfill({ json: [] })
@@ -33,47 +35,57 @@ test('theme choice is accessible, persists, and System follows preference change
   await expect(theme).toBeFocused()
   await page.keyboard.press('d')
   await expect(theme).toHaveValue('dark')
-  await expect.poll(() => themeState(page)).toEqual({
-    choice: 'dark',
-    effective: 'dark',
-    colorScheme: 'dark',
-    themeColor: '#0f1115',
-  })
+  await expect
+    .poll(() => themeState(page))
+    .toEqual({
+      choice: 'dark',
+      effective: 'dark',
+      colorScheme: 'dark',
+      themeColor: '#0f1115',
+    })
 
   await page.reload()
   await expect(page.getByLabel('Theme')).toHaveValue('dark')
-  await expect.poll(() => themeState(page)).toEqual({
-    choice: 'dark',
-    effective: 'dark',
-    colorScheme: 'dark',
-    themeColor: '#0f1115',
-  })
+  await expect
+    .poll(() => themeState(page))
+    .toEqual({
+      choice: 'dark',
+      effective: 'dark',
+      colorScheme: 'dark',
+      themeColor: '#0f1115',
+    })
 
   await page.getByLabel('Theme').selectOption('system')
   await page.emulateMedia({ colorScheme: 'dark' })
-  await expect.poll(() => themeState(page)).toEqual({
-    choice: 'system',
-    effective: 'dark',
-    colorScheme: 'dark',
-    themeColor: '#0f1115',
-  })
+  await expect
+    .poll(() => themeState(page))
+    .toEqual({
+      choice: 'system',
+      effective: 'dark',
+      colorScheme: 'dark',
+      themeColor: '#0f1115',
+    })
 
   await page.emulateMedia({ colorScheme: 'light' })
-  await expect.poll(() => themeState(page)).toEqual({
-    choice: 'system',
-    effective: 'light',
-    colorScheme: 'light',
-    themeColor: '#ffffff',
-  })
+  await expect
+    .poll(() => themeState(page))
+    .toEqual({
+      choice: 'system',
+      effective: 'light',
+      colorScheme: 'light',
+      themeColor: '#ffffff',
+    })
 
   await page.getByLabel('Theme').selectOption('light')
   await page.emulateMedia({ colorScheme: 'dark' })
-  await expect.poll(() => themeState(page)).toEqual({
-    choice: 'light',
-    effective: 'light',
-    colorScheme: 'light',
-    themeColor: '#ffffff',
-  })
+  await expect
+    .poll(() => themeState(page))
+    .toEqual({
+      choice: 'light',
+      effective: 'light',
+      colorScheme: 'light',
+      themeColor: '#ffffff',
+    })
 })
 
 test('bootstrap applies saved choice before the React entrypoint loads', async ({ page }) => {
@@ -83,17 +95,21 @@ test('bootstrap applies saved choice before the React entrypoint loads', async (
 
   await page.goto('/')
 
-  await expect.poll(() => page.evaluate(() => ({
-    effective: document.documentElement.dataset.theme,
-    colorScheme: document.documentElement.style.colorScheme,
-    themeColor: document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content,
-    reactLoaded: Boolean(document.querySelector('#root')?.firstChild),
-  }))).toEqual({
-    effective: 'light',
-    colorScheme: 'light',
-    themeColor: '#ffffff',
-    reactLoaded: false,
-  })
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        effective: document.documentElement.dataset.theme,
+        colorScheme: document.documentElement.style.colorScheme,
+        themeColor: document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content,
+        reactLoaded: Boolean(document.querySelector('#root')?.firstChild),
+      })),
+    )
+    .toEqual({
+      effective: 'light',
+      colorScheme: 'light',
+      themeColor: '#ffffff',
+      reactLoaded: false,
+    })
 })
 
 test('malformed or inaccessible theme storage falls back to System', async ({ browser }) => {

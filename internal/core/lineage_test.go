@@ -32,13 +32,17 @@ func TestLineageLinkRequiresEventProvenanceAndDistinctEndpoints(t *testing.T) {
 
 func TestTraverseLineageKeepsLegacyHistoryAndDropsForeignWorkspace(t *testing.T) {
 	legacy := LineageLink{Workspace: "demo", SrcType: LineageRequirement, SrcID: "req", DstType: LineageTask, DstID: "task", Kind: "historical_feature_assignment", LegacyCreatedByEvent: "feature.migrated", CreatedAt: time.Now().UTC()}
-	foreign := lineageTestLink(2, LineageTask, "task", LineageTask, "foreign", "depends_on")
-	foreign.Workspace = "other"
-	got, err := TraverseLineage([]LineageLink{legacy, foreign}, []LineageNode{{Type: LineageRequirement, ID: "req"}}, LineageTraversalBudget{MaxDepth: 3, MaxNodes: 8, Workspace: "demo"})
+	foreignA := lineageTestLink(2, LineageTask, "task", LineageTask, "foreign-a", "depends_on")
+	foreignA.Workspace = "other"
+	foreignB := lineageTestLink(3, LineageTask, "unreachable", LineageTask, "foreign-b", "depends_on")
+	foreignB.Workspace = "other"
+	unreachable := lineageTestLink(4, LineageTask, "unreachable", LineageTask, "also-unreachable", "depends_on")
+	unreachable.Workspace = "demo"
+	got, err := TraverseLineage([]LineageLink{legacy, foreignA, foreignB, unreachable}, []LineageNode{{Type: LineageRequirement, ID: "req"}}, LineageTraversalBudget{MaxDepth: 3, MaxNodes: 8, Workspace: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Nodes) != 2 || got.Nodes[1].ID != "task" || len(got.Links) != 1 || got.ForeignWorkspaceLinksIgnored != 1 {
+	if len(got.Nodes) != 2 || got.Nodes[1].ID != "task" || len(got.Links) != 1 || got.ForeignWorkspaceLinksIgnored != 2 {
 		t.Fatalf("mixed traversal=%+v", got)
 	}
 }

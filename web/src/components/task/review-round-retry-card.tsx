@@ -26,7 +26,10 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   })
   if (!recovery?.needed) return null
   return (
-    <section className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3" aria-label="Review round recovery">
+    <section
+      className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+      aria-label="Review round recovery"
+    >
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" />
         <div className="min-w-0 text-xs leading-5 text-muted">
@@ -48,11 +51,20 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
         placeholder="Why should Conveyor retry this review round?"
         rows={2}
       />
-      <Button variant="secondary" size="sm" disabled={!token || !reason.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={!token || !reason.trim() || mutation.isPending}
+        onClick={() => mutation.mutate()}
+      >
         <RotateCcw />
         {mutation.isPending ? 'Retrying…' : 'Retry review round'}
       </Button>
-      {mutation.data && <p className="text-xs text-positive">Review round {mutation.data.new_round} is queued with {mutation.data.work_orders.length} seats.</p>}
+      {mutation.data && (
+        <p className="text-xs text-positive">
+          Review round {mutation.data.new_round} is queued with {mutation.data.work_orders.length} seats.
+        </p>
+      )}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
     </section>
   )

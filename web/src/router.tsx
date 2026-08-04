@@ -36,10 +36,22 @@ const rootRoute = createRootRoute({ component: AppShell })
 // modal, so it stays mounted (scroll, search) while overlays open over it.
 const boardRoute = createRoute({ getParentRoute: () => rootRoute, id: 'board', component: BoardPage })
 const boardIndexRoute = createRoute({ getParentRoute: () => boardRoute, path: '/', component: () => null })
-const taskSheetRoute = createRoute({ getParentRoute: () => boardRoute, path: '/tasks/$taskId', component: TaskSheetRoute })
+const taskSheetRoute = createRoute({
+  getParentRoute: () => boardRoute,
+  path: '/tasks/$taskId',
+  component: TaskSheetRoute,
+})
 const newTaskRoute = createRoute({ getParentRoute: () => boardRoute, path: '/new', component: TaskCreateSheet })
-const createWorkspaceRoute = createRoute({ getParentRoute: () => boardRoute, path: '/workspaces/new', component: CreateWorkspaceDialog })
-const taskFullRoute = createRoute({ getParentRoute: () => rootRoute, path: '/tasks/$taskId/full', component: TaskFullPage })
+const createWorkspaceRoute = createRoute({
+  getParentRoute: () => boardRoute,
+  path: '/workspaces/new',
+  component: CreateWorkspaceDialog,
+})
+const taskFullRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tasks/$taskId/full',
+  component: TaskFullPage,
+})
 // Legacy deep links from before the board became the home page.
 const activityRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -67,7 +79,11 @@ const requirementsRoute = createRoute({
 // an anchor — they redirect here once the task loads — so a blueprint has one
 // home and no second door back into the task costume.
 const blueprintsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/blueprints', component: BlueprintsPage })
-const blueprintDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/blueprints/$taskId', component: BlueprintDetailPage })
+const blueprintDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/blueprints/$taskId',
+  component: BlueprintDetailPage,
+})
 const planningRoute = createRoute({ getParentRoute: () => rootRoute, path: '/planning', component: PlanningPage })
 const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitor', component: MonitorPage })
 

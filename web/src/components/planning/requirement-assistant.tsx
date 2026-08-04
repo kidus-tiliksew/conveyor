@@ -21,10 +21,38 @@ export type GuidedAction = {
 // which carries no finalize expectation — it does not forbid one, so the hint
 // promises exploration rather than immunity.
 export const guidedActions: GuidedAction[] = [
-  { id: 'draft', label: 'Draft', hint: 'Start a new requirement document', goal: 'requirement', icon: Sparkles, contextual: false },
-  { id: 'revise', label: 'Revise', hint: 'Propose the next version of this document', goal: 'requirement', icon: PenLine, contextual: true },
-  { id: 'qa', label: 'Q&A', hint: 'Explore this requirement with no artifact in mind', goal: 'open', icon: MessageCircleQuestion, contextual: true },
-  { id: 'plan', label: 'Plan work', hint: 'Open a blueprint at the spec gate, serving this requirement', goal: 'blueprint', icon: GitBranch, contextual: true },
+  {
+    id: 'draft',
+    label: 'Draft',
+    hint: 'Start a new requirement document',
+    goal: 'requirement',
+    icon: Sparkles,
+    contextual: false,
+  },
+  {
+    id: 'revise',
+    label: 'Revise',
+    hint: 'Propose the next version of this document',
+    goal: 'requirement',
+    icon: PenLine,
+    contextual: true,
+  },
+  {
+    id: 'qa',
+    label: 'Q&A',
+    hint: 'Explore this requirement with no artifact in mind',
+    goal: 'open',
+    icon: MessageCircleQuestion,
+    contextual: true,
+  },
+  {
+    id: 'plan',
+    label: 'Plan work',
+    hint: 'Open a blueprint at the spec gate, serving this requirement',
+    goal: 'blueprint',
+    icon: GitBranch,
+    contextual: true,
+  },
 ]
 
 export const draftAction = guidedActions.find((action) => action.id === 'draft') as GuidedAction
@@ -68,7 +96,11 @@ export function RequirementAssistant({
       <div className="shrink-0 border-b border-border px-4 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Assistant</p>
         <p className="mt-0.5 truncate text-xs text-muted">
-		  {session ? session.title || 'Untitled planning session' : selected ? selected.requirement.title : 'No document open'}
+          {session
+            ? session.title || 'Untitled planning session'
+            : selected
+              ? selected.requirement.title
+              : 'No document open'}
         </p>
       </div>
 
@@ -101,28 +133,26 @@ export function RequirementAssistant({
             {errorMessage(sessionError, 'That planning session is not available in this workspace.')}
           </p>
         )}
-        {session && !sessionError
-          ? (
-              <PlanningChat
-                key={`${workspace}:${session.id}`}
-                summary={session}
-                token={token}
-                workspace={workspace}
-                variant="sidebar"
-                onFinalized={onFinalized}
-              />
-            )
-          : (
-              <div className="px-5 py-8 text-center">
-                <Sparkles className="mx-auto size-6 text-primary" />
-                <h3 className="mt-3 text-sm font-semibold">The assistant is the editor</h3>
-                <p className="mx-auto mt-1.5 max-w-xs text-xs leading-5 text-muted">
-                  {selected
-                    ? 'Revise this document, ask about it, or plan the work that delivers it. Every revision arrives as a version you confirm.'
-                    : 'Draft a requirement in conversation. Its first version lands here for you to confirm.'}
-                </p>
-              </div>
-            )}
+        {session && !sessionError ? (
+          <PlanningChat
+            key={`${workspace}:${session.id}`}
+            summary={session}
+            token={token}
+            workspace={workspace}
+            variant="sidebar"
+            onFinalized={onFinalized}
+          />
+        ) : (
+          <div className="px-5 py-8 text-center">
+            <Sparkles className="mx-auto size-6 text-primary" />
+            <h3 className="mt-3 text-sm font-semibold">The assistant is the editor</h3>
+            <p className="mx-auto mt-1.5 max-w-xs text-xs leading-5 text-muted">
+              {selected
+                ? 'Revise this document, ask about it, or plan the work that delivers it. Every revision arrives as a version you confirm.'
+                : 'Draft a requirement in conversation. Its first version lands here for you to confirm.'}
+            </p>
+          </div>
+        )}
       </div>
     </aside>
   )

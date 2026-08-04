@@ -1,7 +1,17 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, ChevronRight, ChevronUp, ExternalLink, GitBranch, GitPullRequest, Hand, Link2Off, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  ExternalLink,
+  GitBranch,
+  GitPullRequest,
+  Hand,
+  Link2Off,
+  Trash2,
+} from 'lucide-react'
 import { dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
 import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
@@ -33,9 +43,11 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const { data: blueprints } = useBlueprints()
   const parent = findBlueprint(blueprints, item.task.parent_task_id ?? '')?.task
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
-  const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? item.stalled.blocking_task_ids ?? [] : [])
+  const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? (item.stalled.blocking_task_ids ?? []) : [])
   const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
-  const issueLabel = item.task.github?.issue_number ? `${item.task.github.repository}#${item.task.github.issue_number}` : ''
+  const issueLabel = item.task.github?.issue_number
+    ? `${item.task.github.repository}#${item.task.github.issue_number}`
+    : ''
   const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
   const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
   const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
@@ -43,7 +55,9 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
     mergedChildren > 0 ? `${mergedChildren} merged` : '',
     closedChildren > 0 ? `${closedChildren} closed` : '',
     openChildren > 0 ? `${openChildren} open` : '',
-  ].filter(Boolean).join(' · ')
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div>
@@ -51,7 +65,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {/* Approved reads as good news even while it waits at the gate —
             amber stays reserved for states that are genuinely stuck. */}
         <span
-		  role="img"
+          role="img"
           className="group/status relative inline-flex rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           aria-label={`Task status: ${stateLabel}`}
         >
@@ -74,9 +88,11 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           </span>
         </span>
         {item.task.hold && <Badge variant="mono">Held</Badge>}
-        {unsatisfiableIDs.size > 0
-          ? <Badge variant="attention">Dependency needs attention</Badge>
-          : blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>}
+        {unsatisfiableIDs.size > 0 ? (
+          <Badge variant="attention">Dependency needs attention</Badge>
+        ) : (
+          blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>
+        )}
         {item.task.class && <Badge>{item.task.class}</Badge>}
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
@@ -85,12 +101,19 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           <CancelControl item={item} />
         </span>
       </div>
-      <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}>
+      <Heading
+        className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}
+      >
         {item.task.title}
       </Heading>
       {item.task.body && <TaskBody body={item.task.body} />}
 
-      <dl className={cn('mt-4 grid gap-x-8 gap-y-2.5 text-xs', variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2')}>
+      <dl
+        className={cn(
+          'mt-4 grid gap-x-8 gap-y-2.5 text-xs',
+          variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2',
+        )}
+      >
         <Fact label="Repo" value={item.task.repo} />
         <Fact
           label="Branch"
@@ -107,32 +130,48 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {item.task.parent_task_id && (
           <Fact
             label="Parent blueprint"
-            value={(
+            value={
               // The parent is an intent artifact, not work, so this reference
               // leaves the task routes for the blueprint's canonical home
               // (spec §21.49) — unlike dependencies below, which are tasks.
-              <Link to="/blueprints/$taskId" params={{ taskId: item.task.parent_task_id }} className="text-primary hover:underline">
+              <Link
+                to="/blueprints/$taskId"
+                params={{ taskId: item.task.parent_task_id }}
+                className="text-primary hover:underline"
+              >
                 {parent?.title ?? item.task.parent_task_id}
                 {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
               </Link>
-            )}
+            }
           />
         )}
         {(item.task.dependencies?.length ?? 0) > 0 && (
           <Fact
             label="Dependencies"
-            value={(
+            value={
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {item.task.dependencies!.map((dependency) => (
-                  <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
-                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, blockingIDs.has(dependency.id), unsatisfiableIDs.has(dependency.id))}
+                  <Link
+                    key={dependency.id}
+                    to={relatedRoute}
+                    params={{ taskId: dependency.id }}
+                    className="text-primary hover:underline"
+                  >
+                    {dependency.title || dependency.id} ·{' '}
+                    {dependencyRelationLabel(
+                      dependency.state,
+                      blockingIDs.has(dependency.id),
+                      unsatisfiableIDs.has(dependency.id),
+                    )}
                   </Link>
                 ))}
               </span>
-            )}
+            }
           />
         )}
-        {item.task.setup_contract?.name && <Fact label="Setup" value={<span className="font-mono">{item.task.setup_contract.name}</span>} />}
+        {item.task.setup_contract?.name && (
+          <Fact label="Setup" value={<span className="font-mono">{item.task.setup_contract.name}</span>} />
+        )}
         {/* Suppressed when the task was raised from the very issue Conveyor
             went on to adopt — the Issue fact below already links it. */}
         {provenance.label !== issueLabel && (
@@ -152,12 +191,23 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {item.task.github && (
           <Fact
             label="Issue"
-            value={item.task.github.issue_url ? (
-              <a href={item.task.github.issue_url} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-primary hover:underline">
-                <span className="truncate">{item.task.github.repository}#{item.task.github.issue_number}</span>
-                <ExternalLink className="size-3 shrink-0" />
-              </a>
-            ) : `${item.task.github.state} · spec v${item.task.github.spec_version}`}
+            value={
+              item.task.github.issue_url ? (
+                <a
+                  href={item.task.github.issue_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
+                >
+                  <span className="truncate">
+                    {item.task.github.repository}#{item.task.github.issue_number}
+                  </span>
+                  <ExternalLink className="size-3 shrink-0" />
+                </a>
+              ) : (
+                `${item.task.github.state} · spec v${item.task.github.spec_version}`
+              )
+            }
           />
         )}
         {prURL && (
@@ -179,9 +229,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
-      {unsatisfiableIDs.size > 0 && (
-        <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />
-      )}
+      {unsatisfiableIDs.size > 0 && <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />}
 
       {(item.task.children?.length ?? 0) > 0 && (
         <section className="mt-4 rounded-md border border-border p-3">
@@ -193,7 +241,13 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             {item.task.children!.map((child) => (
               <li key={child.id} className="flex items-center gap-2 text-xs">
                 <Badge variant="mono">{child.origin_sub_id}</Badge>
-                <Link to={relatedRoute} params={{ taskId: child.id }} className="min-w-0 flex-1 truncate text-primary hover:underline">{child.title}</Link>
+                <Link
+                  to={relatedRoute}
+                  params={{ taskId: child.id }}
+                  className="min-w-0 flex-1 truncate text-primary hover:underline"
+                >
+                  {child.title}
+                </Link>
                 <span className="text-faint">{taskStateLabels[child.state] ?? child.state}</span>
               </li>
             ))}
@@ -250,9 +304,14 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
   }
   if (!token) return null
   return (
-    <section className="mt-4 rounded-md border border-attention/40 bg-attention-soft p-3" aria-label="Dependency needs attention">
+    <section
+      className="mt-4 rounded-md border border-attention/40 bg-attention-soft p-3"
+      aria-label="Dependency needs attention"
+    >
       <p className="text-sm font-medium text-attention">A dependency closed without merging</p>
-      <p className="mt-1 text-xs leading-5 text-muted">Remove the dependency with an audit reason so this task can continue, or cancel the task above.</p>
+      <p className="mt-1 text-xs leading-5 text-muted">
+        Remove the dependency with an audit reason so this task can continue, or cancel the task above.
+      </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {dependencyIDs.map((id) => {
           const dependency = item.task.dependencies?.find((entry) => entry.id === id)
@@ -268,13 +327,15 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
           <div className="border-b border-border px-5 py-4">
             <h2 className="font-semibold">Remove this dependency?</h2>
             <p className="mt-1 text-sm leading-6 text-muted">
-              {selected?.title ?? selectedID} closed without merging. Removing it is audited and may let this task continue.
+              {selected?.title ?? selectedID} closed without merging. Removing it is audited and may let this task
+              continue.
             </p>
           </div>
           <div className="space-y-4 px-5 py-4">
-			<label htmlFor="unlink-dependency-reason" className="block text-sm font-medium">Reason
+            <label htmlFor="unlink-dependency-reason" className="block text-sm font-medium">
+              Reason
               <Textarea
-				id="unlink-dependency-reason"
+                id="unlink-dependency-reason"
                 autoFocus
                 value={reason}
                 maxLength={200}
@@ -285,7 +346,9 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
             </label>
             {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>Keep dependency</Button>
+              <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>
+                Keep dependency
+              </Button>
               <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !reason.trim()}>
                 {mutation.isPending ? 'Removing…' : 'Remove dependency'}
               </Button>
@@ -329,23 +392,41 @@ export function CancelControl({ item }: { item: ActivityItem }) {
         <Dialog label="Cancel task" onClose={() => !mutation.isPending && setOpen(false)}>
           <div className="border-b border-border px-5 py-4">
             <h2 className="font-semibold">Cancel this task?</h2>
-            <p className="mt-1 text-sm leading-6 text-muted">This closes the pipeline and cancels active work orders. It does not delete the branch, worktree, issue, or pull request.</p>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              This closes the pipeline and cancels active work orders. It does not delete the branch, worktree, issue,
+              or pull request.
+            </p>
           </div>
           <div className="space-y-4 px-5 py-4">
-			<label htmlFor="cancel-task-reason" className="block text-sm font-medium">Reason
-			  <Textarea id="cancel-task-reason" autoFocus value={reason} maxLength={64} onChange={(event) => setReason(event.target.value)} placeholder="Why is this task being cancelled?" className="mt-1.5" />
+            <label htmlFor="cancel-task-reason" className="block text-sm font-medium">
+              Reason
+              <Textarea
+                id="cancel-task-reason"
+                autoFocus
+                value={reason}
+                maxLength={64}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="Why is this task being cancelled?"
+                className="mt-1.5"
+              />
             </label>
             {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setOpen(false)} disabled={mutation.isPending}>Keep task</Button>
-              <Button variant="destructive" onClick={() => mutation.mutate()} disabled={mutation.isPending || !reason.trim()}>
+              <Button variant="secondary" onClick={() => setOpen(false)} disabled={mutation.isPending}>
+                Keep task
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => mutation.mutate()}
+                disabled={mutation.isPending || !reason.trim()}
+              >
                 {mutation.isPending ? 'Cancelling…' : 'Cancel task'}
               </Button>
             </div>
           </div>
         </Dialog>
-	  )}
-	</>
+      )}
+    </>
   )
 }
 
@@ -369,15 +450,15 @@ function TaskBody({ body }: { body: string }) {
   return (
     <div className="mt-2 max-w-3xl">
       <div className="relative">
-        <div
-          ref={viewportRef}
-          id={viewportID}
-          className={cn(!expanded && 'max-h-40 overflow-hidden')}
-        >
+        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-40 overflow-hidden')}>
           <MarkdownProse className="text-sm text-muted">{body}</MarkdownProse>
         </div>
         {hasOverflow && !expanded && (
-          <div aria-hidden="true" className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16" data-task-body-overflow-shadow />
+          <div
+            aria-hidden="true"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
+            data-task-body-overflow-shadow
+          />
         )}
       </div>
       {hasOverflow && (
@@ -388,7 +469,11 @@ function TaskBody({ body }: { body: string }) {
           onClick={() => setExpanded((value) => !value)}
           className="mt-1 inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary"
         >
-          {expanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+          {expanded ? (
+            <ChevronUp aria-hidden="true" className="size-3.5" />
+          ) : (
+            <ChevronDown aria-hidden="true" className="size-3.5" />
+          )}
           {expanded ? 'Show less description' : 'Show full description'}
         </button>
       )}
@@ -399,20 +484,31 @@ function TaskBody({ body }: { body: string }) {
 function SetupChangeControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
-  const config = useQuery({ queryKey: ['workspace-config', item.task.workspace, token], queryFn: () => fetchWorkspaceConfig(token), enabled: Boolean(token) })
+  const config = useQuery({
+    queryKey: ['workspace-config', item.task.workspace, token],
+    queryFn: () => fetchWorkspaceConfig(token),
+    enabled: Boolean(token),
+  })
   const [selected, setSelected] = useState(item.task.setup)
   const [reason, setReason] = useState('')
   // Submitted spec/implement attempts are delivered, not executing; only
   // claimed attempts and in-flight review verdicts block (spec §21.36).
   const claimed = (item.work_orders ?? []).some((order) => order.state === 'claimed')
-  const verdictInFlight = (item.work_orders ?? []).some((order) => order.stage === 'review' && order.state === 'submitted')
+  const verdictInFlight = (item.work_orders ?? []).some(
+    (order) => order.stage === 'review' && order.state === 'submitted',
+  )
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const next = config.data?.document.setups.find((setup) => setup.name === selected)
   const current = item.task.setup_contract
   const mutation = useMutation({
-    mutationFn: () => changeTaskSetup(item.task.id, token, selected === item.task.setup
-      ? { apply_latest: true, reason, request_id: crypto.randomUUID() }
-      : { setup: selected, reason, request_id: crypto.randomUUID() }),
+    mutationFn: () =>
+      changeTaskSetup(
+        item.task.id,
+        token,
+        selected === item.task.setup
+          ? { apply_latest: true, reason, request_id: crypto.randomUUID() }
+          : { setup: selected, reason, request_id: crypto.randomUUID() },
+      ),
     onSuccess: () => {
       setReason('')
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
@@ -437,21 +533,67 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
   return (
     <Disclosure summary="Change execution setup" note="affects future work only">
       <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
-        <select aria-label="Named execution setup" value={selected} onChange={(event) => setSelected(event.target.value)} disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs">
-          {(config.data?.document.setups ?? []).map((setup) => <option key={setup.name} value={setup.name}>{setup.name}</option>)}
+        <select
+          aria-label="Named execution setup"
+          value={selected}
+          onChange={(event) => setSelected(event.target.value)}
+          disabled={Boolean(disabledReason) || mutation.isPending}
+          className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+        >
+          {(config.data?.document.setups ?? []).map((setup) => (
+            <option key={setup.name} value={setup.name}>
+              {setup.name}
+            </option>
+          ))}
         </select>
-        <input aria-label="Setup change reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" disabled={Boolean(disabledReason) || mutation.isPending} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs" />
-        <Button size="sm" disabled={Boolean(disabledReason) || !next || mutation.isPending} onClick={() => mutation.mutate()}>
+        <input
+          aria-label="Setup change reason"
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="Reason (optional)"
+          disabled={Boolean(disabledReason) || mutation.isPending}
+          className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+        />
+        <Button
+          size="sm"
+          disabled={Boolean(disabledReason) || !next || mutation.isPending}
+          onClick={() => mutation.mutate()}
+        >
           {selected === item.task.setup ? 'Apply latest setup' : 'Change setup'}
         </Button>
       </div>
-      {next && <div className="mt-2 grid gap-2 text-[11px] text-muted md:grid-cols-2">
-        <p><span className="font-medium text-foreground/80">Before:</span> implement {current.execution_settings.implementation.harness} / {current.execution_settings.implementation.model_policy} / {current.execution_settings.implementation.effort || 'default'} / {current.execution_settings.implementation.timeout}; review {current.execution_settings.review.execution}, {oldSeats.map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`).join(', ')}</p>
-        <p><span className="font-medium text-foreground/80">After:</span> implement {next.execution_settings.implementation.harness} / {next.execution_settings.implementation.model_policy} / {next.execution_settings.implementation.effort || 'default'} / {next.execution_settings.implementation.timeout}; review {next.execution_settings.review.execution}, {newSeats.map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`).join(', ')}</p>
-      </div>}
-      {(disabledReason || interruptedOutcome) && <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>}
+      {next && (
+        <div className="mt-2 grid gap-2 text-[11px] text-muted md:grid-cols-2">
+          <p>
+            <span className="font-medium text-foreground/80">Before:</span> implement{' '}
+            {current.execution_settings.implementation.harness} /{' '}
+            {current.execution_settings.implementation.model_policy} /{' '}
+            {current.execution_settings.implementation.effort || 'default'} /{' '}
+            {current.execution_settings.implementation.timeout}; review {current.execution_settings.review.execution},{' '}
+            {oldSeats
+              .map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`)
+              .join(', ')}
+          </p>
+          <p>
+            <span className="font-medium text-foreground/80">After:</span> implement{' '}
+            {next.execution_settings.implementation.harness} / {next.execution_settings.implementation.model_policy} /{' '}
+            {next.execution_settings.implementation.effort || 'default'} /{' '}
+            {next.execution_settings.implementation.timeout}; review {next.execution_settings.review.execution},{' '}
+            {newSeats
+              .map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`)
+              .join(', ')}
+          </p>
+        </div>
+      )}
+      {(disabledReason || interruptedOutcome) && (
+        <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>
+      )}
       {mutation.error != null && <p className="mt-2 text-xs text-failure">{String(mutation.error)}</p>}
-      {mutation.data && <p className="mt-2 text-xs text-positive">Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.</p>}
+      {mutation.data && (
+        <p className="mt-2 text-xs text-positive">
+          Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.
+        </p>
+      )}
     </Disclosure>
   )
 }
@@ -488,7 +630,11 @@ function HoldControl({ item }: { item: ActivityItem }) {
       type="button"
       disabled={toggle.isPending}
       onClick={() => toggle.mutate()}
-      title={item.task.hold ? 'Held — your worker won’t claim this task. Release it back to the queue.' : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'}
+      title={
+        item.task.hold
+          ? 'Held — your worker won’t claim this task. Release it back to the queue.'
+          : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'
+      }
       className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40 [&_svg]:size-3.5"
     >
       <Hand />

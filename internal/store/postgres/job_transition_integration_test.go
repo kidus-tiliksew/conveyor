@@ -27,7 +27,7 @@ func TestUpdateJobScopesTransitionThroughTaskWorkspaceIntegration(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := core.Task{
 		ID:        core.NewTaskID(),
 		Workspace: workspace,

@@ -33,17 +33,14 @@ export function BlueprintDetailPage() {
         <span className="mr-auto truncate text-sm font-medium text-muted">{view?.task.title ?? item?.task.title}</span>
       </header>
       {(error != null || blueprintsError != null) && (
-        <p className="px-6 py-6 text-sm text-failure">{errorMessage(error ?? blueprintsError, 'Could not load this blueprint.')}</p>
+        <p className="px-6 py-6 text-sm text-failure">
+          {errorMessage(error ?? blueprintsError, 'Could not load this blueprint.')}
+        </p>
       )}
       {error == null && blueprintsError == null && (
-		<section aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto">
-          <BlueprintBody
-            taskId={taskId}
-            view={view}
-            item={item}
-            loading={isLoading || blueprintsLoading}
-          />
-		</section>
+        <section aria-label="Blueprint content" className="min-h-0 flex-1 overflow-y-auto">
+          <BlueprintBody taskId={taskId} view={view} item={item} loading={isLoading || blueprintsLoading} />
+        </section>
       )}
     </div>
   )
@@ -84,5 +81,9 @@ function BlueprintBody({
       </div>
     )
   }
-  return <div className="px-6 py-6"><BlueprintDetailFallback /></div>
+  return (
+    <div className="px-6 py-6">
+      <BlueprintDetailFallback />
+    </div>
+  )
 }

@@ -21,6 +21,39 @@ type failingLineageStore struct {
 	err error
 }
 
+type recordingLineageStore struct {
+	store.Store
+	nodes []core.LineageNode
+}
+
+func (s *recordingLineageStore) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
+	s.nodes = append([]core.LineageNode(nil), nodes...)
+	return s.Store.ListLineageNodeRecords(ctx, nodes)
+}
+
+func TestLineageLabelsUseBoundedNodesAndReusePlanningSessions(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	memory := store.NewMemory()
+	if err := memory.CreateTask(ctx, core.Task{ID: "task-bounded", Workspace: "demo", Title: "Bounded task", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingLineageStore{Store: memory}
+	server := NewServer(recording)
+	request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	taskNode := core.LineageNode{Type: core.LineageTask, ID: "task-bounded"}
+	sessionNode := core.LineageNode{Type: core.LineagePlanningSession, ID: "session-bounded"}
+	labels, err := server.lineageNodeLabels(request, []core.LineageNode{taskNode, sessionNode}, []core.Artifact{}, []core.PlanningSession{{ID: sessionNode.ID, Title: "Preloaded session"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recording.nodes) != 1 || recording.nodes[0] != taskNode {
+		t.Fatalf("bounded record nodes=%+v", recording.nodes)
+	}
+	if labels[taskNode] != "Bounded task" || labels[sessionNode] != "Preloaded session" {
+		t.Fatalf("labels=%+v", labels)
+	}
+}
+
 func (s failingLineageStore) RebuildLineage(context.Context, core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
 	return core.LineageRebuildResult{}, s.err
 }

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GO_VERSION_FILE: go.mod
   NODE_VERSION: 22
@@ -45,6 +49,16 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: web
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
       - run: make test
         env:
           PLAYWRIGHT_INSTALL_ARGS: --with-deps
@@ -74,4 +88,19 @@ jobs:
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache-dependency-path: go.sum
+      - name: Verify the CI integration target rejects a missing database URL
+        run: |
+          if env -u CONVEYOR_TEST_DATABASE_URL make test-integration-ci; then
+            echo "test-integration-ci unexpectedly accepted an unset CONVEYOR_TEST_DATABASE_URL" >&2
+            exit 1
+          fi
+      - name: Verify a PostgreSQL-only regression fails the integration job
+        run: |
+          probe=internal/store/postgres/ci_regression_probe_test.go
+          trap 'rm -f "$probe"' EXIT
+          printf '%s\n' 'package postgres' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { t.Fatal("deliberate PostgreSQL regression probe") }' > "$probe"
+          if GOFLAGS='-run=TestCIRegressionProbe' make test-integration-ci; then
+            echo "test-integration-ci unexpectedly passed a failing PostgreSQL-only test" >&2
+            exit 1
+          fi
       - run: make test-integration-ci
