@@ -12,11 +12,18 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-const maxReferenceDocumentBytes = 2 << 20
+const (
+	maxReferenceDocumentBytes     = 2 << 20
+	maxReferenceMultipartOverhead = 64 << 10
+	maxReferenceUploadBytes       = maxReferenceDocumentBytes + maxReferenceMultipartOverhead
+)
 
 func referenceUpload(w http.ResponseWriter, r *http.Request) (string, string, string, []byte, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxReferenceDocumentBytes+(1<<20))
-	if err := r.ParseMultipartForm(maxReferenceDocumentBytes); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxReferenceUploadBytes)
+	// Keep every accepted request in memory while parsing. The body cap leaves
+	// bounded room for multipart headers and fields above the file limit, and
+	// matching it here prevents oversized file parts from spilling to disk.
+	if err := r.ParseMultipartForm(maxReferenceUploadBytes); err != nil {
 		return "", "", "", nil, err
 	}
 	file, header, err := r.FormFile("file")

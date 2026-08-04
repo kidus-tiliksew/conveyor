@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
 	"strings"
 	"testing"
 
@@ -74,6 +75,39 @@ func TestReferenceDocumentUploadBoundary(t *testing.T) {
 				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body, test.wantStatus)
 			}
 		})
+	}
+}
+
+func TestReferenceDocumentUploadOverLimitDoesNotSpool(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+
+	server := NewServer(store.NewMemory())
+	server.BearerToken = "token"
+	server.Workspace = "demo"
+	request := referenceDocumentUploadRequest(
+		t,
+		"/v1/reference-documents",
+		"Overview",
+		"overview.md",
+		"text/markdown",
+		bytes.Repeat([]byte("a"), maxReferenceDocumentBytes+1),
+	)
+	if request.ContentLength >= maxReferenceUploadBytes {
+		t.Fatalf("test request length=%d must exercise the parser below the body cap=%d", request.ContentLength, maxReferenceUploadBytes)
+	}
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body, http.StatusRequestEntityTooLarge)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("multipart parser created temp files for an oversized upload: %v", entries)
 	}
 }
 
