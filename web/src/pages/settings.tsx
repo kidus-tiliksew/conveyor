@@ -19,8 +19,8 @@ export function SettingsPage() {
           <CardContent className="space-y-2.5">
             <p className="text-sm leading-6 text-muted">
               Mutations — creating tasks, review decisions, redispatch — authenticate with the control plane's{' '}
-              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code> (spec §17.3). Multi-workspace reads and writes both require it. The
-              token is kept in session storage and forgotten when the tab closes.
+              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code> (spec §17.3). Multi-workspace reads and
+              writes both require it. The token is kept in session storage and forgotten when the tab closes.
             </p>
             <Input
               type="password"
@@ -31,14 +31,23 @@ export function SettingsPage() {
               className="max-w-sm font-mono"
             />
             <p className="text-xs text-faint">
-              {token ? 'Token set — workspace data and operator actions are enabled.' : 'No token — set it to load workspaces.'}
+              {token
+                ? 'Token set — workspace data and operator actions are enabled.'
+                : 'No token — set it to load workspaces.'}
             </p>
           </CardContent>
         </Card>
         <Card className="mt-4">
-          <CardHeader><CardTitle>MCP work-order server</CardTitle><PlugZap className="size-4 text-primary" /></CardHeader>
+          <CardHeader>
+            <CardTitle>MCP work-order server</CardTitle>
+            <PlugZap className="size-4 text-primary" />
+          </CardHeader>
           <CardContent className="space-y-2 text-sm leading-6 text-muted">
-            <p>Connect each operator-owned coding-agent session to <code className="font-mono text-xs text-foreground">{location.origin}/mcp</code> using the bearer token above. Start a fresh session for review: Conveyor rejects self-review at claim time.</p>
+            <p>
+              Connect each operator-owned coding-agent session to{' '}
+              <code className="font-mono text-xs text-foreground">{location.origin}/mcp</code> using the bearer token
+              above. Start a fresh session for review: Conveyor rejects self-review at claim time.
+            </p>
             <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">{`{
   "mcpServers": {
     "conveyor": {

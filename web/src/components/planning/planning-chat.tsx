@@ -415,16 +415,37 @@ function groupMessages(messages: PlanningMessage[]) {
   const groups: MessageGroup[] = []
   for (const message of messages) {
     const parts = message.parts ?? []
-    if (message.role === 'tool' && groups.at(-1)?.role === 'assistant') {
-      groups.at(-1)!.parts.push(...parts)
+    const baseRole = message.role === 'tool' ? 'assistant' : message.role
+    if (parts.length === 0 || baseRole === 'user') {
+      groups.push({
+        key: `${message.seq}-${baseRole}`,
+        role: baseRole,
+        content: message.content,
+        parts: [...parts],
+      })
       continue
     }
-    groups.push({
-      key: `${message.seq}-${message.role}`,
-      role: message.role === 'tool' ? 'assistant' : message.role,
-      content: message.content,
-      parts: [...parts],
-    })
+    let contentAssigned = false
+    if (message.content && parts[0]?.type === 'system-correction' && baseRole !== 'system') {
+      groups.push({ key: `${message.seq}-${baseRole}-content`, role: baseRole, content: message.content, parts: [] })
+      contentAssigned = true
+    }
+    for (const part of parts) {
+      const role = part.type === 'system-correction' ? 'system' : baseRole
+      const current = groups.at(-1)
+      if (current?.role === role && (message.role === 'tool' || current.key.startsWith(`${message.seq}-`))) {
+        current.parts.push(part)
+      } else {
+        const content: string = role === baseRole && !contentAssigned ? message.content : ''
+        groups.push({
+          key: `${message.seq}-${role}-${groups.length}`,
+          role,
+          content,
+          parts: [part],
+        })
+        contentAssigned ||= content !== ''
+      }
+    }
   }
   return groups
 }

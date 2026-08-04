@@ -32,7 +32,12 @@ export function TaskCreateSheet() {
   const { data: workspace } = useWorkspace()
   const repos = workspace?.repos ?? []
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const workerHealth = useQuery({ queryKey: ['workers', token, workspace?.workspace], queryFn: () => fetchWorkers(token), enabled: Boolean(token && workspace?.workspace), refetchInterval: 5000 })
+  const workerHealth = useQuery({
+    queryKey: ['workers', token, workspace?.workspace],
+    queryFn: () => fetchWorkers(token),
+    enabled: Boolean(token && workspace?.workspace),
+    refetchInterval: 5000,
+  })
   const setups = workspace?.setups ?? []
   const tasks = useQuery({
     queryKey: ['tasks', workspace?.workspace, 'dependency-candidates'],
@@ -61,16 +66,21 @@ export function TaskCreateSheet() {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const task = await createTask(token, {
-        body: body.trim(),
-        repo: repoName,
-        ...(setupName ? { setup: setupName } : {}),
-        ...(hold ? { hold } : {}),
-        ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
-        ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
-        ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
-        ...(dependsOn.length ? { depends_on: dependsOn } : {}),
-      }, files, intakeKey.current)
+      const task = await createTask(
+        token,
+        {
+          body: body.trim(),
+          repo: repoName,
+          ...(setupName ? { setup: setupName } : {}),
+          ...(hold ? { hold } : {}),
+          ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
+          ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
+          ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
+          ...(dependsOn.length ? { depends_on: dependsOn } : {}),
+        },
+        files,
+        intakeKey.current,
+      )
       return task
     },
     onSuccess: (task) => {
@@ -98,9 +108,10 @@ export function TaskCreateSheet() {
     return !query || task.id.toLowerCase().includes(query) || task.title.toLowerCase().includes(query)
   })
   const dependencyOptions = matchingDependencyOptions.slice(0, DEPENDENCY_RESULT_LIMIT)
-  const dependencyError = mutation.error instanceof TaskIntakeError && mutation.error.code === 'invalid_dependencies'
-    ? mutation.error.message
-    : ''
+  const dependencyError =
+    mutation.error instanceof TaskIntakeError && mutation.error.code === 'invalid_dependencies'
+      ? mutation.error.message
+      : ''
   const dependencyStatus = tasks.isPending
     ? 'Loading dependency candidates…'
     : tasks.error != null
@@ -128,11 +139,7 @@ export function TaskCreateSheet() {
           label="Description"
           hint="AI generates the task title from this context, which also becomes the triage and spec prompt."
         >
-          <MarkdownEditor
-            value={body}
-            onChange={setBody}
-            placeholder={descriptionScaffold}
-          />
+          <MarkdownEditor value={body} onChange={setBody} placeholder={descriptionScaffold} />
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -146,16 +153,49 @@ export function TaskCreateSheet() {
               {repos.length === 0 && <option value="">No repos configured</option>}
             </Select>
           </Field>
-          <Field label="Base branch" hint={`Optional — defaults to ${repos.find((r) => r.name === repoName)?.base ?? 'the repo base'}.`}>
-            <Input value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} placeholder={repos.find((r) => r.name === repoName)?.base ?? 'main'} className="font-mono" />
+          <Field
+            label="Base branch"
+            hint={`Optional — defaults to ${repos.find((r) => r.name === repoName)?.base ?? 'the repo base'}.`}
+          >
+            <Input
+              value={baseBranch}
+              onChange={(event) => setBaseBranch(event.target.value)}
+              placeholder={repos.find((r) => r.name === repoName)?.base ?? 'main'}
+              className="font-mono"
+            />
           </Field>
         </div>
 
-        <Field label="Execution setup" hint="Choose a prepared execution contract; its details are captured on this task.">
+        <Field
+          label="Execution setup"
+          hint="Choose a prepared execution contract; its details are captured on this task."
+        >
           <Select aria-label="Execution setup" value={setupName} onChange={(event) => setSetup(event.target.value)}>
-            {setups.map((entry) => <option key={entry.name} value={entry.name}>{entry.name}{entry.name === workspace?.default_setup ? ' (default)' : ''}</option>)}
+            {setups.map((entry) => (
+              <option key={entry.name} value={entry.name}>
+                {entry.name}
+                {entry.name === workspace?.default_setup ? ' (default)' : ''}
+              </option>
+            ))}
           </Select>
-          {selectedSetup && <details className="mt-2 text-xs text-muted"><summary className="cursor-pointer">Composition</summary><p className="mt-1 font-mono">Implement: {selectedSetup.execution_settings.implementation.harness} · {selectedSetup.execution_settings.implementation.model || 'harness default'}</p><p className="font-mono">Review: {selectedSetup.review.seats.map((seat) => `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`).join(', ')}</p></details>}
+          {selectedSetup && (
+            <details className="mt-2 text-xs text-muted">
+              <summary className="cursor-pointer">Composition</summary>
+              <p className="mt-1 font-mono">
+                Implement: {selectedSetup.execution_settings.implementation.harness} ·{' '}
+                {selectedSetup.execution_settings.implementation.model || 'harness default'}
+              </p>
+              <p className="font-mono">
+                Review:{' '}
+                {selectedSetup.review.seats
+                  .map(
+                    (seat) =>
+                      `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`,
+                  )
+                  .join(', ')}
+              </p>
+            </details>
+          )}
         </Field>
 
         <details
@@ -198,14 +238,27 @@ export function TaskCreateSheet() {
                 {dependencyStatus}
               </p>
               <div id="dependency-results" className="mt-1 max-h-40 space-y-1 overflow-y-auto">
-                {!tasks.isPending && tasks.error == null && dependencyOptions.map((task) => (
-                  <label key={task.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-surface">
-                    <input type="checkbox" checked={dependsOn.includes(task.id)} onChange={(event) => setDependsOn((current) => event.target.checked ? [...current, task.id] : current.filter((value) => value !== task.id))} />
-                    <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                    <span className="shrink-0 text-faint">{task.repo}</span>
-                    <span className="shrink-0 font-mono text-faint">{task.id}</span>
-                  </label>
-                ))}
+                {!tasks.isPending &&
+                  tasks.error == null &&
+                  dependencyOptions.map((task) => (
+                    <label
+                      key={task.id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-surface"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={dependsOn.includes(task.id)}
+                        onChange={(event) =>
+                          setDependsOn((current) =>
+                            event.target.checked ? [...current, task.id] : current.filter((value) => value !== task.id),
+                          )
+                        }
+                      />
+                      <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                      <span className="shrink-0 text-faint">{task.repo}</span>
+                      <span className="shrink-0 font-mono text-faint">{task.id}</span>
+                    </label>
+                  ))}
               </div>
               {dependencyError && <p className="mt-2 text-xs text-failure">{dependencyError}</p>}
             </Field>
@@ -218,19 +271,54 @@ export function TaskCreateSheet() {
             <Switch aria-label="Hold for hands-on work" checked={hold} onChange={setHold} />
             <div>
               <p className="text-sm font-medium">Hold for hands-on work</p>
-              <p className="text-xs leading-5 text-muted">Your worker won't claim this task; you attach an agent and claim it yourself. You can release the hold at any time.</p>
+              <p className="text-xs leading-5 text-muted">
+                Your worker won't claim this task; you attach an agent and claim it yourself. You can release the hold
+                at any time.
+              </p>
             </div>
           </div>
-          {!autoAvailable && !hold && <p className="mt-2 text-xs text-attention">No worker can run {setupName || 'this setup'} right now — {setupHealth?.auto_unavailable_reason ?? workerHealth.data?.auto_unavailable_reason ?? 'waiting for a live worker with healthy routed harnesses'}. The task will queue until a worker is available or you claim it manually.</p>}
+          {!autoAvailable && !hold && (
+            <p className="mt-2 text-xs text-attention">
+              No worker can run {setupName || 'this setup'} right now —{' '}
+              {setupHealth?.auto_unavailable_reason ??
+                workerHealth.data?.auto_unavailable_reason ??
+                'waiting for a live worker with healthy routed harnesses'}
+              . The task will queue until a worker is available or you claim it manually.
+            </p>
+          )}
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Spec approval gate"><Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}><option value="default">Workspace default</option><option value="on">Human approval on</option><option value="off">Auto-approve off</option></Select></Field>
-          <Field label="Merge approval gate"><Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}><option value="default">Workspace default</option><option value="on">Human approval on</option><option value="off">Auto-merge on green</option></Select></Field>
+          <Field label="Spec approval gate">
+            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-approve off</option>
+            </Select>
+          </Field>
+          <Field label="Merge approval gate">
+            <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-merge on green</option>
+            </Select>
+          </Field>
         </div>
 
-        <Field label="Attachments" hint="Designs, specs, logs — uploaded as task artifacts for the triage and spec agents.">
-          <input ref={fileInput} type="file" multiple className="hidden" onChange={(event) => { addFiles(event.target.files); event.target.value = '' }} />
+        <Field
+          label="Attachments"
+          hint="Designs, specs, logs — uploaded as task artifacts for the triage and spec agents."
+        >
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              addFiles(event.target.files)
+              event.target.value = ''
+            }}
+          />
           <Button variant="secondary" size="sm" onClick={() => fileInput.current?.click()}>
             <Paperclip />
             Attach files
@@ -238,7 +326,10 @@ export function TaskCreateSheet() {
           {files.length > 0 && (
             <ul className="mt-2 space-y-1">
               {files.map((file) => (
-                <li key={`${file.name}:${file.size}`} className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs">
+                <li
+                  key={`${file.name}:${file.size}`}
+                  className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+                >
                   <Paperclip className="size-3 shrink-0 text-faint" />
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
                   <span className="shrink-0 font-mono text-[11px] text-faint">{formatBytes(file.size)}</span>

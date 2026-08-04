@@ -29,7 +29,12 @@ export const interventionActions: ReadonlyArray<{
   confirmLabel: string
 }> = [
   { action: 'approve', label: 'Approve', hint: 'Merge or advance the task', confirmLabel: 'Approve' },
-  { action: 'redirect', label: 'Request changes', hint: 'Written feedback returns the pushed branch to the implementing agent', confirmLabel: 'Send feedback' },
+  {
+    action: 'redirect',
+    label: 'Request changes',
+    hint: 'Written feedback returns the pushed branch to the implementing agent',
+    confirmLabel: 'Send feedback',
+  },
   { action: 'reject', label: 'Reject', hint: 'Close the task', confirmLabel: 'Reject task' },
 ]
 
@@ -41,7 +46,7 @@ export const defaultReasonCode: Record<InterventionAction, string> = {
   redirect: 'changes-requested',
   reject: 'rejected',
   pull_to_local: 'needs-human',
-	cancel: 'cancelled',
+  cancel: 'cancelled',
 }
 
 export const stageLabels: Record<string, string> = {

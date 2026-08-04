@@ -10,7 +10,10 @@ export function groupForSummary(item: ActivitySummary): GroupKey {
   if (item.forge_failure && state !== 'merged' && state !== 'closed') return 'human'
   if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
-  const stage = item.task.state === 'queued' ? (item.task.next_stage ?? item.latest_stage) : (item.latest_stage ?? item.task.next_stage)
+  const stage =
+    item.task.state === 'queued'
+      ? (item.task.next_stage ?? item.latest_stage)
+      : (item.latest_stage ?? item.task.next_stage)
   switch (stage) {
     case 'spec':
       return 'spec'
@@ -58,15 +61,17 @@ export function gateBadge(item: ActivitySummary): { label: string; variant: 'att
   return { label: 'Needs attention', variant: 'attention' }
 }
 
-export function reviewDiagnosticBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'accent' } | undefined {
-	const diagnostics = item.review_diagnostics ?? []
-	if (diagnostics.some((diagnostic) => diagnostic.status === 'expired_without_verdict')) {
-		return { label: 'Verdict claim expired', variant: 'attention' }
-	}
-	if (diagnostics.some((diagnostic) => diagnostic.status === 'claimed_without_verdict')) {
-		return { label: 'Awaiting verdict submission', variant: 'accent' }
-	}
-	return undefined
+export function reviewDiagnosticBadge(
+  item: ActivitySummary,
+): { label: string; variant: 'attention' | 'accent' } | undefined {
+  const diagnostics = item.review_diagnostics ?? []
+  if (diagnostics.some((diagnostic) => diagnostic.status === 'expired_without_verdict')) {
+    return { label: 'Verdict claim expired', variant: 'attention' }
+  }
+  if (diagnostics.some((diagnostic) => diagnostic.status === 'claimed_without_verdict')) {
+    return { label: 'Awaiting verdict submission', variant: 'accent' }
+  }
+  return undefined
 }
 
 function forgeFailureDetail(payload: Record<string, unknown>, detailKey: 'last_error' | 'error'): string | undefined {
@@ -87,7 +92,15 @@ const attemptEventKinds = new Set([
   'work_order.redispatched',
 ])
 
-export type CurrentExecutionKind = 'running' | 'dependency_waiting' | 'dependency_attention' | 'retry_pending' | 'provider_usage_limit' | 'checkout_blocked' | 'released' | 'expired'
+export type CurrentExecutionKind =
+  | 'running'
+  | 'dependency_waiting'
+  | 'dependency_attention'
+  | 'retry_pending'
+  | 'provider_usage_limit'
+  | 'checkout_blocked'
+  | 'released'
+  | 'expired'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -104,13 +117,16 @@ export interface CurrentExecutionState {
 }
 
 function orderActivityTime(order: WorkOrder): number {
-  return new Date(order.updated_at ?? order.last_failure_at ?? order.execution_started_at ?? order.queue_entered_at).getTime()
+  return new Date(
+    order.updated_at ?? order.last_failure_at ?? order.execution_started_at ?? order.queue_entered_at,
+  ).getTime()
 }
 
 export function isDirtyPrimaryCheckout(order: WorkOrder) {
   if (order.stage === 'review') return false
-  return [order.last_failure_message, order.last_failure_detail]
-    .some((value) => value?.includes('checkout_blocked_dirty_primary'))
+  return [order.last_failure_message, order.last_failure_detail].some((value) =>
+    value?.includes('checkout_blocked_dirty_primary'),
+  )
 }
 
 // Dependency gating suspends the implementation order's queue clock and makes
@@ -153,7 +169,8 @@ function blockingDependencies(item: ActivityItem) {
 function withDependencyContext(state: CurrentExecutionState, item: ActivityItem): CurrentExecutionState {
   const dependencies = blockingDependencies(item)
   if (dependencies.length === 0) return state
-  const subject = dependencies.length === 1 ? (dependencies[0].title || dependencies[0].id) : `${dependencies.length} dependencies`
+  const subject =
+    dependencies.length === 1 ? dependencies[0].title || dependencies[0].id : `${dependencies.length} dependencies`
   return {
     ...state,
     blocker: `${state.blocker} ${subject} ${dependencies.length === 1 ? 'is' : 'are'} also unresolved.`,
@@ -168,36 +185,50 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
     .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
     .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
     .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))
-  const order = candidates.find((candidate) => candidate.state === 'claimed')
-    ?? candidates.find((candidate) => candidate.state !== 'queued' || Boolean(candidate.last_attempt_outcome || candidate.retry_suppressed || candidate.next_retry_at))
+  const order =
+    candidates.find((candidate) => candidate.state === 'claimed') ??
+    candidates.find(
+      (candidate) =>
+        candidate.state !== 'queued' ||
+        Boolean(candidate.last_attempt_outcome || candidate.retry_suppressed || candidate.next_retry_at),
+    )
 
   if (!order) {
     const unsatisfiableOrder = unsatisfiableDependencyOrder(item)
     if (unsatisfiableOrder) {
-      const unsatisfiableDependencyIDs = (unsatisfiableOrder.unsatisfiable_task_ids?.length ?? 0) > 0
-        ? unsatisfiableOrder.unsatisfiable_task_ids
-        : item.stalled?.blocking_task_ids
+      const unsatisfiableDependencyIDs =
+        (unsatisfiableOrder.unsatisfiable_task_ids?.length ?? 0) > 0
+          ? unsatisfiableOrder.unsatisfiable_task_ids
+          : item.stalled?.blocking_task_ids
       return {
-        kind: 'dependency_attention', status: 'paused', order: unsatisfiableOrder,
+        kind: 'dependency_attention',
+        status: 'paused',
+        order: unsatisfiableOrder,
         title: 'Dependency needs attention',
         blocker: 'A required dependency closed without merging.',
         retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
         nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
-        action: 'none', blockingDependencies: blockingDependencies(item), unsatisfiableDependencyIDs,
+        action: 'none',
+        blockingDependencies: blockingDependencies(item),
+        unsatisfiableDependencyIDs,
       }
     }
     if (dependencyBlockedOrder) {
       const dependencies = blockingDependencies(item)
-      const dependencySubject = dependencies.length > 1
-        ? `${dependencies.length} dependencies`
-        : dependencies[0]?.title || dependencies[0]?.id || 'the blocking dependency'
+      const dependencySubject =
+        dependencies.length > 1
+          ? `${dependencies.length} dependencies`
+          : dependencies[0]?.title || dependencies[0]?.id || 'the blocking dependency'
       return {
-        kind: 'dependency_waiting', status: 'progressing', order: dependencyBlockedOrder,
+        kind: 'dependency_waiting',
+        status: 'progressing',
+        order: dependencyBlockedOrder,
         title: 'Waiting on dependencies',
         blocker: 'Implementation is gated by unresolved task dependencies.',
         retry: 'Not applicable.',
         nextAction: `Nothing — implementation starts automatically when ${dependencySubject} ${dependencies.length > 1 ? 'merge' : 'merges'}.`,
-        action: 'none', blockingDependencies: dependencies,
+        action: 'none',
+        blockingDependencies: dependencies,
       }
     }
     return undefined
@@ -206,52 +237,98 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
   const stage = order.stage === 'spec' ? 'Specification' : order.stage === 'review' ? 'Review' : 'Implementation'
   if (order.state === 'claimed') {
     return {
-      kind: 'running', status: 'progressing', order, attemptId: order.attempt_id,
-      title: `${stage} is in progress`, blocker: 'No current blocker.',
-      retry: 'No retry is needed.', nextAction: 'No operator action is needed.', action: 'none',
+      kind: 'running',
+      status: 'progressing',
+      order,
+      attemptId: order.attempt_id,
+      title: `${stage} is in progress`,
+      blocker: 'No current blocker.',
+      retry: 'No retry is needed.',
+      nextAction: 'No operator action is needed.',
+      action: 'none',
     }
   }
   if (order.next_retry_at && !order.retry_suppressed) {
     const provider = order.last_failure_category === 'provider_usage_limit'
     return {
-      kind: 'retry_pending', status: 'progressing', order, attemptId: order.last_attempt_id,
+      kind: 'retry_pending',
+      status: 'progressing',
+      order,
+      attemptId: order.last_attempt_id,
       title: 'Automatic retry scheduled',
-      blocker: provider ? 'The provider usage limit paused the last attempt.' : 'The last attempt ended before completion.',
-      retry: 'Conveyor will retry automatically.', nextAction: 'No operator action is needed.', action: 'none',
+      blocker: provider
+        ? 'The provider usage limit paused the last attempt.'
+        : 'The last attempt ended before completion.',
+      retry: 'Conveyor will retry automatically.',
+      nextAction: 'No operator action is needed.',
+      action: 'none',
     }
   }
   if (isDirtyPrimaryCheckout(order)) {
-    return withDependencyContext({
-      kind: 'checkout_blocked', status: 'paused', order, attemptId: order.last_attempt_id,
-      title: `${stage} paused — checkout needs attention`,
-      blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
-      retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
-      nextAction: 'Resolve the primary checkout changes, then retry the implementation.', action: 'resolve_checkout',
-    }, item)
+    return withDependencyContext(
+      {
+        kind: 'checkout_blocked',
+        status: 'paused',
+        order,
+        attemptId: order.last_attempt_id,
+        title: `${stage} paused — checkout needs attention`,
+        blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
+        retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
+        nextAction: 'Resolve the primary checkout changes, then retry the implementation.',
+        action: 'resolve_checkout',
+      },
+      item,
+    )
   }
   if (order.last_failure_category === 'provider_usage_limit') {
-    return withDependencyContext({
-      kind: 'provider_usage_limit', status: 'paused', order, attemptId: order.last_attempt_id,
-      title: `${stage} paused — provider limit reached`,
-      blocker: 'The provider usage or capacity limit stopped the last attempt.',
-      retry: 'No automatic retry is pending.', nextAction: 'Retry the implementation after the provider limit has cleared.',
-      action: 'retry_implementation',
-    }, item)
+    return withDependencyContext(
+      {
+        kind: 'provider_usage_limit',
+        status: 'paused',
+        order,
+        attemptId: order.last_attempt_id,
+        title: `${stage} paused — provider limit reached`,
+        blocker: 'The provider usage or capacity limit stopped the last attempt.',
+        retry: 'No automatic retry is pending.',
+        nextAction: 'Retry the implementation after the provider limit has cleared.',
+        action: 'retry_implementation',
+      },
+      item,
+    )
   }
   if (order.state === 'stale' || order.state === 'timed_out' || order.last_attempt_outcome === 'expired') {
-    return withDependencyContext({
-      kind: 'expired', status: 'paused', order, attemptId: order.last_attempt_id,
-      title: `${stage} paused — recovery needed`,
-      blocker: order.state === 'stale' ? 'The order was not claimed before its queue deadline.' : 'The claim or execution window ended before completion.',
-      retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
-    }, item)
+    return withDependencyContext(
+      {
+        kind: 'expired',
+        status: 'paused',
+        order,
+        attemptId: order.last_attempt_id,
+        title: `${stage} paused — recovery needed`,
+        blocker:
+          order.state === 'stale'
+            ? 'The order was not claimed before its queue deadline.'
+            : 'The claim or execution window ended before completion.',
+        retry: 'No automatic retry is pending.',
+        nextAction: 'Recover the work order to try again.',
+        action: 'recover',
+      },
+      item,
+    )
   }
-  return withDependencyContext({
-    kind: 'released', status: 'paused', order, attemptId: order.last_attempt_id,
-    title: `${stage} paused — recovery needed`,
-    blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
-    retry: 'No automatic retry is pending.', nextAction: 'Recover the work order to try again.', action: 'recover',
-  }, item)
+  return withDependencyContext(
+    {
+      kind: 'released',
+      status: 'paused',
+      order,
+      attemptId: order.last_attempt_id,
+      title: `${stage} paused — recovery needed`,
+      blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
+      retry: 'No automatic retry is pending.',
+      nextAction: 'Recover the work order to try again.',
+      action: 'recover',
+    },
+    item,
+  )
 }
 
 export function technicalActivity(item: ActivityItem): TaskEvent[] {
@@ -259,8 +336,25 @@ export function technicalActivity(item: ActivityItem): TaskEvent[] {
 }
 
 export type TimelineEntry =
-  | { type: 'job'; at: string; job: Job; summary: string; model: string; tone: 'default' | 'warning'; order?: WorkOrder }
-  | { type: 'note'; at: string; key: string; title: string; detail?: string; failureDetail?: string; href?: string; alarm?: boolean }
+  | {
+      type: 'job'
+      at: string
+      job: Job
+      summary: string
+      model: string
+      tone: 'default' | 'warning'
+      order?: WorkOrder
+    }
+  | {
+      type: 'note'
+      at: string
+      key: string
+      title: string
+      detail?: string
+      failureDetail?: string
+      href?: string
+      alarm?: boolean
+    }
   | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
   | { type: 'intervention'; at: string; intervention: Intervention }
   | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
@@ -268,14 +362,7 @@ export type TimelineEntry =
 // One review round rendered as a single deliberating body (spec §21.12
 // change 4): seats inside one card instead of N sibling job cards. A seat is
 // a review work order plus whatever exists of its job and verdict.
-export type PanelSeatStatus =
-  | 'waiting'
-  | 'deliberating'
-  | 'verdict'
-  | 'stale'
-  | 'timed_out'
-  | 'failed'
-  | 'cancelled'
+export type PanelSeatStatus = 'waiting' | 'deliberating' | 'verdict' | 'stale' | 'timed_out' | 'failed' | 'cancelled'
 
 export interface PanelSeatReview {
   verdict: 'approve' | 'changes_requested'
@@ -317,9 +404,11 @@ function isPanelReviewEvent(payload: Record<string, unknown>, index: PanelIndex)
   const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
   if (round !== undefined && round > 0) return index.rounds.has(round)
   const reviews = Array.isArray(payload.reviews) ? payload.reviews : []
-  return reviews.some((review) =>
-    typeof (review as Record<string, unknown>)?.review_work_order_id === 'string' &&
-    index.orderIds.has((review as Record<string, unknown>).review_work_order_id as string))
+  return reviews.some(
+    (review) =>
+      typeof (review as Record<string, unknown>)?.review_work_order_id === 'string' &&
+      index.orderIds.has((review as Record<string, unknown>).review_work_order_id as string),
+  )
 }
 
 function buildReviewPanels(item: ActivityItem): PanelIndex {
@@ -370,7 +459,11 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
         if (typeof orderID === 'string') resolutionByOrder.set(orderID, resolution)
       }
     }
-    if (event.kind === 'pipeline.bounced' && typeof payload.review_round === 'number' && typeof payload.count === 'number') {
+    if (
+      event.kind === 'pipeline.bounced' &&
+      typeof payload.review_round === 'number' &&
+      typeof payload.count === 'number'
+    ) {
       bounceByRound.set(payload.review_round, payload.count)
     }
   }
@@ -400,7 +493,10 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
     }
     index.panels.push({
       type: 'panel',
-      at: group.orders.reduce((min, order) => (order.queue_entered_at < min ? order.queue_entered_at : min), group.orders[0].queue_entered_at),
+      at: group.orders.reduce(
+        (min, order) => (order.queue_entered_at < min ? order.queue_entered_at : min),
+        group.orders[0].queue_entered_at,
+      ),
       key,
       round: group.round,
       seats,
@@ -437,11 +533,18 @@ function preferredJobSummary(job: Job, events: TaskEvent[]): string | undefined 
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]
     if (event.job_id !== job.id) continue
-    if ((event.kind === 'triage.completed' || event.kind === 'review.completed') && typeof event.payload?.summary === 'string' && event.payload.summary) {
-      const feedback = event.kind === 'review.completed' && typeof event.payload?.feedback === 'string'
-        ? event.payload.feedback.trim()
-        : ''
-      return [event.payload.summary, feedback ? `Reviewer feedback: ${feedback}` : undefined].filter(Boolean).join('\n\n')
+    if (
+      (event.kind === 'triage.completed' || event.kind === 'review.completed') &&
+      typeof event.payload?.summary === 'string' &&
+      event.payload.summary
+    ) {
+      const feedback =
+        event.kind === 'review.completed' && typeof event.payload?.feedback === 'string'
+          ? event.payload.feedback.trim()
+          : ''
+      return [event.payload.summary, feedback ? `Reviewer feedback: ${feedback}` : undefined]
+        .filter(Boolean)
+        .join('\n\n')
     }
   }
   return undefined
@@ -493,26 +596,44 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
   }
 }
 
-function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
+function noteFor(
+  event: TaskEvent,
+  panels: PanelIndex,
+): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
     case 'work_order.child_failed':
       return {
-        title: payload.retry_suppressed === true ? 'The agent’s run failed — not retried automatically' : 'The agent’s run failed — retrying',
-        detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
+        title:
+          payload.retry_suppressed === true
+            ? 'The agent’s run failed — not retried automatically'
+            : 'The agent’s run failed — retrying',
+        detail:
+          [payload.reason, payload.suppression_reason]
+            .filter((value): value is string => typeof value === 'string' && value.length > 0)
+            .join(' · ') || undefined,
         failureDetail: typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : undefined,
         alarm: true,
       }
     case 'work_order.stalled':
       return {
-        title: payload.retry_suppressed === true ? 'The agent stopped responding — not retried automatically' : 'The agent stopped responding — retrying',
-        detail: [payload.reason, payload.suppression_reason].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ') || undefined,
+        title:
+          payload.retry_suppressed === true
+            ? 'The agent stopped responding — not retried automatically'
+            : 'The agent stopped responding — retrying',
+        detail:
+          [payload.reason, payload.suppression_reason]
+            .filter((value): value is string => typeof value === 'string' && value.length > 0)
+            .join(' · ') || undefined,
         alarm: true,
       }
     case 'work_order.expired':
       return { title: 'The agent’s claim expired — needs your recovery', alarm: true }
     case 'work_order.recovered':
-      return { title: 'Recovered by an operator', detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined }
+      return {
+        title: 'Recovered by an operator',
+        detail: typeof payload.prior_outcome === 'string' ? `Prior outcome: ${payload.prior_outcome}` : undefined,
+      }
     case 'pull_request.opened':
       return {
         title: 'Pull request opened',
@@ -551,14 +672,17 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
       return undefined
     case 'blueprint.materialized':
       return {
-        title: `${typeof payload.children_total === 'number' ? payload.children_total : payload.children_created ?? '?'} tasks created from the blueprint`,
+        title: `${typeof payload.children_total === 'number' ? payload.children_total : (payload.children_created ?? '?')} tasks created from the blueprint`,
       }
     case 'blueprint.closed':
       return { title: 'Blueprint completed — all child tasks are finished' }
     case 'task.dependency_unsatisfiable':
       return {
         title: 'Dependency needs attention',
-        detail: typeof payload.depends_on_task_id === 'string' ? `${payload.depends_on_task_id} closed without merging` : undefined,
+        detail:
+          typeof payload.depends_on_task_id === 'string'
+            ? `${payload.depends_on_task_id} closed without merging`
+            : undefined,
         alarm: true,
       }
     case 'task.dependency_removed':
@@ -569,48 +693,103 @@ function noteFor(event: TaskEvent, panels: PanelIndex): Omit<Extract<TimelineEnt
     case 'github_issue.publication_queued':
       return { title: 'GitHub issue publication queued' }
     case 'github_issue.publication_retry':
-      return { title: 'GitHub issue publication retrying', detail: forgeFailureDetail(payload, 'last_error'), alarm: Boolean(payload.last_error) }
+      return {
+        title: 'GitHub issue publication retrying',
+        detail: forgeFailureDetail(payload, 'last_error'),
+        alarm: Boolean(payload.last_error),
+      }
     case 'github_issue.publication_published':
     case 'github_issue.associated':
-      return { title: 'GitHub issue associated', detail: typeof payload.issue_url === 'string' ? payload.issue_url : undefined, href: typeof payload.issue_url === 'string' ? payload.issue_url : undefined }
+      return {
+        title: 'GitHub issue associated',
+        detail: typeof payload.issue_url === 'string' ? payload.issue_url : undefined,
+        href: typeof payload.issue_url === 'string' ? payload.issue_url : undefined,
+      }
     case 'github_issue.publication_failed':
-      return { title: 'GitHub issue publication failed', detail: forgeFailureDetail(payload, 'last_error'), alarm: true }
+      return {
+        title: 'GitHub issue publication failed',
+        detail: forgeFailureDetail(payload, 'last_error'),
+        alarm: true,
+      }
     case 'review.publication_retry':
-      return { title: 'GitHub review publication retrying', detail: forgeFailureDetail(payload, 'last_error'), alarm: Boolean(payload.last_error) }
+      return {
+        title: 'GitHub review publication retrying',
+        detail: forgeFailureDetail(payload, 'last_error'),
+        alarm: Boolean(payload.last_error),
+      }
     case 'review.publication_failed':
-      return { title: 'GitHub review publication failed', detail: forgeFailureDetail(payload, 'last_error'), alarm: true }
+      return {
+        title: 'GitHub review publication failed',
+        detail: forgeFailureDetail(payload, 'last_error'),
+        alarm: true,
+      }
     case 'github.review_redirected':
       return { title: 'Review comments on GitHub sent the task back for changes' }
     case 'review.round_completed':
       // The panel card's resolution banner is this event, rendered richer.
       if (isPanelReviewEvent(payload, panels)) return undefined
-      return { title: `Review panel: ${String(payload.verdict ?? 'completed')}`, detail: typeof payload.summary === 'string' ? payload.summary : undefined }
-	case 'work_order.released':
-	  return {
-		title: 'Work-order claim released',
-		detail: typeof payload.reason === 'string' ? payload.reason : undefined,
-		alarm: payload.reason === 'harness exited without terminal verdict submission',
-	  }
+      return {
+        title: `Review panel: ${String(payload.verdict ?? 'completed')}`,
+        detail: typeof payload.summary === 'string' ? payload.summary : undefined,
+      }
+    case 'work_order.released':
+      return {
+        title: 'Work-order claim released',
+        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
+        alarm: payload.reason === 'harness exited without terminal verdict submission',
+      }
     case 'merge.requested':
-      return { title: 'Pull request merge requested', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+      return {
+        title: 'Pull request merge requested',
+        detail: typeof payload.url === 'string' ? payload.url : undefined,
+        href: typeof payload.url === 'string' ? payload.url : undefined,
+      }
     case 'merge.confirmed':
-      return { title: 'Pull request merge confirmed by GitHub', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+      return {
+        title: 'Pull request merge confirmed by GitHub',
+        detail: typeof payload.url === 'string' ? payload.url : undefined,
+        href: typeof payload.url === 'string' ? payload.url : undefined,
+      }
     case 'merge.reconciled':
-      return { title: 'Already-merged pull request reconciled', detail: typeof payload.url === 'string' ? payload.url : undefined, href: typeof payload.url === 'string' ? payload.url : undefined }
+      return {
+        title: 'Already-merged pull request reconciled',
+        detail: typeof payload.url === 'string' ? payload.url : undefined,
+        href: typeof payload.url === 'string' ? payload.url : undefined,
+      }
     case 'merge.failed':
       return { title: 'Merge needs operator action', detail: forgeFailureDetail(payload, 'error'), alarm: true }
-	case 'merge.blocked':
-		return { title: 'Merge blocked — conflict fix required', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined, alarm: true }
-	case 'merge.conflict_fix_dispatched':
-		return { title: 'Conflict fix dispatched to implementation', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined }
-	case 'approval.stale':
-		return { title: 'Approval became stale after the PR head changed', detail: typeof payload.review_scope === 'string' ? `Refresh scope: ${payload.review_scope}` : undefined, alarm: true }
-	case 'review.refresh_head_advanced':
-		return { title: 'Refresh review retargeted to the newly pushed head', detail: typeof payload.new_head === 'string' ? `Head: ${payload.new_head.slice(0, 8)}` : undefined }
-	case 'review.refresh_round_created':
-		return { title: `Refresh review round ${String(payload.review_round ?? '')} started`, detail: typeof payload.review_scope === 'string' ? `Scope: ${payload.review_scope}` : undefined }
-	case 'review.refresh_skipped':
-		return { title: 'Clean head update re-armed without refresh review', detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined }
+    case 'merge.blocked':
+      return {
+        title: 'Merge blocked — conflict fix required',
+        detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined,
+        alarm: true,
+      }
+    case 'merge.conflict_fix_dispatched':
+      return {
+        title: 'Conflict fix dispatched to implementation',
+        detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined,
+      }
+    case 'approval.stale':
+      return {
+        title: 'Approval became stale after the PR head changed',
+        detail: typeof payload.review_scope === 'string' ? `Refresh scope: ${payload.review_scope}` : undefined,
+        alarm: true,
+      }
+    case 'review.refresh_head_advanced':
+      return {
+        title: 'Refresh review retargeted to the newly pushed head',
+        detail: typeof payload.new_head === 'string' ? `Head: ${payload.new_head.slice(0, 8)}` : undefined,
+      }
+    case 'review.refresh_round_created':
+      return {
+        title: `Refresh review round ${String(payload.review_round ?? '')} started`,
+        detail: typeof payload.review_scope === 'string' ? `Scope: ${payload.review_scope}` : undefined,
+      }
+    case 'review.refresh_skipped':
+      return {
+        title: 'Clean head update re-armed without refresh review',
+        detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined,
+      }
     case 'dispatch.failed':
       return {
         title: 'Dispatch failed',
@@ -682,22 +861,22 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {
-	const entries: TimelineEntry[] = []
-	const panels = buildReviewPanels(item)
-	const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
-	entries.push(...panels.panels)
-	const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
-	const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
-	for (const job of item.jobs) {
-		if (!job.started_at || panels.jobIds.has(job.id)) continue
-		const order = orderByJob.get(job.id)
-		let summary = jobSummary(job, item.events)
-		if (order?.progress && genericSummaries.has(summary)) summary = order.progress
-		// BYOA jobs carry a placeholder tier; the work order knows the model
-		// the operator's agent actually ran.
-		const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
-		const tone = rejectedOutputEvent(job, item.events) ? 'warning' : 'default'
-		entries.push({ type: 'job', at: job.started_at, job, summary, model, tone, order })
+  const entries: TimelineEntry[] = []
+  const panels = buildReviewPanels(item)
+  const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
+  entries.push(...panels.panels)
+  const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
+  const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
+  for (const job of item.jobs) {
+    if (!job.started_at || panels.jobIds.has(job.id)) continue
+    const order = orderByJob.get(job.id)
+    let summary = jobSummary(job, item.events)
+    if (order?.progress && genericSummaries.has(summary)) summary = order.progress
+    // BYOA jobs carry a placeholder tier; the work order knows the model
+    // the operator's agent actually ran.
+    const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
+    const tone = rejectedOutputEvent(job, item.events) ? 'warning' : 'default'
+    entries.push({ type: 'job', at: job.started_at, job, summary, model, tone, order })
   }
   for (const order of item.work_orders ?? []) {
     if (order.last_agent_activity_at && order.last_agent_activity_label) {
@@ -717,30 +896,36 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
     const note = noteFor(event, panels)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
-	for (const diagnostic of item.review_diagnostics ?? []) {
-		// Active claims already appear as deliberating seats in the review panel.
-		// Keep the diagnostic in the API, but do not repeat it in the timeline.
-		if (diagnostic.status === 'claimed_without_verdict') continue
-		const seat = diagnostic.review_seat ? `seat ${diagnostic.review_seat}` : 'review seat'
-		entries.push({
-			type: 'note',
-			at: diagnostic.status === 'expired_without_verdict'
-				? (diagnostic.lease_expires_at ?? diagnostic.claimed_at ?? item.task.created_at)
-				: (diagnostic.claimed_at ?? item.task.created_at),
-			key: `review-diagnostic-${diagnostic.status}-${diagnostic.work_order_id}`,
-			title: diagnostic.status === 'expired_without_verdict'
-				? 'Review claim expired without verdict submission'
-				: 'Review claimed without terminal verdict submission',
-			detail: `${seat} · ${diagnostic.work_order_id} · ${diagnostic.reason}`,
-			alarm: diagnostic.status === 'expired_without_verdict',
-		})
-	}
+  for (const diagnostic of item.review_diagnostics ?? []) {
+    // Active claims already appear as deliberating seats in the review panel.
+    // Keep the diagnostic in the API, but do not repeat it in the timeline.
+    if (diagnostic.status === 'claimed_without_verdict') continue
+    const seat = diagnostic.review_seat ? `seat ${diagnostic.review_seat}` : 'review seat'
+    entries.push({
+      type: 'note',
+      at:
+        diagnostic.status === 'expired_without_verdict'
+          ? (diagnostic.lease_expires_at ?? diagnostic.claimed_at ?? item.task.created_at)
+          : (diagnostic.claimed_at ?? item.task.created_at),
+      key: `review-diagnostic-${diagnostic.status}-${diagnostic.work_order_id}`,
+      title:
+        diagnostic.status === 'expired_without_verdict'
+          ? 'Review claim expired without verdict submission'
+          : 'Review claimed without terminal verdict submission',
+      detail: `${seat} · ${diagnostic.work_order_id} · ${diagnostic.reason}`,
+      alarm: diagnostic.status === 'expired_without_verdict',
+    })
+  }
   for (const intervention of item.interventions) {
     // The synthetic redirect a panel bounce records (actor "review:round:N")
     // duplicates the panel card's merged notes — the audit row stays in the
     // API, the story is told once here.
     const roundActor = /^review:round:(\d+)$/.exec(intervention.actor_id)
-    if (roundActor && (panels.rounds.has(Number(roundActor[1])) || (Number(roundActor[1]) === 0 && panels.orderIds.size > 0))) continue
+    if (
+      roundActor &&
+      (panels.rounds.has(Number(roundActor[1])) || (Number(roundActor[1]) === 0 && panels.orderIds.size > 0))
+    )
+      continue
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
   return entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())

@@ -30,22 +30,22 @@ function workspaceURL(path: string) {
 }
 
 async function getJSON<T>(url: string): Promise<T> {
-	const token = sessionStorage.getItem('conveyor-token') ?? ''
-	const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  const token = sessionStorage.getItem('conveyor-token') ?? ''
+  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<T>
 }
 
 export function fetchActivity() {
-	return getJSON<ActivitySummary[]>(workspaceURL('/v1/activity'))
+  return getJSON<ActivitySummary[]>(workspaceURL('/v1/activity'))
 }
 
 export function fetchTaskActivity(taskId: string) {
-	return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
+  return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
 }
 
 export function fetchWorkspace() {
-	return getJSON<WorkspaceInfo>(workspaceURL('/v1/workspace'))
+  return getJSON<WorkspaceInfo>(workspaceURL('/v1/workspace'))
 }
 
 export async function fetchWorkspaces(token: string) {
@@ -62,44 +62,81 @@ export interface CreateWorkspaceInput {
 }
 
 export async function createWorkspace(token: string, input: CreateWorkspaceInput) {
-  const response = await fetch('/v1/workspaces', { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input) })
+  const response = await fetch('/v1/workspaces', {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify(input),
+  })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<WorkspaceRecord>
 }
 
-export function fetchBlueprints() { return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints')) }
-export function fetchRequirements() { return getJSON<RequirementView[]>(workspaceURL('/v1/requirements')) }
-export function fetchRequirement(requirementId: string) { return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`)) }
-export function fetchRequirementVersions(requirementId: string) { return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`)) }
-export async function confirmRequirementVersion(token: string, requirementId: string, version: number, expectedVersion: number) {
-  const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`), {
-    method: 'POST', headers: { ...mutationHeaders(token), 'If-Match': `"${expectedVersion}"` },
-  })
+export function fetchBlueprints() {
+  return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
+}
+export function fetchRequirements() {
+  return getJSON<RequirementView[]>(workspaceURL('/v1/requirements'))
+}
+export function fetchRequirement(requirementId: string) {
+  return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`))
+}
+export function fetchRequirementVersions(requirementId: string) {
+  return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`))
+}
+export async function confirmRequirementVersion(
+  token: string,
+  requirementId: string,
+  version: number,
+  expectedVersion: number,
+) {
+  const response = await fetch(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`),
+    {
+      method: 'POST',
+      headers: { ...mutationHeaders(token), 'If-Match': `"${expectedVersion}"` },
+    },
+  )
   if (!response.ok) {
     const body = await response.text()
     let message = body.trim() || response.statusText
     try {
       const parsed = JSON.parse(body) as { message?: string }
       message = parsed.message ?? message
-    } catch { /* plain-text API error */ }
-    if (response.status === 409) message = 'This requirement changed while you were reviewing it. Refresh and choose the version again.'
+    } catch {
+      /* plain-text API error */
+    }
+    if (response.status === 409)
+      message = 'This requirement changed while you were reviewing it. Refresh and choose the version again.'
     throw new Error(message)
   }
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
-export function fetchPlanningSessions() { return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions')) }
-export function fetchPlanningSession(sessionId: string) { return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`)) }
-export function fetchPlanningMessages(sessionId: string) { return getJSON<PlanningMessage[]>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`)) }
-export async function createPlanningSession(token: string, input: { requirement_context_id?: string; model?: string; goal?: PlanningSessionGoal }) {
+export function fetchPlanningSessions() {
+  return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions'))
+}
+export function fetchPlanningSession(sessionId: string) {
+  return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`))
+}
+export function fetchPlanningMessages(sessionId: string) {
+  return getJSON<PlanningMessage[]>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`))
+}
+export async function createPlanningSession(
+  token: string,
+  input: { requirement_context_id?: string; model?: string; goal?: PlanningSessionGoal },
+) {
   const response = await fetch(workspaceURL('/v1/planning-sessions'), {
-    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input),
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify(input),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<PlanningSession>
 }
 export async function abandonPlanningSession(token: string, sessionId: string, reason?: string) {
   const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/abandon`), {
-    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ reason: reason?.trim() || undefined }),
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ reason: reason?.trim() || undefined }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<PlanningSession>
@@ -112,7 +149,8 @@ export async function streamPlanningMessage(
   options: { signal?: AbortSignal; attachments?: Artifact[] } = {},
 ) {
   const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`), {
-    method: 'POST', headers: mutationHeaders(token),
+    method: 'POST',
+    headers: mutationHeaders(token),
     signal: options.signal,
     body: JSON.stringify({
       message: {
@@ -121,8 +159,11 @@ export async function streamPlanningMessage(
         parts: [
           { type: 'text', text: content },
           ...(options.attachments ?? []).map((artifact) => ({
-            type: 'file', artifactId: artifact.id, filename: artifact.name,
-            mediaType: artifact.content_type, size: artifact.size_bytes,
+            type: 'file',
+            artifactId: artifact.id,
+            filename: artifact.name,
+            mediaType: artifact.content_type,
+            size: artifact.size_bytes,
           })),
         ],
       },
@@ -138,13 +179,21 @@ export async function streamPlanningMessage(
   const decoder = new TextDecoder()
   let buffer = ''
   const processFrame = (frame: string) => {
-    const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trim()).join('\n')
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('\n')
     if (!data || data === '[DONE]') return
     let part: PlanningMessagePart
-    try { part = JSON.parse(data) as PlanningMessagePart } catch { return }
+    try {
+      part = JSON.parse(data) as PlanningMessagePart
+    } catch {
+      return
+    }
     onPart(part)
-    if (part.type === 'error') throw new Error(part.errorText || 'Planning stopped before the reply finished. You can retry.')
+    if (part.type === 'error')
+      throw new Error(part.errorText || 'Planning stopped before the reply finished. You can retry.')
   }
   try {
     for (;;) {
@@ -159,38 +208,108 @@ export async function streamPlanningMessage(
       }
     }
   } finally {
-    try { await reader.cancel() } catch { /* the stream may already be closed */ }
+    try {
+      await reader.cancel()
+    } catch {
+      /* the stream may already be closed */
+    }
   }
 }
-export function fetchLifecycleDiagram() { return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram')) }
-export function fetchMonitorStatus() { return getJSON<MonitorStatus>(workspaceURL('/v1/monitor')) }
-export function fetchTasks() { return getJSON<Task[]>(workspaceURL('/v1/tasks')) }
-export async function fetchArtifacts(token: string) { const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact[]> }
-export async function uploadArtifact(token: string, file: File, taskId?: string, requirementId?: string, role?: Artifact['role'], planningSessionId?: string) { const body = new FormData(); body.set('file', file); if (taskId) body.set('task_id', taskId); if (requirementId) body.set('requirement_id', requirementId); if (planningSessionId) body.set('planning_session_id', planningSessionId); if (role) body.set('role', role); const response = await fetch(workspaceURL('/v1/artifacts'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' }, body }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<Artifact> }
+export function fetchLifecycleDiagram() {
+  return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram'))
+}
+export function fetchMonitorStatus() {
+  return getJSON<MonitorStatus>(workspaceURL('/v1/monitor'))
+}
+export function fetchTasks() {
+  return getJSON<Task[]>(workspaceURL('/v1/tasks'))
+}
+export async function fetchArtifacts(token: string) {
+  const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json() as Promise<Artifact[]>
+}
+export async function uploadArtifact(
+  token: string,
+  file: File,
+  taskId?: string,
+  requirementId?: string,
+  role?: Artifact['role'],
+  planningSessionId?: string,
+) {
+  const body = new FormData()
+  body.set('file', file)
+  if (taskId) body.set('task_id', taskId)
+  if (requirementId) body.set('requirement_id', requirementId)
+  if (planningSessionId) body.set('planning_session_id', planningSessionId)
+  if (role) body.set('role', role)
+  const response = await fetch(workspaceURL('/v1/artifacts'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' },
+    body,
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json() as Promise<Artifact>
+}
 // Fetch an attachment's bytes as an object URL for inline preview. The
 // download route requires the operator token and forces attachment
 // disposition, so an <img src> cannot load it directly — the caller revokes
 // the returned URL when the preview unmounts.
 export async function fetchArtifactObjectURL(token: string, artifact: Artifact) {
-  const response = await fetch(workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`), { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  const response = await fetch(
+    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  )
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return URL.createObjectURL(await response.blob())
 }
-export async function downloadArtifact(token: string, artifact: Artifact) { const response = await fetch(workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`), { headers: { Authorization: `Bearer ${token}` } }); if (!response.ok) throw new Error(await response.text()); const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url) }
+export async function downloadArtifact(token: string, artifact: Artifact) {
+  const response = await fetch(
+    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  if (!response.ok) throw new Error(await response.text())
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = artifact.name
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
 
 export function fetchWorkspaceConfig(token: string) {
-	return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
+  return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-    const result = await response.json() as VersionedWorkspaceConfig
-		const fallbackReview = { seats: [{ model: result.document.routing.stages.review?.model ?? '', harness: result.document.routing.stages.review?.harness }] }
-		const review = { ...result.document.review, seats: result.document.review?.seats ?? fallbackReview.seats }
-		const setups = (result.document.setups?.length ? result.document.setups : [{ name: 'default', execution_settings: result.document.execution_settings, review, refresh_review: 'delta' as const }])
-			.map((setup) => ({
-				...setup,
-				review: { ...setup.review, seats: setup.review?.seats ?? review.seats },
-				refresh_review: setup.refresh_review || 'delta' as const,
-			}))
-    const planningModels = [...new Set((result.document.planning_models ?? []).map((model) => model.trim()).filter(Boolean))]
+    const result = (await response.json()) as VersionedWorkspaceConfig
+    const fallbackReview = {
+      seats: [
+        {
+          model: result.document.routing.stages.review?.model ?? '',
+          harness: result.document.routing.stages.review?.harness,
+        },
+      ],
+    }
+    const review = { ...result.document.review, seats: result.document.review?.seats ?? fallbackReview.seats }
+    const setups = (
+      result.document.setups?.length
+        ? result.document.setups
+        : [
+            {
+              name: 'default',
+              execution_settings: result.document.execution_settings,
+              review,
+              refresh_review: 'delta' as const,
+            },
+          ]
+    ).map((setup) => ({
+      ...setup,
+      review: { ...setup.review, seats: setup.review?.seats ?? review.seats },
+      refresh_review: setup.refresh_review || ('delta' as const),
+    }))
+    const planningModels = [
+      ...new Set((result.document.planning_models ?? []).map((model) => model.trim()).filter(Boolean)),
+    ]
     return {
       ...result,
       document: {
@@ -201,7 +320,12 @@ export function fetchWorkspaceConfig(token: string) {
         },
         harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
-        monitor: result.document.monitor ?? { enabled: false, repositories: [], poll_interval: '1m', startup_window: '24h' },
+        monitor: result.document.monitor ?? {
+          enabled: false,
+          repositories: [],
+          poll_interval: '1m',
+          startup_window: '24h',
+        },
         review,
         setups,
         default_setup: result.document.default_setup || setups[0].name,
@@ -227,13 +351,16 @@ export class ConfigValidationError extends Error {
 }
 
 export async function updateWorkspaceConfig(token: string, document: WorkspaceConfigDocument, version: number) {
-	const response = await fetch(workspaceURL('/v1/workspace/config'), {
+  const response = await fetch(workspaceURL('/v1/workspace/config'), {
     method: 'PUT',
     headers: { ...mutationHeaders(token), 'If-Match': String(version) },
     body: JSON.stringify({ document }),
   })
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { message?: string; fields?: Array<{ field: string; message: string }> } | null
+    const body = (await response.json().catch(() => null)) as {
+      message?: string
+      fields?: Array<{ field: string; message: string }>
+    } | null
     throw new ConfigValidationError(body?.message ?? body?.fields?.[0]?.message ?? response.statusText, body?.fields)
   }
   return response.json() as Promise<WorkspaceConfigReceipt>
@@ -267,9 +394,28 @@ export class TaskIntakeError extends Error {
   }
 }
 
-export async function fetchWorkers(token: string) { const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()); const result = await response.json() as WorkerList; return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) } }
-export async function issueWorkerPairing(token: string) { const response = await fetch(workspaceURL('/v1/workers/pairings'), { method: 'POST', headers: mutationHeaders(token), body: JSON.stringify({ ttl_seconds: 600 }) }); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<{ pairing_token: string; expires_at: string }> }
-export async function revokeWorker(token: string, id: string) { const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), { method: 'DELETE', headers: mutationHeaders(token) }); if (!response.ok) throw new Error(await response.text()) }
+export async function fetchWorkers(token: string) {
+  const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error(await response.text())
+  const result = (await response.json()) as WorkerList
+  return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) }
+}
+export async function issueWorkerPairing(token: string) {
+  const response = await fetch(workspaceURL('/v1/workers/pairings'), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ ttl_seconds: 600 }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json() as Promise<{ pairing_token: string; expires_at: string }>
+}
+export async function revokeWorker(token: string, id: string) {
+  const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(await response.text())
+}
 
 export async function createTask(token: string, input: CreateTaskInput, attachments: File[] = [], idempotencyKey = '') {
   const body = new FormData()
@@ -299,18 +445,27 @@ export async function createTask(token: string, input: CreateTaskInput, attachme
   return response.json() as Promise<Task>
 }
 
-export async function removeTaskDependency(taskId: string, dependencyId: string, token: string, reason: string, requestId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(dependencyId)}`), {
-    method: 'DELETE',
-    headers: mutationHeaders(token),
-    body: JSON.stringify({ reason, request_id: requestId }),
-  })
+export async function removeTaskDependency(
+  taskId: string,
+  dependencyId: string,
+  token: string,
+  reason: string,
+  requestId: string,
+) {
+  const response = await fetch(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(dependencyId)}`),
+    {
+      method: 'DELETE',
+      headers: mutationHeaders(token),
+      body: JSON.stringify({ reason, request_id: requestId }),
+    },
+  )
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<{ task: Task; request_id: string; removed: boolean }>
 }
 
 export async function redispatchTask(taskId: string, token: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`), {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`), {
     method: 'POST',
     headers: mutationHeaders(token),
   })
@@ -319,13 +474,13 @@ export async function redispatchTask(taskId: string, token: string) {
 }
 
 export async function cancelTask(taskId: string, token: string, reason: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/close`), {
-		method: 'POST',
-		headers: mutationHeaders(token),
-		body: JSON.stringify({ reason }),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<Task>
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/close`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ reason }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<Task>
 }
 
 // Toggle the per-task hold (spec §21.31): while held, workers never claim
@@ -340,42 +495,48 @@ export async function setTaskHold(taskId: string, token: string, hold: boolean) 
   return response.json() as Promise<Task>
 }
 
-export async function changeTaskSetup(taskId: string, token: string, input: { setup?: string; apply_latest?: boolean; reason?: string; request_id: string }) {
+export async function changeTaskSetup(
+  taskId: string,
+  token: string,
+  input: { setup?: string; apply_latest?: boolean; reason?: string; request_id: string },
+) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/setup`), {
-    method: 'POST', headers: mutationHeaders(token), body: JSON.stringify(input),
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify(input),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<{ task: Task; review_transition: string }>
 }
 
 export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string) {
-	const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
-		method: 'POST',
-		headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
-		body: JSON.stringify({ request_id: requestId }),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<WorkOrder>
+  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+    body: JSON.stringify({ request_id: requestId }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<WorkOrder>
 }
 
 export async function retryReviewRound(taskId: string, token: string, requestId: string, reason: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/retry`), {
-		method: 'POST',
-		headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
-		body: JSON.stringify({ request_id: requestId, reason }),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<import('./types').ReviewRoundRetryResult>
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/retry`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+    body: JSON.stringify({ request_id: requestId, reason }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<import('./types').ReviewRoundRetryResult>
 }
 
 export async function recoverInterruptedReviewRound(taskId: string, token: string, requestId: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`), {
-		method: 'POST',
-		headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
-		body: JSON.stringify({ request_id: requestId }),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<import('./types').InterruptedReviewRecoveryResult>
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+    body: JSON.stringify({ request_id: requestId }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<import('./types').InterruptedReviewRecoveryResult>
 }
 
 export interface ReviewInput {
@@ -385,7 +546,7 @@ export interface ReviewInput {
 }
 
 export async function reviewTask(taskId: string, token: string, input: ReviewInput) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review`), {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review`), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -404,18 +565,19 @@ export async function reviewTask(taskId: string, token: string, input: ReviewInp
 }
 
 export async function mergeTask(taskId: string, token: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`), {
-		method: 'POST',
-		headers: mutationHeaders(token),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<Task>
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<Task>
 }
 
 export async function fixMergeConflict(taskId: string, token: string) {
-	const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge-conflict-fix`), {
-		method: 'POST', headers: mutationHeaders(token),
-	})
-	if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-	return response.json() as Promise<import('./types').WorkOrder>
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge-conflict-fix`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<import('./types').WorkOrder>
 }

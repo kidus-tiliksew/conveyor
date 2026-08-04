@@ -25,30 +25,82 @@ const childTitles = {
 
 function childRelations() {
   return [
-    { id: 'child-sub-1', title: childTitles['child-sub-1'], state: childStates['child-sub-1'], origin_spec_version: 1, origin_sub_id: 'SUB-1' },
-    { id: 'child-sub-2', title: childTitles['child-sub-2'], state: childStates['child-sub-2'], origin_spec_version: 1, origin_sub_id: 'SUB-2' },
-    { id: 'child-sub-3', title: childTitles['child-sub-3'], state: childStates['child-sub-3'], origin_spec_version: 1, origin_sub_id: 'SUB-3' },
-    { id: 'child-sub-4', title: childTitles['child-sub-4'], state: childStates['child-sub-4'], origin_spec_version: 1, origin_sub_id: 'SUB-4' },
+    {
+      id: 'child-sub-1',
+      title: childTitles['child-sub-1'],
+      state: childStates['child-sub-1'],
+      origin_spec_version: 1,
+      origin_sub_id: 'SUB-1',
+    },
+    {
+      id: 'child-sub-2',
+      title: childTitles['child-sub-2'],
+      state: childStates['child-sub-2'],
+      origin_spec_version: 1,
+      origin_sub_id: 'SUB-2',
+    },
+    {
+      id: 'child-sub-3',
+      title: childTitles['child-sub-3'],
+      state: childStates['child-sub-3'],
+      origin_spec_version: 1,
+      origin_sub_id: 'SUB-3',
+    },
+    {
+      id: 'child-sub-4',
+      title: childTitles['child-sub-4'],
+      state: childStates['child-sub-4'],
+      origin_spec_version: 1,
+      origin_sub_id: 'SUB-4',
+    },
   ]
 }
 
 function anchorTask() {
   return {
-    id: anchorId, workspace: 'demo', source: 'planning', title: 'Deliver the planning flow',
+    id: anchorId,
+    workspace: 'demo',
+    source: 'planning',
+    title: 'Deliver the planning flow',
     body: anchorBody,
-    class: 'feature', level: '', spec_approval: true, merge_approval: true, policy_version: 1,
-    setup: 'default', repo: 'conveyor', base_branch: 'main', branch: 'conveyor/task-blueprint-anchor',
-    state: 'queued', next_stage: 'implement', children: childRelations(), created_at: createdAt,
+    class: 'feature',
+    level: '',
+    spec_approval: true,
+    merge_approval: true,
+    policy_version: 1,
+    setup: 'default',
+    repo: 'conveyor',
+    base_branch: 'main',
+    branch: 'conveyor/task-blueprint-anchor',
+    state: 'queued',
+    next_stage: 'implement',
+    children: childRelations(),
+    created_at: createdAt,
   }
 }
 
 function childTask(id: keyof typeof childStates) {
   return {
-    id, workspace: 'demo', source: `blueprint:${anchorId}@v1#SUB-1`, title: childTitles[id],
-    body: '', class: 'feature', level: '', spec_approval: true, merge_approval: true, policy_version: 1,
-    setup: 'default', repo: 'conveyor', base_branch: 'main', branch: `conveyor/task-${id}`,
-    state: childStates[id], next_stage: 'implement', parent_task_id: anchorId,
-    origin_spec_version: 1, origin_sub_id: 'SUB-1', created_at: createdAt,
+    id,
+    workspace: 'demo',
+    source: `blueprint:${anchorId}@v1#SUB-1`,
+    title: childTitles[id],
+    body: '',
+    class: 'feature',
+    level: '',
+    spec_approval: true,
+    merge_approval: true,
+    policy_version: 1,
+    setup: 'default',
+    repo: 'conveyor',
+    base_branch: 'main',
+    branch: `conveyor/task-${id}`,
+    state: childStates[id],
+    next_stage: 'implement',
+    parent_task_id: anchorId,
+    origin_spec_version: 1,
+    origin_sub_id: 'SUB-1',
+    created_at: createdAt,
   }
 }
 
@@ -64,7 +116,10 @@ function blueprintView() {
   return {
     task: anchorTask(),
     spec: {
-      task_id: anchorId, version: 3, content: specContent, acceptance_count: 1,
+      task_id: anchorId,
+      version: 3,
+      content: specContent,
+      acceptance_count: 1,
       acceptance: [{ id: 'AC-1', criterion: 'The board excludes the anchor.', verify: 'test' }],
       decomposition: [
         { id: 'SUB-1', repo: 'conveyor', summary: 'Persist the contract', depends_on: [] },
@@ -72,7 +127,9 @@ function blueprintView() {
         { id: 'SUB-3', repo: 'conveyor', summary: 'Present the delivery', depends_on: ['SUB-2'] },
         { id: 'SUB-4', repo: 'conveyor', summary: 'Retire the feature tree', depends_on: [] },
       ],
-      approved: true, created_at: createdAt, approved_at: createdAt,
+      approved: true,
+      created_at: createdAt,
+      approved_at: createdAt,
     },
     governing_version: 3,
     // Deliberately server-ordered by dependency: SUB-3 declares after SUB-2.
@@ -85,25 +142,48 @@ function blueprintView() {
     delivery: { state: 'in_delivery', total: 4, merged: 1, closed: 1, open: 2 },
     serves: [{ id: 'req-planning', slug: 'in-product-planning', title: 'In-product planning' }],
     events: [
-      { id: 1, task_id: anchorId, kind: 'blueprint.materialized', actor_id: 'system', actor_role: 'system', payload: { version: 3, children_total: 4 }, at: createdAt },
+      {
+        id: 1,
+        task_id: anchorId,
+        kind: 'blueprint.materialized',
+        actor_id: 'system',
+        actor_role: 'system',
+        payload: { version: 3, children_total: 4 },
+        at: createdAt,
+      },
     ],
     // The planning transcript attaches to the anchor, so it is lineage the
     // blueprint detail has to surface.
-    artifacts: [{
-      id: 'artifact-transcript', workspace: 'demo', name: 'planning-transcript.json',
-      content_type: 'application/json', size_bytes: 2048, role: 'generated_audit',
-      task_id: anchorId, download_url: '/v1/artifacts/artifact-transcript', created_at: createdAt,
-    }],
+    artifacts: [
+      {
+        id: 'artifact-transcript',
+        workspace: 'demo',
+        name: 'planning-transcript.json',
+        content_type: 'application/json',
+        size_bytes: 2048,
+        role: 'generated_audit',
+        task_id: anchorId,
+        download_url: '/v1/artifacts/artifact-transcript',
+        created_at: createdAt,
+      },
+    ],
     planning_session: {
-      id: 'session-blueprint', title: 'Plan the delivery', status: 'finalized',
-      model: 'gpt-plan', effort: 'high', exploration_output_tokens: 12000,
+      id: 'session-blueprint',
+      title: 'Plan the delivery',
+      status: 'finalized',
+      model: 'gpt-plan',
+      effort: 'high',
+      exploration_output_tokens: 12000,
       primary_repo: 'conveyor',
       pinned_revisions: {
         conveyor: '0123456789abcdef',
         companion: 'fedcba9876543210',
       },
-      produced_task_id: anchorId, workspace: 'demo',
-      created_at: createdAt, updated_at: createdAt, finalized_at: createdAt,
+      produced_task_id: anchorId,
+      workspace: 'demo',
+      created_at: createdAt,
+      updated_at: createdAt,
+      finalized_at: createdAt,
     },
   }
 }
@@ -112,23 +192,38 @@ function taskActivity(taskId: string) {
   if (taskId === anchorId) {
     return {
       task: anchorTask(),
-      jobs: [], interventions: [], work_orders: [],
+      jobs: [],
+      interventions: [],
+      work_orders: [],
       events: blueprintView().events,
-      checkout_available: false, checkout_guidance: 'No checkout for a blueprint anchor.',
-      needs_attention: false, spec: blueprintView().spec, attachments: [], verification_evidence: [],
+      checkout_available: false,
+      checkout_guidance: 'No checkout for a blueprint anchor.',
+      needs_attention: false,
+      spec: blueprintView().spec,
+      attachments: [],
+      verification_evidence: [],
       // A queued anchor with no serviceable worker is exactly the state that
       // used to offer redispatch and a worker alarm for work it never takes.
       worker_status: {
-        available: false, required_harnesses: ['claude'],
-        reason: 'no worker has claimed this workspace', queue_context: 'never_started',
+        available: false,
+        required_harnesses: ['claude'],
+        reason: 'no worker has claimed this workspace',
+        queue_context: 'never_started',
       },
     }
   }
   return {
     task: childTask(taskId as keyof typeof childStates),
-    jobs: [], events: [], interventions: [], work_orders: [],
-    checkout_command: `conveyor checkout ${taskId}`, checkout_available: true, checkout_guidance: '',
-    needs_attention: false, attachments: [], verification_evidence: [],
+    jobs: [],
+    events: [],
+    interventions: [],
+    work_orders: [],
+    checkout_command: `conveyor checkout ${taskId}`,
+    checkout_available: true,
+    checkout_guidance: '',
+    needs_attention: false,
+    attachments: [],
+    verification_evidence: [],
   }
 }
 
@@ -152,7 +247,8 @@ async function initShell(page: Page) {
 function shellResponse(route: Route) {
   const path = new URL(route.request().url()).pathname
   if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-  if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', base: 'main' }] } })
+  if (path === '/v1/workspace')
+    return route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', base: 'main' }] } })
   return undefined
 }
 
@@ -165,7 +261,8 @@ async function routeAPI(page: Page, options: { feed?: unknown[]; blueprints?: un
     if (path === '/v1/blueprints') return route.fulfill({ json: options.blueprints ?? [blueprintView()] })
     const detail = /^\/v1\/tasks\/([^/]+)\/activity$/.exec(path)
     if (detail) return route.fulfill({ json: taskActivity(decodeURIComponent(detail[1])) })
-    if (path.endsWith('/events/stream')) return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
+    if (path.endsWith('/events/stream'))
+      return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
     return route.fulfill({ json: [] })
   })
 }
@@ -210,8 +307,11 @@ test('the board excludes the blueprint anchor from cards and column counts', asy
 test('a blueprint awaiting its spec gate stays in the review inbox', async ({ page }) => {
   await initShell(page)
   const gated = {
-    ...anchorTask(), id: 'gated-blueprint', title: 'Blueprint awaiting approval',
-    state: 'awaiting_human', children: [],
+    ...anchorTask(),
+    id: 'gated-blueprint',
+    title: 'Blueprint awaiting approval',
+    state: 'awaiting_human',
+    children: [],
   }
   await routeAPI(page, {
     feed: [{ task: gated, latest_stage: 'spec', last_event_at: createdAt, needs_attention: true }],
@@ -297,7 +397,9 @@ test('the blueprints list opens the canonical detail route with the spec first',
 // AC-3: Cancel is the only lifecycle control, the intake body is provenance
 // behind a disclosure rather than the headline, and every execution affordance
 // an anchor can never use is gone.
-test('the canonical blueprint detail suppresses execution affordances and demotes the intake body', async ({ page }) => {
+test('the canonical blueprint detail suppresses execution affordances and demotes the intake body', async ({
+  page,
+}) => {
   await initShell(page)
   await routeAPI(page)
 
@@ -326,7 +428,10 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   await disclosure.click()
   await expect(page.getByText(anchorBody)).toBeVisible()
   const bodyBox = await page.getByText(anchorBody).boundingBox()
-  const specBox = await page.getByRole('region', { name: 'Blueprint' }).getByText('Blueprint planning surface').boundingBox()
+  const specBox = await page
+    .getByRole('region', { name: 'Blueprint' })
+    .getByText('Blueprint planning surface')
+    .boundingBox()
   expect(specBox!.y).toBeLessThan(bodyBox!.y)
 })
 
@@ -369,20 +474,26 @@ test('child task routes stay usable and link back to the canonical blueprint', a
   await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
 
   // Parent to child, and back again from the sheet route.
-  await page.getByRole('list', { name: 'Blueprint tasks' })
-    .getByRole('link', { name: childTitles['child-sub-3'] }).click()
+  await page
+    .getByRole('list', { name: 'Blueprint tasks' })
+    .getByRole('link', { name: childTitles['child-sub-3'] })
+    .click()
   await expect(page).toHaveURL(/\/tasks\/child-sub-3\/full$/)
 
   await page.goto('/tasks/child-sub-2')
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   await expect(sheet).toBeVisible()
-  await expect(sheet.getByRole('link', { name: /Deliver the planning flow/ }))
-    .toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await expect(sheet.getByRole('link', { name: /Deliver the planning flow/ })).toHaveAttribute(
+    'href',
+    `/blueprints/${anchorId}`,
+  )
 })
 
 // AC-1: an honest rollup keeps a closed child out of the delivered count, and
 // a blueprint with no serves link says so rather than hiding the field.
-test('a completed blueprint reads as completed, and a missing serves link is a normal empty state', async ({ page }) => {
+test('a completed blueprint reads as completed, and a missing serves link is a normal empty state', async ({
+  page,
+}) => {
   await initShell(page)
   const completed = blueprintView()
   completed.task.state = 'closed'
@@ -424,7 +535,8 @@ test('the blueprint detail route renders a projection fetch failure', async ({ p
     if (path === '/v1/activity') return route.fulfill({ json: [] })
     if (path === '/v1/blueprints') return route.fulfill({ status: 500, body: 'Blueprint projection is unavailable.' })
     if (path === `/v1/tasks/${anchorTask().id}/activity`) return route.fulfill({ json: taskActivity(anchorTask().id) })
-    if (path.endsWith('/events/stream')) return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
+    if (path.endsWith('/events/stream'))
+      return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
     return route.fulfill({ json: [] })
   })
 

@@ -97,6 +97,10 @@ type Store interface {
 	// for all roots. Callers may derive several per-root traversals from it
 	// without repeating a workspace-wide scan.
 	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
+	// ListLineageNodeRecords resolves label data only for the supplied bounded
+	// graph nodes. Implementations must not replace this with workspace-wide
+	// entity scans.
+	ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error)
 	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
@@ -218,6 +222,15 @@ type Store interface {
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// LineageNodeRecord is the minimal entity projection needed to label a
+// lineage graph without loading unrelated workspace records.
+type LineageNodeRecord struct {
+	Title  string
+	Slug   string
+	TaskID string
+	Stage  core.Stage
 }
 
 // RequirementVersionConflict is returned when an operator confirmation was
@@ -3347,6 +3360,48 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	records := make(map[core.LineageNode]LineageNodeRecord, len(nodes))
+	for _, node := range nodes {
+		baseID := lineageRecordBaseID(node)
+		switch node.Type {
+		case core.LineageTask, core.LineageBlueprint, core.LineageBlueprintVersion:
+			if task, ok := m.tasks[baseID]; ok && task.Workspace == workspace {
+				records[node] = LineageNodeRecord{Title: task.Title}
+			}
+		case core.LineageRequirement, core.LineageRequirementVersion:
+			if requirement, ok := m.requirements[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: requirement.Title, Slug: requirement.Slug}
+			}
+		case core.LineagePlanningSession:
+			if session, ok := m.planningSessions[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: session.Title}
+			}
+		case core.LineageWorkOrder:
+			if order, ok := m.workOrders[baseID]; ok {
+				if task, exists := m.tasks[order.TaskID]; exists && task.Workspace == workspace {
+					records[node] = LineageNodeRecord{TaskID: order.TaskID, Stage: order.Stage}
+				}
+			}
+		}
+	}
+	return records, nil
+}
+
+func lineageRecordBaseID(node core.LineageNode) string {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion {
+		return node.ID
+	}
+	index := strings.LastIndex(node.ID, ":v")
+	if index <= 0 {
+		return node.ID
+	}
+	return node.ID[:index]
 }
 
 func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {

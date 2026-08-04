@@ -1,9 +1,9 @@
 package postgres
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,39 +13,63 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-func TestListArtifactsForLineagePlanUsesTypedIndexes(t *testing.T) {
+func TestListArtifactsForLineagePlanReadsOnlySelectedNodeArtifacts(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
-	conn, err := st.pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Release()
-	if _, err = conn.Exec(ctx, "SET enable_seqscan=off"); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := conn.Query(ctx, "EXPLAIN (COSTS OFF) "+listArtifactsForLineageSQL, workspace,
-		[]string{"task", "requirement", "planning_session", "evidence"}, []string{"task-id", "req-id", "session-id", "artifact-id"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var planLines []string
-	for rows.Next() {
-		var line string
-		if err = rows.Scan(&line); err != nil {
+	target := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	noisy := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	for _, task := range []*core.Task{&target, &noisy} {
+		task.Branch = "conveyor/task-" + task.ID
+		if err := st.CreateTask(ctx, *task); err != nil {
 			t.Fatal(err)
 		}
-		planLines = append(planLines, line)
 	}
-	if err = rows.Err(); err != nil {
+	for index := range 2 {
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("target-%d.txt", index), ContentType: "text/plain", TaskID: target.ID}, []byte(fmt.Sprintf("target-%d", index))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range 40 {
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("noise-%d.txt", index), ContentType: "text/plain", TaskID: noisy.ID}, []byte(fmt.Sprintf("noise-%d", index))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var raw []byte
+	if err := st.pool.QueryRow(ctx, "EXPLAIN (ANALYZE, COSTS OFF, FORMAT JSON) "+listArtifactsForLineageSQL, workspace,
+		[]string{"task"}, []string{target.ID}).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	plan := strings.Join(planLines, "\n")
-	for _, index := range []string{"artifact_links_task_unique", "artifact_links_requirement_unique", "artifact_links_planning_session_unique", "artifact_links_lineage_evidence_idx"} {
-		if !strings.Contains(plan, index) {
-			t.Fatalf("lineage artifact plan omitted %s:\n%s", index, plan)
+	var plan []struct {
+		Plan explainPlanNode `json:"Plan"`
+	}
+	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
+		t.Fatalf("decode EXPLAIN ANALYZE plan: %v\n%s", err, raw)
+	}
+	var scanned []float64
+	collectRelationRows(plan[0].Plan, "artifact_links", &scanned)
+	if len(scanned) == 0 {
+		t.Fatalf("EXPLAIN ANALYZE did not execute an artifact_links branch: %s", raw)
+	}
+	for _, rows := range scanned {
+		if rows > 2 {
+			t.Fatalf("selected task has 2 artifacts but an artifact_links plan branch read %.0f rows: %s", rows, raw)
 		}
+	}
+}
+
+type explainPlanNode struct {
+	RelationName string            `json:"Relation Name"`
+	ActualRows   float64           `json:"Actual Rows"`
+	ActualLoops  float64           `json:"Actual Loops"`
+	Plans        []explainPlanNode `json:"Plans"`
+}
+
+func collectRelationRows(node explainPlanNode, relation string, rows *[]float64) {
+	if node.RelationName == relation && node.ActualLoops > 0 {
+		*rows = append(*rows, node.ActualRows*node.ActualLoops)
+	}
+	for _, child := range node.Plans {
+		collectRelationRows(child, relation, rows)
 	}
 }
 

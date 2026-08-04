@@ -24,7 +24,9 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const reviewDiagnostic = reviewDiagnosticBadge(item)
   const unsatisfiable = item.stalled?.unsatisfiable_edge === true
   const blockingIDs = item.stalled?.blocking_task_ids ?? item.task.blocking_task_ids ?? []
-  const blockingTitles = blockingIDs.map((id) => item.task.dependencies?.find((dependency) => dependency.id === id)?.title ?? id)
+  const blockingTitles = blockingIDs.map(
+    (id) => item.task.dependencies?.find((dependency) => dependency.id === id)?.title ?? id,
+  )
   const dependencyExplanation = unsatisfiable
     ? `Needs attention: ${blockingTitles.join(', ')} closed without merging`
     : `Waiting for ${blockingTitles.join(', ')}`
@@ -71,10 +73,17 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
           )}
         </div>
       )}
-      {item.stalled?.last_failure && <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">{item.stalled.last_failure}</p>}
+      {item.stalled?.last_failure && (
+        <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">{item.stalled.last_failure}</p>
+      )}
       {item.forge_failure && (
         <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">
-          {item.forge_failure.category && <><span className="font-mono">{item.forge_failure.category}</span>{' · '}</>}
+          {item.forge_failure.category && (
+            <>
+              <span className="font-mono">{item.forge_failure.category}</span>
+              {' · '}
+            </>
+          )}
           {item.forge_failure.surface}: {item.forge_failure.detail}
         </p>
       )}

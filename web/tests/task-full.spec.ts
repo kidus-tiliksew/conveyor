@@ -1724,17 +1724,32 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
           ? {
               needed: true,
               prior_round: 2,
-              reason: 'latest review round is non-progressing because a completed seat has a contradictory failed child outcome',
+              reason:
+                'latest review round is non-progressing because a completed seat has a contradictory failed child outcome',
               timed_out_orders: [],
-              inconsistent_orders: [{
-                id: 'review-wedge-review-2-seat-1', task_id: taskId, job_id: 'review-wedge-review-2-seat-1',
-                stage: 'review', state: 'completed', claimable: false, review_round: 2, review_seat: 1,
-                last_attempt_outcome: 'child_failure', retry_suppressed: true,
-                queue_entered_at: createdAt, queue_deadline: createdAt, redispatch_count: 0,
-                cost_usd: 0, tokens_in: 0, tokens_out: 0, self_reported: true,
-              }],
+              inconsistent_orders: [
+                {
+                  id: 'review-wedge-review-2-seat-1',
+                  task_id: taskId,
+                  job_id: 'review-wedge-review-2-seat-1',
+                  stage: 'review',
+                  state: 'completed',
+                  claimable: false,
+                  review_round: 2,
+                  review_seat: 1,
+                  last_attempt_outcome: 'child_failure',
+                  retry_suppressed: true,
+                  queue_entered_at: createdAt,
+                  queue_deadline: createdAt,
+                  redispatch_count: 0,
+                  cost_usd: 0,
+                  tokens_in: 0,
+                  tokens_out: 0,
+                  self_reported: true,
+                },
+              ],
             }
-        : undefined,
+          : undefined,
     interrupted_review_recovery:
       taskId === 'interrupted-review'
         ? {

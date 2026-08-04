@@ -2,19 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquarePlus } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
-import {
-  PlanningChat,
-  relativeDate,
-  sessionStatusLabels,
-} from '../components/planning/planning-chat'
+import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
-import {
-  createPlanningSession,
-  fetchPlanningSessions,
-  fetchWorkspaceConfig,
-} from '../lib/api'
+import { createPlanningSession, fetchPlanningSessions, fetchWorkspaceConfig } from '../lib/api'
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
@@ -38,8 +30,14 @@ export function PlanningPage() {
     queryFn: () => fetchWorkspaceConfig(token),
     enabled: Boolean(token && workspace),
   })
-  const { data: sessions, isLoading, error: sessionsError } = useQuery({
-    queryKey: ['planning-sessions', workspace], queryFn: fetchPlanningSessions, enabled: Boolean(workspace),
+  const {
+    data: sessions,
+    isLoading,
+    error: sessionsError,
+  } = useQuery({
+    queryKey: ['planning-sessions', workspace],
+    queryFn: fetchPlanningSessions,
+    enabled: Boolean(workspace),
   })
 
   useEffect(() => {
@@ -58,10 +56,11 @@ export function PlanningPage() {
   }, [selectedId, workspace])
 
   const configuredModels = workspaceConfig?.document.planning_models ?? []
-  const defaultModel = workspaceConfig?.document.execution_settings.control_plane.planning?.model
-    ?? workspaceConfig?.document.execution_settings.control_plane.triage.model
-    ?? ''
-  const modelOptions = configuredModels.length ? configuredModels : (defaultModel ? [defaultModel] : [])
+  const defaultModel =
+    workspaceConfig?.document.execution_settings.control_plane.planning?.model ??
+    workspaceConfig?.document.execution_settings.control_plane.triage.model ??
+    ''
+  const modelOptions = configuredModels.length ? configuredModels : defaultModel ? [defaultModel] : []
   useEffect(() => {
     if (!workspaceConfig) return
     const next = configuredModels.includes(model) ? model : (configuredModels[0] ?? defaultModel)
@@ -71,10 +70,11 @@ export function PlanningPage() {
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
     // artifact it produces renames it (spec §21.57 change 3).
-    mutationFn: () => createPlanningSession(token, {
-      goal,
-      model: configuredModels.length ? model || undefined : undefined,
-    }),
+    mutationFn: () =>
+      createPlanningSession(token, {
+        goal,
+        model: configuredModels.length ? model || undefined : undefined,
+      }),
     onSuccess: (session) => {
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -87,16 +87,29 @@ export function PlanningPage() {
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
         <div>
           <h1 className="text-lg font-semibold tracking-tight">Planning</h1>
-          <p className="mt-0.5 text-xs text-muted">Open exploration and blueprints without a document. Requirement drafting lives beside the document, in Requirements.</p>
+          <p className="mt-0.5 text-xs text-muted">
+            Open exploration and blueprints without a document. Requirement drafting lives beside the document, in
+            Requirements.
+          </p>
         </div>
-        <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (token) create.mutate() }}>
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (token) create.mutate()
+          }}
+        >
           <Select
             aria-label="Planning goal"
             className="w-44"
             value={goal}
             onChange={(event) => setGoal(event.target.value as PlanningSessionGoal)}
           >
-            {standaloneGoals.map((option) => <option key={option} value={option}>{sessionGoalLabels[option]}</option>)}
+            {standaloneGoals.map((option) => (
+              <option key={option} value={option}>
+                {sessionGoalLabels[option]}
+              </option>
+            ))}
           </Select>
           <Select
             aria-label="Planning model"
@@ -105,19 +118,33 @@ export function PlanningPage() {
             onChange={(event) => setModel(event.target.value)}
             disabled={!workspaceConfig || configuredModels.length === 0}
           >
-            {modelOptions.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
+            {modelOptions.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {candidate}
+              </option>
+            ))}
           </Select>
           <Button type="submit" disabled={!token || create.isPending}>
             <MessageSquarePlus /> {create.isPending ? 'Starting…' : 'New session'}
           </Button>
         </form>
-        {create.error && <p className="basis-full text-xs text-failure">{errorMessage(create.error, 'Could not start this planning session.')}</p>}
+        {create.error && (
+          <p className="basis-full text-xs text-failure">
+            {errorMessage(create.error, 'Could not start this planning session.')}
+          </p>
+        )}
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className="w-72 shrink-0 overflow-y-auto border-r border-border bg-surface/40">
-          <div className="px-4 py-3"><p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Sessions</p></div>
+          <div className="px-4 py-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Sessions</p>
+          </div>
           {isLoading && <p className="px-4 text-xs text-muted">Restoring sessions…</p>}
-          {sessionsError && <p className="px-4 text-xs text-failure">{errorMessage(sessionsError, 'Could not restore planning sessions.')}</p>}
+          {sessionsError && (
+            <p className="px-4 text-xs text-failure">
+              {errorMessage(sessionsError, 'Could not restore planning sessions.')}
+            </p>
+          )}
           {sessions?.length === 0 && <p className="px-4 text-xs leading-5 text-muted">No planning sessions yet.</p>}
           <div className="divide-y divide-border">
             {sessions?.map((session) => (
@@ -128,9 +155,15 @@ export function PlanningPage() {
                 onClick={() => setSelectedId(session.id)}
                 className={`block w-full px-4 py-3 text-left ${selectedId === session.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
               >
-                <strong className="block truncate text-sm font-medium">{session.title || 'Untitled planning session'}</strong>
+                <strong className="block truncate text-sm font-medium">
+                  {session.title || 'Untitled planning session'}
+                </strong>
                 <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                  <Badge variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}>
+                  <Badge
+                    variant={
+                      session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'
+                    }
+                  >
                     {sessionStatusLabels[session.status]}
                   </Badge>
                   <Badge variant="mono">{sessionGoalLabel(session)}</Badge>
@@ -141,9 +174,13 @@ export function PlanningPage() {
           </div>
         </aside>
         <main className="min-w-0 flex-1">
-          {selected
-            ? <PlanningChat key={`${workspace}:${selected.id}`} summary={selected} token={token} workspace={workspace} />
-            : <div className="grid h-full place-items-center"><p className="text-sm text-muted">Start or select a planning session.</p></div>}
+          {selected ? (
+            <PlanningChat key={`${workspace}:${selected.id}`} summary={selected} token={token} workspace={workspace} />
+          ) : (
+            <div className="grid h-full place-items-center">
+              <p className="text-sm text-muted">Start or select a planning session.</p>
+            </div>
+          )}
         </main>
       </div>
     </div>

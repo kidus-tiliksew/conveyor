@@ -1,11 +1,30 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleDashed, Cpu, ExternalLink, Pin, Undo2, UserRound } from 'lucide-react'
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  CircleDashed,
+  Cpu,
+  ExternalLink,
+  Pin,
+  Undo2,
+  UserRound,
+} from 'lucide-react'
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import { buildTimeline, dependencyRelationLabel, deriveCurrentExecutionState, technicalActivity, type CurrentExecutionState, type PanelSeat, type TimelineEntry } from '../../lib/activity'
+import {
+  buildTimeline,
+  dependencyRelationLabel,
+  deriveCurrentExecutionState,
+  technicalActivity,
+  type CurrentExecutionState,
+  type PanelSeat,
+  type TimelineEntry,
+} from '../../lib/activity'
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
@@ -38,7 +57,15 @@ const gateDots: Record<GateTone, string> = {
 // no work orders, so redispatch, worker serviceability, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
-export function Timeline({ item, executionActions = true, routeVariant = 'full' }: { item: ActivityItem; executionActions?: boolean; routeVariant?: TaskRouteVariant }) {
+export function Timeline({
+  item,
+  executionActions = true,
+  routeVariant = 'full',
+}: {
+  item: ActivityItem
+  executionActions?: boolean
+  routeVariant?: TaskRouteVariant
+}) {
   const entries = buildTimeline(item)
   const currentExecution = deriveCurrentExecutionState(item)
   const technicalEvents = technicalActivity(item)
@@ -71,47 +98,77 @@ export function Timeline({ item, executionActions = true, routeVariant = 'full' 
     if (showGate) gateRef.current?.scrollIntoView({ block: 'end' })
   }, [item.task.id, showGate])
 
-  const tail = (executionActions ? [
-    hasWorkerAlert(item) && { key: 'worker-alert', dot: 'bg-attention-dot', card: <WorkerStatusCard item={item} /> },
-    hasInterruptedReviewRecovery(item) && { key: 'interrupted-review', dot: 'bg-attention-dot', card: <InterruptedReviewRecoveryCard item={item} /> },
-    hasReviewRoundRetry(item) && { key: 'review-retry', dot: 'bg-attention-dot', card: <ReviewRoundRetryCard item={item} /> },
-    hasWorkerRecovery(item) && { key: 'order-recovery', dot: 'bg-attention-dot', card: <WorkOrderRecoveryCard item={item} /> },
-    canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
-  ] : []).filter((entry) => entry !== false)
+  const tail = (
+    executionActions
+      ? [
+          hasWorkerAlert(item) && {
+            key: 'worker-alert',
+            dot: 'bg-attention-dot',
+            card: <WorkerStatusCard item={item} />,
+          },
+          hasInterruptedReviewRecovery(item) && {
+            key: 'interrupted-review',
+            dot: 'bg-attention-dot',
+            card: <InterruptedReviewRecoveryCard item={item} />,
+          },
+          hasReviewRoundRetry(item) && {
+            key: 'review-retry',
+            dot: 'bg-attention-dot',
+            card: <ReviewRoundRetryCard item={item} />,
+          },
+          hasWorkerRecovery(item) && {
+            key: 'order-recovery',
+            dot: 'bg-attention-dot',
+            card: <WorkOrderRecoveryCard item={item} />,
+          },
+          canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
+        ]
+      : []
+  ).filter((entry) => entry !== false)
 
   return (
     <>
-    <section ref={timelineRef} aria-label="Execution event timeline">
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{executionAnnouncement}</p>
-      {currentExecution && <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} />}
-      <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
-      <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
-        {entries.map((entry) => (
-          <TimelineRow key={keyFor(entry)} entry={entry} />
-        ))}
-        {entries.length === 0 && tail.length === 0 && !showGate && (
-          <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
-        )}
-        {tail.map(({ key, dot, card }) => (
-          <li key={key} className="relative pl-7">
-            <TimelineDot className={dot} />
-            {card}
-          </li>
-        ))}
-        {showGate && (
-          <li ref={gateRef} className="relative pl-7">
-			<TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])} />
-            <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
-          </li>
-        )}
-      </ol>
-    </section>
-    {technicalEvents.length > 0 && <TechnicalActivity events={technicalEvents} />}
+      <section ref={timelineRef} aria-label="Execution event timeline">
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {executionAnnouncement}
+        </p>
+        {currentExecution && <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} />}
+        <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
+        <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
+          {entries.map((entry) => (
+            <TimelineRow key={keyFor(entry)} entry={entry} />
+          ))}
+          {entries.length === 0 && tail.length === 0 && !showGate && (
+            <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
+          )}
+          {tail.map(({ key, dot, card }) => (
+            <li key={key} className="relative pl-7">
+              <TimelineDot className={dot} />
+              {card}
+            </li>
+          ))}
+          {showGate && (
+            <li ref={gateRef} className="relative pl-7">
+              <TimelineDot
+                className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])}
+              />
+              <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
+            </li>
+          )}
+        </ol>
+      </section>
+      {technicalEvents.length > 0 && <TechnicalActivity events={technicalEvents} />}
     </>
   )
 }
 
-function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecutionState; routeVariant: TaskRouteVariant }) {
+function CurrentExecutionSummary({
+  state,
+  routeVariant,
+}: {
+  state: CurrentExecutionState
+  routeVariant: TaskRouteVariant
+}) {
   const paused = state.status === 'paused'
   const relatedRoute = relatedTaskRoute(routeVariant)
   return (
@@ -123,10 +180,21 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
       )}
     >
       <div className="flex items-start gap-2">
-        {paused ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden /> : <CircleDashed className="mt-0.5 size-4 shrink-0 animate-pulse text-primary" aria-hidden />}
+        {paused ? (
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+        ) : (
+          <CircleDashed className="mt-0.5 size-4 shrink-0 animate-pulse text-primary" aria-hidden />
+        )}
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Current state · {paused ? 'Paused — needs attention' : 'Progressing'}</p>
-          <h2 id="current-execution-title" className={cn('mt-0.5 text-sm font-semibold', paused ? 'text-attention' : 'text-foreground')}>{state.title}</h2>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+            Current state · {paused ? 'Paused — needs attention' : 'Progressing'}
+          </p>
+          <h2
+            id="current-execution-title"
+            className={cn('mt-0.5 text-sm font-semibold', paused ? 'text-attention' : 'text-foreground')}
+          >
+            {state.title}
+          </h2>
         </div>
       </div>
       <dl className="mt-3 grid gap-2 text-xs leading-5 sm:grid-cols-3">
@@ -136,16 +204,34 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
             {state.blockingDependencies?.length ? (
               <span className="flex flex-col items-start">
                 {state.blockingDependencies.map((dependency) => (
-                  <Link key={dependency.id} to={relatedRoute} params={{ taskId: dependency.id }} className="text-primary hover:underline">
-                    {dependency.title || dependency.id} · {dependencyRelationLabel(dependency.state, true, state.unsatisfiableDependencyIDs?.includes(dependency.id) === true)}
+                  <Link
+                    key={dependency.id}
+                    to={relatedRoute}
+                    params={{ taskId: dependency.id }}
+                    className="text-primary hover:underline"
+                  >
+                    {dependency.title || dependency.id} ·{' '}
+                    {dependencyRelationLabel(
+                      dependency.state,
+                      true,
+                      state.unsatisfiableDependencyIDs?.includes(dependency.id) === true,
+                    )}
                   </Link>
                 ))}
               </span>
-            ) : state.blocker}
+            ) : (
+              state.blocker
+            )}
           </dd>
         </div>
-        <div><dt className="font-medium text-foreground">Retry</dt><dd className="text-muted">{state.retry}</dd></div>
-        <div><dt className="font-medium text-foreground">What to do next</dt><dd className="text-muted">{state.nextAction}</dd></div>
+        <div>
+          <dt className="font-medium text-foreground">Retry</dt>
+          <dd className="text-muted">{state.retry}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">What to do next</dt>
+          <dd className="text-muted">{state.nextAction}</dd>
+        </div>
       </dl>
     </section>
   )
@@ -154,7 +240,9 @@ function CurrentExecutionSummary({ state, routeVariant }: { state: CurrentExecut
 function TechnicalActivity({ events }: { events: ActivityItem['events'] }) {
   return (
     <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
-      <summary className="cursor-pointer rounded-lg px-3 py-2.5 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Show technical activity</summary>
+      <summary className="cursor-pointer rounded-lg px-3 py-2.5 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+        Show technical activity
+      </summary>
       <ol className="divide-y divide-border border-t border-border">
         {events.map((event) => (
           <li key={event.id} className="px-3 py-2">
@@ -162,9 +250,7 @@ function TechnicalActivity({ events }: { events: ActivityItem['events'] }) {
               <code className="text-[11px] text-foreground">{event.kind}</code>
               <time className="ml-auto text-[11px] text-faint">{absoluteTime(event.at)}</time>
             </div>
-            {event.payload && Object.keys(event.payload).length > 0 && (
-              <EventPayloadDisclosure event={event} />
-            )}
+            {event.payload && Object.keys(event.payload).length > 0 && <EventPayloadDisclosure event={event} />}
           </li>
         ))}
       </ol>
@@ -176,14 +262,21 @@ function EventPayloadDisclosure({ event }: { event: ActivityItem['events'][numbe
   const [open, setOpen] = useState(false)
   return (
     <details className="mt-1" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
-      <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Event payload</summary>
-      {open && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono">{JSON.stringify(technicalPayload(event), null, 2)}</pre>}
+      <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+        Event payload
+      </summary>
+      {open && (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono">
+          {JSON.stringify(technicalPayload(event), null, 2)}
+        </pre>
+      )}
     </details>
   )
 }
 
 function technicalPayload(event: ActivityItem['events'][number]): Record<string, unknown> {
-  if (!event.kind.endsWith('.output_invalid') || !Object.hasOwn(event.payload ?? {}, 'output')) return event.payload ?? {}
+  if (!event.kind.endsWith('.output_invalid') || !Object.hasOwn(event.payload ?? {}, 'output'))
+    return event.payload ?? {}
   const { output: _rejectedOutput, ...metadata } = event.payload ?? {}
   return metadata
 }
@@ -202,7 +295,7 @@ const interventionLabels: Record<InterventionAction, string> = {
   reject: 'Rejected',
   redirect: 'Requested changes',
   pull_to_local: 'Pulled to local',
-	cancel: 'Cancelled',
+  cancel: 'Cancelled',
 }
 
 function keyFor(entry: TimelineEntry) {
@@ -221,11 +314,18 @@ function ringGradient(seats: PanelSeat[]): string | undefined {
   let angle = 0
   for (const seat of seats) {
     const color = seat.review
-      ? seat.review.verdict === 'approve' ? 'var(--color-positive)' : 'var(--color-attention-dot)'
-      : seat.status === 'stale' || seat.status === 'timed_out' ? 'var(--color-attention-dot)'
-        : seat.status === 'failed' ? 'var(--color-failure)'
+      ? seat.review.verdict === 'approve'
+        ? 'var(--color-positive)'
+        : 'var(--color-attention-dot)'
+      : seat.status === 'stale' || seat.status === 'timed_out'
+        ? 'var(--color-attention-dot)'
+        : seat.status === 'failed'
+          ? 'var(--color-failure)'
           : 'var(--color-edge)'
-    stops.push(`${color} ${angle}deg ${angle + segment}deg`, `transparent ${angle + segment}deg ${angle + segment + gap}deg`)
+    stops.push(
+      `${color} ${angle}deg ${angle + segment}deg`,
+      `transparent ${angle + segment}deg ${angle + segment + gap}deg`,
+    )
     angle += segment + gap
   }
   return `conic-gradient(from -90deg, ${stops.join(', ')})`
@@ -238,7 +338,10 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
 }
 
 function TimelineRow({ entry }: { entry: TimelineEntry }) {
-  if (entry.type === 'job') return <JobEntry job={entry.job} summary={entry.summary} model={entry.model} tone={entry.tone} order={entry.order} />
+  if (entry.type === 'job')
+    return (
+      <JobEntry job={entry.job} summary={entry.summary} model={entry.model} tone={entry.tone} order={entry.order} />
+    )
   if (entry.type === 'panel') return <PanelEntry entry={entry} />
   if (entry.type === 'order') {
     return (
@@ -262,7 +365,9 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         <div className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
-            <strong className="font-semibold">{interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}</strong>
+            <strong className="font-semibold">
+              {interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
+            </strong>
             {intervention.reason_code !== defaultReasonCode[intervention.action] && (
               <Badge variant="mono">{intervention.reason_code}</Badge>
             )}
@@ -280,7 +385,12 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         {entry.alarm && <AlertTriangle className="size-3.5 self-center text-attention" />}
         <span className={cn('text-sm', entry.alarm ? 'font-medium text-attention' : 'text-foreground/90')}>
           {entry.href ? (
-            <a href={entry.href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+            <a
+              href={entry.href}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+            >
               {entry.title}
               <ExternalLink className="size-3.5" />
             </a>
@@ -290,7 +400,14 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         </span>
         {entry.detail && !entry.href && <span className="text-xs text-muted">{entry.detail}</span>}
         <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
-        {entry.failureDetail && <details className="basis-full text-xs text-muted"><summary className="cursor-pointer">Captured child error</summary><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">{entry.failureDetail}</pre></details>}
+        {entry.failureDetail && (
+          <details className="basis-full text-xs text-muted">
+            <summary className="cursor-pointer">Captured child error</summary>
+            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">
+              {entry.failureDetail}
+            </pre>
+          </details>
+        )}
       </div>
     </li>
   )
@@ -346,7 +463,9 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
                 className={cn(
                   'size-2 rounded-full',
                   seat.review
-                    ? seat.review.verdict === 'approve' ? 'bg-positive' : 'bg-attention-dot'
+                    ? seat.review.verdict === 'approve'
+                      ? 'bg-positive'
+                      : 'bg-attention-dot'
                     : 'border-[1.5px] border-edge',
                 )}
               />
@@ -372,8 +491,13 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
               )}
             </div>
             {notes.map((seat) => (
-              <div key={seat.seat} className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0">
-                <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">Seat {seat.seat}</span>
+              <div
+                key={seat.seat}
+                className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
+              >
+                <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+                  Seat {seat.seat}
+                </span>
                 <SeatNote seat={seat} />
               </div>
             ))}
@@ -386,19 +510,29 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
               resolution.verdict === 'approve' ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
             )}
           >
-            {resolution.verdict === 'approve' ? <Check className="size-4 shrink-0" /> : <Undo2 className="size-4 shrink-0" />}
+            {resolution.verdict === 'approve' ? (
+              <Check className="size-4 shrink-0" />
+            ) : (
+              <Undo2 className="size-4 shrink-0" />
+            )}
             {resolution.verdict === 'approve'
-              ? seats.length > 1 ? `The panel is unanimous — ${seats.length} of ${seats.length} approved` : 'Approved'
+              ? seats.length > 1
+                ? `The panel is unanimous — ${seats.length} of ${seats.length} approved`
+                : 'Approved'
               : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}
             <span className="text-xs font-normal opacity-80">
               {resolution.verdict === 'approve'
-                ? spendUSD > 0 ? `${usd(spendUSD)} across the panel` : ''
+                ? spendUSD > 0
+                  ? `${usd(spendUSD)} across the panel`
+                  : ''
                 : `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`}
             </span>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
-            <span>{verdictsIn} of {seats.length} verdicts in</span>
+            <span>
+              {verdictsIn} of {seats.length} verdicts in
+            </span>
             {seats.length > 1 && (
               <>
                 <span className="text-faint">·</span>
@@ -416,7 +550,9 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
 function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-      <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">Seat {seat.seat}</span>
+      <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+        Seat {seat.seat}
+      </span>
       <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
@@ -469,7 +605,10 @@ function SeatNote({ seat }: { seat: PanelSeat }) {
           <p className="whitespace-pre-line leading-6 text-foreground/85">{seat.review!.feedback.trim()}</p>
         </div>
         {hasOverflow && !expanded && (
-          <div aria-hidden="true" className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-12" />
+          <div
+            aria-hidden="true"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-12"
+          />
         )}
       </div>
       {hasOverflow && (
@@ -481,7 +620,11 @@ function SeatNote({ seat }: { seat: PanelSeat }) {
           className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? <ChevronUp aria-hidden="true" className="size-3" /> : <ChevronDown aria-hidden="true" className="size-3" />}
+          {expanded ? (
+            <ChevronUp aria-hidden="true" className="size-3" />
+          ) : (
+            <ChevronDown aria-hidden="true" className="size-3" />
+          )}
           {expanded ? 'Less' : 'More'}
         </button>
       )}
@@ -497,7 +640,11 @@ function EnforcementChip({ enforcement }: { enforcement?: WorkOrder['model_enfor
   const pinned = enforcement === 'worker-pinned'
   return (
     <span className="group/enforce relative inline-flex cursor-default items-center gap-1 whitespace-nowrap text-[11px] text-faint">
-      {pinned ? <Pin aria-hidden className="size-3 shrink-0" /> : <CircleDashed aria-hidden className="size-3 shrink-0" />}
+      {pinned ? (
+        <Pin aria-hidden className="size-3 shrink-0" />
+      ) : (
+        <CircleDashed aria-hidden className="size-3 shrink-0" />
+      )}
       <span>{pinned ? 'pinned' : 'self-reported'}</span>
       <span
         role="tooltip"
@@ -538,10 +685,15 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
     return (
       <span className="flex items-center justify-end gap-2">
         <span className="inline-flex items-center gap-1.5 text-xs text-primary">
-          <span className="size-1.5 animate-pulse rounded-full bg-primary" style={{ animationDelay: `${index * 0.5}s` }} />
+          <span
+            className="size-1.5 animate-pulse rounded-full bg-primary"
+            style={{ animationDelay: `${index * 0.5}s` }}
+          />
           Deliberating
         </span>
-        {job?.started_at && <span className="font-mono text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>}
+        {job?.started_at && (
+          <span className="font-mono text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>
+        )}
       </span>
     )
   }
@@ -556,7 +708,14 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
       </span>
     )
   }
-  const label = status === 'stale' ? 'Went stale in the queue' : status === 'timed_out' ? 'Timed out' : status === 'failed' ? 'Failed' : 'Cancelled'
+  const label =
+    status === 'stale'
+      ? 'Went stale in the queue'
+      : status === 'timed_out'
+        ? 'Timed out'
+        : status === 'failed'
+          ? 'Failed'
+          : 'Cancelled'
   return (
     <span
       className={cn(
@@ -572,21 +731,44 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
 // A stage that produced no narration of its own ("Completed.", "Queued.") has
 // nothing to read: it collapses to one line so the stages that did say
 // something keep the reader's attention.
-const placeholderSummaries = new Set(['Queued.', 'Queued for an operator-owned agent over MCP.', 'In progress.', 'Completed.'])
+const placeholderSummaries = new Set([
+  'Queued.',
+  'Queued for an operator-owned agent over MCP.',
+  'In progress.',
+  'Completed.',
+])
 
 // The job footer keeps the operator-facing facts — duration and model — and
 // tucks the dispatch details (effort, enforcement) and audit numbers (tokens,
 // cost) behind a hover on the model chip. Harness, auth mode, confinement,
 // and actor plumbing stay in the API.
-function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: string; model: string; tone: Extract<TimelineEntry, { type: 'job' }>['tone']; order?: WorkOrder }) {
-	if (!job.started_at) return null
-	const running = job.state === 'running'
-	const warning = tone === 'warning'
+function JobEntry({
+  job,
+  summary,
+  model,
+  tone,
+  order,
+}: {
+  job: Job
+  summary: string
+  model: string
+  tone: Extract<TimelineEntry, { type: 'job' }>['tone']
+  order?: WorkOrder
+}) {
+  if (!job.started_at) return null
+  const running = job.state === 'running'
+  const warning = tone === 'warning'
   const stage = stageLabels[job.stage] ?? job.stage
   const note = [
     order?.required_effort ? `effort ${order.required_effort}` : undefined,
-    order?.model_enforcement === 'worker-pinned' ? 'model pinned by your worker' : order?.model_enforcement === 'self-reported' ? 'model self-reported by the agent' : undefined,
-  ].filter(Boolean).join(' · ')
+    order?.model_enforcement === 'worker-pinned'
+      ? 'model pinned by your worker'
+      : order?.model_enforcement === 'self-reported'
+        ? 'model self-reported by the agent'
+        : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const dot = (
     <TimelineDot
       className={cn(
@@ -604,7 +786,9 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
         {dot}
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm">
           <span className="text-foreground/90">{stage} completed</span>
-          <span className="font-mono text-[11px] tabular-nums text-faint">{duration(job.started_at, job.ended_at)}</span>
+          <span className="font-mono text-[11px] tabular-nums text-faint">
+            {duration(job.started_at, job.ended_at)}
+          </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
         </div>
       </li>
@@ -613,7 +797,9 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
   return (
     <li className="relative pl-7">
       {dot}
-      <article className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}>
+      <article
+        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
+      >
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">{stage}</span>
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
@@ -624,10 +810,18 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
         <MarkdownProse
           className="px-4 py-3 text-sm leading-6 text-foreground/85"
           components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
-        >{summary}</MarkdownProse>
+        >
+          {summary}
+        </MarkdownProse>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <ModelChip model={model} costUSD={displayedCostUSD(job)} tokensIn={job.tokens_in} tokensOut={job.tokens_out} note={note || undefined} />
+          <ModelChip
+            model={model}
+            costUSD={displayedCostUSD(job)}
+            tokensIn={job.tokens_in}
+            tokensOut={job.tokens_out}
+            note={note || undefined}
+          />
         </div>
       </article>
     </li>
@@ -637,7 +831,8 @@ function JobEntry({ job, summary, model, tone, order }: { job: Job; summary: str
 // Provider logo keyed off the model name (bundled SVGs, no network fetch).
 function providerLogo(model: string): { svg: string; className?: string } | undefined {
   const name = model.toLowerCase()
-  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai')) return { svg: openaiIcon, className: 'text-foreground' }
+  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai'))
+    return { svg: openaiIcon, className: 'text-foreground' }
   if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
   if (/gemini|google/.test(name)) return { svg: geminiIcon }
   if (/grok|xai|x\.ai/.test(name)) return { svg: grokIcon, className: 'text-foreground' }
@@ -649,7 +844,19 @@ function displayedCostUSD(job: Job | undefined, fallback?: number): number | und
   return job?.cost_usd ?? fallback
 }
 
-function ModelChip({ model, costUSD, tokensIn, tokensOut, note }: { model: string; costUSD?: number | null; tokensIn: number; tokensOut: number; note?: string }) {
+function ModelChip({
+  model,
+  costUSD,
+  tokensIn,
+  tokensOut,
+  note,
+}: {
+  model: string
+  costUSD?: number | null
+  tokensIn: number
+  tokensOut: number
+  note?: string
+}) {
   const logo = providerLogo(model)
   const usage = [
     tokensIn + tokensOut > 0 ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out` : undefined,
@@ -669,7 +876,9 @@ function ModelChip({ model, costUSD, tokensIn, tokensOut, note }: { model: strin
       ) : (
         <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
       )}
-      <span className="truncate" title={model}>{model}</span>
+      <span className="truncate" title={model}>
+        {model}
+      </span>
       {usage && (
         <span
           role="tooltip"

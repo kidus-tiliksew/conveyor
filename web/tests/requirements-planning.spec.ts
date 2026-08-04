@@ -143,6 +143,14 @@ async function initShell(page: Page) {
   })
 }
 
+async function expectStructuralCorrection(page: Page, text: string) {
+  const correction = page.getByText(text)
+  await expect(correction).toBeVisible()
+  const row = correction.locator('xpath=../../..')
+  await expect(row).toHaveClass(/justify-center/)
+  await expect(row.locator('svg')).toHaveCount(0)
+}
+
 function shellResponse(route: Route) {
   const path = new URL(route.request().url()).pathname
   if (path === '/v1/workspaces')
@@ -193,6 +201,7 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toBeVisible()
+  await expect(page.getByText('Latest delivery: blueprint-task.')).toHaveAttribute('title', /blueprint-task delivered/)
   await page.getByText('Trace planning to delivery evidence').click()
   await expect(page.getByText('serves', { exact: true })).toBeVisible()
   await expect(page.getByText('Retry behavior', { exact: true }).last()).toBeVisible()
@@ -473,7 +482,7 @@ test('planning restores durable messages, tool markers, and streams a new turn',
   await expect(page.getByText('Plan bounded retries.')).toBeVisible()
   await expect(page.getByText('I found the approved queue contract.')).toBeVisible()
   await expect(page.getByText('read_approved_spec')).toBeVisible()
-  await expect(page.getByText("The assistant's response needed correction — retrying.")).toBeVisible()
+  await expectStructuralCorrection(page, "The assistant's response needed correction — retrying.")
   await page.getByText('Technical details').click()
   await expect(page.getByText('planning_step parse detail')).toBeVisible()
   await expect(page.getByText('finalize_blueprint corrected')).toBeVisible()
@@ -488,11 +497,7 @@ test('planning restores durable messages, tool markers, and streams a new turn',
 
   await page.getByLabel('Planning message').fill('Draft a requirement with stable statements.')
   await page.getByRole('button', { name: 'Send' }).click()
-  const liveCorrection = page.getByText('Live correction row')
-  await expect(liveCorrection).toBeVisible()
-  const liveCorrectionRow = liveCorrection.locator('xpath=../../..')
-  await expect(liveCorrectionRow).toHaveClass(/justify-center/)
-  await expect(liveCorrectionRow.locator('svg')).toHaveCount(0)
+  await expectStructuralCorrection(page, 'Live correction row')
   await expect
     .poll(() =>
       page.evaluate(
