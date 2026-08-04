@@ -1047,7 +1047,8 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
             version: 2,
             filename: 'overview.md',
             content_type: 'text/markdown',
-            content: '# Billing rule\n\nRetry failed charges twice.',
+            content:
+              '# Billing rule\n\nRetry failed charges twice.\n\n```md\n# Hidden instruction\n```\n\n# Billing rule\n\nDuplicate section.',
             workspace: 'demo',
           },
         ],
@@ -1092,6 +1093,7 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
   await page.goto('/requirements')
   await page.getByRole('button', { name: 'Promote overview' }).click()
   await expect(page.getByRole('dialog', { name: 'Promote product overview' })).toBeVisible()
+  await expect(page.getByLabel('Section').getByRole('option', { name: 'Hidden instruction' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Start promotion' }).click()
   await expect.poll(() => created.length).toBe(1)
   expect(created[0]).toMatchObject({
@@ -1103,13 +1105,14 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
   existing = true
   await page.goto('/requirements?requirement=req-retries')
   await page.getByRole('button', { name: 'Promote overview' }).click()
+  await page.getByLabel('Section').selectOption('#billing-rule-1')
   await page.getByLabel('Promotion target').selectOption('AC-1.1')
   await page.getByRole('button', { name: 'Start promotion' }).click()
   await expect.poll(() => created.length).toBe(2)
   expect(created[1]).toMatchObject({
     goal: 'requirement',
     requirement_context_id: 'req-retries',
-    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'AC-1.1' },
+    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule-1', target_id: 'AC-1.1' },
   })
 })
 

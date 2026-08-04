@@ -381,3 +381,43 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 		t.Fatalf("re-read session=%+v err=%v", reread, err)
 	}
 }
+
+func TestPlanningHTTPFallbackRejectsUncheckedPromotions(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	document, version, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-http-promotion", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Retry policy\nRetry twice."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for name, body := range map[string]string{
+		"missing document": `{"goal":"requirement","promotion":{"document_id":"missing","version":1,"section_anchor":"#retry-policy","target_id":"REQ-1"}}`,
+		"invalid anchor":   fmt.Sprintf(`{"goal":"requirement","promotion":{"document_id":%q,"version":%d,"section_anchor":"#missing","target_id":"REQ-1"}}`, document.ID, version.Version),
+		"blueprint goal":   fmt.Sprintf(`{"goal":"blueprint","promotion":{"document_id":%q,"version":%d,"section_anchor":"#retry-policy","target_id":"REQ-1"}}`, document.ID, version.Version),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := create(body)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+	valid := create(fmt.Sprintf(`{"goal":"requirement","promotion":{"document_id":%q,"version":%d,"section_anchor":"#retry-policy","target_id":"REQ-1"}}`, document.ID, version.Version))
+	if valid.Code != http.StatusCreated {
+		t.Fatalf("valid promotion status=%d body=%s", valid.Code, valid.Body.String())
+	}
+	sessions, err := st.ListPlanningSessions(ctx)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("persisted sessions=%+v err=%v", sessions, err)
+	}
+}

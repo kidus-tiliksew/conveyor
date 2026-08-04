@@ -189,6 +189,40 @@ function headingAnchor(value: string) {
     .replace(/^-|-$/g, '')
 }
 
+export function markdownHeadings(content: string) {
+  const headings: Array<{ label: string; anchor: string }> = []
+  const seen = new Map<string, number>()
+  let fenceCharacter = ''
+  let fenceLength = 0
+  for (const line of content.split('\n')) {
+    const trimmedLeft = line.replace(/^ +/, '')
+    const indent = line.length - trimmedLeft.length
+    const fence = indent <= 3 ? trimmedLeft.match(/^(`+|~+)/)?.[1] : undefined
+    if (fence && fence.length >= 3) {
+      if (!fenceCharacter) {
+        fenceCharacter = fence[0]
+        fenceLength = fence.length
+        continue
+      }
+      if (fence[0] === fenceCharacter && fence.length >= fenceLength && trimmedLeft.slice(fence.length).trim() === '') {
+        fenceCharacter = ''
+        fenceLength = 0
+        continue
+      }
+    }
+    if (fenceCharacter) continue
+    const match = line.match(/^ {0,3}#{1,6}[ \t]+(.+?)\s*$/)
+    if (!match) continue
+    const label = match[1].trim()
+    const base = headingAnchor(label)
+    if (!base) continue
+    const ordinal = seen.get(base) ?? 0
+    seen.set(base, ordinal + 1)
+    headings.push({ label, anchor: `#${base}${ordinal > 0 ? `-${ordinal}` : ''}` })
+  }
+  return headings
+}
+
 function PromotionDialog({
   selected,
   starting,
@@ -213,17 +247,7 @@ function PromotionDialog({
   })
   const [versionNumber, setVersionNumber] = useState(0)
   const chosenVersion = versions.find((version) => version.version === versionNumber) ?? versions.at(-1)
-  const headings = useMemo(
-    () =>
-      (chosenVersion?.content ?? '')
-        .split('\n')
-        .filter((line) => /^\s*#{1,6}\s+\S/.test(line))
-        .map((line) => {
-          const label = line.replace(/^\s*#{1,6}\s+/, '').trim()
-          return { label, anchor: `#${headingAnchor(label)}` }
-        }),
-    [chosenVersion],
-  )
+  const headings = useMemo(() => markdownHeadings(chosenVersion?.content ?? ''), [chosenVersion])
   const [sectionAnchor, setSectionAnchor] = useState('')
   const targetIDs = useMemo(
     () =>
