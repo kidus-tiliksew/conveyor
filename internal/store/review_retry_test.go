@@ -145,6 +145,35 @@ func TestReviewRecoveryNeedsTerminalLatestTimedOutRound(t *testing.T) {
 	}
 }
 
+func TestReviewRecoveryIncludesCompletedSeatWithContradictoryChildFailure(t *testing.T) {
+	wedge := []core.WorkOrder{{
+		ID: "accepted-seat", Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1,
+		State: core.WorkOrderCompleted, LastAttemptOutcome: core.WorkOrderOutcomeChildFailure,
+		AttemptID: "attempt-2", LastAttemptID: "attempt-2", RetrySuppressed: true,
+		LastFailureMessage: "harness exited without terminal verdict submission",
+	}}
+	recovery := ReviewRecoveryNeeded(wedge)
+	if recovery == nil || recovery.PriorRound != 2 || len(recovery.InconsistentOrders) != 1 || len(recovery.TimedOutOrders) != 0 {
+		t.Fatalf("wedge recovery=%+v", recovery)
+	}
+	active := append(wedge, core.WorkOrder{ID: "new-active", Stage: core.StageReview, ReviewRound: 3, State: core.WorkOrderClaimed})
+	if recovery = ReviewRecoveryNeeded(active); recovery != nil {
+		t.Fatalf("active round recovery=%+v", recovery)
+	}
+	resolved := []core.Event{{Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 2, "verdict": "approve"})}}
+	if recovery = ReviewRecoveryNeeded(wedge, resolved); recovery != nil {
+		t.Fatalf("resolved round recovery=%+v", recovery)
+	}
+	successAfterRetry := []core.WorkOrder{{
+		ID: "successful-retry", Stage: core.StageReview, ReviewRound: 4, State: core.WorkOrderCompleted,
+		AttemptID: "attempt-2", LastAttemptID: "attempt-1", LastAttemptOutcome: core.WorkOrderOutcomeChildFailure,
+		LastFailureMessage: "prior attempt failed",
+	}}
+	if recovery = ReviewRecoveryNeeded(successAfterRetry); recovery != nil {
+		t.Fatalf("successful retry was marked contradictory: %+v", recovery)
+	}
+}
+
 func TestMemoryRetryReviewRoundSerializesConcurrentRequests(t *testing.T) {
 	ctx := WithWorkspace(context.Background(), "demo")
 	st := NewMemory()

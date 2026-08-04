@@ -204,6 +204,15 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	if !taskLease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdRelease)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order release requires a valid taskops lease")
 	}
+	if current.Stage == core.StageReview {
+		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), current.TaskID, current.ID)
+		if acceptedErr != nil {
+			return core.WorkOrder{}, acceptedErr
+		}
+		if accepted {
+			return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal", workOrderID)
+		}
+	}
 	if current.State == core.WorkOrderCancelled {
 		matches, matchErr := cancelledSessionMatches(ctx, tx, workspace(ctx), current.TaskID, current.JobID, release.SessionID)
 		if matchErr != nil {

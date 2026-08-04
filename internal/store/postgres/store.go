@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2110,7 +2111,7 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
 			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.TaskID]),
 			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
-			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID]),
+			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID], eventsByTask[row.TaskID]),
 			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.TaskID], eventsByTask[row.TaskID])),
 			Stalled:                   store.StalledTask(ordersByTask[row.TaskID]),
 		}
@@ -2651,12 +2652,29 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, notFound(err, "task %s", request.TaskID)
 	}
-	var latestRound, activeCount, timedOutCount int
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(review_round),0), count(*) FILTER (WHERE state IN ('queued','claimed','submitted')), count(*) FILTER (WHERE state='timed_out' AND review_round=(SELECT COALESCE(max(review_round),0) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review')) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review'`, workspaceID, request.TaskID).Scan(&latestRound, &activeCount, &timedOutCount); err != nil {
+	var latestRound, activeCount, recoverableCount int
+	if err = tx.QueryRow(ctx, `WITH latest AS (
+		SELECT COALESCE(max(review_round),0) AS review_round FROM work_orders
+		WHERE workspace_id=$1 AND task_id=$2 AND stage='review'
+	) SELECT latest.review_round,
+		count(*) FILTER (WHERE state IN ('queued','claimed','submitted')),
+		count(*) FILTER (WHERE state='timed_out' OR (state='completed' AND (last_attempt_outcome<>'' OR retry_suppressed OR last_failure_message<>'') AND (attempt_id='' OR last_attempt_id=attempt_id)))
+	FROM latest LEFT JOIN work_orders ON workspace_id=$1 AND task_id=$2 AND stage='review' AND work_orders.review_round=latest.review_round
+	GROUP BY latest.review_round`, workspaceID, request.TaskID).Scan(&latestRound, &activeCount, &recoverableCount); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	if latestRound == 0 || latestRound != request.PriorRound || timedOutCount == 0 || activeCount != 0 {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", store.ErrReviewRetryConflict, request.TaskID)
+	var resolved bool
+	if latestRound > 0 {
+		err = tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='review.round_completed'
+			AND payload_json->>'review_round'=$3
+		)`, workspaceID, request.TaskID, strconv.Itoa(latestRound)).Scan(&resolved)
+		if err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
+	}
+	if latestRound == 0 || latestRound != request.PriorRound || recoverableCount == 0 || activeCount != 0 || resolved {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching recoverable non-progressing review round", store.ErrReviewRetryConflict, request.TaskID)
 	}
 	newRound := request.PriorRound + 1
 	for i, job := range jobs {
@@ -2722,13 +2740,17 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		return store.ReviewRoundRetryResult{}, err
 	}
 	var timedOutIDs []string
+	var inconsistentIDs []string
 	for _, order := range timedOutOrders {
 		if order.State == core.WorkOrderTimedOut {
 			timedOutIDs = append(timedOutIDs, order.ID)
 		}
+		if order.State == core.WorkOrderCompleted && (order.LastAttemptOutcome != "" || order.RetrySuppressed || order.LastFailureMessage != "") && (order.AttemptID == "" || order.LastAttemptID == order.AttemptID) {
+			inconsistentIDs = append(inconsistentIDs, order.ID)
+		}
 	}
 	retryTask := taskFromDB(before)
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -3012,6 +3034,15 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
+	if order.Stage == core.StageReview {
+		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
+		if acceptedErr != nil {
+			return core.WorkOrder{}, acceptedErr
+		}
+		if accepted {
+			return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
+		}
+	}
 	now := time.Now().UTC()
 	var blockingTaskIDs []string
 	if order.Stage == core.StageImplement {
@@ -3257,6 +3288,17 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	return order, nil
 }
 
+func reviewSeatAcceptedTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID, workOrderID string) (bool, error) {
+	var accepted bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM events e
+		JOIN tasks t ON t.id=e.task_id
+		WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='review.accepted'
+		AND e.payload_json->>'review_work_order_id'=$3
+	)`, workspaceID, taskID, workOrderID).Scan(&accepted)
+	return accepted, err
+}
+
 // RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
 // of an unclaimed queued or stale order on queue re-entry (spec §21.32). The
 // active-attempt snapshot stays immutable: claimed orders are rejected.
@@ -3272,6 +3314,15 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	if order.Stage == core.StageReview {
+		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
+		if acceptedErr != nil {
+			return core.WorkOrder{}, acceptedErr
+		}
+		if accepted {
+			return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot refresh its harness", id)
+		}
 	}
 	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
 		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)

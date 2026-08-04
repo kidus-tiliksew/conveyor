@@ -225,6 +225,7 @@ export interface ReviewRecoveryState {
   prior_round: number
   reason: string
   timed_out_orders: WorkOrder[]
+  inconsistent_orders: WorkOrder[]
 }
 
 export interface ReviewRoundRetryResult {
