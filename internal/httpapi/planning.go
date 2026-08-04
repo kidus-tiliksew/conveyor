@@ -37,7 +37,8 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 		RequirementContextID string `json:"requirement_context_id"`
 		Model                string `json:"model"`
 		// Goal is accepted once at creation and never updated (spec §21.57).
-		Goal string `json:"goal"`
+		Goal      string                      `json:"goal"`
+		Promotion *core.RequirementDerivation `json:"promotion"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxPlanningRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -58,11 +59,13 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 			RequirementContextID: request.RequirementContextID,
 			ModelOverride:        request.Model,
 			Goal:                 goal,
+			Promotion:            request.Promotion,
 		})
 	} else {
 		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
 			RequirementContextID: request.RequirementContextID,
+			Promotion:            request.Promotion,
 		})
 	}
 	if err != nil {

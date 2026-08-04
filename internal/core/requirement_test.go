@@ -88,6 +88,48 @@ func TestValidateRequirementStatements(t *testing.T) {
 	}
 }
 
+func TestValidateRequirementStatementsV2(t *testing.T) {
+	statements := []RequirementStatement{{
+		ID: "REQ-2", Statement: "Operators can verify delivery.",
+		UserStory: &RequirementUserStory{AsA: "release operator", IWant: "a durable check", SoThat: "delivery is reviewable"},
+		AcceptanceCriteria: []AcceptanceCriterion{
+			{ID: "AC-2.1", Statement: "When delivery finishes, the system shall retain its evidence."},
+			{ID: "AC-2.2", Statement: "When evidence is opened, the system shall show its origin."},
+		},
+	}}
+	if err := ValidateRequirementStatements(statements); err != nil {
+		t.Fatalf("v2 statements rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*RequirementStatement){
+		"partial story": func(statement *RequirementStatement) { statement.UserStory.SoThat = "" },
+		"wrong parent":  func(statement *RequirementStatement) { statement.AcceptanceCriteria[0].ID = "AC-3.1" },
+		"empty AC":      func(statement *RequirementStatement) { statement.AcceptanceCriteria[0].Statement = " " },
+		"duplicate AC":  func(statement *RequirementStatement) { statement.AcceptanceCriteria[1].ID = "AC-2.1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := statements[0]
+			story := *copy.UserStory
+			copy.UserStory = &story
+			copy.AcceptanceCriteria = append([]AcceptanceCriterion(nil), copy.AcceptanceCriteria...)
+			mutate(&copy)
+			if err := ValidateRequirementStatements([]RequirementStatement{copy}); err == nil {
+				t.Fatal("invalid v2 statement accepted")
+			}
+		})
+	}
+}
+
+func TestValidateRequirementRevisionDoesNotRecycleAcceptanceCriteria(t *testing.T) {
+	next := []RequirementStatement{{ID: "REQ-1", Statement: "Stable.", AcceptanceCriteria: []AcceptanceCriterion{{ID: "AC-1.2", Statement: "Reused."}}}}
+	if err := ValidateRequirementRevision(1, []string{"REQ-1", "AC-1.1", "AC-1.3"}, next); err == nil || !strings.Contains(err.Error(), "reuses a retired identifier") {
+		t.Fatalf("recycled AC result = %v", err)
+	}
+	next[0].AcceptanceCriteria[0].ID = "AC-1.4"
+	if err := ValidateRequirementRevision(1, []string{"REQ-1", "AC-1.1", "AC-1.3"}, next); err != nil {
+		t.Fatalf("monotonic AC rejected: %v", err)
+	}
+}
+
 func TestValidateRequirementRevisionKeepsStatementIdentityStable(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

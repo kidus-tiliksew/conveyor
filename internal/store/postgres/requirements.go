@@ -61,6 +61,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
+	derivedFrom, err := json.Marshal(first.DerivedFrom)
+	if err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO requirements
 			(workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at)
@@ -70,10 +74,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
 			first.Workspace, first.RequirementID, first.Version, first.Content, statements,
-			string(first.Origin), first.OriginSessionID, first.OriginDriftID, first.CreatedAt); err != nil {
+			string(first.Origin), first.OriginSessionID, first.OriginDriftID, first.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if err := insertRequirementEvent(ctx, q, "requirement.created", map[string]any{
@@ -159,11 +163,16 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 		var latestVersion int
 		var issued []string
 		if err := tx.QueryRow(ctx,
-			`SELECT coalesce(max(version), 0),
-			        coalesce(array_agg(DISTINCT statement.id) FILTER (WHERE statement.id IS NOT NULL), '{}')
-			 FROM requirement_versions
-			 LEFT JOIN LATERAL jsonb_to_recordset(statements_json) AS statement(id text) ON true
-			 WHERE workspace_id=$1 AND requirement_id=$2`,
+			`SELECT coalesce(max(rv.version), 0),
+			        coalesce(array_agg(DISTINCT ids.id) FILTER (WHERE ids.id IS NOT NULL), '{}')
+			 FROM requirement_versions rv
+			 LEFT JOIN LATERAL jsonb_array_elements(rv.statements_json) statement ON true
+			 LEFT JOIN LATERAL (
+			   SELECT statement->>'id' AS id
+			   UNION ALL
+			   SELECT criterion->>'id' FROM jsonb_array_elements(coalesce(statement->'acceptance_criteria','[]'::jsonb)) criterion
+			 ) ids ON true
+			 WHERE rv.workspace_id=$1 AND rv.requirement_id=$2`,
 			version.Workspace, version.RequirementID).Scan(&latestVersion, &issued); err != nil {
 			return err
 		}
@@ -175,11 +184,15 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 		if err != nil {
 			return err
 		}
+		derivedFrom, err := json.Marshal(version.DerivedFrom)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
 			version.Workspace, version.RequirementID, version.Version, version.Content, statements,
-			string(version.Origin), version.OriginSessionID, version.OriginDriftID, version.CreatedAt); err != nil {
+			string(version.Origin), version.OriginSessionID, version.OriginDriftID, version.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if mark := core.RequirementStatementHighWaterMark(version.Statements); mark > highWaterMark {
@@ -278,11 +291,15 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID); err != nil {
 			return err
 		}
-		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", map[string]any{
+		payload := map[string]any{
 			"workspace_id": workspace(ctx), "requirement_id": requirementID,
 			"version": version, "origin": stored.Origin, "confirmed_by": actor.ID,
 			"supersedes_version": current,
-		})
+		}
+		if stored.DerivedFrom != nil {
+			payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = stored.DerivedFrom.DocumentID, stored.DerivedFrom.Version, stored.DerivedFrom.SectionAnchor, stored.DerivedFrom.TargetID
+		}
+		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload)
 	})
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
@@ -499,16 +516,20 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("encode planning revisions: %w", err)
 	}
+	promotion, err := json.Marshal(session.Promotion)
+	if err != nil {
+		return core.PlanningSession{}, fmt.Errorf("encode planning promotion: %w", err)
+	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO planning_sessions
 			(workspace_id,id,title,status,goal,requirement_context_id,model,effort,
 			 exploration_output_tokens,exploration_tokens_used,primary_repo,pinned_revisions,
-			 created_at,updated_at)
-			VALUES ($1,$2,$3,'active',$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13)`,
+			 promotion,created_at,updated_at)
+			VALUES ($1,$2,$3,'active',$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 			session.Workspace, session.ID, session.Title, string(session.Goal),
 			session.RequirementContextID,
 			session.Model, session.Effort, session.ExplorationOutputTokens,
-			session.ExplorationTokensUsed, session.PrimaryRepo, pins,
+			session.ExplorationTokensUsed, session.PrimaryRepo, pins, promotion,
 			session.CreatedAt, session.UpdatedAt); err != nil {
 			return err
 		}
@@ -516,6 +537,7 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 			"workspace_id": session.Workspace, "session_id": session.ID, "title": session.Title,
 			"requirement_context_id": session.RequirementContextID,
 			"goal":                   string(session.Goal),
+			"promotion":              session.Promotion,
 			"model":                  session.Model, "effort": session.Effort,
 			"exploration_output_tokens": session.ExplorationOutputTokens,
 			"primary_repo":              session.PrimaryRepo, "pinned_revisions": session.PinnedRevisions,
@@ -842,12 +864,12 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`
 
-const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at FROM requirement_versions`
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),
 	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
-	exploration_tokens_used,primary_repo,pinned_revisions,created_at,updated_at,finalized_at
+	exploration_tokens_used,primary_repo,pinned_revisions,promotion,created_at,updated_at,finalized_at
 	FROM planning_sessions`
 
 func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
@@ -880,9 +902,10 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	var statements []byte
 	var confirmedBy string
 	var confirmedAt *time.Time
+	var derivedFrom []byte
 	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
 		&statements, &origin, &stored.OriginSessionID, &stored.OriginDriftID,
-		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.CreatedAt); err != nil {
+		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.CreatedAt, &derivedFrom); err != nil {
 		return core.RequirementVersion{}, err
 	}
 	parsed, err := unmarshalRequirementStatements(statements)
@@ -891,6 +914,13 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	}
 	stored.Statements = parsed
 	stored.Origin = core.RequirementOrigin(origin)
+	if len(derivedFrom) > 0 && string(derivedFrom) != "null" {
+		var derivation core.RequirementDerivation
+		if err := json.Unmarshal(derivedFrom, &derivation); err != nil {
+			return core.RequirementVersion{}, err
+		}
+		stored.DerivedFrom = &derivation
+	}
 	stored.ConfirmedBy = confirmedBy
 	if confirmedAt != nil {
 		stored.ConfirmedAt = *confirmedAt
@@ -912,15 +942,21 @@ func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 	var goal string
 	var finalizedAt *time.Time
 	var pins []byte
+	var promotion []byte
 	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status, &goal,
 		&session.RequirementContextID, &session.ProducedRequirementID, &session.ProducedTaskID,
 		&session.TranscriptArtifactID, &session.Model, &session.Effort,
 		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
-		&session.PrimaryRepo, &pins, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
+		&session.PrimaryRepo, &pins, &promotion, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
 		return core.PlanningSession{}, err
 	}
 	if err := json.Unmarshal(pins, &session.PinnedRevisions); err != nil {
 		return core.PlanningSession{}, fmt.Errorf("decode planning revisions: %w", err)
+	}
+	if len(promotion) > 0 && string(promotion) != "null" {
+		if err := json.Unmarshal(promotion, &session.Promotion); err != nil {
+			return core.PlanningSession{}, fmt.Errorf("decode planning promotion: %w", err)
+		}
 	}
 	session.Status = core.PlanningSessionStatus(status)
 	session.Goal = core.PlanningSessionGoal(goal)

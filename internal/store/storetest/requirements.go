@@ -731,6 +731,14 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("goal-less session=%+v err=%v, want open", defaulted, err)
 		}
 		assertPlanningSessionRoundTrip(t, ctx, st, defaulted)
+		promotion, err := st.CreatePlanningSession(ctx, core.PlanningSession{
+			ID: "session-" + core.NewTaskID(), Title: "Promoting requirement…", Goal: core.PlanningGoalRequirement,
+			Promotion: &core.RequirementDerivation{DocumentID: "ref-overview", Version: 2, SectionAnchor: "#billing", TargetID: "AC-1.1"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertPlanningSessionRoundTrip(t, ctx, st, promotion)
 		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), Goal: core.PlanningSessionGoal("epic"),
 		}); err == nil {
@@ -848,15 +856,15 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(sessions) != 3 || sessions[0].ID != sessionID || sessions[1].ID != quiet.ID ||
-			sessions[2].ID != defaulted.ID {
-			t.Fatalf("listed sessions=%+v, want %s before %s before %s",
-				sessions, sessionID, quiet.ID, defaulted.ID)
+		if len(sessions) != 4 || sessions[0].ID != sessionID || sessions[1].ID != quiet.ID ||
+			sessions[2].ID != promotion.ID || sessions[3].ID != defaulted.ID {
+			t.Fatalf("listed sessions=%+v, want %s before %s before %s before %s",
+				sessions, sessionID, quiet.ID, promotion.ID, defaulted.ID)
 		}
 		// Listing exposes the declared goal, so a session list can label it
 		// without a second read (spec §21.57).
-		if sessions[0].Goal != core.PlanningGoalBlueprint || sessions[2].Goal != core.PlanningGoalOpen {
-			t.Fatalf("listed goals=%q/%q, want blueprint/open", sessions[0].Goal, sessions[2].Goal)
+		if sessions[0].Goal != core.PlanningGoalBlueprint || sessions[3].Goal != core.PlanningGoalOpen {
+			t.Fatalf("listed goals=%q/%q, want blueprint/open", sessions[0].Goal, sessions[3].Goal)
 		}
 		for _, listed := range sessions {
 			if listed.Status != core.PlanningSessionActive || listed.Workspace != workspace ||
@@ -1520,6 +1528,10 @@ func assertPlanningSessionRoundTrip(t *testing.T, ctx context.Context, st store.
 		!sameInstant(got.CreatedAt, want.CreatedAt) || !sameInstant(got.FinalizedAt, want.FinalizedAt) {
 		t.Fatalf("read back session=%+v, want %+v", got, want)
 	}
+	if (got.Promotion == nil) != (want.Promotion == nil) ||
+		got.Promotion != nil && *got.Promotion != *want.Promotion {
+		t.Fatalf("read back promotion=%+v, want %+v", got.Promotion, want.Promotion)
+	}
 }
 
 func assertRequirementCount(t *testing.T, ctx context.Context, st store.Store, want int) {
@@ -1543,7 +1555,7 @@ func sameRequirementStatements(got, want []core.RequirementStatement) bool {
 		return false
 	}
 	for index := range got {
-		if got[index] != want[index] {
+		if !reflect.DeepEqual(got[index], want[index]) {
 			return false
 		}
 	}

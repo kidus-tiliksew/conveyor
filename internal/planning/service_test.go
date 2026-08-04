@@ -1039,6 +1039,79 @@ func TestServiceFinalizesUnconfirmedRequirementAndArchivesTranscript(t *testing.
 	assertChunkTypes(t, chunks, "start", "start-step", "tool-input-available", "tool-output-available", "finish-step", "finish")
 }
 
+func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		existing   bool
+		targetID   string
+		statements []core.RequirementStatement
+	}{
+		{name: "new requirement", targetID: "REQ-1", statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Charges retry twice."}}},
+		{name: "existing nested AC", existing: true, targetID: "AC-1.1", statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries are bounded.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "A failed charge retries twice."}}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			document, source, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-overview", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Billing rule\n\nRetry failed charges twice."})
+			if err != nil {
+				t.Fatal(err)
+			}
+			derivation := &core.RequirementDerivation{DocumentID: document.ID, Version: source.Version, SectionAnchor: "#billing-rule", TargetID: test.targetID}
+			requirementID := ""
+			if test.existing {
+				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				if _, _, createErr = st.ConfirmRequirementVersion(ctx, requirement.ID, baseline.Version); createErr != nil {
+					t.Fatal(createErr)
+				}
+				requirementID = requirement.ID
+			}
+			session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-promotion", Goal: core.PlanningGoalRequirement, RequirementContextID: requirementID, Promotion: derivation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{Store: st}
+			args := requirementArgs{RequirementID: requirementID, Title: "Billing", Prose: "Promoted billing behavior.", Statements: test.statements, DerivedFrom: derivation}
+			execution, err := service.requirementTool(ctx, session, toolCall{ID: "promote", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)})
+			if err != nil || execution.Produced == nil {
+				t.Fatalf("promotion execution=%+v err=%v", execution, err)
+			}
+			versions, err := st.ListRequirementVersions(ctx, execution.Produced.RequirementID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := versions[len(versions)-1]
+			if pending.Confirmed || !sameRequirementDerivation(pending.DerivedFrom, derivation) {
+				t.Fatalf("pending promotion=%+v", pending)
+			}
+			assertDerivedFromLinks(t, ctx, st, 0)
+			if _, _, err = st.ConfirmRequirementVersion(ctx, execution.Produced.RequirementID, pending.Version); err != nil {
+				t.Fatal(err)
+			}
+			assertDerivedFromLinks(t, ctx, st, 1)
+		})
+	}
+}
+
+func assertDerivedFromLinks(t *testing.T, ctx context.Context, st store.Store, want int) {
+	t.Helper()
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	for _, link := range links {
+		if link.Kind == "derived_from" {
+			got++
+		}
+	}
+	if got != want {
+		t.Fatalf("derived_from links=%d want %d: %+v", got, want, links)
+	}
+}
+
 func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-260801-adopt")
 	service := &Service{Store: st}

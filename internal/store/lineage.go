@@ -92,6 +92,10 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
 		return result
 	case "requirement.version_confirmed":
+		var links []core.LineageLink
+		if documentID, documentVersion := text("derived_document_id"), number("derived_document_version"); documentID != "" && documentVersion > 0 {
+			links = append(links, link(core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(documentID, documentVersion), core.LineageRequirementVersion, core.RequirementVersionLineageID(text("requirement_id"), number("version")), "derived_from"))
+		}
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
 			_, predecessorRecorded := payload["supersedes_version"]
@@ -100,10 +104,23 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 				predecessor = version - 1
 			}
 			if predecessor <= 0 {
-				return result
+				return emit(links...)
 			}
-			return emit(link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
+			links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
+		return emit(links...)
+	case "reference_document.superseded":
+		id, version, predecessor := text("document_id"), number("version"), number("supersedes_version")
+		return emit(
+			link(core.LineageReferenceDocument, id, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "versions"),
+			link(core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, predecessor), "supersedes"),
+		)
+	case "reference_document.created":
+		id, version := text("document_id"), number("version")
+		return emit(link(core.LineageReferenceDocument, id, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "versions"))
+	case "reference_document.consulted":
+		id, version, sessionID := text("document_id"), number("version"), text("session_id")
+		return emit(link(core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), core.LineagePlanningSession, sessionID, "consulted"))
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
 			links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), "versions")}
@@ -200,6 +217,7 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"dispatches": {}, "produced_requirement": {}, "produced_blueprint": {}, "serves": {},
 	"versions": {}, "supersedes": {}, "submitted_as": {}, "submitted_range": {},
 	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
+	"consulted": {}, "derived_from": {},
 }
 
 func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }

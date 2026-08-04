@@ -122,13 +122,16 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 		fmt.Fprintf(&contract, "- %s v%d — %s\n", requirement.ID, requirement.Version, requirement.Title)
 		for _, statement := range requirement.Statements {
 			fmt.Fprintf(&contract, "  - %s: %s\n", statement.ID, statement.Statement)
+			for _, criterion := range statement.AcceptanceCriteria {
+				fmt.Fprintf(&contract, "    - %s: %s\n", criterion.ID, criterion.Statement)
+			}
 		}
 	}
 	if stage == core.StageImplement {
-		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs in code comments alongside existing (spec §N) citations. Do not add ornamental citations where no implementation decision needs explanation.\n")
+		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs or AC-n.m IDs in code comments alongside existing (spec §N) citations. AC citations are valid only beneath their served parent in the confirmed version above. Do not add ornamental citations where no implementation decision needs explanation.\n")
 	}
 	if stage == core.StageReview {
-		contract.WriteString("\nValidate REQ-n citations against the confirmed statements above and the approved governing spec. Record requirement_citations with applicable=true plus cited_ids, unknown_ids, unserved_ids, and conflicts arrays. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
+		contract.WriteString("\nValidate REQ-n and AC-n.m citations against the confirmed statements above and the approved governing spec. An AC citation is served only when its parent REQ and exact AC exist in that confirmed version. Record requirement_citations with applicable=true plus cited_ids, unknown_ids, unserved_ids, and conflicts arrays. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
 	}
 	return contract.String()
 }

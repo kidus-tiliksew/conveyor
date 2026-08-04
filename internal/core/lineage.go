@@ -19,22 +19,24 @@ const (
 type LineageNodeType string
 
 const (
-	LineagePlanningSession    LineageNodeType = "planning_session"
-	LineageRequirement        LineageNodeType = "requirement"
-	LineageRequirementVersion LineageNodeType = "requirement_version"
-	LineageBlueprint          LineageNodeType = "blueprint"
-	LineageBlueprintVersion   LineageNodeType = "blueprint_version"
-	LineageTask               LineageNodeType = "task"
-	LineageWorkOrder          LineageNodeType = "work_order"
-	LineagePullRequest        LineageNodeType = "pull_request"
-	LineageCommitRange        LineageNodeType = "commit_range"
-	LineageEvidence           LineageNodeType = "evidence"
-	LineageVerdict            LineageNodeType = "verdict"
+	LineagePlanningSession          LineageNodeType = "planning_session"
+	LineageRequirement              LineageNodeType = "requirement"
+	LineageRequirementVersion       LineageNodeType = "requirement_version"
+	LineageReferenceDocument        LineageNodeType = "reference_document"
+	LineageReferenceDocumentVersion LineageNodeType = "reference_document_version"
+	LineageBlueprint                LineageNodeType = "blueprint"
+	LineageBlueprintVersion         LineageNodeType = "blueprint_version"
+	LineageTask                     LineageNodeType = "task"
+	LineageWorkOrder                LineageNodeType = "work_order"
+	LineagePullRequest              LineageNodeType = "pull_request"
+	LineageCommitRange              LineageNodeType = "commit_range"
+	LineageEvidence                 LineageNodeType = "evidence"
+	LineageVerdict                  LineageNodeType = "verdict"
 )
 
 func (nodeType LineageNodeType) Valid() bool {
 	switch nodeType {
-	case LineagePlanningSession, LineageRequirement, LineageRequirementVersion,
+	case LineagePlanningSession, LineageRequirement, LineageRequirementVersion, LineageReferenceDocument, LineageReferenceDocumentVersion,
 		LineageBlueprint, LineageBlueprintVersion, LineageTask, LineageWorkOrder,
 		LineagePullRequest, LineageCommitRange, LineageEvidence, LineageVerdict:
 		return true

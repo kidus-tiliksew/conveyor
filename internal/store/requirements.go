@@ -186,7 +186,7 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	var issued []string
 	for _, previous := range existing {
 		for _, statement := range previous.Statements {
-			issued = append(issued, statement.ID)
+			issued = append(issued, core.RequirementStatementIDs(statement)...)
 		}
 	}
 	if err := core.ValidateRequirementRevision(requirement.StatementHighWaterMark, issued, version.Statements); err != nil {
@@ -266,10 +266,14 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	requirement.CurrentVersion = version
 	requirement.UpdatedAt = now
 	m.requirements[key] = requirement
-	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"workspace_id": workspace, "requirement_id": requirementID, "version": version,
 		"origin": confirmed.Origin, "confirmed_by": actor.ID, "supersedes_version": previousConfirmedVersion,
-	})})
+	}
+	if confirmed.DerivedFrom != nil {
+		payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = confirmed.DerivedFrom.DocumentID, confirmed.DerivedFrom.Version, confirmed.DerivedFrom.SectionAnchor, confirmed.DerivedFrom.TargetID
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(payload)})
 	return requirement, confirmed, nil
 }
 
@@ -451,6 +455,7 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.created", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
 		"requirement_context_id": session.RequirementContextID,
+		"promotion":              session.Promotion,
 		"goal":                   string(session.Goal),
 	})})
 	return clonePlanningSession(session), nil
@@ -549,6 +554,10 @@ func cloneStringMap(values map[string]string) map[string]string {
 
 func clonePlanningSession(session core.PlanningSession) core.PlanningSession {
 	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
+	if session.Promotion != nil {
+		promotion := *session.Promotion
+		session.Promotion = &promotion
+	}
 	return session
 }
 

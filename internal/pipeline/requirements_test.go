@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -111,7 +112,7 @@ func TestRenderRequirementDocumentRoundTripsThroughTheParser(t *testing.T) {
 		t.Fatalf("roundTrip statements = %+v", roundTrip.Statements)
 	}
 	for index, statement := range statements {
-		if roundTrip.Statements[index] != statement {
+		if !reflect.DeepEqual(roundTrip.Statements[index], statement) {
 			t.Fatalf("statement %d = %+v, want %+v", index, roundTrip.Statements[index], statement)
 		}
 	}

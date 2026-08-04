@@ -193,6 +193,14 @@ type Store interface {
 	DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error)
 	ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error)
 
+	CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error)
+	SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error)
+	ListReferenceDocuments(ctx context.Context, includeDeleted bool) ([]core.ReferenceDocument, error)
+	ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error)
+	GetReferenceDocumentVersion(ctx context.Context, documentID string, version int) (core.ReferenceDocumentVersion, error)
+	DeleteReferenceDocument(ctx context.Context, documentID string) error
+	RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error
+
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it (spec §9, §13.1).
 	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
@@ -705,6 +713,8 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		requirements:                map[memoryScopedKey]core.Requirement{},
 		requirementVersions:         map[memoryScopedKey][]core.RequirementVersion{},
 		requirementServes:           map[string]core.RequirementServesLink{},
+		referenceDocuments:          map[memoryScopedKey]core.ReferenceDocument{},
+		referenceDocumentVersions:   map[memoryScopedKey][]core.ReferenceDocumentVersion{},
 		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
@@ -763,6 +773,8 @@ type memory struct {
 	requirements                map[memoryScopedKey]core.Requirement
 	requirementVersions         map[memoryScopedKey][]core.RequirementVersion
 	requirementServes           map[string]core.RequirementServesLink
+	referenceDocuments          map[memoryScopedKey]core.ReferenceDocument
+	referenceDocumentVersions   map[memoryScopedKey][]core.ReferenceDocumentVersion
 	planningSessions            map[memoryScopedKey]core.PlanningSession
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
@@ -3378,6 +3390,10 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 			if requirement, ok := m.requirements[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
 				records[node] = LineageNodeRecord{Title: requirement.Title, Slug: requirement.Slug}
 			}
+		case core.LineageReferenceDocument, core.LineageReferenceDocumentVersion:
+			if document, ok := m.referenceDocuments[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: document.Name}
+			}
 		case core.LineagePlanningSession:
 			if session, ok := m.planningSessions[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
 				records[node] = LineageNodeRecord{Title: session.Title}
@@ -3394,7 +3410,7 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {
-	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion {
 		return node.ID
 	}
 	index := strings.LastIndex(node.ID, ":v")

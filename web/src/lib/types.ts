@@ -619,9 +619,32 @@ export interface Artifact {
   created_at: string
 }
 
+export interface ReferenceDocument {
+  id: string
+  workspace: string
+  name: string
+  current_version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ReferenceDocumentVersion {
+  document_id: string
+  workspace: string
+  version: number
+  filename: string
+  content_type: string
+  content: string
+  supersedes_version?: number
+  created_by: string
+  created_at: string
+}
+
 export interface RequirementStatement {
   id: string
   statement: string
+  user_story?: { as_a: string; i_want: string; so_that: string }
+  acceptance_criteria?: Array<{ id: string; statement: string }>
 }
 
 export interface Requirement {
@@ -643,11 +666,19 @@ export interface RequirementVersion {
   origin: 'chat' | 'drift_amendment' | 'feature_migration'
   origin_session_id?: string
   origin_drift_id?: string
+  derived_from?: RequirementDerivation
   confirmed: boolean
   confirmed_by?: string
   confirmed_at?: string
   workspace: string
   created_at: string
+}
+
+export interface RequirementDerivation {
+  document_id: string
+  version: number
+  section_anchor: string
+  target_id: string
 }
 
 /** The artifact a session declares it is working toward (spec §21.57). */
@@ -660,6 +691,7 @@ export interface PlanningSession {
   /** Declared once at creation; sessions predating the goal read as `open`. */
   goal?: PlanningSessionGoal
   requirement_context_id?: string
+  promotion?: RequirementDerivation
   produced_requirement_id?: string
   produced_task_id?: string
   transcript_artifact_id?: string

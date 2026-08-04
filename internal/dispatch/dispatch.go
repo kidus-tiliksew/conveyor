@@ -1048,6 +1048,19 @@ func validateReviewCitations(result *pipeline.Review, servedRequirements []core.
 	if len(servedRequirements) == 0 && (len(result.RequirementCitations.CitedIDs) > 0 || len(result.RequirementCitations.UnknownIDs) > 0 || len(result.RequirementCitations.UnservedIDs) > 0 || len(result.RequirementCitations.Conflicts) > 0) {
 		return fmt.Errorf("review requirement_citations findings must be empty when no confirmed serves relation exists")
 	}
+	servedIDs := map[string]bool{}
+	for _, requirement := range servedRequirements {
+		for _, statement := range requirement.Statements {
+			for _, id := range core.RequirementStatementIDs(statement) {
+				servedIDs[id] = true
+			}
+		}
+	}
+	for _, id := range result.RequirementCitations.CitedIDs {
+		if !servedIDs[id] {
+			return fmt.Errorf("review requirement_citations cited id %q is not present in the confirmed served requirement version", id)
+		}
+	}
 	return nil
 }
 
