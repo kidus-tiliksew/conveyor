@@ -15,8 +15,11 @@ func (m *memory) CreateReferenceDocument(ctx context.Context, document core.Refe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, document.Workspace)
-	if strings.TrimSpace(document.ID) == "" || strings.TrimSpace(document.Name) == "" {
+	if strings.TrimSpace(document.ID) == "" {
 		return document, version, fmt.Errorf("reference document id and name are required")
+	}
+	if err := core.ValidateReferenceDocumentName(document.Name); err != nil {
+		return document, version, err
 	}
 	key := memoryScopedKey{workspace: workspace, id: document.ID}
 	if _, exists := m.referenceDocuments[key]; exists {
@@ -109,6 +112,9 @@ func (m *memory) ListReferenceDocumentEvents(ctx context.Context, documentID str
 	workspace := workspaceOrDefault(ctx, "")
 	result := []core.Event{}
 	for _, event := range m.events[""] {
+		if !strings.HasPrefix(event.Kind, "reference_document.") {
+			continue
+		}
 		var payload struct {
 			WorkspaceID string `json:"workspace_id"`
 			DocumentID  string `json:"document_id"`

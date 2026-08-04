@@ -2268,11 +2268,24 @@ func TestRequirementSchemaHintAndMarkdownAnchorsExposeV2Contract(t *testing.T) {
 			t.Fatalf("schema hint omitted %q: %s", want, hint)
 		}
 	}
-	content := "# Retry Policy\n```md\n# Hidden\n```\n# Retry Policy\n~~~\n## Also hidden\n~~~\n    # Four-space code\n\t# Tab-indented\n   ## Three spaces\n## Résumé"
+	content := "# Retry Policy\n```md\n# Hidden\n```\n# Retry Policy\n~~~\n## Also hidden\n~~~\n    # Four-space code\n\t# Tab-indented\n   ## Three spaces\n## Résumé\n## Ⅱ\n## ²\n## ½\n## ٣"
 	got := markdownHeadingAnchors(content)
-	want := []string{"retry-policy", "retry-policy-1", "three-spaces", "résumé"}
+	want := []string{"retry-policy", "retry-policy-1", "three-spaces", "résumé", "٣"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("anchors=%v want %v", got, want)
+	}
+}
+
+func TestCreatePromotionSessionRejectsImpossibleTargetIDs(t *testing.T) {
+	service := &Service{Store: store.NewMemory(), ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	for _, target := range []string{"banana", "AC-1-1", "REQ-0", "AC-0.1"} {
+		_, err := service.CreateSession(store.WithWorkspace(t.Context(), "test"), CreateSessionInput{
+			Goal:      core.PlanningGoalRequirement,
+			Promotion: &core.RequirementDerivation{DocumentID: "missing", Version: 1, SectionAnchor: "#section", TargetID: target},
+		})
+		if err == nil || !strings.Contains(err.Error(), "want REQ-n or parent-qualified AC-n.m") {
+			t.Fatalf("target=%q err=%v", target, err)
+		}
 	}
 }
 

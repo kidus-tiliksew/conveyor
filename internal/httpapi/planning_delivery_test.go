@@ -213,10 +213,14 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		if err = st.CreateJob(ctx, reviewJob); err != nil {
 			t.Fatal(err)
 		}
-		if err = dispatcher.ApplyExternalReview(ctx, started.Task, reviewJob, pipeline.Review{
+		served, servedErr := store.ServedRequirementsForTask(ctx, st, child.ID, 256)
+		if servedErr != nil {
+			t.Fatal(servedErr)
+		}
+		if err = dispatcher.ApplyExternalReviewPinned(ctx, started.Task, reviewJob, pipeline.Review{
 			Verdict: "approve", ReasonCode: "approved", Summary: "child review passed",
 			RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
-		}, reviewJob.ID, "review-session", "reviewer"); err != nil {
+		}, reviewJob.ID, "review-session", "reviewer", served.Requirements); err != nil {
 			t.Fatal(err)
 		}
 		current, getErr := st.GetTask(ctx, child.ID)

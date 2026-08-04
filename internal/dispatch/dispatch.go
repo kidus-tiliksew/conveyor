@@ -802,14 +802,6 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 	}
 }
 
-func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string) error {
-	cfg, err := d.currentConfig(ctx)
-	if err != nil {
-		return err
-	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, nil, nil)
-}
-
 // ApplyExternalReviewPinned completes an MCP review against the immutable
 // citation authority stored on its claimed work order.
 func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext) error {

@@ -14,8 +14,11 @@ import (
 )
 
 func (s *Store) CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error) {
-	if document.ID == "" || document.Name == "" {
+	if document.ID == "" {
 		return document, version, fmt.Errorf("reference document id and name are required")
+	}
+	if err := core.ValidateReferenceDocumentName(document.Name); err != nil {
+		return document, version, err
 	}
 	now := time.Now().UTC()
 	document.Workspace, document.CurrentVersion = workspace(ctx), 1
@@ -125,19 +128,25 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 }
 
 func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
-	rows, err := s.queries.ListWorkspaceEvents(ctx, workspace(ctx))
+	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id
+		FROM events WHERE workspace_id=$1 AND kind LIKE 'reference_document.%' ORDER BY id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	result := []core.Event{}
-	for _, row := range rows {
+	for rows.Next() {
+		var row db.Event
+		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
+			return nil, err
+		}
 		event := eventFromDB(row)
 		var payload map[string]any
 		if json.Unmarshal(event.Payload, &payload) == nil && payload["document_id"] == documentID {
 			result = append(result, event)
 		}
 	}
-	return result, nil
+	return result, rows.Err()
 }
 
 func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) error {

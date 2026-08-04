@@ -49,4 +49,19 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 	if len(reloaded.ServedRequirementSnapshot) != 1 || reloaded.ServedRequirementSnapshot[0].Version != 3 || reloaded.ServedRequirementSnapshot[0].Statements[0].AcceptanceCriteria[0].ID != "AC-2.1" {
 		t.Fatalf("reloaded snapshot=%+v", reloaded.ServedRequirementSnapshot)
 	}
+	emptyJob := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, emptyJob); err != nil {
+		t.Fatal(err)
+	}
+	emptyOrder := core.WorkOrder{ID: emptyJob.ID, TaskID: task.ID, JobID: emptyJob.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+	if err = storetest.For(st).CreateWorkOrder(ctx, emptyOrder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, emptyOrder.ID, core.WorkOrderClaim{SessionID: "empty-snapshot-session", ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour, Requirements: []core.ServedRequirementContext{}}); err != nil {
+		t.Fatal(err)
+	}
+	emptyReloaded, err := st.GetWorkOrder(ctx, emptyOrder.ID)
+	if err != nil || emptyReloaded.ServedRequirementSnapshot == nil || len(emptyReloaded.ServedRequirementSnapshot) != 0 {
+		t.Fatalf("reloaded empty snapshot=%+v err=%v", emptyReloaded.ServedRequirementSnapshot, err)
+	}
 }

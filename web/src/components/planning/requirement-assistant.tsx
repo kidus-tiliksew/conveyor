@@ -186,7 +186,7 @@ function headingAnchor(value: string) {
   return value
     .trim()
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/[^\p{L}\p{Nd}]+/gu, '-')
     .replace(/^-|-$/g, '')
 }
 
@@ -351,8 +351,8 @@ function PromotionDialog({
           </datalist>
           <span className="mt-1 block font-normal text-muted">
             {selected
-              ? `Choose an existing ID or enter a new AC ID for ${selected.requirement.title}.`
-              : 'Start a new requirement with REQ-1.'}
+              ? `Choose an existing ID or enter a parent-qualified AC-n.m ID for ${selected.requirement.title}.`
+              : 'Use REQ-n or a parent-qualified AC-n.m ID; new requirements normally start with REQ-1.'}
           </span>
         </label>
         {(documentsError || versionsError) && (

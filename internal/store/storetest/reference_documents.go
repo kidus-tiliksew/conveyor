@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -83,12 +84,23 @@ func RunReferenceDocumentConformance(t *testing.T, st store.Store, ctx context.C
 	if all, listErr := st.ListReferenceDocuments(ctx, true); listErr != nil || !containsReferenceDocument(all, document.ID) {
 		t.Fatalf("all documents after delete=%+v err=%v", all, listErr)
 	}
+	unrelatedTaskID := "unrelated-" + core.NewTaskID()
+	unrelatedTask := core.Task{ID: unrelatedTaskID, Workspace: document.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + unrelatedTaskID, State: core.TaskQueued, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, unrelatedTask); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: unrelatedTask.ID, Kind: "planning.unrelated", Payload: core.JSONPayload(map[string]any{"workspace_id": document.Workspace, "document_id": document.ID})}); err != nil {
+		t.Fatal(err)
+	}
 	events, err := st.ListReferenceDocumentEvents(ctx, document.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	deleteEvents := 0
 	for _, event := range events {
+		if event.Kind == "planning.unrelated" {
+			t.Fatalf("unrelated event leaked into reference history: %+v", event)
+		}
 		if event.TaskID != "" {
 			t.Fatalf("reference event is task-bound: %+v", event)
 		}
