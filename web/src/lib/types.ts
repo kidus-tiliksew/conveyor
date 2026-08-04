@@ -115,6 +115,8 @@ export type LineageNodeType =
   | 'planning_session'
   | 'requirement'
   | 'requirement_version'
+  | 'reference_document'
+  | 'reference_document_version'
   | 'blueprint'
   | 'blueprint_version'
   | 'task'

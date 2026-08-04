@@ -1103,14 +1103,167 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
   existing = true
   await page.goto('/requirements?requirement=req-retries')
   await page.getByRole('button', { name: 'Promote overview' }).click()
-  await page.getByLabel('Promotion target').selectOption('AC-1.1')
+  await page.getByLabel('Promotion target').fill('AC-1.2')
   await page.getByRole('button', { name: 'Start promotion' }).click()
   await expect.poll(() => created.length).toBe(2)
   expect(created[1]).toMatchObject({
     goal: 'requirement',
     requirement_context_id: 'req-retries',
-    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'AC-1.1' },
+    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'AC-1.2' },
   })
+})
+
+test('reference documents upload safely, load history on demand, compare both sides, and confirm deletion', async ({
+  page,
+}) => {
+  await initShell(page)
+  let versionRequests = 0
+  let uploadRequests = 0
+  let deleteRequests = 0
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'GET')
+      return route.fulfill({
+        json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
+      })
+    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'POST') {
+      uploadRequests++
+      if (uploadRequests === 2)
+        return route.fulfill({ status: 400, body: 'reference document content is not Markdown' })
+      return route.fulfill({ status: 201, json: {} })
+    }
+    if (url.pathname === '/v1/reference-documents/ref-overview/versions') {
+      versionRequests++
+      return route.fulfill({
+        json: [
+          {
+            document_id: 'ref-overview',
+            version: 1,
+            filename: 'overview.md',
+            content_type: 'text/markdown',
+            content: '# Overview\n\nKeep this line.\n\nRemoved section.',
+            workspace: 'demo',
+          },
+          {
+            document_id: 'ref-overview',
+            version: 2,
+            filename: 'overview.md',
+            content_type: 'text/plain',
+            content: '# Overview\n\nKeep this line.\n\nAdded section.',
+            supersedes_version: 1,
+            workspace: 'demo',
+          },
+        ],
+      })
+    }
+    if (url.pathname === '/v1/reference-documents/ref-overview' && route.request().method() === 'DELETE') {
+      deleteRequests++
+      return route.fulfill({ status: 204 })
+    }
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  const overviewSummary = page.locator('summary').filter({ hasText: 'Product overview' })
+  await expect(overviewSummary).toBeVisible()
+  expect(versionRequests).toBe(0)
+
+  const addInput = page.locator('label').filter({ hasText: 'Add Markdown' }).locator('input[type=file]')
+  await addInput.setInputFiles({ name: 'new.md', mimeType: 'application/octet-stream', buffer: Buffer.from('# New') })
+  await expect.poll(() => uploadRequests).toBe(1)
+  await addInput.setInputFiles({ name: 'bad.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7') })
+  await expect(page.getByText('reference document content is not Markdown')).toBeVisible()
+
+  await overviewSummary.click()
+  await expect.poll(() => versionRequests).toBe(1)
+  await page.getByLabel('Read version').selectOption('1')
+  await expect(page.getByText('Removed section.')).toBeVisible()
+  await page.getByLabel('Read version').selectOption('2')
+  const comparison = page.locator('details').filter({ hasText: 'Compared with v1' })
+  await comparison.getByText('Compared with v1').click()
+  await expect(comparison.locator('span').filter({ hasText: 'Removed section.' })).toBeVisible()
+  await expect(comparison.locator('span').filter({ hasText: 'Added section.' })).toBeVisible()
+
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('Delete Product overview?')
+    await dialog.accept()
+  })
+  await page.getByRole('button', { name: 'Delete' }).click()
+  await expect.poll(() => deleteRequests).toBe(1)
+})
+
+test('pending derivation links to its pinned source and requirement anchors scroll after rendering', async ({
+  page,
+}) => {
+  await initShell(page)
+  let historyRequests = 0
+  const derived = {
+    ...requirement,
+    pending_versions: [
+      {
+        ...requirement.pending_versions[0],
+        derived_from: { document_id: 'ref-overview', version: 1, section_anchor: '#billing-rule', target_id: 'AC-1.1' },
+        statements: [
+          {
+            id: 'REQ-1',
+            statement: 'Retries stay bounded.',
+            user_story: { as_a: 'billing operator', i_want: 'bounded retries', so_that: 'failures remain visible' },
+            acceptance_criteria: [{ id: 'AC-1.1', statement: 'A failed charge retries twice.' }],
+          },
+        ],
+      },
+    ],
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/reference-documents')
+      return route.fulfill({
+        json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
+      })
+    if (url.pathname === '/v1/reference-documents/ref-overview/versions') {
+      historyRequests++
+      return route.fulfill({
+        json: [
+          {
+            document_id: 'ref-overview',
+            version: 1,
+            filename: 'overview.md',
+            content_type: 'text/markdown',
+            content: '# Billing rule\n\nRetry twice.',
+            workspace: 'demo',
+          },
+        ],
+      })
+    }
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [derived] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: derived })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: derived.pending_versions })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries#ac-1.1')
+  await expect(
+    page.getByText('As billing operator, I want bounded retries, so that failures remain visible.'),
+  ).toBeVisible()
+  const criterion = page.locator('#ac-1\\.1')
+  await expect(criterion).toBeVisible()
+  await expect
+    .poll(() => criterion.evaluate((element) => element.getBoundingClientRect().top < window.innerHeight))
+    .toBe(true)
+  const source = page.getByRole('link', { name: 'Product overview · version 1' })
+  await expect(source).toHaveAttribute('href', '#reference-ref-overview-v1')
+  expect(historyRequests).toBe(0)
+  await source.click()
+  await expect.poll(() => historyRequests).toBe(1)
+  await expect(page.getByText('Retry twice.')).toBeVisible()
 })
 
 // AC-5: finalizing in the sidebar refreshes the canvas in place — a produced

@@ -43,7 +43,7 @@ export const guidedActions: GuidedAction[] = [
   {
     id: 'promote',
     label: 'Promote overview',
-    hint: 'Turn an enforceable overview passage into a proposed REQ or AC with provenance',
+    hint: 'Turn an overview section into a proposed requirement or acceptance criterion',
     goal: 'requirement',
     icon: ArrowUpRight,
     contextual: false,
@@ -169,6 +169,7 @@ export function RequirementAssistant({
       {promotionOpen && (
         <PromotionDialog
           selected={selected}
+          workspace={workspace}
           starting={starting}
           onClose={() => setPromotionOpen(false)}
           onStart={(promotion) => {
@@ -191,23 +192,25 @@ function headingAnchor(value: string) {
 
 function PromotionDialog({
   selected,
+  workspace,
   starting,
   onClose,
   onStart,
 }: {
   selected?: RequirementView
+  workspace: string
   starting: boolean
   onClose: () => void
   onStart: (promotion: RequirementDerivation) => void
 }) {
   const { data: documents = [], error: documentsError } = useQuery({
-    queryKey: ['reference-documents', 'promotion'],
+    queryKey: ['reference-documents', workspace, 'promotion'],
     queryFn: fetchReferenceDocuments,
   })
   const [documentID, setDocumentID] = useState('')
   const chosenDocument = documents.find((document) => document.id === documentID) ?? documents[0]
   const { data: versions = [], error: versionsError } = useQuery({
-    queryKey: ['reference-document-versions', chosenDocument?.id, 'promotion'],
+    queryKey: ['reference-document-versions', workspace, chosenDocument?.id, 'promotion'],
     queryFn: () => fetchReferenceDocumentVersions(chosenDocument?.id ?? ''),
     enabled: Boolean(chosenDocument),
   })
@@ -237,15 +240,15 @@ function PromotionDialog({
   const effectiveAnchor = headings.some((heading) => heading.anchor === sectionAnchor)
     ? sectionAnchor
     : (headings[0]?.anchor ?? '')
-  const effectiveTarget = targetIDs.includes(targetID) ? targetID : (targetIDs[0] ?? '')
+  const effectiveTarget = targetID.trim() || (targetIDs[0] ?? '')
 
   return (
     <Dialog label="Promote product overview" onClose={onClose}>
       <div className="border-b border-border px-5 py-4">
         <h2 className="text-sm font-semibold">Promote product overview</h2>
         <p className="mt-1 text-xs leading-5 text-muted">
-          Choose an immutable source passage and the REQ or AC it should propose. The source becomes normative only
-          after confirmation.
+          Choose the source section and the requirement or acceptance criterion it should propose. You will review the
+          proposal before confirming it.
         </p>
       </div>
       <div className="space-y-4 px-5 py-4">
@@ -266,9 +269,14 @@ function PromotionDialog({
               </option>
             ))}
           </Select>
+          {documents.length === 0 && !documentsError && (
+            <span className="mt-1 block font-normal text-muted">
+              Upload a Markdown overview before starting a promotion.
+            </span>
+          )}
         </label>
         <label className="block text-xs font-medium" htmlFor="promotion-version">
-          Immutable version
+          Version
           <Select
             id="promotion-version"
             value={chosenVersion?.version ?? ''}
@@ -297,19 +305,29 @@ function PromotionDialog({
               </option>
             ))}
           </Select>
+          {chosenVersion && headings.length === 0 && (
+            <span className="mt-1 block font-normal text-muted">
+              This version has no Markdown headings. Add a heading in a newer version to choose a section.
+            </span>
+          )}
         </label>
         <label className="block text-xs font-medium" htmlFor="promotion-target">
           Promotion target
-          <Select id="promotion-target" value={effectiveTarget} onChange={(event) => setTargetID(event.target.value)}>
+          <input
+            id="promotion-target"
+            list="promotion-target-options"
+            value={effectiveTarget}
+            onChange={(event) => setTargetID(event.target.value)}
+            className="mt-1 h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary"
+          />
+          <datalist id="promotion-target-options">
             {targetIDs.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
+              <option key={id} value={id} />
             ))}
-          </Select>
+          </datalist>
           <span className="mt-1 block font-normal text-muted">
             {selected
-              ? `Propose a pending revision of ${selected.requirement.title}.`
+              ? `Choose an existing ID or enter a new AC ID for ${selected.requirement.title}.`
               : 'Start a new requirement with REQ-1.'}
           </span>
         </label>

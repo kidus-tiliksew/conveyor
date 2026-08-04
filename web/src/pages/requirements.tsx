@@ -27,6 +27,7 @@ import { errorMessage } from '../lib/errors'
 import type {
   PlanningSession,
   ReferenceDocument,
+  ReferenceDocumentVersion,
   RequirementDerivation,
   RequirementVersion,
   RequirementView,
@@ -309,7 +310,14 @@ function ReferenceDocumentsPanel({ token, workspace }: { token: string; workspac
       )}
       <div className="mt-2 space-y-2">
         {documents.map((document) => (
-          <ReferenceDocumentItem key={document.id} document={document} token={token} upload={upload} remove={remove} />
+          <ReferenceDocumentItem
+            key={document.id}
+            document={document}
+            token={token}
+            workspace={workspace}
+            upload={upload}
+            remove={remove}
+          />
         ))}
       </div>
       <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs text-muted hover:bg-surface">
@@ -336,35 +344,85 @@ function ReferenceDocumentsPanel({ token, workspace }: { token: string; workspac
 function ReferenceDocumentItem({
   document,
   token,
+  workspace,
   upload,
   remove,
 }: {
   document: ReferenceDocument
   token: string
+  workspace: string
   upload: UseMutationResult<unknown, Error, { file: File; id?: string }>
   remove: UseMutationResult<unknown, Error, string>
 }) {
-  const { data: versions = [] } = useQuery({
-    queryKey: ['reference-document-versions', document.id, document.current_version],
+  const versionAnchorPrefix = `reference-${document.id}-v`
+  const initialVersion = (() => {
+    const match = window.location.hash.match(new RegExp(`^#${versionAnchorPrefix}(\\d+)$`))
+    return match ? Number(match[1]) : document.current_version
+  })()
+  const [open, setOpen] = useState(() => window.location.hash.startsWith(`#${versionAnchorPrefix}`))
+  const [selectedVersion, setSelectedVersion] = useState(initialVersion)
+  const {
+    data: versions = [],
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['reference-document-versions', workspace, document.id, document.current_version],
     queryFn: () => fetchReferenceDocumentVersions(document.id),
+    enabled: open,
   })
-  const latest = versions.at(-1),
-    prior = versions.at(-2)
+  const selected = versions.find((version) => version.version === selectedVersion) ?? versions.at(-1)
+  const prior = selected?.supersedes_version
+    ? versions.find((version) => version.version === selected.supersedes_version)
+    : undefined
+  useEffect(() => {
+    const openLinkedVersion = () => {
+      const match = window.location.hash.match(new RegExp(`^#${versionAnchorPrefix}(\\d+)$`))
+      if (!match) return
+      setOpen(true)
+      setSelectedVersion(Number(match[1]))
+    }
+    window.addEventListener('hashchange', openLinkedVersion)
+    return () => window.removeEventListener('hashchange', openLinkedVersion)
+  }, [versionAnchorPrefix])
+  useEffect(() => {
+    if (!selected) return
+    const id = `${versionAnchorPrefix}${selected.version}`
+    if (window.location.hash === `#${id}`) requestAnimationFrame(() => documentGlobalByID(id)?.scrollIntoView())
+  }, [selected, versionAnchorPrefix])
   return (
-    <details className="rounded-md border border-border bg-card px-2 py-2">
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="rounded-md border border-border bg-card px-2 py-2"
+    >
       <summary className="cursor-pointer text-xs font-medium">
         {document.name} <Badge variant="mono">v{document.current_version}</Badge>
       </summary>
-      {latest && <MarkdownProse>{latest.content}</MarkdownProse>}
-      {prior && latest && (
-        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap border-t border-border pt-2 text-[10px]">
-          {lineChanges(prior.content, latest.content)[1].map((line, index) => (
-            <span key={index} className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}>
-              {line.text || ' '}
-            </span>
-          ))}
-        </pre>
+      {isLoading && <p className="mt-2 text-xs text-muted">Loading version history…</p>}
+      {error && <p className="mt-2 text-xs text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
+      {versions.length > 0 && (
+        <label className="mt-2 block text-[10px] font-medium" htmlFor={`reference-version-${document.id}`}>
+          Read version
+          <select
+            id={`reference-version-${document.id}`}
+            className="mt-1 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
+            value={selected?.version ?? ''}
+            onChange={(event) => setSelectedVersion(Number(event.target.value))}
+          >
+            {[...versions].reverse().map((version) => (
+              <option key={version.version} value={version.version}>
+                v{version.version} · {version.filename}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
+      {selected && (
+        <div id={`${versionAnchorPrefix}${selected.version}`} className="scroll-mt-6">
+          <MarkdownProse>{selected.content}</MarkdownProse>
+        </div>
+      )}
+      {prior && selected && <ReferenceDocumentDiff prior={prior} current={selected} />}
       <div className="mt-2 flex gap-2">
         <label className="cursor-pointer text-[10px] text-primary">
           Re-upload
@@ -384,10 +442,55 @@ function ReferenceDocumentItem({
           type="button"
           className="flex items-center gap-1 text-[10px] text-failure"
           disabled={!token || remove.isPending}
-          onClick={() => remove.mutate(document.id)}
+          onClick={() => {
+            if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) {
+              remove.mutate(document.id)
+            }
+          }}
         >
           <Trash2 className="size-3" /> Delete
         </button>
+      </div>
+    </details>
+  )
+}
+
+function documentGlobalByID(id: string) {
+  return window.document.getElementById(id)
+}
+
+function ReferenceDocumentDiff({
+  prior,
+  current,
+}: {
+  prior: ReferenceDocumentVersion
+  current: ReferenceDocumentVersion
+}) {
+  const [priorLines, currentLines] = lineChanges(prior.content, current.content)
+  return (
+    <details className="mt-2 rounded-md border border-border bg-surface/40">
+      <summary className="cursor-pointer px-2 py-2 text-[10px] font-medium">Compared with v{prior.version}</summary>
+      <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-card p-2 text-[10px]">
+          {priorLines.map((line, index) => (
+            <span
+              key={`${index}-${line.text}`}
+              className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}
+            >
+              {line.text || ' '}
+            </span>
+          ))}
+        </pre>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-card p-2 text-[10px]">
+          {currentLines.map((line, index) => (
+            <span
+              key={`${index}-${line.text}`}
+              className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}
+            >
+              {line.text || ' '}
+            </span>
+          ))}
+        </pre>
       </div>
     </details>
   )
@@ -426,6 +529,16 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
     orderedVersions.find((version) => version.version === selectedVersion) ??
     item.pending_versions.at(-1) ??
     item.current_version
+  const { data: referenceDocuments = [] } = useQuery({
+    queryKey: ['reference-documents', workspace],
+    queryFn: fetchReferenceDocuments,
+    enabled: Boolean(displayed?.derived_from),
+  })
+  useEffect(() => {
+    if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
+    const id = window.location.hash.slice(1).toLowerCase()
+    requestAnimationFrame(() => documentGlobalByID(id)?.scrollIntoView())
+  }, [displayed])
   const currentVersion = item.current_version?.version ?? 0
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
@@ -519,6 +632,9 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
               )}
               {!displayed.confirmed && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
+                  {displayed.derived_from && (
+                    <RequirementDerivationNotice derivation={displayed.derived_from} documents={referenceDocuments} />
+                  )}
                   <p className="text-xs leading-5 text-attention">
                     This revision is not current intent until an operator confirms it.
                   </p>
@@ -698,6 +814,26 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
       </div>
       {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} title="Intent to delivery" />}
     </div>
+  )
+}
+
+function RequirementDerivationNotice({
+  derivation,
+  documents,
+}: {
+  derivation: RequirementDerivation
+  documents: ReferenceDocument[]
+}) {
+  const source = documents.find((document) => document.id === derivation.document_id)
+  const anchor = `reference-${derivation.document_id}-v${derivation.version}`
+  return (
+    <p className="basis-full text-xs leading-5 text-muted" title="The exact saved source used to create this proposal.">
+      Source:{' '}
+      <a className="font-medium text-primary underline-offset-2 hover:underline" href={`#${anchor}`}>
+        {source?.name ?? derivation.document_id} · version {derivation.version}
+      </a>{' '}
+      · section {derivation.section_anchor}
+    </p>
   )
 }
 
