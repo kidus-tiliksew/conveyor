@@ -6,7 +6,14 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestMemoryReferenceDocumentConformance(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "reference-conformance")
+	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	storetest.RunReferenceDocumentConformance(t, store.NewMemory(), ctx)
+}
 
 func TestReferenceDocumentConsultationAndPromotionLineage(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")

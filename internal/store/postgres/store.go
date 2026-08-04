@@ -4773,6 +4773,9 @@ func insertEvent(ctx context.Context, q *db.Queries, event core.Event) error {
 }
 
 func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (int64, error) {
+	if strings.TrimSpace(event.TaskID) == "" {
+		return 0, fmt.Errorf("task-bound event %q requires a task id; use insertWorkspaceEvent for workspace-scoped events", event.Kind)
+	}
 	actor := store.ActorFromContext(ctx)
 	if event.ActorID == "" {
 		event.ActorID = actor.ID
@@ -4805,6 +4808,44 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 		}
 	}
 	return inserted.ID, nil
+}
+
+// insertWorkspaceEvent records one task-less event and projects its canonical
+// lineage inside the caller's transaction. Task-bound and workspace-scoped
+// event insertion stay deliberately separate so a missing task ID cannot turn
+// an INSERT ... SELECT into a silent pgx.ErrNoRows rollback.
+func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) error {
+	actor := store.ActorFromContext(ctx)
+	if event.ActorID == "" {
+		event.ActorID = actor.ID
+	}
+	if event.ActorRole == "" {
+		event.ActorRole = actor.Role
+	}
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if event.Payload == nil {
+		event.Payload = json.RawMessage(`{}`)
+	}
+	inserted, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		WorkspaceID: workspace(ctx), Kind: event.Kind, ActorID: event.ActorID,
+		ActorRole: string(event.ActorRole), PayloadJson: event.Payload, At: timestamp(event.At),
+	})
+	if err != nil {
+		return err
+	}
+	event.ID, event.At = inserted.ID, inserted.At.Time
+	for _, link := range store.LineageLinksForEvent(inserted.WorkspaceID, event) {
+		if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
+			WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+			DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+			CreatedByEventID: link.CreatedByEventID, CreatedAt: timestamp(link.CreatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func lockDependencyEdgesTx(ctx context.Context, tx pgx.Tx, workspaceID string) error {

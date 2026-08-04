@@ -94,7 +94,7 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case "requirement.version_confirmed":
 		var links []core.LineageLink
 		if documentID, documentVersion := text("derived_document_id"), number("derived_document_version"); documentID != "" && documentVersion > 0 {
-			links = append(links, link(core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(documentID, documentVersion), core.LineageRequirementVersion, core.RequirementVersionLineageID(text("requirement_id"), number("version")), "derived_from"))
+			links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(text("requirement_id"), number("version")), core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(documentID, documentVersion), "derived_from"))
 		}
 		if version := number("version"); version > 1 {
 			id := text("requirement_id")
@@ -120,7 +120,7 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		return emit(link(core.LineageReferenceDocument, id, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "versions"))
 	case "reference_document.consulted":
 		id, version, sessionID := text("document_id"), number("version"), text("session_id")
-		return emit(link(core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), core.LineagePlanningSession, sessionID, "consulted"))
+		return emit(link(core.LineagePlanningSession, sessionID, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "consulted"))
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
 			links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), "versions")}
@@ -219,6 +219,11 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
 	"consulted": {}, "derived_from": {},
 }
+
+// Direction is part of the vocabulary contract even though ownership is keyed
+// only by kind: planning_session -consulted-> reference_document_version and
+// requirement_version -derived_from-> reference_document_version. Keep this
+// mirror aligned with the Postgres delete vocabularies below.
 
 func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }
 
