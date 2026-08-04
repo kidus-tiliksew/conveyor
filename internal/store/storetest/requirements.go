@@ -548,6 +548,40 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("acceptance-criterion identifiers are never reissued", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		firstStatement := requirementStatement("REQ-1", "Stable requirement.")
+		firstStatement.AcceptanceCriteria = []core.AcceptanceCriterion{
+			{ID: "AC-1.1", Statement: "First criterion."},
+			{ID: "AC-1.3", Statement: "Third criterion."},
+		}
+		requirement, _ := createRequirement(t, ctx, st, "Stable AC Identity", chatVersion("Initial criteria.", firstStatement))
+
+		dropped := requirementStatement("REQ-1", "Stable requirement.")
+		dropped.AcceptanceCriteria = []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "First criterion."}}
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Third retired.", dropped)); err != nil {
+			t.Fatal(err)
+		}
+
+		reused := dropped
+		reused.AcceptanceCriteria = append(append([]core.AcceptanceCriterion(nil), dropped.AcceptanceCriteria...), core.AcceptanceCriterion{ID: "AC-1.2", Statement: "Reassigned criterion."})
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Reuse attempt.", reused)); err == nil {
+			t.Fatal("retired AC-1.2 at or below the historical AC-1.3 high-water mark was accepted")
+		}
+
+		reinstated := dropped
+		reinstated.AcceptanceCriteria = append(append([]core.AcceptanceCriterion(nil), dropped.AcceptanceCriteria...), core.AcceptanceCriterion{ID: "AC-1.3", Statement: "Third criterion, revised."})
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Third restored.", reinstated)); err != nil {
+			t.Fatalf("reinstating historically issued AC-1.3: %v", err)
+		}
+
+		grown := reinstated
+		grown.AcceptanceCriteria = append(append([]core.AcceptanceCriterion(nil), reinstated.AcceptanceCriteria...), core.AcceptanceCriterion{ID: "AC-1.4", Statement: "Fourth criterion."})
+		if _, err := st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Fourth added.", grown)); err != nil {
+			t.Fatalf("adding AC-1.4 above the historical high-water mark: %v", err)
+		}
+	})
+
 	t.Run("confirmation is forward-only and records the operator", func(t *testing.T) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		requirement, _ := createRequirement(t, ctx, st, "Confirmed Intent",

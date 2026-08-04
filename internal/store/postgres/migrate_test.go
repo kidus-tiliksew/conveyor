@@ -293,9 +293,36 @@ func TestMigrationVersion(t *testing.T) {
 	if err != nil || version != 60 {
 		t.Fatalf("pull request identity repair version=%d err=%v", version, err)
 	}
+	version, err = migrationVersion("migrations/063_reference_document_lineage_repair.sql")
+	if err != nil || version != 63 {
+		t.Fatalf("reference document lineage repair version=%d err=%v", version, err)
+	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {
 			t.Errorf("migrationVersion(%q) succeeded", name)
+		}
+	}
+}
+
+func TestReferenceDocumentLineageRepairMigrationIsRebuildSafe(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/063_reference_document_lineage_repair.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, marker := range []string{
+		"kind in ('consulted', 'derived_from')",
+		"created_by_event_id is not null",
+		"on delete cascade",
+		"rebuildlineage",
+	} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("migration 063 missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{"insert into links", "insert into events", "delete from events"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("migration 063 retains an obsolete projection copy via %q", forbidden)
 		}
 	}
 }

@@ -151,16 +151,8 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 		_, err := s.Store.GetRequirement(r.Context(), node.ID)
 		found = err == nil
 	case core.LineageReferenceDocument:
-		documents, err := s.Store.ListReferenceDocuments(r.Context(), true)
-		if err != nil {
-			return false, err
-		}
-		for _, document := range documents {
-			if document.ID == node.ID {
-				found = true
-				break
-			}
-		}
+		_, err := s.Store.GetReferenceDocument(r.Context(), node.ID)
+		found = err == nil
 	case core.LineagePlanningSession:
 		_, err := s.Store.GetPlanningSession(r.Context(), node.ID)
 		found = err == nil
