@@ -42,6 +42,12 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
               {order.last_failure_message ? ` · ${order.last_failure_message}` : ''}
             </p>
           ))}
+          {(recovery.inconsistent_orders ?? []).map((order) => (
+            <p key={order.id} className="mt-1 font-mono text-[11px]">
+              Seat {order.review_seat ?? '?'} · {order.id} · completed verdict with contradictory{' '}
+              {order.last_attempt_outcome ?? 'failed child'} outcome
+            </p>
+          ))}
         </div>
       </div>
       <Textarea

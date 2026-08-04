@@ -429,9 +429,9 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	recovery := store.ReviewRecoveryNeeded(orders)
+	recovery := store.ReviewRecoveryNeeded(orders, events)
 	if recovery == nil {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s does not have a terminal timed-out review round", store.ErrReviewRetryConflict, taskID)
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s does not have a recoverable non-progressing review round", store.ErrReviewRetryConflict, taskID)
 	}
 	if task.NextStage != core.StageReview {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s requires implementation handoff before another review", store.ErrReviewRetryConflict, taskID)

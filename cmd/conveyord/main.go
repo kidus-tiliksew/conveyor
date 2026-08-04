@@ -250,6 +250,14 @@ func main() {
 			}
 			for _, workspace := range workspaces {
 				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
+				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
+				if mergeErr != nil {
+					log.Printf("reconcile merge readiness: %v", mergeErr)
+					return
+				}
+				if mergeReadiness != 0 {
+					log.Printf("reconciled %d merge-ready task(s) in workspace %s", mergeReadiness, workspace.ID)
+				}
 				lifecycles, lifecycleErr := d.ReconcileGitHubLifecycles(workspaceCtx)
 				if lifecycleErr != nil {
 					log.Printf("reconcile GitHub lifecycle intents: %v", lifecycleErr)

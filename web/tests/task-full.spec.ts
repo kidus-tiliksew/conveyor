@@ -1718,8 +1718,38 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             prior_round: 1,
             reason: 'latest review round is terminal after a reviewer timed out',
             timed_out_orders: reviewActivity.work_orders?.filter((order) => order.state === 'timed_out') ?? [],
+            inconsistent_orders: [],
           }
-        : undefined,
+        : taskId === 'review-wedge'
+          ? {
+              needed: true,
+              prior_round: 2,
+              reason:
+                'latest review round is non-progressing because a completed seat has a contradictory failed child outcome',
+              timed_out_orders: [],
+              inconsistent_orders: [
+                {
+                  id: 'review-wedge-review-2-seat-1',
+                  task_id: taskId,
+                  job_id: 'review-wedge-review-2-seat-1',
+                  stage: 'review',
+                  state: 'completed',
+                  claimable: false,
+                  review_round: 2,
+                  review_seat: 1,
+                  last_attempt_outcome: 'child_failure',
+                  retry_suppressed: true,
+                  queue_entered_at: createdAt,
+                  queue_deadline: createdAt,
+                  redispatch_count: 0,
+                  cost_usd: 0,
+                  tokens_in: 0,
+                  tokens_out: 0,
+                  self_reported: true,
+                },
+              ],
+            }
+          : undefined,
     interrupted_review_recovery:
       taskId === 'interrupted-review'
         ? {
@@ -2371,6 +2401,13 @@ test('timed-out review round exposes a reasoned full-round retry and preserves h
   await expect.poll(() => retryRequest).toContain('request_id')
   expect(retryRequest).toContain('corrected current harness configuration')
   await expect(page.getByText('Review round 2 is queued with 2 seats.')).toBeVisible()
+})
+
+test('contradictory completed review round surfaces a needs-operator retry card', async ({ page }) => {
+  await page.goto('/tasks/review-wedge/full')
+  await expect(page.getByText('Review round 2 needs operator attention')).toBeVisible()
+  await expect(page.getByText(/completed verdict with contradictory child_failure outcome/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Retry review round' })).toBeDisabled()
 })
 
 test('interrupted review round offers one same-round recovery and retains completed verdicts', async ({ page }) => {

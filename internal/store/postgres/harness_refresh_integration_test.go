@@ -69,3 +69,57 @@ func TestHarnessSnapshotRefreshIntegration(t *testing.T) {
 		t.Fatalf("claimed refresh err=%v", err)
 	}
 }
+
+func TestAcceptedReviewSeatRejectsHarnessRefreshAndReclaimIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "accepted-seat-" + core.NewTaskID()
+	ctx := store.WithWorkspace(context.Background(), workspace)
+	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &core.HarnessSnapshot{Name: "codex", Command: []string{"codex", "exec"}}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RequiredHarness: "codex", RequiredHarnessConfig: snapshot, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "accepted-session", ClientToken: "accepted-token", WorkerID: "worker", Lease: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "accepted", PolicyVersion: 1, MergeApproval: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.RefreshWorkOrderHarnessSnapshot(ctx, order.ID, snapshot); err == nil || !strings.Contains(err.Error(), "accepted review seat") {
+		t.Fatalf("accepted refresh err=%v", err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "reclaim", ClientToken: "reclaim-token", WorkerID: "worker", Lease: time.Hour}); err == nil || !strings.Contains(err.Error(), "accepted review seat") {
+		t.Fatalf("accepted reclaim err=%v", err)
+	}
+	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || persisted.State != core.WorkOrderCompleted || persisted.LastAttemptOutcome != "" {
+		t.Fatalf("accepted order=%+v err=%v", persisted, err)
+	}
+	if refreshes, countErr := st.CountEvents(ctx, task.ID, "work_order.harness_refreshed"); countErr != nil || refreshes != 0 {
+		t.Fatalf("accepted harness refresh events=%d err=%v", refreshes, countErr)
+	}
+}

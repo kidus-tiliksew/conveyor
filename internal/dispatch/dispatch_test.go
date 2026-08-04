@@ -735,6 +735,38 @@ func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
 	}
 }
 
+func TestReconcileMergeReadinessRecoversAcceptedTaskKnockedOutOfApproved(t *testing.T) {
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "lost-approved", Workspace: "test", Repo: "app", Branch: "conveyor/lost-approved", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, ApprovedHeadSHA: "accepted-head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 2, "verdict": "approve", "approved_head_sha": "accepted-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	views, merges := 0, 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		if views == 1 {
+			return githubtrigger.PullRequest{Number: 44, State: "open", Mergeable: "MERGEABLE", HeadSHA: "accepted-head"}, nil
+		}
+		return githubtrigger.PullRequest{Number: 44, State: "closed", Merged: true, HeadSHA: "accepted-head"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
+	if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 1 {
+		t.Fatalf("reconciled=%d err=%v", reconciled, err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskMerged || merges != 1 {
+		t.Fatalf("task=%+v merges=%d err=%v", current, merges, err)
+	}
+	if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 0 || merges != 1 {
+		t.Fatalf("idempotent reconciled=%d merges=%d err=%v", reconciled, merges, err)
+	}
+}
+
 func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 	for _, test := range []struct {
 		name       string

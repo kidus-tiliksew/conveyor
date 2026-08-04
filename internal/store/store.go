@@ -581,13 +581,15 @@ func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReview
 }
 
 // ReviewRecoveryState is the actionable projection of a latest review round
-// that cannot finish because at least one seat reached terminal timed_out.
+// that cannot finish because a seat timed out or durable terminal facts
+// contradict a later child outcome.
 // Prior work orders remain immutable; recovery always creates a new round.
 type ReviewRecoveryState struct {
-	Needed         bool             `json:"needed"`
-	PriorRound     int              `json:"prior_round"`
-	Reason         string           `json:"reason"`
-	TimedOutOrders []core.WorkOrder `json:"timed_out_orders"`
+	Needed             bool             `json:"needed"`
+	PriorRound         int              `json:"prior_round"`
+	Reason             string           `json:"reason"`
+	TimedOutOrders     []core.WorkOrder `json:"timed_out_orders"`
+	InconsistentOrders []core.WorkOrder `json:"inconsistent_orders"`
 }
 
 type ReviewRoundRetryRequest struct {
@@ -615,34 +617,58 @@ type memoryReviewRoundRetry struct {
 
 // ReviewRecoveryNeeded derives the retry gate from the latest review round.
 // A round is terminal only when no seat is queued, claimed, or submitted.
-func ReviewRecoveryNeeded(orders []core.WorkOrder) *ReviewRecoveryState {
+func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *ReviewRecoveryState {
 	latest := 0
 	for _, order := range orders {
-		if order.Stage != core.StageReview {
-			continue
-		}
-		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
-			return nil
-		}
-		if order.ReviewRound > latest {
+		if order.Stage == core.StageReview && order.ReviewRound > latest {
 			latest = order.ReviewRound
 		}
 	}
 	if latest == 0 {
 		return nil
 	}
-	state := &ReviewRecoveryState{Needed: true, PriorRound: latest, Reason: "latest review round is terminal after a reviewer timed out"}
+	for _, events := range eventSets {
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Kind != "review.round_completed" {
+				continue
+			}
+			var resolution struct {
+				ReviewRound int `json:"review_round"`
+			}
+			if json.Unmarshal(events[i].Payload, &resolution) == nil && resolution.ReviewRound == latest {
+				return nil
+			}
+		}
+	}
+	state := &ReviewRecoveryState{
+		Needed: true, PriorRound: latest,
+		Reason:             "latest review round is terminal after a reviewer timed out",
+		TimedOutOrders:     make([]core.WorkOrder, 0),
+		InconsistentOrders: make([]core.WorkOrder, 0),
+	}
 	for _, order := range orders {
 		if order.Stage != core.StageReview || order.ReviewRound != latest {
 			continue
 		}
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
+			return nil
+		}
 		switch order.State {
 		case core.WorkOrderTimedOut:
 			state.TimedOutOrders = append(state.TimedOutOrders, order)
+		case core.WorkOrderCompleted:
+			failedOutcome := core.WorkOrderOutcomeConsumesRetry(order.LastAttemptOutcome) || order.RetrySuppressed || order.LastFailureMessage != ""
+			contradictsTerminalAttempt := order.AttemptID == "" || order.LastAttemptID == order.AttemptID
+			if failedOutcome && contradictsTerminalAttempt {
+				state.InconsistentOrders = append(state.InconsistentOrders, order)
+			}
 		}
 	}
-	if len(state.TimedOutOrders) == 0 {
+	if len(state.TimedOutOrders) == 0 && len(state.InconsistentOrders) == 0 {
 		return nil
+	}
+	if len(state.InconsistentOrders) > 0 {
+		state.Reason = "latest review round is non-progressing because a completed seat has a contradictory failed child outcome"
 	}
 	return state
 }
@@ -946,6 +972,9 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	}
 	if ok {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
+	}
+	if ok && order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
+		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal", workOrderID)
 	}
 	if ok && order.State == core.WorkOrderCancelled &&
 		((order.LastAttemptID != "" && order.LastAttemptID == release.SessionID) ||
@@ -1687,7 +1716,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 		m.workOrders[id] = order
 		taskOrders = append(taskOrders, order)
 	}
-	recovery := ReviewRecoveryNeeded(taskOrders)
+	recovery := ReviewRecoveryNeeded(taskOrders, m.events[request.TaskID])
 	if recovery == nil || recovery.PriorRound != request.PriorRound {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", ErrReviewRetryConflict, request.TaskID)
 	}
@@ -1732,7 +1761,11 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	for _, order := range recovery.TimedOutOrders {
 		timedOutIDs = append(timedOutIDs, order.ID)
 	}
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
+	inconsistentIDs := make([]string, 0, len(recovery.InconsistentOrders))
+	for _, order := range recovery.InconsistentOrders {
+		inconsistentIDs = append(inconsistentIDs, order.ID)
+	}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
@@ -1982,6 +2015,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		m.workOrders[id] = order
 	}
 	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
+		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
+	}
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)
 	}
@@ -2147,6 +2183,9 @@ func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string,
 	}
 	now := time.Now().UTC()
 	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
+		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot refresh its harness", id)
+	}
 	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
 		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)
 	}
@@ -2159,6 +2198,22 @@ func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string,
 	m.workOrders[id] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "harness": snapshot.Name, "previous_command": previous.Command, "command": snapshot.Command}), At: now})
 	return order, nil
+}
+
+func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
+	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+		event := m.events[order.TaskID][i]
+		if event.Kind != "review.accepted" {
+			continue
+		}
+		var payload struct {
+			WorkOrderID string `json:"review_work_order_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == order.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
@@ -3725,7 +3780,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		}
 		marker.ForgeFailure = LatestForgeFailure(m.events[id])
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
-		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id])
+		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id], m.events[id])
 		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))
 		marker.Stalled = StalledTask(ordersByTask[id])
 		markers = append(markers, marker)

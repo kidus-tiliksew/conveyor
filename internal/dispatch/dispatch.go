@@ -1303,7 +1303,11 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	if scope == config.RefreshReviewNone && !conflict {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")
 	}
-	if err := d.transition(ctx, task.ID, core.TaskRefreshReview, core.StageReview, ""); err != nil {
+	command := core.TaskRefreshReview
+	if task.State != core.TaskApproved {
+		command = core.TaskRecoverRefresh
+	}
+	if err := d.transition(ctx, task.ID, command, core.StageReview, ""); err != nil {
 		return err
 	}
 	current, err := d.Store.GetTask(ctx, task.ID)
@@ -1323,6 +1327,16 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 // ReadMergeReadiness resolves the gate-facing PR state with bounded backoff.
 // UNKNOWN is an ordinary pending result and never creates merge.failed noise.
 func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (MergeReadiness, error) {
+	var result MergeReadiness
+	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		var lockedErr error
+		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task)
+		return lockedErr
+	})
+	return result, err
+}
+
+func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Task) (MergeReadiness, error) {
 	var result MergeReadiness
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
@@ -1551,7 +1565,16 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return nil
 	}
 	if current.State != core.TaskApproved {
-		return fmt.Errorf("task %s is not approved for merge", task.ID)
+		if (current.State != core.TaskQueued && current.State != core.TaskRunning) || current.MergeApproval {
+			return fmt.Errorf("task %s is not approved for merge", task.ID)
+		}
+		recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, current)
+		if evidenceErr != nil {
+			return evidenceErr
+		}
+		if !recoverable {
+			return fmt.Errorf("task %s has no accepted review evidence for merge recovery", task.ID)
+		}
 	}
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
@@ -1633,11 +1656,87 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	return d.confirmTaskMerged(ctx, current.ID)
 }
 
+func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core.Task) (bool, error) {
+	if task.ApprovedHeadSHA == "" && task.ReviewedHeadSHA == "" {
+		return false, nil
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "review.round_completed" {
+			continue
+		}
+		var payload struct {
+			Verdict string `json:"verdict"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
+			return false, fmt.Errorf("decode latest review resolution for %s: %w", task.ID, err)
+		}
+		return payload.Verdict == "approve", nil
+	}
+	return false, nil
+}
+
+// ReconcileMergeReadiness is a level-triggered sweep for accepted review
+// evidence whose approved-to-merge edge was interrupted. Every candidate is
+// revalidated under the task side-effect lock before a forge mutation.
+func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
+	tasks, err := d.Store.ListTasks(ctx)
+	if err != nil {
+		return 0, err
+	}
+	reconciled := 0
+	for _, task := range tasks {
+		if task.MergeApproval || task.State == core.TaskMerged || task.State == core.TaskClosed || task.State == core.TaskParked || task.State == core.TaskAwaiting {
+			continue
+		}
+		if task.State != core.TaskApproved {
+			recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
+			if evidenceErr != nil {
+				return reconciled, evidenceErr
+			}
+			if !recoverable {
+				continue
+			}
+		}
+		before := task.State
+		if err = d.MergeApprovedTask(ctx, task); err != nil {
+			after, getErr := d.Store.GetTask(ctx, task.ID)
+			if getErr != nil {
+				return reconciled, getErr
+			}
+			if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
+				reconciled++
+				continue
+			}
+			return reconciled, err
+		}
+		after, getErr := d.Store.GetTask(ctx, task.ID)
+		if getErr != nil {
+			return reconciled, getErr
+		}
+		if before != after.State || after.State == core.TaskMerged {
+			reconciled++
+		}
+	}
+	return reconciled, nil
+}
+
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
 	// The task transition atomically resumes dependent queue clocks. Worker
 	// polling discovers the now-claimable order; the old durable-queue nudge
 	// was a no-op because the existing stage order already owns dispatch.
-	return d.transition(ctx, taskID, core.TaskMergeConfirm, "", "")
+	current, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	command := core.TaskMergeConfirm
+	if current.State != core.TaskApproved {
+		command = core.TaskMergeRecover
+	}
+	return d.transition(ctx, taskID, command, "", "")
 }
 
 func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {
