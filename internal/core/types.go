@@ -546,6 +546,10 @@ type WorkOrder struct {
 	LastAgentActivityLabel string           `json:"last_agent_activity_label,omitempty"`
 	CreatedAt              time.Time        `json:"created_at"`
 	UpdatedAt              time.Time        `json:"updated_at"`
+	// ServedRequirementSnapshot is the citation authority rendered for this
+	// review order. A non-nil empty slice means the task had no served
+	// requirements; nil is reserved for pre-snapshot compatibility handling.
+	ServedRequirementSnapshot []ServedRequirementContext `json:"served_requirement_snapshot,omitempty"`
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and
@@ -605,6 +609,7 @@ type WorkOrderClaim struct {
 	Lease            time.Duration
 	ExecutionTimeout time.Duration
 	WorkerID         string
+	Requirements     []ServedRequirementContext
 }
 
 const (

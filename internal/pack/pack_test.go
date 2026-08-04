@@ -94,7 +94,7 @@ func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	if !strings.Contains(implement, "REQ-3: Retries stop.") || !strings.Contains(implement, "cite the applicable stable REQ-n IDs") {
 		t.Fatalf("implement contract=%s", implement)
 	}
-	if !strings.Contains(review, "unknown_ids") || !strings.Contains(review, "not a claim of exhaustive source parsing") {
+	if !strings.Contains(review, "Pinned served requirement citation authority") || !strings.Contains(review, "req-runtime v2") || !strings.Contains(review, "unknown_ids") || !strings.Contains(review, "not a claim of exhaustive source parsing") {
 		t.Fatalf("review contract=%s", review)
 	}
 	if !strings.Contains(unlinked, "applicable=false") || !strings.Contains(unlinked, "unlinked task remains legal") {

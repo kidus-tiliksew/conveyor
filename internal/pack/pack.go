@@ -100,7 +100,7 @@ response must contain the verdict.
 
 End your answer with exactly one machine-owned block and nothing after it:
 
-` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]}}
+` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing blueprint criterion AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]}}
 ` + "```"
 }
 
@@ -117,7 +117,11 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 		}
 		return contract.String()
 	}
-	contract.WriteString("\n\n# Confirmed served requirements\n\n")
+	if stage == core.StageReview {
+		contract.WriteString("\n\n# Pinned served requirement citation authority\n\nThe exact requirement version(s) below are pinned to this review order and bind verdict citation validation:\n")
+	} else {
+		contract.WriteString("\n\n# Confirmed served requirements\n\n")
+	}
 	for _, requirement := range requirements {
 		fmt.Fprintf(&contract, "- %s v%d — %s\n", requirement.ID, requirement.Version, requirement.Title)
 		for _, statement := range requirement.Statements {
@@ -131,7 +135,7 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs or AC-n.m IDs in code comments alongside existing (spec §N) citations. AC citations are valid only beneath their served parent in the confirmed version above. Do not add ornamental citations where no implementation decision needs explanation.\n")
 	}
 	if stage == core.StageReview {
-		contract.WriteString("\nValidate REQ-n and AC-n.m citations against the confirmed statements above and the approved governing spec. An AC citation is served only when its parent REQ and exact AC exist in that confirmed version. Record requirement_citations with applicable=true plus cited_ids, unknown_ids, unserved_ids, and conflicts arrays. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
+		contract.WriteString("\nValidate requirement statement REQ-n and requirement acceptance-criterion AC-n.m citations against the pinned versions above and the approved governing spec. Do not put blueprint acceptance-criterion IDs such as AC-1 in cited_ids. A requirement AC citation is served only when its parent REQ and exact AC exist in its pinned version. Record requirement_citations with applicable=true plus cited_ids, unknown_ids, unserved_ids, and conflicts arrays. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
 	}
 	return contract.String()
 }

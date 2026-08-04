@@ -64,10 +64,11 @@ type Attachment struct {
 }
 
 type Input struct {
-	Prompt       string
-	Effort       string
-	Attachments  []Attachment
-	OutputSchema *OutputSchema
+	Prompt                    string
+	Effort                    string
+	Attachments               []Attachment
+	OutputSchema              *OutputSchema
+	ServedRequirementSnapshot []core.ServedRequirementContext
 }
 
 // OutputSchema requests a strict Responses-compatible JSON-schema result.

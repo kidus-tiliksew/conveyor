@@ -2018,7 +2018,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			if reviewPath == "external-mcp" {
 				err = d.ApplyExternalReview(ctx, task, job, review, job.ID, "review-session", "review")
 			} else {
-				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil)
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -2208,7 +2208,7 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 }
 
 func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
-	served := []core.ServedRequirementContext{{ID: "req-runtime"}}
+	served := []core.ServedRequirementContext{{ID: "req-runtime", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Pinned criterion"}}}}}}
 	tests := []struct {
 		name   string
 		served []core.ServedRequirementContext
@@ -2238,6 +2238,73 @@ func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
 			t.Fatalf("auto-fill result=%+v err=%v", result.RequirementCitations, err)
 		}
 	})
+	t.Run("pinned requirement and acceptance criterion are accepted", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-1", "AC-1.1"}}}
+		if err := validateReviewCitations(&result, served); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("id absent from pinned version is rejected", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"AC-1.2"}}}
+		if err := validateReviewCitations(&result, served); err == nil || !strings.Contains(err.Error(), `cited id "AC-1.2" is not present in the confirmed served requirement version`) {
+			t.Fatalf("validation error=%v", err)
+		}
+	})
+}
+
+func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "pinned-review-race", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pinned", Title: "Pinned authority"}, core.RequirementVersion{
+		Content: "Pinned authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retired later"}}}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(human, task.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := store.ServedRequirementsForTask(ctx, st, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning, ModelTier: "reviewer", StartedAt: now}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: append([]core.ServedRequirementContext{}, pinned.Requirements...)}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: requirement.ID, Content: "Revised authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement"}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "session-second",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
+	d.DisableMemoryQueueForTest()
+	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "contract-faithful", RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-1", "AC-1.1"}}}
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, review, order.ID, "review-session", "reviewer", order.ServedRequirementSnapshot); err != nil {
+		t.Fatalf("pinned verdict rejected after confirmation moved: %v", err)
+	}
 }
 
 func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
@@ -2444,8 +2511,8 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 				{ID: task.ID + "-review-1-seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending},
 			}
 			orders := []core.WorkOrder{
-				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
-				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+				{ID: jobs[0].ID, TaskID: task.ID, JobID: jobs[0].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RequiredModel: "gpt-review", RequiredHarness: "codex", ServedRequirementSnapshot: []core.ServedRequirementContext{}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+				{ID: jobs[1].ID, TaskID: task.ID, JobID: jobs[1].ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, RequiredModel: "claude-review", RequiredHarness: "claude", ServedRequirementSnapshot: []core.ServedRequirementContext{}, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
 			}
 			if err := storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
 				t.Fatal(err)
