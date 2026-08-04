@@ -521,7 +521,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	if err := d.Store.UpdateJob(ctx, job); err != nil {
 		return err
 	}
-	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process")
+	return d.completeOutput(ctx, cfg, task, job, result.Output, "in-process", input.ServedRequirementSnapshot)
 }
 
 func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, cfg *config.Config, task core.Task) (int, []string) {
@@ -554,8 +554,11 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		return inprocess.Input{}, d.failAuthorityBudget(ctx, task, err)
 	}
 	servedRequirements := servedAuthority.Requirements
-	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	input := inprocess.Input{}
+	if stage == core.StageReview {
+		input.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, servedRequirements...)
+	}
+	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
@@ -741,7 +744,7 @@ func modelAttachmentKind(artifact core.Artifact) (inprocess.AttachmentKind, erro
 	return "", fmt.Errorf("unsupported context artifact %s (%s, %s); pipeline context was not prepared", artifact.ID, artifact.Name, artifact.ContentType)
 }
 
-func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, output, reviewer string) error {
+func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, output, reviewer string, snapshots ...[]core.ServedRequirementContext) error {
 	invalid := func(parseErr error) error {
 		kind := string(job.Stage) + ".output_invalid"
 		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: kind, Payload: core.JSONPayload(map[string]string{"error": parseErr.Error()})}); err != nil {
@@ -789,7 +792,11 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
-		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier, invalid)
+		var snapshot []core.ServedRequirementContext
+		if len(snapshots) > 0 {
+			snapshot = snapshots[0]
+		}
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier, snapshot, invalid)
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
@@ -800,7 +807,20 @@ func (d *Dispatcher) ApplyExternalReview(ctx context.Context, task core.Task, jo
 	if err != nil {
 		return err
 	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, nil)
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, nil, nil)
+}
+
+// ApplyExternalReviewPinned completes an MCP review against the immutable
+// citation authority stored on its claimed work order.
+func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext) error {
+	if servedRequirements == nil {
+		return fmt.Errorf("review work order %s predates pinned served-requirement authority; release and reclaim it through the current server", reviewWorkOrderID)
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return err
+	}
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, nil)
 }
 
 // ApplyExternalSpec validates an MCP-authored structured specification and
@@ -940,13 +960,15 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	return version, nil
 }
 
-func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, invalid func(error) error) error {
-	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
-	if err != nil {
-		return d.failAuthorityBudget(ctx, task, err)
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, invalid func(error) error) error {
+	if servedRequirements == nil {
+		servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
+		if err != nil {
+			return d.failAuthorityBudget(ctx, task, err)
+		}
+		servedRequirements = servedAuthority.Requirements
 	}
-	servedRequirements := servedAuthority.Requirements
-	if err = validateReviewCitations(&result, servedRequirements); err != nil {
+	if err := validateReviewCitations(&result, servedRequirements); err != nil {
 		if invalid != nil {
 			return invalid(err)
 		}

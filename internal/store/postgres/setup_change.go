@@ -180,11 +180,11 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 			review_round,review_seat,required_model,required_harness,required_effort,required_harness_config,execution_timeout,model_enforcement,
 			reason_code,review_kind,review_scope,baseline_sha,head_sha,queue_entered_at,queue_deadline,execution_started_at,execution_deadline,
 			last_attempt_outcome,last_failure_message,last_failure_detail,last_failure_exit_status,last_failure_at,automatic_retry_count,next_retry_at,
-			retry_suppressed,retry_suppression_reason,redispatch_count,progress,cost_usd,tokens_in,tokens_out,self_reported,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,'queued','','','','','','',NULL,$6,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','','',NULL,NULL,0,NULL,false,'',0,'',0,0,0,true,$20,$20)`,
+			retry_suppressed,retry_suppression_reason,redispatch_count,progress,cost_usd,tokens_in,tokens_out,self_reported,created_at,updated_at,served_requirement_snapshot)
+			VALUES ($1,$2,$3,$4,$5,'queued','','','','','','',NULL,$6,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','','',NULL,NULL,0,NULL,false,'',0,'',0,0,0,true,$20,$20,$21)`,
 			order.ID, workspaceID, task.ID, job.ID, order.Stage, order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 			order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt)
+			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot))
 		if err != nil {
 			return store.SetupChangeResult{}, err
 		}

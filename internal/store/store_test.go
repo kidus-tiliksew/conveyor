@@ -94,6 +94,31 @@ func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
 	}
 }
 
+func TestMemoryReviewRequirementSnapshotSurvivesReload(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "snapshot-memory", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := []core.ServedRequirementContext{{ID: "req-memory", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-1"}}}}
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "snapshot-session", ClientToken: "secret", Lease: time.Minute, Requirements: snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || len(reloaded.ServedRequirementSnapshot) != 1 || reloaded.ServedRequirementSnapshot[0].Version != 2 {
+		t.Fatalf("reloaded=%+v err=%v", reloaded.ServedRequirementSnapshot, err)
+	}
+}
+
 func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	t.Parallel()
 	ctx := WithActor(context.Background(), Actor{ID: "operator-1", Role: core.ActorHuman})

@@ -389,6 +389,12 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			}
 		}
 		if tool["name"] == "submit_review_verdict" {
+			description, _ := tool["description"].(string)
+			for _, requiredText := range []string{"REQ-n", "AC-n.m", "pinned"} {
+				if !strings.Contains(description, requiredText) {
+					t.Fatalf("submit_review_verdict description lacks %q: %s", requiredText, description)
+				}
+			}
 			schema := tool["inputSchema"].(map[string]any)
 			properties := schema["properties"].(map[string]any)
 			assessment, ok := properties["requirement_citations"].(map[string]any)
