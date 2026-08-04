@@ -195,9 +195,11 @@ type Store interface {
 
 	CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error)
 	SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error)
+	GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error)
 	ListReferenceDocuments(ctx context.Context, includeDeleted bool) ([]core.ReferenceDocument, error)
 	ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error)
 	GetReferenceDocumentVersion(ctx context.Context, documentID string, version int) (core.ReferenceDocumentVersion, error)
+	ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	DeleteReferenceDocument(ctx context.Context, documentID string) error
 	RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error
 

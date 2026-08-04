@@ -203,6 +203,9 @@ WHERE workspace_id = $1
 ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
 
 -- name: DeleteLineageLinks :execrows
+-- Canonical reference directions: planning_session -consulted->
+-- reference_document_version and requirement_version -derived_from->
+-- reference_document_version. Rebuild owns both kinds below.
 DELETE FROM links WHERE workspace_id = $1
   AND created_by_event_id IS NOT NULL
   AND kind = ANY(ARRAY[

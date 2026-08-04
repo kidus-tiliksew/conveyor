@@ -34,6 +34,17 @@ func TestRenderUntrustedDerivesFenceAndFramesOrigin(t *testing.T) {
 	}
 }
 
+func TestPathLabelRendersCanonicalReferenceDirections(t *testing.T) {
+	path := []core.LineageLink{
+		{SrcType: core.LineagePlanningSession, SrcID: "session-1", DstType: core.LineageReferenceDocumentVersion, DstID: "ref-1:v2", Kind: "consulted"},
+		{SrcType: core.LineageRequirementVersion, SrcID: "req-1:v1", DstType: core.LineageReferenceDocumentVersion, DstID: "ref-1:v2", Kind: "derived_from"},
+	}
+	want := "planning_session:session-1 ->[consulted]-> reference_document_version:ref-1:v2 | requirement_version:req-1:v1 ->[derived_from]-> reference_document_version:ref-1:v2"
+	if got := pathLabel(path); got != want {
+		t.Fatalf("reference path label=%q, want %q", got, want)
+	}
+}
+
 func TestBlueprintSectionUsesCanonicalDecompositionAndExactID(t *testing.T) {
 	encoded, err := json.Marshal(pipeline.StructuredSpec{
 		Markdown:   "## Intent\nRetain the useful parent intent.\n\n## Non-goals\nDo not select neighboring children.",

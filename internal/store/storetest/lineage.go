@@ -57,6 +57,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "in-process")
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "external-mcp")
 	assertLineageArtifactOrderingAndBounds(t, st, ctx, fixture.Workspace)
+	assertReferenceDocumentLineage(t, st, ctx)
 	for _, event := range []core.Event{
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
@@ -107,6 +108,66 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		if after[key] != eventID {
 			t.Fatalf("edge %s provenance before=%d after=%d", key, eventID, after[key])
 		}
+	}
+}
+
+func assertReferenceDocumentLineage(t *testing.T, st store.Store, ctx context.Context) {
+	t.Helper()
+	documentID := "ref-" + core.NewTaskID()
+	document, first, err := st.CreateReferenceDocument(ctx,
+		core.ReferenceDocument{ID: documentID, Name: "Lineage conformance " + documentID},
+		core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Overview\n\nInitial context."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.SupersedeReferenceDocument(ctx, document.ID,
+		core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Overview\n\nCurrent context."})
+	if err != nil || second.SupersedesVersion != first.Version {
+		t.Fatalf("reference supersede=%+v err=%v", second, err)
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Reference lineage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.RecordReferenceDocumentConsulted(ctx, document.ID, second.Version, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	requirementID := "req-" + core.NewTaskID()
+	requirement, version, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: requirementID, Title: "Derived reference lineage"},
+		core.RequirementVersion{
+			Content: "Derived reference lineage.", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			Statements:  []core.RequirementStatement{{ID: "REQ-1", Statement: "Reference lineage stays durable."}},
+			DerivedFrom: &core.RequirementDerivation{DocumentID: document.ID, Version: second.Version, SectionAnchor: "#overview", TargetID: "REQ-1"},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]core.LineageLink{
+		"consulted": {
+			SrcType: core.LineagePlanningSession, SrcID: session.ID,
+			DstType: core.LineageReferenceDocumentVersion, DstID: core.ReferenceDocumentVersionLineageID(document.ID, second.Version), Kind: "consulted",
+		},
+		"derived_from": {
+			SrcType: core.LineageRequirementVersion, SrcID: core.RequirementVersionLineageID(requirement.ID, version.Version),
+			DstType: core.LineageReferenceDocumentVersion, DstID: core.ReferenceDocumentVersionLineageID(document.ID, second.Version), Kind: "derived_from",
+		},
+	}
+	for _, link := range links {
+		candidate, ok := want[link.Kind]
+		if ok && link.SrcType == candidate.SrcType && link.SrcID == candidate.SrcID && link.DstType == candidate.DstType && link.DstID == candidate.DstID && link.CreatedByEventID > 0 {
+			delete(want, link.Kind)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing corrected reference lineage edges: want=%+v links=%+v", want, links)
 	}
 }
 

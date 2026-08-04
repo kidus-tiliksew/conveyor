@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,7 +33,7 @@ func (m *memory) CreateReferenceDocument(ctx context.Context, document core.Refe
 	version.CreatedBy, version.CreatedAt = ActorFromContext(ctx).ID, now
 	m.referenceDocuments[key] = document
 	m.referenceDocumentVersions[key] = []core.ReferenceDocumentVersion{version}
-	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"document_id": document.ID, "version": 1, "name": document.Name})})
+	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "document_id": document.ID, "version": 1, "name": document.Name})})
 	return document, version, nil
 }
 
@@ -51,7 +52,7 @@ func (m *memory) SupersedeReferenceDocument(ctx context.Context, documentID stri
 	m.referenceDocumentVersions[key] = append(m.referenceDocumentVersions[key], version)
 	document.CurrentVersion, document.UpdatedAt = version.Version, now
 	m.referenceDocuments[key] = document
-	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"document_id": documentID, "version": version.Version, "supersedes_version": version.SupersedesVersion})})
+	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"workspace_id": key.workspace, "document_id": documentID, "version": version.Version, "supersedes_version": version.SupersedesVersion})})
 	return version, nil
 }
 
@@ -67,6 +68,16 @@ func (m *memory) ListReferenceDocuments(ctx context.Context, includeDeleted bool
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func (m *memory) GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	document, ok := m.referenceDocuments[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: documentID}]
+	if !ok {
+		return core.ReferenceDocument{}, fmt.Errorf("%w: reference document %s", ErrNotFound, documentID)
+	}
+	return document, nil
 }
 
 func (m *memory) ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error) {
@@ -92,6 +103,23 @@ func (m *memory) GetReferenceDocumentVersion(ctx context.Context, documentID str
 	return core.ReferenceDocumentVersion{}, fmt.Errorf("%w: reference document %s version %d", ErrNotFound, documentID, version)
 }
 
+func (m *memory) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	result := []core.Event{}
+	for _, event := range m.events[""] {
+		var payload struct {
+			WorkspaceID string `json:"workspace_id"`
+			DocumentID  string `json:"document_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkspaceID == workspace && payload.DocumentID == documentID {
+			result = append(result, event)
+		}
+	}
+	return result, nil
+}
+
 func (m *memory) DeleteReferenceDocument(ctx context.Context, documentID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,7 +133,7 @@ func (m *memory) DeleteReferenceDocument(ctx context.Context, documentID string)
 	}
 	document.DeletedAt, document.UpdatedAt = time.Now().UTC(), time.Now().UTC()
 	m.referenceDocuments[key] = document
-	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.deleted", Payload: core.JSONPayload(map[string]any{"document_id": documentID, "version": document.CurrentVersion})})
+	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.deleted", Payload: core.JSONPayload(map[string]any{"workspace_id": key.workspace, "document_id": documentID, "version": document.CurrentVersion})})
 	return nil
 }
 
@@ -116,9 +144,20 @@ func (m *memory) RecordReferenceDocumentConsulted(ctx context.Context, documentI
 	if _, ok := m.referenceDocuments[key]; !ok {
 		return fmt.Errorf("%w: reference document %s", ErrNotFound, documentID)
 	}
+	versions := m.referenceDocumentVersions[key]
+	foundVersion := false
+	for _, candidate := range versions {
+		if candidate.Version == version {
+			foundVersion = true
+			break
+		}
+	}
+	if !foundVersion {
+		return fmt.Errorf("%w: reference document %s version %d", ErrNotFound, documentID, version)
+	}
 	if _, ok := m.planningSessions[memoryScopedKey{workspace: key.workspace, id: sessionID}]; !ok {
 		return fmt.Errorf("%w: planning session %s", ErrNotFound, sessionID)
 	}
-	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.consulted", Payload: core.JSONPayload(map[string]any{"document_id": documentID, "version": version, "session_id": sessionID})})
+	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.consulted", Payload: core.JSONPayload(map[string]any{"workspace_id": key.workspace, "document_id": documentID, "version": version, "session_id": sessionID})})
 	return nil
 }

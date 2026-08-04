@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -28,7 +29,7 @@ func (s *Store) CreateReferenceDocument(ctx context.Context, document core.Refer
 		if _, err := tx.Exec(ctx, `INSERT INTO reference_document_versions (workspace_id,document_id,version,filename,content_type,content,created_by,created_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7)`, workspace(ctx), document.ID, version.Filename, version.ContentType, version.Content, version.CreatedBy, now); err != nil {
 			return err
 		}
-		return insertEvent(ctx, q, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"document_id": document.ID, "version": 1, "name": document.Name})})
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": document.ID, "version": 1, "name": document.Name})})
 	})
 	return document, version, err
 }
@@ -49,7 +50,7 @@ func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID strin
 		if _, err := tx.Exec(ctx, `UPDATE reference_documents SET current_version=$3,updated_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, version.Version, now); err != nil {
 			return err
 		}
-		return insertEvent(ctx, q, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"document_id": documentID, "version": version.Version, "supersedes_version": current})})
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version.Version, "supersedes_version": current})})
 	})
 	return version, err
 }
@@ -74,6 +75,20 @@ func (s *Store) ListReferenceDocuments(ctx context.Context, includeDeleted bool)
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error) {
+	item := core.ReferenceDocument{Workspace: workspace(ctx), ID: documentID}
+	var deleted *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID).
+		Scan(&item.Name, &item.CurrentVersion, &deleted, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, fmt.Errorf("%w: reference document %s", store.ErrNotFound, documentID)
+	}
+	if deleted != nil {
+		item.DeletedAt = *deleted
+	}
+	return item, err
 }
 
 func (s *Store) ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error) {
@@ -109,17 +124,37 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 	return item, err
 }
 
+func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
+	rows, err := s.queries.ListWorkspaceEvents(ctx, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	result := []core.Event{}
+	for _, row := range rows {
+		event := eventFromDB(row)
+		var payload map[string]any
+		if json.Unmarshal(event.Payload, &payload) == nil && payload["document_id"] == documentID {
+			result = append(result, event)
+		}
+	}
+	return result, nil
+}
+
 func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var currentVersion int
+		var deleted *time.Time
+		if err := tx.QueryRow(ctx, `SELECT current_version,deleted_at FROM reference_documents WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&currentVersion, &deleted); err != nil {
+			return notFound(err, "reference document %s", documentID)
+		}
+		if deleted != nil {
+			return nil
+		}
 		now := time.Now().UTC()
-		tag, err := tx.Exec(ctx, `UPDATE reference_documents SET deleted_at=$3,updated_at=$3 WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL`, workspace(ctx), documentID, now)
-		if err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE reference_documents SET deleted_at=$3,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, now); err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("%w: reference document %s", store.ErrNotFound, documentID)
-		}
-		return insertEvent(ctx, q, core.Event{Kind: "reference_document.deleted", Payload: core.JSONPayload(map[string]any{"document_id": documentID})})
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.deleted", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": currentVersion})})
 	})
 }
 
@@ -132,6 +167,6 @@ func (s *Store) RecordReferenceDocumentConsulted(ctx context.Context, documentID
 		if !exists {
 			return fmt.Errorf("%w: reference document consultation target", store.ErrNotFound)
 		}
-		return insertEvent(ctx, q, core.Event{Kind: "reference_document.consulted", Payload: core.JSONPayload(map[string]any{"document_id": documentID, "version": version, "session_id": sessionID})})
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.consulted", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "session_id": sessionID})})
 	})
 }
