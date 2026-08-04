@@ -60,9 +60,12 @@ func TestReferenceDocumentUploadBoundary(t *testing.T) {
 	}{
 		{name: "browser octet stream", filename: "overview.md", contentType: "application/octet-stream", content: []byte("# Overview\n\nFacts."), wantStatus: http.StatusCreated},
 		{name: "generic text", filename: "details.markdown", contentType: "text/plain", content: []byte("# Details"), wantStatus: http.StatusCreated},
+		{name: "HTML comment", filename: "comment.md", contentType: "text/markdown", content: []byte("<!-- centered -->\n# Overview"), wantStatus: http.StatusCreated},
+		{name: "HTML container", filename: "container.md", contentType: "text/markdown", content: []byte(`<div align="center">Overview</div>`), wantStatus: http.StatusCreated},
 		{name: "invalid extension", filename: "overview.txt", contentType: "text/plain", content: []byte("# Overview"), wantStatus: http.StatusBadRequest},
 		{name: "known bad media", filename: "overview.md", contentType: "application/pdf", content: []byte("content"), wantStatus: http.StatusBadRequest},
 		{name: "pdf disguised as octet stream", filename: "overview.md", contentType: "application/octet-stream", content: []byte("%PDF-1.7\n"), wantStatus: http.StatusBadRequest},
+		{name: "png disguised as markdown", filename: "overview.md", contentType: "application/octet-stream", content: []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, wantStatus: http.StatusBadRequest},
 		{name: "empty", filename: "overview.md", contentType: "text/markdown", content: nil, wantStatus: http.StatusBadRequest},
 		{name: "malformed media", filename: "overview.md", contentType: "not a media type", content: []byte("# Overview"), wantStatus: http.StatusBadRequest},
 		{name: "oversized", filename: "overview.md", contentType: "text/markdown", content: bytes.Repeat([]byte("a"), maxReferenceDocumentBytes+(1<<20)), wantStatus: http.StatusRequestEntityTooLarge},
@@ -75,6 +78,19 @@ func TestReferenceDocumentUploadBoundary(t *testing.T) {
 				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body, test.wantStatus)
 			}
 		})
+	}
+}
+
+func TestReferenceDocumentNameRejectsFenceCharacters(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.BearerToken = "token"
+	server.Workspace = "demo"
+	for _, name := range []string{"Overview ```", "Overview~~~"} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, referenceDocumentUploadRequest(t, "/v1/reference-documents", name, "overview.md", "text/markdown", []byte("# Overview")))
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "backticks or tildes") {
+			t.Fatalf("name=%q status=%d body=%q", name, response.Code, response.Body.String())
+		}
 	}
 }
 

@@ -2205,6 +2205,12 @@ func (s *Service) validatePromotionSource(ctx context.Context, derivation *core.
 	if derivation.DocumentID == "" || derivation.Version < 1 || strings.TrimSpace(derivation.SectionAnchor) == "" || strings.TrimSpace(derivation.TargetID) == "" {
 		return fmt.Errorf("derived_from requires document_id, version, section_anchor, and target_id")
 	}
+	derivation.TargetID = strings.TrimSpace(derivation.TargetID)
+	if _, ok := core.RequirementStatementNumber(derivation.TargetID); !ok {
+		if _, _, criterionOK := core.AcceptanceCriterionNumber(derivation.TargetID); !criterionOK {
+			return fmt.Errorf("promotion target %q is invalid; want REQ-n or parent-qualified AC-n.m", derivation.TargetID)
+		}
+	}
 	version, err := s.Store.GetReferenceDocumentVersion(ctx, derivation.DocumentID, derivation.Version)
 	if err != nil {
 		return planningStoreError(fmt.Errorf("validate promotion source: %w", err))
@@ -2283,7 +2289,7 @@ func markdownSectionAnchor(heading string) string {
 	var out strings.Builder
 	dash := false
 	for _, r := range strings.ToLower(strings.TrimSpace(heading)) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if unicode.IsLetter(r) || unicode.In(r, unicode.Nd) {
 			out.WriteRune(r)
 			dash = false
 		} else if !dash && out.Len() > 0 {

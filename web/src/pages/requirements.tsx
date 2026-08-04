@@ -361,6 +361,7 @@ function ReferenceDocumentItem({
   })()
   const [open, setOpen] = useState(() => window.location.hash.startsWith(`#${versionAnchorPrefix}`))
   const [selectedVersion, setSelectedVersion] = useState(initialVersion)
+  useEffect(() => setSelectedVersion(document.current_version), [document.current_version])
   const {
     data: versions = [],
     isLoading,
@@ -466,10 +467,23 @@ function ReferenceDocumentDiff({
   prior: ReferenceDocumentVersion
   current: ReferenceDocumentVersion
 }) {
-  const [priorLines, currentLines] = lineChanges(prior.content, current.content)
+  const [open, setOpen] = useState(false)
+  const comparison = useMemo(
+    () => (open ? boundedLineChanges(prior.content, current.content) : undefined),
+    [open, prior.content, current.content],
+  )
+  const [priorLines, currentLines] = comparison?.lines ?? [[], []]
   return (
-    <details className="mt-2 rounded-md border border-border bg-surface/40">
+    <details
+      className="mt-2 rounded-md border border-border bg-surface/40"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary className="cursor-pointer px-2 py-2 text-[10px] font-medium">Compared with v{prior.version}</summary>
+      {comparison?.limited && (
+        <p className="border-t border-border px-2 py-2 text-[10px] text-muted">
+          Diff too large; showing both versions without highlighting.
+        </p>
+      )}
       <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-card p-2 text-[10px]">
           {priorLines.map((line, index) => (
@@ -1025,6 +1039,20 @@ function lineChanges(current: string, pending: string) {
     left.map((text, index) => ({ text, changed: !unchangedLeft.has(index) })),
     right.map((text, index) => ({ text, changed: !unchangedRight.has(index) })),
   ]
+}
+
+const maxReferenceDiffMatrixCells = 250_000
+
+function boundedLineChanges(current: string, pending: string) {
+  const left = current.split('\n')
+  const right = pending.split('\n')
+  if ((left.length + 1) * (right.length + 1) > maxReferenceDiffMatrixCells) {
+    return {
+      limited: true,
+      lines: [left.map((text) => ({ text, changed: false })), right.map((text) => ({ text, changed: false }))] as const,
+    }
+  }
+  return { limited: false, lines: lineChanges(current, pending) }
 }
 
 function eventLabel(event: TaskEvent) {

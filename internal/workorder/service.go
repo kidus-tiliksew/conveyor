@@ -547,10 +547,18 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	}
 	var servedRequirements []core.ServedRequirementContext
 	if order.Stage == core.StageReview {
-		if order.ServedRequirementSnapshot == nil {
+		if order.ServedRequirementSnapshot == nil && order.State != core.WorkOrderQueued {
 			return Context{}, fmt.Errorf("review work order %s predates pinned served-requirement authority; release and reclaim it through the current server", order.ID)
 		}
-		servedRequirements = order.ServedRequirementSnapshot
+		if order.ServedRequirementSnapshot != nil {
+			servedRequirements = order.ServedRequirementSnapshot
+		} else {
+			servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
+			if resolveErr != nil {
+				return Context{}, fmt.Errorf("resolve served requirements for queued review task %s: %w", task.ID, resolveErr)
+			}
+			servedRequirements = servedAuthority.Requirements
+		}
 	} else {
 		servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 		if resolveErr != nil {

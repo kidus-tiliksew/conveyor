@@ -68,8 +68,8 @@ func (s *Server) createReferenceDocument(w http.ResponseWriter, r *http.Request)
 		writeReferenceUploadError(w, err)
 		return
 	}
-	if name == "" {
-		http.Error(w, "reference document name is required", 400)
+	if err = core.ValidateReferenceDocumentName(name); err != nil {
+		http.Error(w, err.Error(), 400)
 		return
 	}
 	document, version, err := s.Store.CreateReferenceDocument(r.Context(), core.ReferenceDocument{ID: "ref-" + core.NewTaskID(), Name: name}, core.ReferenceDocumentVersion{Filename: filename, ContentType: contentType, Content: string(content)})

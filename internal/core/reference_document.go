@@ -35,6 +35,16 @@ type ReferenceDocumentVersion struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
+func ValidateReferenceDocumentName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("reference document name is required")
+	}
+	if strings.ContainsAny(name, "`~") {
+		return fmt.Errorf("reference document name must not contain backticks or tildes")
+	}
+	return nil
+}
+
 func NormalizeReferenceMarkdown(filename, contentType string, content []byte) (string, error) {
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil {
@@ -52,7 +62,9 @@ func NormalizeReferenceMarkdown(filename, contentType string, content []byte) (s
 		return "", fmt.Errorf("reference document must contain text")
 	}
 	detected := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(content), ";", 2)[0]))
-	if detected != "text/plain" && detected != "application/octet-stream" {
+	// Markdown may begin with a raw HTML comment or container. DetectContentType
+	// reports those ordinary Markdown documents as text/html.
+	if detected != "text/plain" && detected != "text/html" && detected != "application/octet-stream" {
 		return "", fmt.Errorf("reference document content is not Markdown text")
 	}
 	text := strings.TrimSpace(string(content))

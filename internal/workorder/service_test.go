@@ -767,6 +767,49 @@ func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "queued-review-peek", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-queued-peek", Title: "Peek authority"}, core.RequirementVersion{Content: "Current", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Render current authority."}}, Origin: core.RequirementOriginChat, OriginSessionID: "peek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(human, task.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	peek, err := service.GetVisible(ctx, job.ID)
+	if err != nil || len(peek.ServedRequirements) != 1 || !strings.Contains(peek.RolePrompt, "req-queued-peek v1") {
+		t.Fatalf("peek=%+v err=%v", peek.ServedRequirements, err)
+	}
+	reloaded, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || reloaded.ServedRequirementSnapshot != nil {
+		t.Fatalf("queued peek persisted snapshot=%+v err=%v", reloaded.ServedRequirementSnapshot, err)
+	}
+}
+
 func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()

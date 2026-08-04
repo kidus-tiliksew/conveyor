@@ -11,6 +11,11 @@ func TestNormalizeReferenceMarkdown(t *testing.T) {
 			t.Fatalf("generic markdown media %q = %q, %v", media, got, err)
 		}
 	}
+	for _, content := range []string{"<!-- centered heading -->\n# Product", `<div align="center">Product</div>`} {
+		if got, err := NormalizeReferenceMarkdown("overview.md", "text/markdown", []byte(content)); err != nil || got != content {
+			t.Fatalf("HTML-leading markdown normalization = %q, %v", got, err)
+		}
+	}
 	for _, input := range []struct {
 		name, media string
 		content     []byte
@@ -19,6 +24,7 @@ func TestNormalizeReferenceMarkdown(t *testing.T) {
 		{"overview.md", "application/pdf", []byte("content")},
 		{"overview.docx", "text/markdown", []byte("content")},
 		{"overview.md", "application/octet-stream", []byte("%PDF-1.7\n")},
+		{"overview.md", "application/octet-stream", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}},
 		{"overview.md", "text/plain", []byte{'t', 'e', 'x', 't', 0}},
 		{"overview.md", "not a media type", []byte("content")},
 	} {

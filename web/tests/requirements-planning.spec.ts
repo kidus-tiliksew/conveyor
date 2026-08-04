@@ -1048,7 +1048,7 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
             filename: 'overview.md',
             content_type: 'text/markdown',
             content:
-              '# Billing rule\n\nRetry failed charges twice.\n\n```md\n# Hidden instruction\n```\n\n# Billing rule\n\nDuplicate section.\n\n    # Four-space code\n\n\t# Tab-indented\n\n   ## Three spaces',
+              '# Billing rule\n\nRetry failed charges twice.\n\n```md\n# Hidden instruction\n```\n\n# Billing rule\n\nDuplicate section.\n\n    # Four-space code\n\n\t# Tab-indented\n\n   ## Three spaces\n\n# Ⅱ\n\n# ²\n\n# ½\n\n# ٣',
             workspace: 'demo',
           },
         ],
@@ -1097,6 +1097,10 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
   await expect(page.getByLabel('Section').getByRole('option', { name: 'Four-space code' })).toHaveCount(0)
   await expect(page.getByLabel('Section').getByRole('option', { name: 'Tab-indented' })).toHaveCount(0)
   await expect(page.getByLabel('Section').getByRole('option', { name: 'Three spaces' })).toHaveCount(1)
+  await expect(page.getByLabel('Section').getByRole('option', { name: 'Ⅱ' })).toHaveCount(0)
+  await expect(page.getByLabel('Section').getByRole('option', { name: '²' })).toHaveCount(0)
+  await expect(page.getByLabel('Section').getByRole('option', { name: '½' })).toHaveCount(0)
+  await expect(page.getByLabel('Section').getByRole('option', { name: '٣' })).toHaveCount(1)
   await page.getByRole('button', { name: 'Start promotion' }).click()
   await expect.poll(() => created.length).toBe(1)
   expect(created[0]).toMatchObject({
@@ -1200,6 +1204,104 @@ test('reference documents upload safely, load history on demand, compare both si
   })
   await page.getByRole('button', { name: 'Delete' }).click()
   await expect.poll(() => deleteRequests).toBe(1)
+})
+
+test('upload then supersede uses the version endpoint and bounds oversized comparison', async ({ page }) => {
+  await initShell(page)
+  let currentVersion = 0
+  let createRequests = 0
+  let supersedeRequests = 0
+  const priorContent = Array.from({ length: 600 }, (_, index) => `Prior line ${index}`).join('\n')
+  const currentContent = Array.from({ length: 600 }, (_, index) => `Current line ${index}`).join('\n')
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'GET') {
+      return route.fulfill({
+        json: currentVersion
+          ? [{ id: 'ref-live', name: 'overview', current_version: currentVersion, workspace: 'demo' }]
+          : [],
+      })
+    }
+    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'POST') {
+      createRequests++
+      currentVersion = 1
+      return route.fulfill({ status: 201, json: { document: { id: 'ref-live' }, version: { version: 1 } } })
+    }
+    if (url.pathname === '/v1/reference-documents/ref-live/versions' && route.request().method() === 'POST') {
+      supersedeRequests++
+      currentVersion = 2
+      return route.fulfill({ status: 201, json: { document_id: 'ref-live', version: 2, supersedes_version: 1 } })
+    }
+    if (url.pathname === '/v1/reference-documents/ref-live/versions') {
+      return route.fulfill({
+        json: [
+          {
+            document_id: 'ref-live',
+            version: 1,
+            filename: 'overview.md',
+            content_type: 'text/markdown',
+            content: priorContent,
+            workspace: 'demo',
+          },
+          ...(currentVersion > 1
+            ? [
+                {
+                  document_id: 'ref-live',
+                  version: 2,
+                  filename: 'overview.md',
+                  content_type: 'text/markdown',
+                  content: currentContent,
+                  supersedes_version: 1,
+                  workspace: 'demo',
+                },
+              ]
+            : []),
+        ],
+      })
+    }
+    if (url.pathname === '/v1/requirements' || url.pathname === '/v1/planning-sessions') {
+      return route.fulfill({ json: [] })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  await page
+    .locator('label')
+    .filter({ hasText: 'Add Markdown' })
+    .locator('input[type=file]')
+    .setInputFiles({
+      name: 'overview.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from(priorContent),
+    })
+  await expect.poll(() => createRequests).toBe(1)
+  const summary = page.locator('summary').filter({ hasText: 'overview' })
+  await expect(summary).toContainText('v1')
+  await summary.click()
+  await expect(page.getByText('Prior line 0')).toBeVisible()
+
+  await page
+    .locator('label')
+    .filter({ hasText: 'Re-upload' })
+    .locator('input[type=file]')
+    .setInputFiles({
+      name: 'overview.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from(currentContent),
+    })
+  await expect.poll(() => supersedeRequests).toBe(1)
+  await expect(summary).toContainText('v2')
+  const comparison = page.locator('details').filter({ hasText: 'Compared with v1' })
+  await comparison.getByText('Compared with v1').click()
+  await expect(comparison.getByText('Diff too large; showing both versions without highlighting.')).toBeVisible()
+  await expect(comparison.getByText('Prior line 0', { exact: true })).toBeVisible()
+  await expect(comparison.getByText('Current line 0', { exact: true })).toBeVisible()
+
+  await page.getByLabel('Read version').selectOption('1')
+  await expect(page.getByText('Prior line 599')).toBeVisible()
 })
 
 test('pending derivation links to its pinned source and requirement anchors scroll after rendering', async ({
