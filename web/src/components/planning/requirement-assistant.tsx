@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, MessageCircleQuestion, PenLine, Sparkles } from 'lucide-react'
+import { ArrowUpRight, GitBranch, MessageCircleQuestion, PenLine, Sparkles } from 'lucide-react'
 import { Button } from '../ui/button'
 import { fetchPlanningSession } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -7,7 +7,7 @@ import type { PlanningSession, PlanningSessionGoal, RequirementView } from '../.
 import { PlanningChat } from './planning-chat'
 
 export type GuidedAction = {
-  id: 'draft' | 'revise' | 'qa' | 'plan'
+  id: 'draft' | 'revise' | 'promote' | 'qa' | 'plan'
   label: string
   hint: string
   goal: PlanningSessionGoal
@@ -35,6 +35,14 @@ export const guidedActions: GuidedAction[] = [
     hint: 'Propose the next version of this document',
     goal: 'requirement',
     icon: PenLine,
+    contextual: true,
+  },
+  {
+    id: 'promote',
+    label: 'Promote overview',
+    hint: 'Turn an enforceable overview passage into a proposed REQ or AC with provenance',
+    goal: 'requirement',
+    icon: ArrowUpRight,
     contextual: true,
   },
   {

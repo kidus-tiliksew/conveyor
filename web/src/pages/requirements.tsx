@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, Sparkles } from 'lucide-react'
+import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, Sparkles, Trash2 } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
 import { type GuidedAction, RequirementAssistant, draftAction } from '../components/planning/requirement-assistant'
@@ -16,11 +16,15 @@ import {
   fetchRequirement,
   fetchRequirements,
   fetchRequirementVersions,
+  fetchReferenceDocuments,
+  fetchReferenceDocumentVersions,
+  uploadReferenceDocument,
+  deleteReferenceDocument,
   uploadArtifact,
 } from '../lib/api'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
-import type { PlanningSession, RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
+import type { PlanningSession, ReferenceDocument, RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Planning conversation',
@@ -178,6 +182,7 @@ export function RequirementsPage() {
           aria-label="Requirement corpus"
           className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-surface/40"
         >
+          <ReferenceDocumentsPanel token={token} workspace={workspace} />
           <div className="flex items-baseline justify-between px-4 py-3">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Living documents</p>
             <span className="text-[10px] text-faint">Flat corpus</span>
@@ -261,6 +266,118 @@ export function RequirementsPage() {
         />
       </div>
     </div>
+  )
+}
+
+function ReferenceDocumentsPanel({ token, workspace }: { token: string; workspace: string }) {
+  const client = useQueryClient()
+  const { data: documents = [] } = useQuery({
+    queryKey: ['reference-documents', workspace],
+    queryFn: fetchReferenceDocuments,
+    enabled: Boolean(workspace),
+  })
+  const upload = useMutation({
+    mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(token, file, id),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteReferenceDocument(token, id),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
+  })
+  return (
+    <section aria-label="Product overview documents" className="border-b border-border px-4 py-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Product overviews</p>
+        <Badge variant="mono">{documents.length}</Badge>
+      </div>
+      {documents.length === 0 && (
+        <p className="mt-2 text-xs leading-5 text-muted">
+          Add Product Overview, Personas, or Domain Glossary Markdown.
+        </p>
+      )}
+      <div className="mt-2 space-y-2">
+        {documents.map((document) => (
+          <ReferenceDocumentItem key={document.id} document={document} token={token} upload={upload} remove={remove} />
+        ))}
+      </div>
+      <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs text-muted hover:bg-surface">
+        <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
+        <input
+          className="hidden"
+          type="file"
+          accept=".md,.markdown,text/markdown"
+          disabled={!token || upload.isPending}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            if (file) upload.mutate({ file })
+            event.currentTarget.value = ''
+          }}
+        />
+      </label>
+      {upload.error && (
+        <p className="mt-2 text-xs text-failure">{errorMessage(upload.error, 'Could not upload overview.')}</p>
+      )}
+    </section>
+  )
+}
+
+function ReferenceDocumentItem({
+  document,
+  token,
+  upload,
+  remove,
+}: {
+  document: ReferenceDocument
+  token: string
+  upload: UseMutationResult<unknown, Error, { file: File; id?: string }>
+  remove: UseMutationResult<unknown, Error, string>
+}) {
+  const { data: versions = [] } = useQuery({
+    queryKey: ['reference-document-versions', document.id, document.current_version],
+    queryFn: () => fetchReferenceDocumentVersions(document.id),
+  })
+  const latest = versions.at(-1),
+    prior = versions.at(-2)
+  return (
+    <details className="rounded-md border border-border bg-card px-2 py-2">
+      <summary className="cursor-pointer text-xs font-medium">
+        {document.name} <Badge variant="mono">v{document.current_version}</Badge>
+      </summary>
+      {latest && <MarkdownProse>{latest.content}</MarkdownProse>}
+      {prior && latest && (
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap border-t border-border pt-2 text-[10px]">
+          {lineChanges(prior.content, latest.content)[1].map((line, index) => (
+            <span key={index} className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}>
+              {line.text || ' '}
+            </span>
+          ))}
+        </pre>
+      )}
+      <div className="mt-2 flex gap-2">
+        <label className="cursor-pointer text-[10px] text-primary">
+          Re-upload
+          <input
+            className="hidden"
+            type="file"
+            accept=".md,.markdown,text/markdown"
+            disabled={!token || upload.isPending}
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) upload.mutate({ file, id: document.id })
+              event.currentTarget.value = ''
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="flex items-center gap-1 text-[10px] text-failure"
+          disabled={!token || remove.isPending}
+          onClick={() => remove.mutate(document.id)}
+        >
+          <Trash2 className="size-3" /> Delete
+        </button>
+      </div>
+    </details>
   )
 }
 
@@ -583,10 +700,33 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
             {version.statements.map((statement) => (
               <li
                 key={statement.id}
-                className="flex gap-3 rounded-md border border-border bg-surface px-3 py-2.5 text-sm"
+                id={statement.id.toLowerCase()}
+                className="scroll-mt-6 rounded-md border border-border bg-surface px-3 py-2.5 text-sm"
               >
-                <Badge variant="mono">{statement.id}</Badge>
-                <span>{statement.statement}</span>
+                <div className="flex gap-3">
+                  <a href={`#${statement.id.toLowerCase()}`} aria-label={`Link to ${statement.id}`}>
+                    <Badge variant="mono">{statement.id}</Badge>
+                  </a>
+                  <span>{statement.statement}</span>
+                </div>
+                {statement.user_story && (
+                  <p className="mt-2 pl-14 text-xs leading-5 text-muted">
+                    As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
+                    {statement.user_story.so_that}.
+                  </p>
+                )}
+                {(statement.acceptance_criteria?.length ?? 0) > 0 && (
+                  <ol className="mt-3 space-y-2 border-l border-border pl-4">
+                    {statement.acceptance_criteria?.map((criterion) => (
+                      <li key={criterion.id} id={criterion.id.toLowerCase()} className="scroll-mt-6 flex gap-3 text-xs">
+                        <a href={`#${criterion.id.toLowerCase()}`} aria-label={`Link to ${criterion.id}`}>
+                          <Badge variant="mono">{criterion.id}</Badge>
+                        </a>
+                        <span className="leading-5">{criterion.statement}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </li>
             ))}
           </ol>
@@ -699,7 +839,17 @@ function stripStatementsFence(content: string) {
 
 function documentText(version: RequirementVersion) {
   const prose = stripStatementsFence(version.content)
-  const statements = version.statements.map((statement) => `${statement.id}: ${statement.statement}`).join('\n')
+  const statements = version.statements
+    .flatMap((statement) => [
+      `${statement.id}: ${statement.statement}`,
+      ...(statement.user_story
+        ? [
+            `  As ${statement.user_story.as_a}, I want ${statement.user_story.i_want}, so that ${statement.user_story.so_that}.`,
+          ]
+        : []),
+      ...(statement.acceptance_criteria ?? []).map((criterion) => `  ${criterion.id}: ${criterion.statement}`),
+    ])
+    .join('\n')
   return [prose, statements].filter(Boolean).join('\n\n')
 }
 

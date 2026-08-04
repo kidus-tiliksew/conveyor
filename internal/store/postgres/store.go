@@ -560,6 +560,7 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}
+	referenceNodes := map[string][]core.LineageNode{}
 	sessionNodes := map[string][]core.LineageNode{}
 	orderNodes := map[string][]core.LineageNode{}
 	for _, node := range nodes {
@@ -569,6 +570,8 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 			taskNodes[baseID] = append(taskNodes[baseID], node)
 		case core.LineageRequirement, core.LineageRequirementVersion:
 			requirementNodes[baseID] = append(requirementNodes[baseID], node)
+		case core.LineageReferenceDocument, core.LineageReferenceDocumentVersion:
+			referenceNodes[baseID] = append(referenceNodes[baseID], node)
 		case core.LineagePlanningSession:
 			sessionNodes[baseID] = append(sessionNodes[baseID], node)
 		case core.LineageWorkOrder:
@@ -582,6 +585,25 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 	if err := s.queryLineageRequirementRecords(ctx, requirementNodes, records); err != nil {
 		return nil, err
 	}
+	if len(referenceNodes) > 0 {
+		rows, queryErr := s.pool.Query(ctx, `SELECT id,name FROM reference_documents WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(referenceNodes))
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, name string
+			if scanErr := rows.Scan(&id, &name); scanErr != nil {
+				return nil, scanErr
+			}
+			for _, node := range referenceNodes[id] {
+				records[node] = store.LineageNodeRecord{Title: name}
+			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, rowsErr
+		}
+	}
 	if err := s.queryLineageSessionRecords(ctx, sessionNodes, records); err != nil {
 		return nil, err
 	}
@@ -592,7 +614,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {
-	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion {
 		return node.ID
 	}
 	index := strings.LastIndex(node.ID, ":v")

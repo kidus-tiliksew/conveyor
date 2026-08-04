@@ -206,11 +206,16 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 			}
 			var latestVersion int
 			var issued []string
-			if err = tx.QueryRow(ctx, `SELECT coalesce(max(version),0),
-				coalesce(array_agg(DISTINCT statement.id) FILTER (WHERE statement.id IS NOT NULL),'{}')
-				FROM requirement_versions
-				LEFT JOIN LATERAL jsonb_to_recordset(statements_json) AS statement(id text) ON true
-				WHERE workspace_id=$1 AND requirement_id=$2`, workspace(ctx), drift.RequirementID).
+			if err = tx.QueryRow(ctx, `SELECT coalesce(max(rv.version),0),
+				coalesce(array_agg(DISTINCT ids.id) FILTER (WHERE ids.id IS NOT NULL),'{}')
+				FROM requirement_versions rv
+				LEFT JOIN LATERAL jsonb_array_elements(rv.statements_json) statement ON true
+				LEFT JOIN LATERAL (
+				  SELECT statement->>'id' AS id
+				  UNION ALL
+				  SELECT criterion->>'id' FROM jsonb_array_elements(coalesce(statement->'acceptance_criteria','[]'::jsonb)) criterion
+				) ids ON true
+				WHERE rv.workspace_id=$1 AND rv.requirement_id=$2`, workspace(ctx), drift.RequirementID).
 				Scan(&latestVersion, &issued); err != nil {
 				return err
 			}

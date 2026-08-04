@@ -138,7 +138,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 		var issued []string
 		for _, existing := range versions {
 			for _, statement := range existing.Statements {
-				issued = append(issued, statement.ID)
+				issued = append(issued, core.RequirementStatementIDs(statement)...)
 			}
 			if existing.OriginDriftID == drift.ID {
 				return drift, nil

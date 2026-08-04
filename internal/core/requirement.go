@@ -15,7 +15,24 @@ import (
 // approval gate stays on blueprints (§13.1). The corpus is flat; there is no
 // hierarchy to curate.
 
-var requirementStatementIDPattern = regexp.MustCompile(`^REQ-[1-9][0-9]*$`)
+var (
+	requirementStatementIDPattern = regexp.MustCompile(`^REQ-[1-9][0-9]*$`)
+	acceptanceCriterionIDPattern  = regexp.MustCompile(`^AC-([1-9][0-9]*)\.([1-9][0-9]*)$`)
+)
+
+// RequirementUserStory is optional framing around a normative statement. It
+// remains data, not a replacement for the stable REQ-n statement itself.
+type RequirementUserStory struct {
+	AsA    string `yaml:"as_a" json:"as_a"`
+	IWant  string `yaml:"i_want" json:"i_want"`
+	SoThat string `yaml:"so_that" json:"so_that"`
+}
+
+// AcceptanceCriterion is one independently citable, parent-qualified outcome.
+type AcceptanceCriterion struct {
+	ID        string `yaml:"id" json:"id"`
+	Statement string `yaml:"statement" json:"statement"`
+}
 
 // RequirementOrigin records why a version exists. Origin is provenance, not
 // authority: no origin confirms itself.
@@ -42,8 +59,10 @@ func (o RequirementOrigin) Valid() bool {
 // acceptance criteria, verdicts, and in-repo citations can reference. A REQ-n
 // outlives every blueprint that serves it, so IDs are never recycled.
 type RequirementStatement struct {
-	ID        string `yaml:"id" json:"id"`
-	Statement string `yaml:"statement" json:"statement"`
+	ID                 string                `yaml:"id" json:"id"`
+	Statement          string                `yaml:"statement" json:"statement"`
+	UserStory          *RequirementUserStory `yaml:"user_story,omitempty" json:"user_story,omitempty"`
+	AcceptanceCriteria []AcceptanceCriterion `yaml:"acceptance_criteria,omitempty" json:"acceptance_criteria,omitempty"`
 }
 
 // ServedRequirementContext is the confirmed intent a task reaches through
@@ -93,11 +112,21 @@ type RequirementVersion struct {
 	Origin          RequirementOrigin      `json:"origin"`
 	OriginSessionID string                 `json:"origin_session_id,omitempty"`
 	OriginDriftID   string                 `json:"origin_drift_id,omitempty"`
+	DerivedFrom     *RequirementDerivation `json:"derived_from,omitempty"`
 	Confirmed       bool                   `json:"confirmed"`
 	ConfirmedBy     string                 `json:"confirmed_by,omitempty"`
 	ConfirmedAt     time.Time              `json:"confirmed_at,omitempty"`
 	Workspace       string                 `json:"workspace"`
 	CreatedAt       time.Time              `json:"created_at"`
+}
+
+// RequirementDerivation retains version-scoped informative provenance without
+// granting the upload normative authority or a citation identity.
+type RequirementDerivation struct {
+	DocumentID    string `json:"document_id"`
+	Version       int    `json:"version"`
+	SectionAnchor string `json:"section_anchor"`
+	TargetID      string `json:"target_id"`
 }
 
 // RequirementServesState is the operator-owned lifecycle of a proposed
@@ -280,6 +309,27 @@ func RequirementStatementNumber(id string) (int, bool) {
 	return number, true
 }
 
+// AcceptanceCriterionNumber returns parent n and child m in AC-n.m.
+func AcceptanceCriterionNumber(id string) (int, int, bool) {
+	match := acceptanceCriterionIDPattern.FindStringSubmatch(id)
+	if len(match) != 3 {
+		return 0, 0, false
+	}
+	parent, parentErr := strconv.Atoi(match[1])
+	child, childErr := strconv.Atoi(match[2])
+	return parent, child, parentErr == nil && childErr == nil
+}
+
+// RequirementStatementIDs returns every normative identity carried by one
+// statement, including its independently citable children.
+func RequirementStatementIDs(statement RequirementStatement) []string {
+	ids := []string{statement.ID}
+	for _, criterion := range statement.AcceptanceCriteria {
+		ids = append(ids, criterion.ID)
+	}
+	return ids
+}
+
 // ValidateRequirementStatements enforces the shape of one statement block.
 // Prose is deliberately unconstrained (spec §4.2 item 1) — only the machine
 // block is validated.
@@ -295,6 +345,29 @@ func ValidateRequirementStatements(statements []RequirementStatement) error {
 		seen[statement.ID] = true
 		if strings.TrimSpace(statement.Statement) == "" {
 			return fmt.Errorf("requirement statement %s is empty", statement.ID)
+		}
+		if story := statement.UserStory; story != nil {
+			if strings.TrimSpace(story.AsA) == "" || strings.TrimSpace(story.IWant) == "" || strings.TrimSpace(story.SoThat) == "" {
+				return fmt.Errorf("requirement statement %s user_story requires non-empty as_a, i_want, and so_that", statement.ID)
+			}
+		}
+		parent, _ := RequirementStatementNumber(statement.ID)
+		criteria := map[string]bool{}
+		for criterionIndex, criterion := range statement.AcceptanceCriteria {
+			criterionParent, _, ok := AcceptanceCriterionNumber(criterion.ID)
+			if !ok {
+				return fmt.Errorf("requirement statement %s acceptance criterion %d has invalid id %q; want AC-%d.m", statement.ID, criterionIndex+1, criterion.ID, parent)
+			}
+			if criterionParent != parent {
+				return fmt.Errorf("acceptance criterion %s belongs under REQ-%d, not %s", criterion.ID, criterionParent, statement.ID)
+			}
+			if criteria[criterion.ID] {
+				return fmt.Errorf("requirement statement %s contains duplicate acceptance criterion id %q", statement.ID, criterion.ID)
+			}
+			criteria[criterion.ID] = true
+			if strings.TrimSpace(criterion.Statement) == "" {
+				return fmt.Errorf("acceptance criterion %s is empty", criterion.ID)
+			}
 		}
 	}
 	return nil
@@ -318,16 +391,28 @@ func ValidateRequirementRevision(highWaterMark int, issuedIDs []string, next []R
 		return err
 	}
 	issued := map[string]bool{}
+	acHighWater := map[int]int{}
 	for _, id := range issuedIDs {
 		issued[id] = true
+		if parent, child, ok := AcceptanceCriterionNumber(id); ok && child > acHighWater[parent] {
+			acHighWater[parent] = child
+		}
 	}
 	for _, statement := range next {
-		if issued[statement.ID] {
-			continue
+		if !issued[statement.ID] {
+			number, _ := RequirementStatementNumber(statement.ID)
+			if number <= highWaterMark {
+				return fmt.Errorf("requirement statement %s reuses a retired identifier; new statements must exceed REQ-%d", statement.ID, highWaterMark)
+			}
 		}
-		number, _ := RequirementStatementNumber(statement.ID)
-		if number <= highWaterMark {
-			return fmt.Errorf("requirement statement %s reuses a retired identifier; new statements must exceed REQ-%d", statement.ID, highWaterMark)
+		for _, criterion := range statement.AcceptanceCriteria {
+			if issued[criterion.ID] {
+				continue
+			}
+			parent, child, _ := AcceptanceCriterionNumber(criterion.ID)
+			if child <= acHighWater[parent] {
+				return fmt.Errorf("acceptance criterion %s reuses a retired identifier; new criteria under REQ-%d must exceed AC-%d.%d", criterion.ID, parent, parent, acHighWater[parent])
+			}
 		}
 	}
 	return nil

@@ -61,6 +61,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
 	}
+	derivedFrom, err := json.Marshal(first.DerivedFrom)
+	if err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO requirements
 			(workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at)
@@ -70,10 +74,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
 			first.Workspace, first.RequirementID, first.Version, first.Content, statements,
-			string(first.Origin), first.OriginSessionID, first.OriginDriftID, first.CreatedAt); err != nil {
+			string(first.Origin), first.OriginSessionID, first.OriginDriftID, first.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if err := insertRequirementEvent(ctx, q, "requirement.created", map[string]any{
@@ -159,11 +163,16 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 		var latestVersion int
 		var issued []string
 		if err := tx.QueryRow(ctx,
-			`SELECT coalesce(max(version), 0),
-			        coalesce(array_agg(DISTINCT statement.id) FILTER (WHERE statement.id IS NOT NULL), '{}')
-			 FROM requirement_versions
-			 LEFT JOIN LATERAL jsonb_to_recordset(statements_json) AS statement(id text) ON true
-			 WHERE workspace_id=$1 AND requirement_id=$2`,
+			`SELECT coalesce(max(rv.version), 0),
+			        coalesce(array_agg(DISTINCT ids.id) FILTER (WHERE ids.id IS NOT NULL), '{}')
+			 FROM requirement_versions rv
+			 LEFT JOIN LATERAL jsonb_array_elements(rv.statements_json) statement ON true
+			 LEFT JOIN LATERAL (
+			   SELECT statement->>'id' AS id
+			   UNION ALL
+			   SELECT criterion->>'id' FROM jsonb_array_elements(coalesce(statement->'acceptance_criteria','[]'::jsonb)) criterion
+			 ) ids ON true
+			 WHERE rv.workspace_id=$1 AND rv.requirement_id=$2`,
 			version.Workspace, version.RequirementID).Scan(&latestVersion, &issued); err != nil {
 			return err
 		}
@@ -175,11 +184,15 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 		if err != nil {
 			return err
 		}
+		derivedFrom, err := json.Marshal(version.DerivedFrom)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
 			version.Workspace, version.RequirementID, version.Version, version.Content, statements,
-			string(version.Origin), version.OriginSessionID, version.OriginDriftID, version.CreatedAt); err != nil {
+			string(version.Origin), version.OriginSessionID, version.OriginDriftID, version.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if mark := core.RequirementStatementHighWaterMark(version.Statements); mark > highWaterMark {
@@ -278,11 +291,15 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID); err != nil {
 			return err
 		}
-		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", map[string]any{
+		payload := map[string]any{
 			"workspace_id": workspace(ctx), "requirement_id": requirementID,
 			"version": version, "origin": stored.Origin, "confirmed_by": actor.ID,
 			"supersedes_version": current,
-		})
+		}
+		if stored.DerivedFrom != nil {
+			payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = stored.DerivedFrom.DocumentID, stored.DerivedFrom.Version, stored.DerivedFrom.SectionAnchor, stored.DerivedFrom.TargetID
+		}
+		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload)
 	})
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err
@@ -842,7 +859,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`
 
-const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at FROM requirement_versions`
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),
@@ -880,9 +897,10 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	var statements []byte
 	var confirmedBy string
 	var confirmedAt *time.Time
+	var derivedFrom []byte
 	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
 		&statements, &origin, &stored.OriginSessionID, &stored.OriginDriftID,
-		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.CreatedAt); err != nil {
+		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.CreatedAt, &derivedFrom); err != nil {
 		return core.RequirementVersion{}, err
 	}
 	parsed, err := unmarshalRequirementStatements(statements)
@@ -891,6 +909,13 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	}
 	stored.Statements = parsed
 	stored.Origin = core.RequirementOrigin(origin)
+	if len(derivedFrom) > 0 && string(derivedFrom) != "null" {
+		var derivation core.RequirementDerivation
+		if err := json.Unmarshal(derivedFrom, &derivation); err != nil {
+			return core.RequirementVersion{}, err
+		}
+		stored.DerivedFrom = &derivation
+	}
 	stored.ConfirmedBy = confirmedBy
 	if confirmedAt != nil {
 		stored.ConfirmedAt = *confirmedAt

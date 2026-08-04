@@ -1543,7 +1543,7 @@ func sameRequirementStatements(got, want []core.RequirementStatement) bool {
 		return false
 	}
 	for index := range got {
-		if got[index] != want[index] {
+		if !reflect.DeepEqual(got[index], want[index]) {
 			return false
 		}
 	}

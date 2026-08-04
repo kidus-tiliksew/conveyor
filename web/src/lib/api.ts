@@ -251,6 +251,35 @@ export async function uploadArtifact(
   if (!response.ok) throw new Error(await response.text())
   return response.json() as Promise<Artifact>
 }
+
+export function fetchReferenceDocuments() {
+  return fetch(workspaceURL('/v1/reference-documents')).then(async (response) => {
+    if (!response.ok) throw new Error(await response.text())
+    return response.json() as Promise<import('./types').ReferenceDocument[]>
+  })
+}
+export function fetchReferenceDocumentVersions(id: string) {
+  return fetch(workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`)).then(async (response) => {
+    if (!response.ok) throw new Error(await response.text())
+    return response.json() as Promise<import('./types').ReferenceDocumentVersion[]>
+  })
+}
+export async function uploadReferenceDocument(token: string, file: File, id?: string) {
+  const body = new FormData()
+  body.set('file', file)
+  if (!id) body.set('name', file.name.replace(/\.(md|markdown)$/i, ''))
+  const path = id ? `/v1/reference-documents/${encodeURIComponent(id)}/versions` : '/v1/reference-documents'
+  const response = await fetch(workspaceURL(path), { method: 'POST', headers: mutationHeaders(token), body })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json()
+}
+export async function deleteReferenceDocument(token: string, id: string) {
+  const response = await fetch(workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(await response.text())
+}
 // Fetch an attachment's bytes as an object URL for inline preview. The
 // download route requires the operator token and forces attachment
 // disposition, so an <img src> cannot load it directly — the caller revokes
