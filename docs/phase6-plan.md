@@ -1,5 +1,11 @@
 # Phase 6 plan: planning & the knowledge graph (phases 6.1–6.3)
 
+**Phase 6 closed complete August 4, 2026 (§21.59).** All three exit
+criteria attested; the first live lineage rebuild reconciled with zero
+loss (596 links before and after; 53 non-regenerable edges preserved).
+This document is a historical record; the active scope is Phase 8
+(docs/phase8-plan.md).
+
 Accepted by §21.46; spec §19 is authoritative for scope and ordering.
 The thesis: the factory's compounding value is that task N is cheaper
 than task 1. That requires owning planning (so rationale enters the

@@ -1,7 +1,7 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.18,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.58
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.19,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.59
 through Phase 5 closure, the accepted Phase 6, the §21.47 dependency
 semantics, §21.48 worktree containment, the §21.49 blueprint
 presentation surface, §21.50–§21.52 planning repo exploration
@@ -83,9 +83,10 @@ service packaging, monitor agent + `.conveyor/hints.yaml`. The worker is
 a thin supervisor over the unchanged §17.4 MCP lifecycle — never a second
 protocol, adapter interface, or credential pool.
 
-**Active scope is Phase 6 — planning & the knowledge graph** (§21.46;
-working breakdown in [docs/phase6-plan.md](docs/phase6-plan.md)), in
-order: 6.1 blueprint materialization (approved specs with a
+**Phase 6 — planning & the knowledge graph is complete** (§21.46,
+closed by §21.59 with all exit criteria attested and the first live
+lineage rebuild reconciled at zero loss; historical breakdown in
+[docs/phase6-plan.md](docs/phase6-plan.md)). It delivered: 6.1 blueprint materialization (approved specs with a
 `decomposition` fan out into child tasks entering at `implement`) +
 dependency-gated claiming (blocked is a derived predicate in the same
 enforcement layer as hold — never a stored state, never a priority
@@ -102,8 +103,8 @@ epic entity, flat requirement corpus (no hierarchy curation). v1
 dependencies are ordering gates — branch stacking stays deferred
 (§8.3).
 
-**Phase 8 — the desired-state document model is accepted (§21.58)**
-and follows Phase 6 closure (working breakdown in
+**Active scope is Phase 8 — the desired-state document model**
+(§21.58, entered on Phase 6 closure §21.59; working breakdown in
 [docs/phase8-plan.md](docs/phase8-plan.md)), in order: 8.1
 requirements v2 (REQ→AC nested structure, user-story framing) +
 markdown-only product-overview uploads with promotion; 8.2 System
@@ -116,8 +117,7 @@ stage-typed order, versioned markdown exec plans with done-criteria,
 approval; `submit_plan` succeeds `submit_spec`); tasks carry attached
 context (`serves` at task level), planning finalize proposes
 document-revisions + task-set bundles; 8.4 Tasks view (list-first management — never priority,
-assignee, or declared phases). Nothing retires before 8.3; do not
-start 8.x while Phase 6 is the active scope.
+assignee, or declared phases). Nothing retires before 8.3.
 
 **Phase 9 — deployment & multi-user (§21.54, resequenced §21.58)**
 follows Phase 8: embedded worker (may land earlier), identity/grants,
