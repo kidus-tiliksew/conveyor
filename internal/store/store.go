@@ -2061,6 +2061,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 	}
 	if order.Stage == core.StageReview {
+		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
+			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
+		}
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
 				(candidate.Stage == core.StageImplement || (candidate.Stage == core.StageReview && candidate.ReviewRound == order.ReviewRound)) &&

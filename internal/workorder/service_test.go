@@ -714,7 +714,7 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
@@ -737,6 +737,94 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 	if strings.Contains(result.RolePrompt, "```conveyor:review") {
 		t.Fatalf("MCP review context includes the in-process output contract: %s", result.RolePrompt)
+	}
+}
+
+func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "legacy-review-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "legacy-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	if _, err = service.Get(ctx, job.ID, "legacy-session"); err == nil || !strings.Contains(err.Error(), "release and reclaim") {
+		t.Fatalf("legacy context error=%v", err)
+	}
+}
+
+func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "review-claim-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim-pin", Title: "Claim pin"}, core.RequirementVersion{
+		Content: "First", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Pinned criterion"}}}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(human, task.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-pin-session", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.ServedRequirementSnapshot) != 1 || claimed.ServedRequirementSnapshot[0].Version != 1 {
+		t.Fatalf("claim snapshot=%+v", claimed.ServedRequirementSnapshot)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second"}}, Origin: core.RequirementOriginChat, OriginSessionID: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	context, err := service.Get(ctx, job.ID, "review-pin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(context.RolePrompt, "req-claim-pin v1") || !strings.Contains(context.RolePrompt, "AC-1.1: Pinned criterion") || strings.Contains(context.RolePrompt, "req-claim-pin v2") {
+		t.Fatalf("review role did not render pinned authority: %s", context.RolePrompt)
 	}
 }
 
@@ -1713,7 +1801,7 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	if err := base.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
