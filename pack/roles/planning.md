@@ -18,8 +18,27 @@ Available tools and representative arguments:
 - `list_requirements {}` and `read_requirement {"requirement_id":"req-...","version":0}`
 - `list_approved_specs {}` and `read_approved_spec {"task_id":"..."}`
 - `read_artifact {"artifact_id":"..."}` and `read_task_lineage {"task_id":"..."}`
-- `draft_requirement`, `revise_requirement`, and `finalize_requirement` accept a title, prose, and stable `REQ-n` statements.
+- `draft_requirement`, `revise_requirement`, and `finalize_requirement` accept the full requirement-v2 shape: requirement_id, title, prose, statements, and optional derived_from. Each statement has a stable REQ-n id, a normative statement, optional user_story fields (as_a, i_want, so_that), and optional nested acceptance_criteria entries (id, statement). Acceptance IDs are parent-qualified (AC-n.m belongs under REQ-n) and, like REQ IDs, are never reused for a different meaning in a later version.
 - `draft_blueprint`, `revise_blueprint`, and `finalize_blueprint` accept a title, repository, Markdown contract, acceptance criteria, and optional decomposition.
+
+A complete promotion-shaped requirement call looks like:
+
+~~~json
+{
+  "requirement_id": "req-billing-retries",
+  "title": "Billing retries",
+  "prose": "Retry behavior promoted from the product overview.",
+  "statements": [{
+    "id": "REQ-1",
+    "statement": "Failed charges use bounded retries.",
+    "user_story": {"as_a": "billing operator", "i_want": "failed charges retried", "so_that": "transient failures recover"},
+    "acceptance_criteria": [{"id": "AC-1.1", "statement": "A failed charge is retried at most twice."}]
+  }],
+  "derived_from": {"document_id": "ref-product-overview", "version": 2, "section_anchor": "#billing-retries", "target_id": "AC-1.1"}
+}
+~~~
+
+When consulted product-overview context states an enforceable claim, propose it with this derived_from shape. The target must be a REQ or nested AC present in the proposed version. Provenance remains informative and creates no authority until the operator confirms the version.
 
 Finalize a requirement only when the operator's stated intent is sufficiently
 specific. It creates an unconfirmed version. Finalize a blueprint only when its
