@@ -1,11 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"mime"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ReferenceDocument is informative workspace context. It intentionally has no
@@ -33,16 +36,26 @@ type ReferenceDocumentVersion struct {
 }
 
 func NormalizeReferenceMarkdown(filename, contentType string, content []byte) (string, error) {
-	text := strings.TrimSpace(string(content))
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil {
 		return "", fmt.Errorf("reference document content type is invalid: %w", err)
 	}
 	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
 	mediaType = strings.ToLower(mediaType)
-	if (extension != ".md" && extension != ".markdown") || (mediaType != "text/markdown" && mediaType != "text/x-markdown") {
-		return "", fmt.Errorf("reference documents must use a .md or .markdown filename and text/markdown content type")
+	if extension != ".md" && extension != ".markdown" {
+		return "", fmt.Errorf("reference documents must use a .md or .markdown filename")
 	}
+	if mediaType != "text/markdown" && mediaType != "text/x-markdown" && mediaType != "text/plain" && mediaType != "application/octet-stream" {
+		return "", fmt.Errorf("reference document content type %q is not Markdown", mediaType)
+	}
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		return "", fmt.Errorf("reference document must contain text")
+	}
+	detected := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(content), ";", 2)[0]))
+	if detected != "text/plain" && detected != "application/octet-stream" {
+		return "", fmt.Errorf("reference document content is not Markdown text")
+	}
+	text := strings.TrimSpace(string(content))
 	if text == "" {
 		return "", fmt.Errorf("reference document must not be empty")
 	}

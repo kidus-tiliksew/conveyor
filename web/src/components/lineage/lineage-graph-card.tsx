@@ -7,6 +7,8 @@ const nodeLabels: Record<LineageNodeType, string> = {
   planning_session: 'Planning session',
   requirement: 'Requirement',
   requirement_version: 'Requirement version',
+  reference_document: 'Reference document',
+  reference_document_version: 'Reference document version',
   blueprint: 'Blueprint',
   blueprint_version: 'Blueprint version',
   task: 'Task',
