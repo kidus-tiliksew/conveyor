@@ -791,48 +791,9 @@ func (s *Service) modelSettings(ctx context.Context, session core.PlanningSessio
 
 func (s *Service) prompt(ctx context.Context, session core.PlanningSession, messages []core.PlanningMessage, step, maxSteps int) (string, error) {
 	liveMessages := append([]core.PlanningMessage(nil), messages...)
-	contextValue := struct {
-		Session  core.PlanningSession   `json:"session"`
-		Messages []core.PlanningMessage `json:"messages"`
-		Step     int                    `json:"step"`
-		MaxSteps int                    `json:"max_steps"`
-	}{Session: session, Messages: liveMessages, Step: step, MaxSteps: maxSteps}
-	contextJSON, err := json.Marshal(contextValue)
-	if err != nil {
-		return "", err
-	}
 	maxBytes := s.MaxContextBytes
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContextBytes
-	}
-	contextBytes := len(contextJSON)
-	changed := false
-	for _, result := range toolResultMessages(liveMessages) {
-		if contextBytes <= maxBytes {
-			break
-		}
-		before, marshalErr := json.Marshal(liveMessages[result.messageIndex])
-		if marshalErr != nil {
-			return "", marshalErr
-		}
-		elided := elideToolResult(liveMessages[result.messageIndex], result.calls)
-		after, marshalErr := json.Marshal(elided)
-		if marshalErr != nil {
-			return "", marshalErr
-		}
-		liveMessages[result.messageIndex] = elided
-		contextBytes += len(after) - len(before)
-		changed = true
-	}
-	if changed {
-		contextValue.Messages = liveMessages
-		contextJSON, err = json.Marshal(contextValue)
-		if err != nil {
-			return "", err
-		}
-	}
-	if len(contextJSON) > maxBytes {
-		return "", &planningContextOverflowError{limit: maxBytes}
 	}
 	repositories := []string{}
 	var cfg *config.Config
@@ -883,17 +844,57 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 		}
 		lineagePrompt = lineagecontext.RenderUntrusted(lineage)
 	}
-	prompt := role +
+	prefix := role +
 		"\n\nConfigured workspace repositories: " + strings.Join(repositories, ", ") + "." +
 		"\n" + snapshotStatement +
 		"\n" + goalStatement(session) +
 		lineagePrompt +
 		"\nStrict exploration tool schemas:\n" + string(explorationSchemas) +
-		"\n\nDurable conversation context:\n" + string(contextJSON)
-	if len(prompt) > maxBytes {
+		"\n\nDurable conversation context:\n"
+	transcriptBudget := maxBytes - len(prefix)
+	if transcriptBudget <= 0 {
 		return "", &planningContextOverflowError{limit: maxBytes}
 	}
-	return prompt, nil
+	contextValue := struct {
+		Session  core.PlanningSession   `json:"session"`
+		Messages []core.PlanningMessage `json:"messages"`
+		Step     int                    `json:"step"`
+		MaxSteps int                    `json:"max_steps"`
+	}{Session: session, Messages: liveMessages, Step: step, MaxSteps: maxSteps}
+	contextJSON, err := json.Marshal(contextValue)
+	if err != nil {
+		return "", err
+	}
+	contextBytes := len(contextJSON)
+	changed := false
+	for _, result := range toolResultMessages(liveMessages) {
+		if contextBytes <= transcriptBudget {
+			break
+		}
+		before, marshalErr := json.Marshal(liveMessages[result.messageIndex])
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		elided := elideToolResult(liveMessages[result.messageIndex], result.calls)
+		after, marshalErr := json.Marshal(elided)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		liveMessages[result.messageIndex] = elided
+		contextBytes += len(after) - len(before)
+		changed = true
+	}
+	if changed {
+		contextValue.Messages = liveMessages
+		contextJSON, err = json.Marshal(contextValue)
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(contextJSON) > transcriptBudget {
+		return "", &planningContextOverflowError{limit: maxBytes}
+	}
+	return prefix + string(contextJSON), nil
 }
 
 type planningLineageMemoKey struct{}

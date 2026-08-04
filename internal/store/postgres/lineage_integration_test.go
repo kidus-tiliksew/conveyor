@@ -133,6 +133,30 @@ func TestPostgresLineageRebuildPreservesLiveShapedUnregenerableLinks(t *testing.
 	}
 }
 
+func TestPostgresLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	taskID := core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+		Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": "overlap-order"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE links SET created_by_event_id=NULL,legacy_created_by_event='legacy.dispatch'
+		WHERE workspace_id=$1 AND src_id=$2 AND dst_id='overlap-order' AND kind='dispatches'`, workspace, taskID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "overlap classification", RequestID: core.NewTaskID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Projected != 1 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
+		t.Fatalf("overlapping legacy key was double-classified: %+v", result)
+	}
+}
+
 func TestLineageRebuildCrossStoreParityIntegration(t *testing.T) {
 	pg, ctx, workspace := newPhase61IntegrationStore(t)
 	defer pg.Close()
@@ -146,7 +170,13 @@ func TestLineageRebuildCrossStoreParityIntegration(t *testing.T) {
 		}
 		for _, event := range []core.Event{
 			{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": task.ID + "-implement-1"})},
+			{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": task.ID + "-implement-1"})},
 			{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "number": 7, "base_sha": "base", "head_sha": "head"})},
+			{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 8})},
+			// The ordinary projector can derive this historical predecessor, but
+			// rebuild cannot prove it from durable requirement versions and must
+			// preserve the live edge instead of dropping it.
+			{TaskID: task.ID, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": "historical", "version": 2})},
 		} {
 			if err := st.AppendEvent(ctx, event); err != nil {
 				t.Fatal(err)
@@ -164,6 +194,9 @@ func TestLineageRebuildCrossStoreParityIntegration(t *testing.T) {
 		repeated, err := st.RebuildLineage(ctx, request)
 		if err != nil || repeated != result {
 			t.Fatalf("idempotent result=%+v repeated=%+v err=%v", result, repeated, err)
+		}
+		if result.PreservedUnregenerable != 1 || result.Unsupported != 1 || result.Ambiguous != 1 {
+			t.Fatalf("rebuild classification=%+v, want preserved=1 unsupported=1 ambiguous=1", result)
 		}
 		links, err := st.ListLineageLinks(ctx)
 		if err != nil {

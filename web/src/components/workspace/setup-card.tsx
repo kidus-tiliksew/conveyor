@@ -40,10 +40,17 @@ export function SetupCard({
     effort: settings.control_plane.triage.effort,
     timeout: settings.control_plane.triage.timeout,
     exploration_output_tokens: 10_000,
-    context: { depth: 3, nodes: 32, renderable_bytes: 262_144 },
+    context: { depth: 5, nodes: 32, renderable_bytes: 262_144, artifact_refs: 64, authority_nodes: 256 },
   }
   const seats = setup.review.seats
-  const planningContext = planning.context ?? { depth: 3, nodes: 32, renderable_bytes: 262_144 }
+  const planningContext = {
+    depth: 5,
+    nodes: 32,
+    renderable_bytes: 262_144,
+    artifact_refs: 64,
+    authority_nodes: 256,
+    ...planning.context,
+  }
 
   const updateSetup = (change: Partial<ExecutionSetup>) => {
     const setups = [...document.setups]
@@ -254,6 +261,27 @@ export function SetupCard({
                   min={1}
                   value={planningContext.renderable_bytes}
                   onChange={(event) => updatePlanningContext({ renderable_bytes: Number(event.target.value) })}
+                />
+              </Field>
+              <Field label="Artifact references">
+                <Input
+                  aria-label="planning context artifact references"
+                  type="number"
+                  min={1}
+                  value={planningContext.artifact_refs}
+                  onChange={(event) => updatePlanningContext({ artifact_refs: Number(event.target.value) })}
+                />
+              </Field>
+              <Field
+                label="Authority nodes"
+                hint="Raise this bounded requirement-authority limit when a task pauses with authority_budget_exceeded."
+              >
+                <Input
+                  aria-label="served requirement authority nodes"
+                  type="number"
+                  min={8}
+                  value={planningContext.authority_nodes}
+                  onChange={(event) => updatePlanningContext({ authority_nodes: Number(event.target.value) })}
                 />
               </Field>
             </div>

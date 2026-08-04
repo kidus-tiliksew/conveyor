@@ -354,7 +354,13 @@ export interface WorkspaceExecutionSettings {
       effort?: 'minimal' | 'low' | 'medium' | 'high'
       timeout: string
       exploration_output_tokens: number
-      context?: { depth: number; nodes: number; renderable_bytes: number }
+      context?: {
+        depth: number
+        nodes: number
+        renderable_bytes: number
+        artifact_refs?: number
+        authority_nodes?: number
+      }
     }
   }
   spec: {

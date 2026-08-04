@@ -40,6 +40,20 @@ func TestFutureMigrationsDoNotWriteEvents(t *testing.T) {
 	}
 }
 
+func TestPullRequestIdentityRepairAuditKindIsMigrationAllowed(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/060_pull_request_identity_repair.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "'lineage.pull_request_identity_repaired'") {
+		t.Fatal("migration 060 does not allow its application-level audit kind")
+	}
+	if strings.Contains(strings.ToLower(text), "insert into events") {
+		t.Fatal("migration 060 writes the event ledger from SQL")
+	}
+}
+
 func TestLineageMigrationVocabularyAgreesWithProjector(t *testing.T) {
 	canonical := controlstore.CanonicalLineageKinds()
 	emitted := map[string]bool{}
@@ -274,6 +288,10 @@ func TestMigrationVersion(t *testing.T) {
 	version, err = migrationVersion("migrations/055_blueprint_version_lineage.sql")
 	if err != nil || version != 55 {
 		t.Fatalf("blueprint version lineage version=%d err=%v", version, err)
+	}
+	version, err = migrationVersion("migrations/060_pull_request_identity_repair.sql")
+	if err != nil || version != 60 {
+		t.Fatalf("pull request identity repair version=%d err=%v", version, err)
 	}
 	for _, name := range []string{"migration.sql", "zero_phase.sql", "000_phase.sql"} {
 		if _, err := migrationVersion(name); err == nil {

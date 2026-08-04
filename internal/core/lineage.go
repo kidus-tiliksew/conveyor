@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	DefaultContextArtifactMaxRefs       = 64
-	ContextArtifactProtectedTierMaxRefs = 16
+	DefaultContextArtifactMaxRefs        = 64
+	ContextArtifactProtectedTierMaxRefs  = 16
+	DefaultContextArtifactTraversalDepth = 5
+	DefaultContextArtifactTraversalNodes = 32
 )
 
 // LineageNodeType names a durable node class in the Phase 6 knowledge graph
@@ -60,11 +62,13 @@ type LineageLink struct {
 // LineageRebuildResult reports projection reconciliation without treating
 // retained, non-derived legacy links as event-derived graph state.
 type LineageRebuildResult struct {
-	Projected              int `json:"projected"`
-	Existing               int `json:"existing"`
+	Projected int `json:"projected"` // distinct canonical keys regenerated from eligible events
+	Existing  int `json:"existing"`  // retained non-projector rows whose keys were not regenerated
+	// PreservedUnregenerable counts projector-owned event-provenanced rows for
+	// which the current replay cannot derive a replacement.
 	PreservedUnregenerable int `json:"preserved_unregenerable"`
-	Unsupported            int `json:"unsupported"`
-	Ambiguous              int `json:"ambiguous"`
+	Unsupported            int `json:"unsupported"` // structurally invalid event-derived candidates
+	Ambiguous              int `json:"ambiguous"`   // keys with multiple eligible candidate events
 }
 
 type LineageRebuildRequest struct {
@@ -146,7 +150,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	}
 	budget := opts.Budget
 	if budget.MaxDepth == 0 && budget.MaxNodes == 0 {
-		budget.MaxDepth, budget.MaxNodes = 5, 32
+		budget.MaxDepth, budget.MaxNodes = DefaultContextArtifactTraversalDepth, DefaultContextArtifactTraversalNodes
 	}
 	budget.Workspace = opts.Workspace
 	traversal, err := TraverseLineage(links, roots, budget)

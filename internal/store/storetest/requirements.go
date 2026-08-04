@@ -213,9 +213,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 	t.Run("dismissing a proposal removes any stale serves projection", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
-		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Dismissed intent"},
+		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Dismissed intent"},
 			chatVersion("Dismissed service is not delivery authority.", requirementStatement("REQ-1", "Dismissal removes projection.")))
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
 			t.Fatal(err)
 		}
 		taskID := core.NewTaskID()
@@ -234,7 +237,13 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if exists, existsErr := st.LineageNodeExists(ctx, node); existsErr != nil || !exists {
 			t.Fatalf("stale projection exists=%t err=%v", exists, existsErr)
 		}
+		if served, servedErr := store.ServedRequirementsForTask(ctx, st, taskID); servedErr != nil || len(served.Requirements) != 1 {
+			t.Fatalf("stale citation authority=%+v err=%v", served, servedErr)
+		}
 		if _, err = st.DismissRequirementServes(ctx, taskID, requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "dismissal conformance", RequestID: core.NewTaskID()}); err != nil {
 			t.Fatal(err)
 		}
 		links, listErr := st.ListLineageLinks(ctx)
@@ -245,6 +254,9 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			if link.Kind == "serves" && link.SrcID == requirement.ID && link.DstID == taskID {
 				t.Fatalf("dismissal retained serves projection: %+v", link)
 			}
+		}
+		if served, servedErr := store.ServedRequirementsForTask(ctx, st, taskID); servedErr != nil || len(served.Requirements) != 0 {
+			t.Fatalf("dismissed citation authority=%+v err=%v", served, servedErr)
 		}
 	})
 

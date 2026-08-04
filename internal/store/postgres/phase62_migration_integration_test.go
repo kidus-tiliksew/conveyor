@@ -183,6 +183,91 @@ func TestMigration058CanonicalizesOnlyDerivablePullRequestIdentitiesIntegration(
 	}
 }
 
+func TestMigration060RepairsNameFallbackAndUsesOnlyDerivableIdentityIntegration(t *testing.T) {
+	t.Run("empty slug reverts name fallback and records exclusion audit", func(t *testing.T) {
+		f := newPhase62MigrationFixture(t)
+		taskID := f.task(t, "", "")
+		f.upgradeTo(t, 57)
+		var eventID int64
+		if err := f.pool.QueryRow(f.ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,'pull_request.opened','legacy','system',$3,now()) RETURNING id`,
+			f.workspace, taskID, core.JSONPayload(map[string]any{"number": 42})).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.pool.Exec(f.ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at)
+			VALUES ($1,'task',$2,'pull_request','42','submitted_as',$3,now())`, f.workspace, taskID, eventID); err != nil {
+			t.Fatal(err)
+		}
+		f.upgradeTo(t, 59)
+		var nameFallback int
+		if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND dst_id='repo#42'`, f.workspace).Scan(&nameFallback); err != nil || nameFallback != 1 {
+			t.Fatalf("058 name fallback count=%d err=%v", nameFallback, err)
+		}
+		started := time.Now().UTC().Add(-time.Second)
+		f.upgradeTo(t, 60)
+		var bare, split, auditCount int
+		var reason string
+		var auditAt time.Time
+		var payload []byte
+		if err := f.pool.QueryRow(f.ctx, `SELECT
+			count(*) FILTER (WHERE dst_id='42'),count(*) FILTER (WHERE dst_id='repo#42')
+			FROM links WHERE workspace_id=$1 AND kind='submitted_as'`, f.workspace).Scan(&bare, &split); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.pool.QueryRow(f.ctx, `SELECT reason FROM lineage_repair_exclusions
+			WHERE workspace_id=$1 AND src_id=$2 AND dst_id='42' AND kind='submitted_as'`, f.workspace, taskID).Scan(&reason); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.pool.QueryRow(f.ctx, `SELECT count(*) OVER(),at,payload_json FROM events
+			WHERE workspace_id=$1 AND kind='lineage.pull_request_identity_repaired' ORDER BY id DESC LIMIT 1`, f.workspace).Scan(&auditCount, &auditAt, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if bare != 1 || split != 0 || reason != "empty github_slug and missing event repository" {
+			t.Fatalf("bare=%d split=%d reason=%q", bare, split, reason)
+		}
+		if auditCount != 1 || auditAt.Before(started) || !strings.Contains(string(payload), `"reverted_name_fallback_count": 1`) || !strings.Contains(string(payload), `"excluded_count": 1`) {
+			t.Fatalf("audit count=%d at=%s payload=%s", auditCount, auditAt, payload)
+		}
+		f.upgradeTo(t, 60)
+		if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM events WHERE workspace_id=$1
+			AND kind='lineage.pull_request_identity_repaired'`, f.workspace).Scan(&auditCount); err != nil || auditCount != 1 {
+			t.Fatalf("idempotent audit count=%d err=%v", auditCount, err)
+		}
+	})
+
+	t.Run("github slug and projector converge on one identity", func(t *testing.T) {
+		f := newPhase62MigrationFixture(t)
+		taskID := f.task(t, "", "")
+		f.upgradeTo(t, 59)
+		if _, err := f.pool.Exec(f.ctx, `UPDATE repos SET github_slug='acme/repo' WHERE workspace_id=$1 AND name='repo'`, f.workspace); err != nil {
+			t.Fatal(err)
+		}
+		var eventID int64
+		if err := f.pool.QueryRow(f.ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,'pull_request.opened','legacy','system',$3,now()) RETURNING id`,
+			f.workspace, taskID, core.JSONPayload(map[string]any{"number": 43})).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.pool.Exec(f.ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at)
+			VALUES ($1,'task',$2,'pull_request','43','submitted_as',$3,now())`, f.workspace, taskID, eventID); err != nil {
+			t.Fatal(err)
+		}
+		f.upgradeTo(t, 60)
+		if err := f.store.AppendEvent(f.ctx, core.Event{TaskID: taskID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/repo", "number": 43})}); err != nil {
+			t.Fatal(err)
+		}
+		var canonical, bare int
+		if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FILTER (WHERE dst_id='acme/repo#43'),count(*) FILTER (WHERE dst_id='43')
+			FROM links WHERE workspace_id=$1 AND kind='submitted_as'`, f.workspace).Scan(&canonical, &bare); err != nil || canonical != 1 || bare != 0 {
+			t.Fatalf("canonical=%d bare=%d err=%v", canonical, bare, err)
+		}
+	})
+}
+
 func TestLineageRepairRemoves054VocabularyWithExactExclusionsIntegration(t *testing.T) {
 	f := newPhase62MigrationFixture(t)
 	taskID := f.task(t, "", "")

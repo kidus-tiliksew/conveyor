@@ -2032,9 +2032,13 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			return strings.Join([]string{link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind}, "\x00")
 		}
 		replayable := map[string]core.LineageLink{}
+		suppressed := map[string]struct{}{}
+		candidateEvent := map[string]int64{}
+		ambiguous := map[string]struct{}{}
 		for _, row := range events {
 			event := eventFromDB(row)
-			links := store.LineageLinksForEvent(workspace(ctx), event)
+			projection := store.ProjectLineageEvent(workspace(ctx), event)
+			links := projection.Links
 			if requirementID, version, historical := store.HistoricalRequirementConfirmation(event); historical {
 				var predecessor pgtype.Int4
 				if err = q.QueryRow(ctx, `SELECT max(version) FROM requirement_versions
@@ -2048,8 +2052,20 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 				}
 				links = store.LineageLinksForHistoricalConfirmation(workspace(ctx), event, predecessorVersion)
 			}
+			result.Unsupported += projection.Unsupported
+			for _, link := range projection.Suppresses {
+				linkKey := key(link)
+				delete(replayable, linkKey)
+				suppressed[linkKey] = struct{}{}
+			}
 			for _, link := range links {
 				linkKey := key(link)
+				delete(suppressed, linkKey)
+				if first, ok := candidateEvent[linkKey]; ok && first != link.CreatedByEventID {
+					ambiguous[linkKey] = struct{}{}
+				} else if !ok {
+					candidateEvent[linkKey] = link.CreatedByEventID
+				}
 				if prior, ok := replayable[linkKey]; !ok || link.CreatedByEventID < prior.CreatedByEventID {
 					replayable[linkKey] = link
 				}
@@ -2070,11 +2086,14 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			}
 			_, owned := canonical[link.Kind]
 			if !row.CreatedByEventID.Valid || !owned {
-				result.Existing++
+				if _, regenerated := replayable[key(link)]; !regenerated {
+					result.Existing++
+				}
 				continue
 			}
 			linkKey := key(link)
-			if _, regenerable := replayable[linkKey]; !regenerable {
+			_, isSuppressed := suppressed[linkKey]
+			if _, regenerable := replayable[linkKey]; !regenerable && !isSuppressed {
 				preserved[linkKey] = link
 			}
 		}
@@ -2100,7 +2119,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		}
 		result.Projected = len(replayable)
 		result.PreservedUnregenerable = len(preserved)
-		result.Unsupported = len(preserved)
+		result.Ambiguous = len(ambiguous)
 		actor := store.ActorFromContext(ctx)
 		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
@@ -4581,7 +4600,10 @@ const listArtifactsForLineageSQL = `WITH wanted(node_type,node_id,ord) AS (
 	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=$1 AND l.planning_session_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
 	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.feature_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=$1 AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id AND l.role='verification_evidence'
+	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=$1 AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
+		AND l.role='verification_evidence' AND l.task_id IS NOT NULL AND l.feature_id IS NULL
+		AND ((a.content_type IN ('image/png','image/jpeg','image/webp') AND a.size_bytes BETWEEN 1 AND 10485760)
+			OR (a.content_type IN ('video/mp4','video/webm') AND a.size_bytes BETWEEN 1 AND 26214400))
 ), dedup AS (
 	SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,feature_id,requirement_id,planning_session_id,min(ord) AS ord
 	FROM matched GROUP BY id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,feature_id,requirement_id,planning_session_id
