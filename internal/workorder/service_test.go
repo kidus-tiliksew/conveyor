@@ -1464,8 +1464,22 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		}
 		reviewSeats++
 		session := "review-session-" + order.ID
-		if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute}); err != nil {
-			t.Fatal(err)
+		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute})
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		if claimed.ServedRequirementSnapshot == nil {
+			t.Fatalf("seat %s did not pin an empty served-requirement snapshot", order.ID)
+		}
+		if len(claimed.ServedRequirementSnapshot) != 0 {
+			t.Fatalf("seat %s snapshot=%+v, want empty", order.ID, claimed.ServedRequirementSnapshot)
+		}
+		reloaded, reloadErr := st.GetWorkOrder(ctx, order.ID)
+		if reloadErr != nil {
+			t.Fatal(reloadErr)
+		}
+		if reloaded.ServedRequirementSnapshot == nil || len(reloaded.ServedRequirementSnapshot) != 0 {
+			t.Fatalf("seat %s reloaded snapshot=%+v, want non-nil empty", order.ID, reloaded.ServedRequirementSnapshot)
 		}
 		context, getErr := service.Get(ctx, order.ID, session)
 		if getErr != nil {
