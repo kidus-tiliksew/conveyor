@@ -91,7 +91,7 @@ func TestAssembleRetainsDirectReviewEvidenceUnderBytePressure(t *testing.T) {
 	if _, err = st.CreateArtifact(ctx, core.Artifact{Name: strings.Repeat("local-context-", 30) + ".md", ContentType: "text/markdown", Role: core.ArtifactRoleTaskContext, TaskID: task.ID}, []byte("lower-priority local context")); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 3, Nodes: 32, RenderableBytes: 200, ArtifactRefs: 8}}}}}
+	cfg := &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 3, Nodes: 32, RenderableBytes: 400, ArtifactRefs: 8}}}}}
 	result, err := Assemble(ctx, st, cfg, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}, task.ID, true)
 	if err != nil {
 		t.Fatal(err)

@@ -62,6 +62,17 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 			Promotion:            request.Promotion,
 		})
 	} else {
+		if request.Promotion != nil {
+			if goal != core.PlanningGoalRequirement {
+				err = fmt.Errorf("promotion requires a requirement goal")
+			} else {
+				err = (&planning.Service{Store: s.Store}).ValidatePromotionSource(r.Context(), request.Promotion)
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
 			RequirementContextID: request.RequirementContextID,
