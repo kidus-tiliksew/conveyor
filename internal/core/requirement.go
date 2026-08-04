@@ -259,6 +259,10 @@ type PlanningSession struct {
 	// RequirementContextID is set when the session was opened from a
 	// requirement ("Plan work"), which is what auto-proposes a serves link.
 	RequirementContextID string `json:"requirement_context_id,omitempty"`
+	// Promotion is immutable operator-selected provenance for a guided
+	// product-overview promotion. The planning model must reproduce it exactly
+	// when finalizing the pending requirement version.
+	Promotion *RequirementDerivation `json:"promotion,omitempty"`
 	// ProducedRequirementID and ProducedTaskID are mutually exclusive.
 	ProducedRequirementID string    `json:"produced_requirement_id,omitempty"`
 	ProducedTaskID        string    `json:"produced_task_id,omitempty"`

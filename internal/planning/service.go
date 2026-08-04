@@ -146,6 +146,7 @@ type CreateSessionInput struct {
 	RequirementContextID string
 	ModelOverride        string
 	Goal                 core.PlanningSessionGoal
+	Promotion            *core.RequirementDerivation
 }
 
 func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (core.PlanningSession, error) {
@@ -155,6 +156,14 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	goal, err := core.NormalizePlanningSessionGoal(input.Goal)
 	if err != nil {
 		return core.PlanningSession{}, err
+	}
+	if input.Promotion != nil {
+		if goal != core.PlanningGoalRequirement {
+			return core.PlanningSession{}, fmt.Errorf("promotion requires a requirement goal")
+		}
+		if err = s.validatePromotionSource(ctx, input.Promotion); err != nil {
+			return core.PlanningSession{}, err
+		}
 	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
@@ -196,6 +205,7 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	return s.Store.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
 		RequirementContextID: input.RequirementContextID,
+		Promotion:            input.Promotion,
 		Model:                model, Effort: settings.Effort,
 		ExplorationOutputTokens: settings.ExplorationOutputTokens,
 		PrimaryRepo:             primary.Name,
@@ -971,6 +981,10 @@ func goalStatement(session core.PlanningSession) string {
 		statement += " This session was opened from requirement " + context +
 			". A requirement you finalize here revises that document — pass requirement_id " + context +
 			", never a new one — and a blueprint you finalize here proposes serving it."
+	}
+	if session.Promotion != nil {
+		encoded, _ := json.Marshal(session.Promotion)
+		statement += " This is an operator-scoped promotion. finalize_requirement MUST include derived_from exactly as " + string(encoded) + ". The source remains informative until the operator confirms the pending requirement version."
 	}
 	return statement
 }
@@ -1919,6 +1933,9 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 	if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
 		return toolExecution{}, err
 	}
+	if session.Promotion != nil && !sameRequirementDerivation(session.Promotion, args.DerivedFrom) {
+		return toolExecution{}, fmt.Errorf("finalize_requirement derived_from must match the session promotion intent")
+	}
 	document, err := pipeline.RenderRequirementDocument(args.Prose, args.Statements)
 	if err != nil {
 		return toolExecution{}, err
@@ -2057,6 +2074,24 @@ func sameRequirementDerivation(left, right *core.RequirementDerivation) bool {
 }
 
 func (s *Service) validateRequirementDerivation(ctx context.Context, derivation *core.RequirementDerivation, statements []core.RequirementStatement) error {
+	if err := s.validatePromotionSource(ctx, derivation); err != nil {
+		return err
+	}
+	foundTarget := false
+	for _, statement := range statements {
+		for _, id := range core.RequirementStatementIDs(statement) {
+			if id == derivation.TargetID {
+				foundTarget = true
+			}
+		}
+	}
+	if !foundTarget {
+		return fmt.Errorf("promotion target %s is not present in the proposed requirement version", derivation.TargetID)
+	}
+	return nil
+}
+
+func (s *Service) validatePromotionSource(ctx context.Context, derivation *core.RequirementDerivation) error {
 	if derivation.DocumentID == "" || derivation.Version < 1 || strings.TrimSpace(derivation.SectionAnchor) == "" || strings.TrimSpace(derivation.TargetID) == "" {
 		return fmt.Errorf("derived_from requires document_id, version, section_anchor, and target_id")
 	}
@@ -2074,17 +2109,6 @@ func (s *Service) validateRequirementDerivation(ctx context.Context, derivation 
 	}
 	if !foundAnchor {
 		return fmt.Errorf("reference document %s version %d has no section anchor #%s", derivation.DocumentID, derivation.Version, wanted)
-	}
-	foundTarget := false
-	for _, statement := range statements {
-		for _, id := range core.RequirementStatementIDs(statement) {
-			if id == derivation.TargetID {
-				foundTarget = true
-			}
-		}
-	}
-	if !foundTarget {
-		return fmt.Errorf("promotion target %s is not present in the proposed requirement version", derivation.TargetID)
 	}
 	derivation.SectionAnchor = "#" + wanted
 	return nil

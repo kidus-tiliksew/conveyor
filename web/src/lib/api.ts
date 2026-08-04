@@ -13,6 +13,7 @@ import type {
   RequirementVersion,
   PlanningSession,
   PlanningSessionGoal,
+  RequirementDerivation,
   PlanningMessage,
   PlanningMessagePart,
   Artifact,
@@ -122,7 +123,12 @@ export function fetchPlanningMessages(sessionId: string) {
 }
 export async function createPlanningSession(
   token: string,
-  input: { requirement_context_id?: string; model?: string; goal?: PlanningSessionGoal },
+  input: {
+    requirement_context_id?: string
+    model?: string
+    goal?: PlanningSessionGoal
+    promotion?: RequirementDerivation
+  },
 ) {
   const response = await fetch(workspaceURL('/v1/planning-sessions'), {
     method: 'POST',

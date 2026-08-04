@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
 import { ArrowUpRight, GitBranch, MessageCircleQuestion, PenLine, Sparkles } from 'lucide-react'
 import { Button } from '../ui/button'
-import { fetchPlanningSession } from '../../lib/api'
+import { fetchPlanningSession, fetchReferenceDocuments, fetchReferenceDocumentVersions } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { PlanningSession, PlanningSessionGoal, RequirementView } from '../../lib/types'
+import type { PlanningSession, PlanningSessionGoal, RequirementDerivation, RequirementView } from '../../lib/types'
 import { PlanningChat } from './planning-chat'
+import { Dialog } from '../ui/dialog'
+import { Select } from '../ui/input'
 
 export type GuidedAction = {
   id: 'draft' | 'revise' | 'promote' | 'qa' | 'plan'
@@ -43,7 +46,7 @@ export const guidedActions: GuidedAction[] = [
     hint: 'Turn an enforceable overview passage into a proposed REQ or AC with provenance',
     goal: 'requirement',
     icon: ArrowUpRight,
-    contextual: true,
+    contextual: false,
   },
   {
     id: 'qa',
@@ -84,7 +87,7 @@ export function RequirementAssistant({
   sessionId: string
   token: string
   workspace: string
-  onStart: (action: GuidedAction) => void
+  onStart: (action: GuidedAction, promotion?: RequirementDerivation) => void
   starting: boolean
   startError: unknown
   onFinalized: (session: PlanningSession) => void
@@ -94,6 +97,7 @@ export function RequirementAssistant({
     queryFn: () => fetchPlanningSession(sessionId),
     enabled: Boolean(sessionId),
   })
+  const [promotionOpen, setPromotionOpen] = useState(false)
   const actions = guidedActions.filter((action) => !action.contextual || Boolean(selected))
 
   return (
@@ -120,7 +124,7 @@ export function RequirementAssistant({
             size="sm"
             title={action.hint}
             disabled={!token || !workspace || starting}
-            onClick={() => onStart(action)}
+            onClick={() => (action.id === 'promote' ? setPromotionOpen(true) : onStart(action))}
           >
             <action.icon /> {action.label}
           </Button>
@@ -162,6 +166,179 @@ export function RequirementAssistant({
           </div>
         )}
       </div>
+      {promotionOpen && (
+        <PromotionDialog
+          selected={selected}
+          starting={starting}
+          onClose={() => setPromotionOpen(false)}
+          onStart={(promotion) => {
+            onStart(guidedActions.find((action) => action.id === 'promote') as GuidedAction, promotion)
+            setPromotionOpen(false)
+          }}
+        />
+      )}
     </aside>
+  )
+}
+
+function headingAnchor(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function PromotionDialog({
+  selected,
+  starting,
+  onClose,
+  onStart,
+}: {
+  selected?: RequirementView
+  starting: boolean
+  onClose: () => void
+  onStart: (promotion: RequirementDerivation) => void
+}) {
+  const { data: documents = [], error: documentsError } = useQuery({
+    queryKey: ['reference-documents', 'promotion'],
+    queryFn: fetchReferenceDocuments,
+  })
+  const [documentID, setDocumentID] = useState('')
+  const chosenDocument = documents.find((document) => document.id === documentID) ?? documents[0]
+  const { data: versions = [], error: versionsError } = useQuery({
+    queryKey: ['reference-document-versions', chosenDocument?.id, 'promotion'],
+    queryFn: () => fetchReferenceDocumentVersions(chosenDocument?.id ?? ''),
+    enabled: Boolean(chosenDocument),
+  })
+  const [versionNumber, setVersionNumber] = useState(0)
+  const chosenVersion = versions.find((version) => version.version === versionNumber) ?? versions.at(-1)
+  const headings = useMemo(
+    () =>
+      (chosenVersion?.content ?? '')
+        .split('\n')
+        .filter((line) => /^\s*#{1,6}\s+\S/.test(line))
+        .map((line) => {
+          const label = line.replace(/^\s*#{1,6}\s+/, '').trim()
+          return { label, anchor: `#${headingAnchor(label)}` }
+        }),
+    [chosenVersion],
+  )
+  const [sectionAnchor, setSectionAnchor] = useState('')
+  const targetIDs = useMemo(
+    () =>
+      selected?.current_version?.statements.flatMap((statement) => [
+        statement.id,
+        ...(statement.acceptance_criteria ?? []).map((criterion) => criterion.id),
+      ]) ?? ['REQ-1'],
+    [selected],
+  )
+  const [targetID, setTargetID] = useState('')
+  const effectiveAnchor = headings.some((heading) => heading.anchor === sectionAnchor)
+    ? sectionAnchor
+    : (headings[0]?.anchor ?? '')
+  const effectiveTarget = targetIDs.includes(targetID) ? targetID : (targetIDs[0] ?? '')
+
+  return (
+    <Dialog label="Promote product overview" onClose={onClose}>
+      <div className="border-b border-border px-5 py-4">
+        <h2 className="text-sm font-semibold">Promote product overview</h2>
+        <p className="mt-1 text-xs leading-5 text-muted">
+          Choose an immutable source passage and the REQ or AC it should propose. The source becomes normative only
+          after confirmation.
+        </p>
+      </div>
+      <div className="space-y-4 px-5 py-4">
+        <label className="block text-xs font-medium" htmlFor="promotion-document">
+          Document
+          <Select
+            id="promotion-document"
+            value={chosenDocument?.id ?? ''}
+            onChange={(event) => {
+              setDocumentID(event.target.value)
+              setVersionNumber(0)
+              setSectionAnchor('')
+            }}
+          >
+            {documents.map((document) => (
+              <option key={document.id} value={document.id}>
+                {document.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label className="block text-xs font-medium" htmlFor="promotion-version">
+          Immutable version
+          <Select
+            id="promotion-version"
+            value={chosenVersion?.version ?? ''}
+            onChange={(event) => {
+              setVersionNumber(Number(event.target.value))
+              setSectionAnchor('')
+            }}
+          >
+            {versions.map((version) => (
+              <option key={version.version} value={version.version}>
+                v{version.version} · {version.filename}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label className="block text-xs font-medium" htmlFor="promotion-section">
+          Section
+          <Select
+            id="promotion-section"
+            value={effectiveAnchor}
+            onChange={(event) => setSectionAnchor(event.target.value)}
+          >
+            {headings.map((heading) => (
+              <option key={heading.anchor} value={heading.anchor}>
+                {heading.label}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label className="block text-xs font-medium" htmlFor="promotion-target">
+          Promotion target
+          <Select id="promotion-target" value={effectiveTarget} onChange={(event) => setTargetID(event.target.value)}>
+            {targetIDs.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </Select>
+          <span className="mt-1 block font-normal text-muted">
+            {selected
+              ? `Propose a pending revision of ${selected.requirement.title}.`
+              : 'Start a new requirement with REQ-1.'}
+          </span>
+        </label>
+        {(documentsError || versionsError) && (
+          <p className="text-xs text-failure">
+            {errorMessage(documentsError ?? versionsError, 'Could not load promotion sources.')}
+          </p>
+        )}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          disabled={starting || !chosenDocument || !chosenVersion || !effectiveAnchor || !effectiveTarget}
+          onClick={() =>
+            chosenDocument &&
+            chosenVersion &&
+            onStart({
+              document_id: chosenDocument.id,
+              version: chosenVersion.version,
+              section_anchor: effectiveAnchor,
+              target_id: effectiveTarget,
+            })
+          }
+        >
+          Start promotion
+        </Button>
+      </div>
+    </Dialog>
   )
 }

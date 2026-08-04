@@ -995,13 +995,27 @@ func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *te
 
 	f.upgradeTo(t, 56)
 
-	migrated, err := f.store.GetPlanningSession(f.ctx, legacyID)
-	if err != nil {
+	var migratedGoal core.PlanningSessionGoal
+	var migratedTitle string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT goal,title FROM planning_sessions WHERE workspace_id=$1 AND id=$2`,
+		f.workspace, legacyID).Scan(&migratedGoal, &migratedTitle); err != nil {
 		t.Fatal(err)
 	}
-	if migrated.Goal != core.PlanningGoalOpen || migrated.Title != "New requirement" {
-		t.Fatalf("migrated session=%+v, want the open goal with its title intact", migrated)
+	if migratedGoal != core.PlanningGoalOpen || migratedTitle != "New requirement" {
+		t.Fatalf("migrated goal/title=%q/%q, want open/New requirement", migratedGoal, migratedTitle)
 	}
+	// The column constraint is the last line of defense behind the service and
+	// API validation, so it must reject an unknown goal on its own.
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO planning_sessions (workspace_id,id,title,status,goal,created_at,updated_at)
+		 VALUES ($1,$2,'Epic','active','epic',now(),now())`,
+		f.workspace, "session-"+core.NewTaskID()); err == nil {
+		t.Fatal("the goal CHECK accepted an unknown goal")
+	}
+	// Exercise the current store contract only after newer immutable session
+	// fields have been installed by the remaining schema migrations.
+	f.upgradeTo(t, 62)
 	for _, goal := range []core.PlanningSessionGoal{
 		core.PlanningGoalRequirement, core.PlanningGoalBlueprint, core.PlanningGoalOpen,
 	} {
@@ -1011,13 +1025,5 @@ func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *te
 		if createErr != nil || created.Goal != goal {
 			t.Fatalf("goal %q created=%+v err=%v", goal, created, createErr)
 		}
-	}
-	// The column constraint is the last line of defense behind the service and
-	// API validation, so it must reject an unknown goal on its own.
-	if _, err = f.pool.Exec(f.ctx,
-		`INSERT INTO planning_sessions (workspace_id,id,title,status,goal,created_at,updated_at)
-		 VALUES ($1,$2,'Epic','active','epic',now(),now())`,
-		f.workspace, "session-"+core.NewTaskID()); err == nil {
-		t.Fatal("the goal CHECK accepted an unknown goal")
 	}
 }

@@ -455,6 +455,7 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.created", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
 		"requirement_context_id": session.RequirementContextID,
+		"promotion":              session.Promotion,
 		"goal":                   string(session.Goal),
 	})})
 	return clonePlanningSession(session), nil
@@ -553,6 +554,10 @@ func cloneStringMap(values map[string]string) map[string]string {
 
 func clonePlanningSession(session core.PlanningSession) core.PlanningSession {
 	session.PinnedRevisions = cloneStringMap(session.PinnedRevisions)
+	if session.Promotion != nil {
+		promotion := *session.Promotion
+		session.Promotion = &promotion
+	}
 	return session
 }
 

@@ -24,7 +24,14 @@ import {
 } from '../lib/api'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
-import type { PlanningSession, ReferenceDocument, RequirementVersion, RequirementView, TaskEvent } from '../lib/types'
+import type {
+  PlanningSession,
+  ReferenceDocument,
+  RequirementDerivation,
+  RequirementVersion,
+  RequirementView,
+  TaskEvent,
+} from '../lib/types'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Planning conversation',
@@ -112,10 +119,12 @@ export function RequirementsPage() {
     })
   }
   const start = useMutation({
-    mutationFn: (action: GuidedAction) =>
+    mutationFn: ({ action, promotion }: { action: GuidedAction; promotion?: RequirementDerivation }) =>
       createPlanningSession(token, {
         goal: action.goal,
-        requirement_context_id: action.contextual ? selectedId || undefined : undefined,
+        requirement_context_id:
+          action.id === 'promote' ? selectedId || undefined : action.contextual ? selectedId || undefined : undefined,
+        promotion,
       }),
     onSuccess: (session) => {
       void client.invalidateQueries({
@@ -172,7 +181,10 @@ export function RequirementsPage() {
             Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.
           </p>
         </div>
-        <Button disabled={!token || !workspace || start.isPending} onClick={() => start.mutate(draftAction)}>
+        <Button
+          disabled={!token || !workspace || start.isPending}
+          onClick={() => start.mutate({ action: draftAction })}
+        >
           <Sparkles /> {start.isPending ? 'Starting…' : 'New requirement'}
         </Button>
       </header>
@@ -243,7 +255,7 @@ export function RequirementsPage() {
                   <Button
                     className="mt-5"
                     disabled={!token || !workspace || start.isPending}
-                    onClick={() => start.mutate(draftAction)}
+                    onClick={() => start.mutate({ action: draftAction })}
                   >
                     Draft a requirement <ArrowRight />
                   </Button>
@@ -259,7 +271,7 @@ export function RequirementsPage() {
           sessionId={sessionId}
           token={token}
           workspace={workspace}
-          onStart={(action) => start.mutate(action)}
+          onStart={(action, promotion) => start.mutate({ action, promotion })}
           starting={start.isPending}
           startError={start.error}
           onFinalized={adoptFinalized}

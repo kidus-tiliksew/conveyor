@@ -1011,6 +1011,108 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
   await expect(page).toHaveURL(/session=session-4/)
 })
 
+test('promotion selects immutable provenance for new REQ and existing nested AC sessions', async ({ page }) => {
+  await initShell(page)
+  let existing = false
+  const created: Record<string, unknown>[] = []
+  const existingRequirement = {
+    ...requirement,
+    requirement: { ...requirement.requirement, current_version: 1 },
+    current_version: {
+      ...requirement.pending_versions[0],
+      confirmed: true,
+      statements: [
+        {
+          id: 'REQ-1',
+          statement: 'Retries stay bounded.',
+          acceptance_criteria: [{ id: 'AC-1.1', statement: 'A failed charge retries twice.' }],
+        },
+      ],
+    },
+    pending_versions: [],
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/reference-documents')
+      return route.fulfill({
+        json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
+      })
+    if (url.pathname === '/v1/reference-documents/ref-overview/versions')
+      return route.fulfill({
+        json: [
+          {
+            document_id: 'ref-overview',
+            version: 2,
+            filename: 'overview.md',
+            content_type: 'text/markdown',
+            content: '# Billing rule\n\nRetry failed charges twice.',
+            workspace: 'demo',
+          },
+        ],
+      })
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
+      created.push(body)
+      return route.fulfill({
+        json: {
+          id: `session-promotion-${created.length}`,
+          title: 'Drafting requirement…',
+          status: 'active',
+          goal: 'requirement',
+          ...body,
+          workspace: 'demo',
+        },
+      })
+    }
+    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages'))
+      return route.fulfill({ json: [] })
+    if (url.pathname.startsWith('/v1/planning-sessions/')) {
+      const body = created.at(-1) ?? {}
+      return route.fulfill({
+        json: {
+          id: url.pathname.split('/')[3],
+          title: 'Drafting requirement…',
+          status: 'active',
+          goal: 'requirement',
+          ...body,
+          workspace: 'demo',
+        },
+      })
+    }
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: existing ? [existingRequirement] : [] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: existingRequirement })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: [existingRequirement.current_version] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  await page.getByRole('button', { name: 'Promote overview' }).click()
+  await expect(page.getByRole('dialog', { name: 'Promote product overview' })).toBeVisible()
+  await page.getByRole('button', { name: 'Start promotion' }).click()
+  await expect.poll(() => created.length).toBe(1)
+  expect(created[0]).toMatchObject({
+    goal: 'requirement',
+    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'REQ-1' },
+  })
+  expect(created[0].requirement_context_id).toBeUndefined()
+
+  existing = true
+  await page.goto('/requirements?requirement=req-retries')
+  await page.getByRole('button', { name: 'Promote overview' }).click()
+  await page.getByLabel('Promotion target').selectOption('AC-1.1')
+  await page.getByRole('button', { name: 'Start promotion' }).click()
+  await expect.poll(() => created.length).toBe(2)
+  expect(created[1]).toMatchObject({
+    goal: 'requirement',
+    requirement_context_id: 'req-retries',
+    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'AC-1.1' },
+  })
+})
+
 // AC-5: finalizing in the sidebar refreshes the canvas in place — a produced
 // requirement becomes the open document with its pending version and the
 // unchanged confirmation affordance; a produced blueprint refreshes the
