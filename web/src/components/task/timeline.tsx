@@ -69,6 +69,7 @@ export function Timeline({
   const entries = buildTimeline(item)
   const currentExecution = deriveCurrentExecutionState(item)
   const technicalEvents = technicalActivity(item)
+  const usageReportedOrderIDs = reportedUsageOrderIDs(item)
   const showGate = isReviewable(item.task)
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
@@ -136,7 +137,7 @@ export function Timeline({
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
-            <TimelineRow key={keyFor(entry)} entry={entry} />
+            <TimelineRow key={keyFor(entry)} entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} />
           ))}
           {entries.length === 0 && tail.length === 0 && !showGate && (
             <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
@@ -157,7 +158,7 @@ export function Timeline({
           )}
         </ol>
       </section>
-      {technicalEvents.length > 0 && <TechnicalActivity events={technicalEvents} />}
+      {(technicalEvents.length > 0 || (item.work_orders?.length ?? 0) > 0) && <TechnicalActivity item={item} />}
     </>
   )
 }
@@ -237,12 +238,66 @@ function CurrentExecutionSummary({
   )
 }
 
-function TechnicalActivity({ events }: { events: ActivityItem['events'] }) {
+function reportedUsageOrderIDs(item: ActivityItem): Set<string> {
+  // Usage availability and aggregation are presentation-only. They never feed
+  // a lifecycle or admission decision (DEC-1).
+  return new Set(
+    item.events
+      .filter((event) => event.kind === 'work_order.usage_reported')
+      .map((event) => event.payload?.work_order_id)
+      .filter((id): id is string => typeof id === 'string'),
+  )
+}
+
+function usageProvenance(order: WorkOrder): string {
+  return order.self_reported ? 'self-reported' : 'worker-reported'
+}
+
+function usageText(order: WorkOrder, available: boolean): string {
+  if (!available) return 'Usage unavailable'
+  return `${compactTokens(order.tokens_in)} in / ${compactTokens(order.tokens_out)} out · ${usd(order.cost_usd)} · ${usageProvenance(order)}`
+}
+
+function TechnicalActivity({ item }: { item: ActivityItem }) {
+  const events = technicalActivity(item)
+  const reported = reportedUsageOrderIDs(item)
+  const orders = item.work_orders ?? []
+  const measured = orders.filter((order) => reported.has(order.id))
+  const totals = measured.reduce(
+    (sum, order) => ({
+      tokensIn: sum.tokensIn + order.tokens_in,
+      tokensOut: sum.tokensOut + order.tokens_out,
+      costUSD: sum.costUSD + order.cost_usd,
+    }),
+    { tokensIn: 0, tokensOut: 0, costUSD: 0 },
+  )
   return (
     <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
       <summary className="cursor-pointer rounded-lg px-3 py-2.5 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
         Show technical activity
       </summary>
+      {orders.length > 0 && (
+        <section aria-label="Task usage telemetry" className="border-t border-border px-3 py-3">
+          <p className="font-medium text-foreground">Task usage</p>
+          <p className="mt-1 font-mono text-[11px] tabular-nums">
+            {measured.length > 0
+              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out · ${usd(totals.costUSD)} across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
+              : 'Usage unavailable for every work order'}
+            {orders.length > measured.length
+              ? ` · ${orders.length - measured.length} ${orders.length - measured.length === 1 ? 'order' : 'orders'} unavailable`
+              : ''}
+          </p>
+          <ul className="mt-2 space-y-1" aria-label="Work-order usage">
+            {orders.map((order) => (
+              <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
+                <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
+                <code className="text-faint">{order.id}</code>
+                <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <ol className="divide-y divide-border border-t border-border">
         {events.map((event) => (
           <li key={event.id} className="px-3 py-2">
@@ -337,12 +392,19 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
   alarm: 'bg-attention-dot',
 }
 
-function TimelineRow({ entry }: { entry: TimelineEntry }) {
+function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; usageReportedOrderIDs: Set<string> }) {
   if (entry.type === 'job')
     return (
-      <JobEntry job={entry.job} summary={entry.summary} model={entry.model} tone={entry.tone} order={entry.order} />
+      <JobEntry
+        job={entry.job}
+        summary={entry.summary}
+        model={entry.model}
+        tone={entry.tone}
+        order={entry.order}
+        usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+      />
     )
-  if (entry.type === 'panel') return <PanelEntry entry={entry} />
+  if (entry.type === 'panel') return <PanelEntry entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} />
   if (entry.type === 'order') {
     return (
       <li className="relative pl-7">
@@ -352,6 +414,9 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
             {entry.title}
           </span>
           {entry.detail && <span className="text-xs text-muted">{entry.detail}</span>}
+          <span className="font-mono text-[11px] tabular-nums text-faint">
+            {usageText(entry.order, usageReportedOrderIDs.has(entry.order.id))}
+          </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
         </div>
       </li>
@@ -417,7 +482,13 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
 // rows inside a single card, a verdict tally in the header, and — on a
 // changes-requested settle — every dissenting seat's notes merged into one
 // attributed round. Vocabulary is the spec's own: panel, seats, verdicts.
-function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }> }) {
+function PanelEntry({
+  entry,
+  usageReportedOrderIDs,
+}: {
+  entry: Extract<TimelineEntry, { type: 'panel' }>
+  usageReportedOrderIDs: Set<string>
+}) {
   const { seats, resolution } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
   const changes = seats.filter((seat) => seat.review?.verdict === 'changes_requested').length
@@ -477,7 +548,12 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
         </div>
         <div className="divide-y divide-border/60">
           {seats.map((seat, index) => (
-            <SeatRow key={seat.seat} seat={seat} index={index} />
+            <SeatRow
+              key={seat.seat}
+              seat={seat}
+              index={index}
+              usageAvailable={usageReportedOrderIDs.has(seat.order.id)}
+            />
           ))}
         </div>
         {notes.length > 0 && (
@@ -547,7 +623,7 @@ function PanelEntry({ entry }: { entry: Extract<TimelineEntry, { type: 'panel' }
   )
 }
 
-function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
+function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
@@ -560,8 +636,11 @@ function SeatRow({ seat, index }: { seat: PanelSeat; index: number }) {
           tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
           tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
           note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
+          usageAvailable={usageAvailable}
+          usageProvenance={usageProvenance(seat.order)}
         />
       </span>
+      <span className="font-mono text-[11px] tabular-nums text-faint">{usageText(seat.order, usageAvailable)}</span>
       <EnforcementChip enforcement={seat.order.model_enforcement} />
       <span className="ml-auto">
         <SeatState seat={seat} index={index} />
@@ -738,22 +817,23 @@ const placeholderSummaries = new Set([
   'Completed.',
 ])
 
-// The job footer keeps the operator-facing facts — duration and model — and
-// tucks the dispatch details (effort, enforcement) and audit numbers (tokens,
-// cost) behind a hover on the model chip. Harness, auth mode, confinement,
-// and actor plumbing stay in the API.
+// The job footer keeps the operator-facing facts — duration, model, and
+// explicit work-order usage — while the model chip retains dispatch detail on
+// hover. Harness, auth mode, confinement, and actor plumbing stay in the API.
 function JobEntry({
   job,
   summary,
   model,
   tone,
   order,
+  usageAvailable,
 }: {
   job: Job
   summary: string
   model: string
   tone: Extract<TimelineEntry, { type: 'job' }>['tone']
   order?: WorkOrder
+  usageAvailable?: boolean
 }) {
   if (!job.started_at) return null
   const running = job.state === 'running'
@@ -790,6 +870,11 @@ function JobEntry({
             {duration(job.started_at, job.ended_at)}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
+          {order && (
+            <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
+              {usageText(order, usageAvailable === true)}
+            </span>
+          )}
         </div>
       </li>
     )
@@ -821,7 +906,10 @@ function JobEntry({
             tokensIn={job.tokens_in}
             tokensOut={job.tokens_out}
             note={note || undefined}
+            usageAvailable={order ? usageAvailable : job.tokens_in + job.tokens_out > 0}
+            usageProvenance={order ? usageProvenance(order) : 'provider-reported'}
           />
+          {order && <span>{usageText(order, usageAvailable === true)}</span>}
         </div>
       </article>
     </li>
@@ -850,17 +938,26 @@ function ModelChip({
   tokensIn,
   tokensOut,
   note,
+  usageAvailable,
+  usageProvenance,
 }: {
   model: string
   costUSD?: number | null
   tokensIn: number
   tokensOut: number
   note?: string
+  usageAvailable?: boolean
+  usageProvenance?: string
 }) {
   const logo = providerLogo(model)
   const usage = [
-    tokensIn + tokensOut > 0 ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out` : undefined,
-    costUSD != null && costUSD > 0 ? usd(costUSD) : undefined,
+    usageAvailable === false
+      ? 'Usage unavailable'
+      : usageAvailable || tokensIn + tokensOut > 0
+        ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out`
+        : undefined,
+    usageAvailable && costUSD != null ? usd(costUSD) : costUSD != null && costUSD > 0 ? usd(costUSD) : undefined,
+    usageAvailable ? usageProvenance : undefined,
     note,
   ]
     .filter(Boolean)

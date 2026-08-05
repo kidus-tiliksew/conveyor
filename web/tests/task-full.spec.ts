@@ -2475,6 +2475,66 @@ test('work-order cards use their actual stage and technical activity exposes cap
   await expect(technical.getByText('provider rejected the configured model', { exact: false })).toBeVisible()
 })
 
+test('task detail aggregates reported work-order usage and distinguishes reported zero from unavailable', async ({
+  page,
+}) => {
+  await page.route('**/v1/tasks/usage-telemetry/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'usage-telemetry'
+    item.work_orders = item.work_orders.map((order, index) => ({
+      ...order,
+      task_id: 'usage-telemetry',
+      tokens_in: index === 0 ? 1200 : 0,
+      tokens_out: index === 0 ? 300 : 0,
+      cost_usd: index === 0 ? 1.25 : 0,
+    }))
+    item.events = [
+      {
+        id: 1,
+        task_id: 'usage-telemetry',
+        job_id: item.work_orders[0].job_id,
+        kind: 'work_order.usage_reported',
+        actor_id: 'spec-agent',
+        actor_role: 'runner',
+        payload: {
+          work_order_id: item.work_orders[0].id,
+          tokens_in: 1200,
+          tokens_out: 300,
+          cost_usd: 1.25,
+        },
+        at: createdAt,
+      },
+      {
+        id: 2,
+        task_id: 'usage-telemetry',
+        job_id: item.work_orders[1].job_id,
+        kind: 'work_order.usage_reported',
+        actor_id: 'implement-agent',
+        actor_role: 'runner',
+        payload: { work_order_id: item.work_orders[1].id, tokens_in: 0, tokens_out: 0, cost_usd: 0 },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/usage-telemetry/full')
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('1.2k in / 300 out · $1.25 · self-reported')).toBeVisible()
+  await expect(timeline.getByText('0 in / 0 out · $0.00 · self-reported')).toBeVisible()
+  await expect(timeline.getByText('Usage unavailable')).toBeVisible()
+
+  const technical = page.getByText('Show technical activity').locator('..')
+  await technical.getByText('Show technical activity').click()
+  await expect(technical.getByRole('region', { name: 'Task usage telemetry' })).toContainText(
+    '1.2k in / 300 out · $1.25 across 2 reported work orders · 1 order unavailable',
+  )
+  await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText(
+    '0 in / 0 out · $0.00 · self-reported',
+  )
+  await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('Usage unavailable')
+})
+
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
   await page.goto('/tasks/overflowing/full')
 

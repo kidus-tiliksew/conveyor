@@ -65,6 +65,9 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 		"wait for and observe a successful tool response",
 		"Printing, returning, or describing verdict JSON is not completion",
 		"A missing or failed tool response is not terminal success",
+		"call `report_usage` at natural checkpoints",
+		"immediately before `submit_review_verdict`",
+		"missing usage must never block a review verdict (DEC-1)",
 	} {
 		if !strings.Contains(normalized, required) {
 			t.Fatalf("MCP review role is missing %q: %s", required, mcp)
@@ -82,6 +85,28 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	}
 	if strings.Contains(inProcess, "submit_review_verdict") {
 		t.Fatalf("in-process review role requires an unavailable MCP tool: %s", inProcess)
+	}
+}
+
+func TestMCPRolePromptsRequireBestEffortCumulativeUsage(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join("..", "..", "pack")
+	for _, tc := range []struct {
+		stage    core.Stage
+		terminal string
+	}{
+		{stage: core.StageSpec, terminal: "submit_spec"},
+		{stage: core.StageImplement, terminal: "submit_for_review"},
+	} {
+		role, err := (Loader{Dir: dir}).Role(tc.stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, required := range []string{"report_usage", "natural checkpoints", "cumulative", "immediately before `" + tc.terminal + "`", "missing usage must never block"} {
+			if !strings.Contains(role, required) {
+				t.Fatalf("%s role is missing %q: %s", tc.stage, required, role)
+			}
+		}
 	}
 }
 

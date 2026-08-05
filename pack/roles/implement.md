@@ -38,6 +38,12 @@ Working discipline:
   `submit_for_review`. Do not open the PR yourself; Conveyor coordinates the
   review handoff from the pushed branch. Do not touch paths outside the
   configured repository checkout.
+- Usage telemetry is best-effort and cumulative. When current token and cost
+  figures are available, call `report_usage` at natural checkpoints during a
+  long session and immediately before `submit_for_review`, using the cumulative
+  `tokens_in`, `tokens_out`, and `cost_usd` for this work order. If those
+  figures are unavailable, continue normally: missing usage must never block
+  implementation or review submission (DEC-1).
 
 Review wait discipline:
 

@@ -265,6 +265,64 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	}
 }
 
+func TestMCPUsageSurfacesForImplementationAndReviewOrders(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
+		stage := stage
+		t.Run(string(stage), func(t *testing.T) {
+			t.Parallel()
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "usage-" + string(stage), Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+			job := core.Job{ID: task.ID + "-1", TaskID: task.ID, Stage: stage, State: core.JobPending}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: stage}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(st)
+			server.Workspace = "demo"
+			server.WorkOrders = &workorder.Service{Store: st}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			result, err := server.callMCPTool(request, "report_usage", map[string]any{
+				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+				"tokens_in": 1200.0, "tokens_out": 300.0, "cost_usd": 1.25,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reported := result.(core.WorkOrder)
+			if reported.TokensIn != 1200 || reported.TokensOut != 300 || reported.CostUSD != 1.25 || !reported.SelfReported {
+				t.Fatalf("reported %s usage=%+v", stage, reported)
+			}
+		})
+	}
+}
+
+func TestMCPUsageToolDescribesBestEffortObservationalPosture(t *testing.T) {
+	t.Parallel()
+	for _, tool := range mcpTools() {
+		if tool["name"] != "report_usage" {
+			continue
+		}
+		description, _ := tool["description"].(string)
+		for _, required := range []string{"cumulative", "natural checkpoints", "immediately before", "missing usage never blocks", "DEC-1"} {
+			if !strings.Contains(description, required) {
+				t.Fatalf("report_usage description is missing %q: %s", required, description)
+			}
+		}
+		return
+	}
+	t.Fatal("report_usage tool not found")
+}
+
 func TestMCPWorkerListIncludesOnlyOwnActiveOrdersAndClaimableWork(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
