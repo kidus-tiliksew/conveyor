@@ -76,6 +76,7 @@ export const taskStateLabels: Record<string, string> = {
 // instead of raw state strings is the §13.3 presentation convention).
 export const sessionGoalLabels: Record<PlanningSessionGoal, string> = {
   requirement: 'Requirement',
+  system_design: 'System Design',
   blueprint: 'Blueprint',
   open: 'Open exploration',
 }

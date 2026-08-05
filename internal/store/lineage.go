@@ -121,6 +121,43 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case "reference_document.consulted":
 		id, version, sessionID := text("document_id"), number("version"), text("session_id")
 		return emit(link(core.LineagePlanningSession, sessionID, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "consulted"))
+	case "system_design.version_confirmed":
+		id, version, predecessor := text("document_id"), number("version"), number("supersedes_version")
+		versionID := core.SystemDesignVersionLineageID(id, version)
+		links := []core.LineageLink{link(core.LineageSystemDesign, id, core.LineageSystemDesignVersion, versionID, "versions")}
+		if predecessor > 0 {
+			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(id, predecessor), "supersedes"))
+		}
+		if raw, ok := payload["governs"].([]any); ok {
+			for _, rawScope := range raw {
+				scope, _ := rawScope.(map[string]any)
+				repository, _ := scope["repository"].(string)
+				if repository == "" {
+					repository, _ = scope["repo"].(string)
+				}
+				paths, _ := scope["paths"].([]any)
+				for _, rawPath := range paths {
+					glob, _ := rawPath.(string)
+					links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineageRepositoryPath, core.RepoPathComponentLineageID(repository, glob), "governs"))
+				}
+			}
+		}
+		if taskID := text("origin_task_id"); taskID != "" {
+			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineageTask, taskID, "governs"))
+		}
+		return emit(links...)
+	case "decision.proposed":
+		id := text("decision_id")
+		if sessionID := text("origin_session_id"); sessionID != "" {
+			return emit(link(core.LineageDecision, id, core.LineagePlanningSession, sessionID, "proposed_by"))
+		}
+		if taskID := text("origin_task_id"); taskID != "" {
+			return emit(link(core.LineageDecision, id, core.LineageTask, taskID, "proposed_by"))
+		}
+	case "decision.confirmed":
+		if predecessor := text("supersedes"); predecessor != "" {
+			return emit(link(core.LineageDecision, text("decision_id"), core.LineageDecision, predecessor, "supersedes"))
+		}
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
 			links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), "versions")}
@@ -218,6 +255,7 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"versions": {}, "supersedes": {}, "submitted_as": {}, "submitted_range": {},
 	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
 	"consulted": {}, "derived_from": {},
+	"governs": {}, "proposed_by": {},
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed

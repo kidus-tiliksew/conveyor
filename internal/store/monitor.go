@@ -110,7 +110,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 		return monitor.Drift{}, fmt.Errorf("drift %s not found", id)
 	}
 	outcome = strings.TrimSpace(outcome)
-	if outcome != "requirements_amended" && outcome != "conflict_resolved" && outcome != "change_reverted" {
+	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
 	}
 	if !drift.ResolvedAt.IsZero() {

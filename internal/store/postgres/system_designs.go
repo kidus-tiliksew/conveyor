@@ -1,0 +1,351 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+)
+
+func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error) {
+	document.ID, document.Title, document.Category = strings.TrimSpace(document.ID), strings.TrimSpace(document.Title), strings.TrimSpace(document.Category)
+	if document.ID == "" || document.Title == "" || document.Category == "" {
+		return document, first, fmt.Errorf("system design id, title, and category are required")
+	}
+	if document.Slug == "" {
+		document.Slug = core.RequirementSlug(document.Title)
+	}
+	if err := core.NormalizeSystemDesignVersion(&first); err != nil {
+		return document, first, err
+	}
+	now := time.Now().UTC()
+	document.Workspace, document.CurrentVersion = workspace(ctx), 0
+	document.CreatedAt, document.UpdatedAt = now, now
+	first.Workspace, first.DocumentID, first.Version = workspace(ctx), document.ID, 1
+	first.Confirmed, first.ConfirmedBy, first.ConfirmedAt, first.CreatedAt = false, "", time.Time{}, now
+	governs, _ := json.Marshal(first.Governs)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO system_designs (workspace_id,id,slug,title,category,current_version,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,NULL,$6,$6)`, workspace(ctx), document.ID, document.Slug, document.Title, document.Category, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO system_design_versions (workspace_id,document_id,version,content,governs,origin,origin_session_id,origin_task_id,created_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8)`, workspace(ctx), document.ID, first.Content, governs, string(first.Origin), nullString(first.OriginSessionID), nullString(first.OriginTaskID), now); err != nil {
+			return err
+		}
+		if err := insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": document.ID, "title": document.Title, "category": document.Category})}); err != nil {
+			return err
+		}
+		return insertSystemDesignProposalEvent(ctx, q, first)
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
+		}
+	}
+	return document, first, err
+}
+
+func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
+	item := core.SystemDesign{Workspace: workspace(ctx), ID: id}
+	var current *int
+	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
+	}
+	if current != nil {
+		item.CurrentVersion = *current
+	}
+	return item, err
+}
+
+func (s *Store) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,slug,title,category,current_version,created_at,updated_at FROM system_designs WHERE workspace_id=$1 ORDER BY category,title,id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.SystemDesign{}
+	for rows.Next() {
+		item := core.SystemDesign{Workspace: workspace(ctx)}
+		var current *int
+		if err = rows.Scan(&item.ID, &item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if current != nil {
+			item.CurrentVersion = *current
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error) {
+	if err := core.NormalizeSystemDesignVersion(&version); err != nil {
+		return version, err
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var latest int
+		if err := tx.QueryRow(ctx, `SELECT 1 FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), version.DocumentID).Scan(new(int)); err != nil {
+			return notFound(err, "system design %s", version.DocumentID)
+		}
+		if err := tx.QueryRow(ctx, `SELECT coalesce(max(version),0) FROM system_design_versions WHERE workspace_id=$1 AND document_id=$2`, workspace(ctx), version.DocumentID).Scan(&latest); err != nil {
+			return err
+		}
+		version.Workspace, version.Version, version.Confirmed = workspace(ctx), latest+1, false
+		version.ConfirmedBy, version.ConfirmedAt, version.CreatedAt = "", time.Time{}, time.Now().UTC()
+		governs, _ := json.Marshal(version.Governs)
+		if _, err := tx.Exec(ctx, `INSERT INTO system_design_versions (workspace_id,document_id,version,content,governs,origin,origin_session_id,origin_task_id,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, workspace(ctx), version.DocumentID, version.Version, version.Content, governs, string(version.Origin), nullString(version.OriginSessionID), nullString(version.OriginTaskID), version.CreatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE system_designs SET updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), version.DocumentID, version.CreatedAt); err != nil {
+			return err
+		}
+		return insertSystemDesignProposalEvent(ctx, q, version)
+	})
+	return version, err
+}
+
+func insertSystemDesignProposalEvent(ctx context.Context, q *db.Queries, version core.SystemDesignVersion) error {
+	return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_proposed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": version.DocumentID, "version": version.Version, "origin": version.Origin, "origin_session_id": version.OriginSessionID, "origin_task_id": version.OriginTaskID, "governs": version.Governs})})
+}
+
+func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	var document core.SystemDesign
+	var confirmed core.SystemDesignVersion
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current *int
+		if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current); err != nil {
+			return notFound(err, "system design %s", documentID)
+		}
+		currentVersion := 0
+		if current != nil {
+			currentVersion = *current
+		}
+		if len(expectedCurrentVersion) > 1 {
+			return fmt.Errorf("at most one expected current system design version may be supplied")
+		}
+		if len(expectedCurrentVersion) == 1 && expectedCurrentVersion[0] != currentVersion {
+			expected := expectedCurrentVersion[0]
+			return &store.SystemDesignVersionConflict{DocumentID: documentID, Requested: version, Current: currentVersion, Expected: &expected}
+		}
+		var err error
+		confirmed, err = scanSystemDesignVersion(tx.QueryRow(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version), documentID, version)
+		if err != nil {
+			return err
+		}
+		if confirmed.Confirmed && currentVersion == version {
+			document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID)
+			return err
+		}
+		if version < currentVersion {
+			return &store.SystemDesignVersionConflict{DocumentID: documentID, Requested: version, Current: currentVersion}
+		}
+		if err = core.NormalizeSystemDesignVersion(&confirmed); err != nil {
+			return err
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = tx.Exec(ctx, `UPDATE system_design_versions SET confirmed=true,confirmed_by=$4,confirmed_at=$5 WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version, actor.ID, now); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE system_designs SET current_version=$3,updated_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, version, now); err != nil {
+			return err
+		}
+		confirmed.Confirmed, confirmed.ConfirmedBy, confirmed.ConfirmedAt = true, actor.ID, now
+		document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID)
+		if err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})})
+	})
+	return document, confirmed, err
+}
+
+const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,created_at,updated_at FROM system_designs`
+const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,created_at FROM system_design_versions`
+
+func scanSystemDesign(row pgx.Row, id string) (core.SystemDesign, error) {
+	var item core.SystemDesign
+	var current *int
+	err := row.Scan(&item.Workspace, &item.ID, &item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
+	}
+	if current != nil {
+		item.CurrentVersion = *current
+	}
+	return item, err
+}
+func scanSystemDesignVersion(row pgx.Row, id string, version int) (core.SystemDesignVersion, error) {
+	var item core.SystemDesignVersion
+	var raw []byte
+	var origin string
+	var confirmedAt *time.Time
+	err := row.Scan(&item.Workspace, &item.DocumentID, &item.Version, &item.Content, &raw, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Confirmed, &item.ConfirmedBy, &confirmedAt, &item.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, fmt.Errorf("%w: system design %s has no version %d", store.ErrNotFound, id, version)
+	}
+	if err != nil {
+		return item, err
+	}
+	item.Origin = core.SystemDesignOrigin(origin)
+	if err = json.Unmarshal(raw, &item.Governs); err != nil {
+		return item, err
+	}
+	if confirmedAt != nil {
+		item.ConfirmedAt = *confirmedAt
+	}
+	return item, nil
+}
+
+func (s *Store) GetSystemDesignVersion(ctx context.Context, id string, version int) (core.SystemDesignVersion, error) {
+	return scanSystemDesignVersion(s.pool.QueryRow(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), id, version), id, version)
+}
+func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
+	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 ORDER BY version`, workspace(ctx), id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.SystemDesignVersion{}
+	for rows.Next() {
+		item, scanErr := scanSystemDesignVersion(rows, id, 0)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY id`, workspace(ctx), id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Event{}
+	for rows.Next() {
+		var row db.Event
+		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
+			return nil, err
+		}
+		out = append(out, eventFromDB(row))
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {
+	if err := core.ValidateDecision(decision); err != nil {
+		return decision, err
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if decision.ID == "" {
+			var high int
+			if err := tx.QueryRow(ctx, `INSERT INTO decision_sequences(workspace_id,high_water_mark) VALUES($1,1) ON CONFLICT(workspace_id) DO UPDATE SET high_water_mark=decision_sequences.high_water_mark+1 RETURNING high_water_mark`, workspace(ctx)).Scan(&high); err != nil {
+				return err
+			}
+			decision.ID = "DEC-" + strconv.Itoa(high)
+		} else {
+			n, _ := strconv.Atoi(strings.TrimPrefix(decision.ID, "DEC-"))
+			if _, err := tx.Exec(ctx, `INSERT INTO decision_sequences(workspace_id,high_water_mark) VALUES($1,$2) ON CONFLICT(workspace_id) DO UPDATE SET high_water_mark=greatest(decision_sequences.high_water_mark,excluded.high_water_mark)`, workspace(ctx), n); err != nil {
+				return err
+			}
+		}
+		if decision.Supersedes != "" {
+			var status string
+			if err := tx.QueryRow(ctx, `SELECT status FROM decisions WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), decision.Supersedes).Scan(&status); err != nil {
+				return notFound(err, "decision %s", decision.Supersedes)
+			}
+			if status != string(core.DecisionConfirmed) {
+				return fmt.Errorf("decision %s can supersede only a confirmed decision", decision.ID)
+			}
+		}
+		decision.Workspace, decision.Status, decision.CreatedAt = workspace(ctx), core.DecisionProposed, time.Now().UTC()
+		decision.ConfirmedBy, decision.ConfirmedAt, decision.SupersededBy = "", time.Time{}, ""
+		if _, err := tx.Exec(ctx, `INSERT INTO decisions(workspace_id,id,statement,context,alternatives_rejected,status,origin,origin_session_id,origin_task_id,supersedes,created_at) VALUES($1,$2,$3,$4,$5,'proposed',$6,$7,$8,$9,$10)`, workspace(ctx), decision.ID, decision.Statement, decision.Context, decision.AlternativesRejected, string(decision.Origin), nullString(decision.OriginSessionID), nullString(decision.OriginTaskID), nullString(decision.Supersedes), decision.CreatedAt); err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.proposed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": decision.ID, "origin": decision.Origin, "origin_session_id": decision.OriginSessionID, "origin_task_id": decision.OriginTaskID, "supersedes": decision.Supersedes})})
+	})
+	return decision, err
+}
+
+func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
+	var decision core.Decision
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		decision, err = scanDecision(tx.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id), id)
+		if err != nil {
+			return err
+		}
+		if decision.Status == core.DecisionConfirmed {
+			return nil
+		}
+		if decision.Status != core.DecisionProposed {
+			return fmt.Errorf("decision %s is %s and cannot be confirmed", id, decision.Status)
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if decision.Supersedes != "" {
+			if _, err = tx.Exec(ctx, `UPDATE decisions SET status='superseded',superseded_by=$3 WHERE workspace_id=$1 AND id=$2 AND status='confirmed'`, workspace(ctx), decision.Supersedes, id); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(ctx, `UPDATE decisions SET status='confirmed',confirmed_by=$3,confirmed_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, actor.ID, now); err != nil {
+			return err
+		}
+		decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes})})
+	})
+	return decision, err
+}
+
+const decisionSelect = `SELECT workspace_id,id,statement,context,alternatives_rejected,status,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),coalesce(supersedes,''),coalesce(confirmed_by,''),confirmed_at,coalesce(superseded_by,''),created_at FROM decisions`
+
+func scanDecision(row pgx.Row, id string) (core.Decision, error) {
+	var item core.Decision
+	var status, origin string
+	var confirmedAt *time.Time
+	err := row.Scan(&item.Workspace, &item.ID, &item.Statement, &item.Context, &item.AlternativesRejected, &status, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Supersedes, &item.ConfirmedBy, &confirmedAt, &item.SupersededBy, &item.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, fmt.Errorf("%w: decision %s", store.ErrNotFound, id)
+	}
+	item.Status, item.Origin = core.DecisionStatus(status), core.DecisionOrigin(origin)
+	if confirmedAt != nil {
+		item.ConfirmedAt = *confirmedAt
+	}
+	return item, err
+}
+func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, error) {
+	return scanDecision(s.pool.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+}
+func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
+	rows, err := s.pool.Query(ctx, decisionSelect+` WHERE workspace_id=$1 ORDER BY substring(id from 5)::integer`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Decision{}
+	for rows.Next() {
+		item, scanErr := scanDecision(rows, "")
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func nullString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}

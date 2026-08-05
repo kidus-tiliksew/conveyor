@@ -49,6 +49,7 @@ func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (i
 		'consulted','depends_on','derived_from','dispatches','materializes','merged_range','produced_blueprint',
 		'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
 		'supersedes','supports','versions'
+		,'governs','proposed_by'
 	]::text[])`, workspaceID)
 	return tag.RowsAffected(), err
 }

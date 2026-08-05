@@ -11,6 +11,7 @@ import {
   Settings,
   SunMoon,
   Workflow,
+  FileCode2,
   type LucideIcon,
 } from 'lucide-react'
 import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
@@ -214,6 +215,7 @@ function NavSidebar() {
         </NavItem>
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
+        <NavItem to="/system-design" icon={FileCode2} label="System Design" />
         <NavItem to="/blueprints" icon={Blocks} label="Blueprints" />
         <NavItem to="/planning" icon={MessageSquare} label="Planning" />
         <NavItem to="/monitor" icon={Activity} label="Monitor" />

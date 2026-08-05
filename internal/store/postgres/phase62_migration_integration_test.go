@@ -1015,9 +1015,9 @@ func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *te
 	}
 	// Exercise the current store contract only after newer immutable session
 	// fields have been installed by the remaining schema migrations.
-	f.upgradeTo(t, 62)
+	f.upgradeTo(t, 65)
 	for _, goal := range []core.PlanningSessionGoal{
-		core.PlanningGoalRequirement, core.PlanningGoalBlueprint, core.PlanningGoalOpen,
+		core.PlanningGoalRequirement, core.PlanningGoalSystemDesign, core.PlanningGoalBlueprint, core.PlanningGoalOpen,
 	} {
 		created, createErr := f.store.CreatePlanningSession(f.ctx, core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,

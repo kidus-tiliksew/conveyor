@@ -125,6 +125,7 @@ export async function createPlanningSession(
   token: string,
   input: {
     requirement_context_id?: string
+    system_design_context_id?: string
     model?: string
     goal?: PlanningSessionGoal
     promotion?: RequirementDerivation
@@ -260,6 +261,28 @@ export async function uploadArtifact(
 
 export function fetchReferenceDocuments() {
   return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents'))
+}
+export function fetchSystemDesigns() {
+  return getJSON<import('./types').SystemDesignView[]>(workspaceURL('/v1/system-designs'))
+}
+export function fetchSystemDesign(id: string) {
+  return getJSON<import('./types').SystemDesignView>(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`))
+}
+export function fetchSystemDesignVersions(id: string) {
+  return getJSON<import('./types').SystemDesignVersion[]>(
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions`),
+  )
+}
+export async function confirmSystemDesignVersion(token: string, id: string, version: number, expected: number) {
+  const response = await fetch(
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/confirm`),
+    { method: 'POST', headers: { ...mutationHeaders(token), 'If-Match': `"${expected}"` } },
+  )
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json()
+}
+export function fetchDecisions() {
+  return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions'))
 }
 export function fetchReferenceDocumentVersions(id: string) {
   return getJSON<import('./types').ReferenceDocumentVersion[]>(

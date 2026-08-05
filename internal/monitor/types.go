@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,18 +39,21 @@ func (k SignalKind) Drift() bool {
 }
 
 type Observation struct {
-	WorkspaceID       string            `json:"workspace_id"`
-	Repository        string            `json:"repository"`
-	Kind              SignalKind        `json:"kind"`
-	OccurrenceID      string            `json:"occurrence_id"`
-	SourceURL         string            `json:"source_url"`
-	CommitSHA         string            `json:"commit_sha,omitempty"`
-	PullRequestNumber int               `json:"pull_request_number,omitempty"`
-	CheckRunID        string            `json:"check_run_id,omitempty"`
-	RequirementID     string            `json:"requirement_id,omitempty"`
-	ObservedAt        time.Time         `json:"observed_at"`
-	Context           map[string]string `json:"context,omitempty"`
-	Hints             *HintContext      `json:"hints,omitempty"`
+	WorkspaceID             string            `json:"workspace_id"`
+	Repository              string            `json:"repository"`
+	Kind                    SignalKind        `json:"kind"`
+	OccurrenceID            string            `json:"occurrence_id"`
+	SourceURL               string            `json:"source_url"`
+	CommitSHA               string            `json:"commit_sha,omitempty"`
+	PullRequestNumber       int               `json:"pull_request_number,omitempty"`
+	CheckRunID              string            `json:"check_run_id,omitempty"`
+	RequirementID           string            `json:"requirement_id,omitempty"`
+	ChangedPaths            []string          `json:"changed_paths,omitempty"`
+	ProposedSystemDesignIDs []string          `json:"proposed_system_design_ids,omitempty"`
+	CausalEventID           int64             `json:"causal_event_id,omitempty"`
+	ObservedAt              time.Time         `json:"observed_at"`
+	Context                 map[string]string `json:"context,omitempty"`
+	Hints                   *HintContext      `json:"hints,omitempty"`
 }
 
 func (o *Observation) Normalize(workspace string, now time.Time) error {
@@ -60,6 +64,9 @@ func (o *Observation) Normalize(workspace string, now time.Time) error {
 	o.CommitSHA = strings.TrimSpace(o.CommitSHA)
 	o.CheckRunID = strings.TrimSpace(o.CheckRunID)
 	o.RequirementID = strings.TrimSpace(o.RequirementID)
+	for i := range o.ChangedPaths {
+		o.ChangedPaths[i] = strings.TrimSpace(strings.ReplaceAll(o.ChangedPaths[i], "\\", "/"))
+	}
 	if o.WorkspaceID == "" {
 		o.WorkspaceID = workspace
 	}
@@ -116,17 +123,21 @@ type ObservationRecord struct {
 }
 
 type Drift struct {
-	ID            string     `json:"id"`
-	WorkspaceID   string     `json:"workspace_id"`
-	Repository    string     `json:"repository"`
-	Kind          SignalKind `json:"kind"`
-	SourceURL     string     `json:"source_url"`
-	CommitSHA     string     `json:"commit_sha,omitempty"`
-	RequirementID string     `json:"requirement_id,omitempty"`
-	TaskID        string     `json:"task_id"`
-	DetectedAt    time.Time  `json:"detected_at"`
-	ResolvedAt    time.Time  `json:"resolved_at,omitempty"`
-	Outcome       string     `json:"outcome,omitempty"`
+	ID                  string     `json:"id"`
+	WorkspaceID         string     `json:"workspace_id"`
+	Repository          string     `json:"repository"`
+	Kind                SignalKind `json:"kind"`
+	SourceURL           string     `json:"source_url"`
+	CommitSHA           string     `json:"commit_sha,omitempty"`
+	RequirementID       string     `json:"requirement_id,omitempty"`
+	SystemDesignID      string     `json:"system_design_id,omitempty"`
+	SystemDesignVersion int        `json:"system_design_version,omitempty"`
+	CausalEventID       int64      `json:"causal_event_id,omitempty"`
+	MatchingPaths       []string   `json:"matching_paths,omitempty"`
+	TaskID              string     `json:"task_id"`
+	DetectedAt          time.Time  `json:"detected_at"`
+	ResolvedAt          time.Time  `json:"resolved_at,omitempty"`
+	Outcome             string     `json:"outcome,omitempty"`
 }
 
 type Status struct {
@@ -175,6 +186,8 @@ type Store interface {
 	RecordMonitorFailure(context.Context, string, string, time.Time) error
 	AuditTask(context.Context, string, string, map[string]any) error
 	AuditMonitor(context.Context, string, map[string]any) error
+	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
+	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
 }
 
 var (
@@ -323,9 +336,76 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			"drift_id": observation.Identity(), "commit_sha": observation.CommitSHA,
 			"requirement_id": observation.RequirementID,
 		})
+		if err = s.recordSystemDesignDrift(ctx, observation, result.Task.ID); err != nil {
+			return ObservationRecord{}, err
+		}
 	}
 	_ = s.Store.RecordMonitorSuccess(ctx, now)
 	return record, nil
+}
+
+func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Observation, taskID string) error {
+	if len(observation.ChangedPaths) == 0 {
+		return nil
+	}
+	proposed := map[string]bool{}
+	for _, id := range observation.ProposedSystemDesignIDs {
+		proposed[strings.TrimSpace(id)] = true
+	}
+	documents, err := s.Store.ListSystemDesigns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, document := range documents {
+		if document.CurrentVersion == 0 || proposed[document.ID] {
+			continue
+		}
+		version, getErr := s.Store.GetSystemDesignVersion(ctx, document.ID, document.CurrentVersion)
+		if getErr != nil {
+			return getErr
+		}
+		matches := []string{}
+		for _, scope := range version.Governs {
+			if scope.Repository != observation.Repository {
+				continue
+			}
+			for _, changed := range observation.ChangedPaths {
+				for _, glob := range scope.Paths {
+					if core.MatchGovernedPath(glob, changed) {
+						matches = append(matches, changed)
+						break
+					}
+				}
+			}
+		}
+		if len(matches) == 0 {
+			continue
+		}
+		sort.Strings(matches)
+		matches = compactStrings(matches)
+		id := "design:" + document.ID + ":" + observation.Identity()
+		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: document.ID, SystemDesignVersion: version.Version, CausalEventID: observation.CausalEventID, MatchingPaths: matches, TaskID: taskID, DetectedAt: observation.ObservedAt})
+		if recordErr != nil {
+			return recordErr
+		}
+		if fresh {
+			_ = s.Store.AuditMonitor(ctx, "system_design.drift_detected", map[string]any{"drift_id": id, "document_id": document.ID, "version": version.Version, "causal_event_id": observation.CausalEventID, "matching_paths": matches})
+		}
+	}
+	return nil
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func taskBody(o Observation) string {

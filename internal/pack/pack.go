@@ -100,7 +100,7 @@ response must contain the verdict.
 
 End your answer with exactly one machine-owned block and nothing after it:
 
-` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing blueprint criterion AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]}}
+` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing blueprint criterion AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]},"governance_assessment":{"applicable":false,"cited_ids":[],"unknown_ids":[],"ungoverned_ids":[],"superseded_ids":[],"conflicts":[]}}
 ` + "```"
 }
 
@@ -150,8 +150,8 @@ branch diff against its base; you may read any file for context, but judge
 only what the diff changes.
 
 Before ending, call Conveyor's ` + "`submit_review_verdict`" + ` MCP tool with
-your verdict, reason code, summary, feedback, and requirement-citation
-assessment, then wait for and observe a
+your verdict, reason code, summary, feedback, requirement-citation assessment,
+and System Design/DEC governance assessment, then wait for and observe a
 successful tool response. Printing, returning, or describing verdict JSON is
 not completion and is never a substitute for the tool call. A missing or failed
 tool response is not terminal success: keep the review active and retry or

@@ -30,6 +30,7 @@ var (
 	ErrNotFound                    = errors.New("resource not found")
 	ErrWorkspaceConflict           = errors.New("workspace id or name already exists")
 	ErrRequirementSlugConflict     = errors.New("requirement slug already exists")
+	ErrSystemDesignSlugConflict    = errors.New("system design slug already exists")
 	ErrRequirementServesTransition = errors.New("invalid requirement serves-link transition")
 	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
 	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
@@ -203,6 +204,20 @@ type Store interface {
 	DeleteReferenceDocument(ctx context.Context, documentID string) error
 	RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error
 
+	CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error)
+	GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error)
+	ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error)
+	ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error)
+	ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error)
+	GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error)
+	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
+	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
+
+	ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error)
+	ConfirmDecision(ctx context.Context, id string) (core.Decision, error)
+	GetDecision(ctx context.Context, id string) (core.Decision, error)
+	ListDecisions(ctx context.Context) ([]core.Decision, error)
+
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it (spec §9, §13.1).
 	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
@@ -251,6 +266,20 @@ type RequirementVersionConflict struct {
 	Requested     int
 	Current       int
 	Expected      *int
+}
+
+type SystemDesignVersionConflict struct {
+	DocumentID string
+	Requested  int
+	Current    int
+	Expected   *int
+}
+
+func (e *SystemDesignVersionConflict) Error() string {
+	if e.Expected != nil {
+		return fmt.Sprintf("system design %s current version is %d, not expected version %d", e.DocumentID, e.Current, *e.Expected)
+	}
+	return fmt.Sprintf("system design %s already confirmed version %d; cannot confirm superseded version %d", e.DocumentID, e.Current, e.Requested)
 }
 
 func (e *RequirementVersionConflict) Error() string {
@@ -717,6 +746,9 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		requirementServes:           map[string]core.RequirementServesLink{},
 		referenceDocuments:          map[memoryScopedKey]core.ReferenceDocument{},
 		referenceDocumentVersions:   map[memoryScopedKey][]core.ReferenceDocumentVersion{},
+		systemDesigns:               map[memoryScopedKey]core.SystemDesign{},
+		systemDesignVersions:        map[memoryScopedKey][]core.SystemDesignVersion{},
+		decisions:                   map[memoryScopedKey]core.Decision{},
 		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
@@ -777,6 +809,9 @@ type memory struct {
 	requirementServes           map[string]core.RequirementServesLink
 	referenceDocuments          map[memoryScopedKey]core.ReferenceDocument
 	referenceDocumentVersions   map[memoryScopedKey][]core.ReferenceDocumentVersion
+	systemDesigns               map[memoryScopedKey]core.SystemDesign
+	systemDesignVersions        map[memoryScopedKey][]core.SystemDesignVersion
+	decisions                   map[memoryScopedKey]core.Decision
 	planningSessions            map[memoryScopedKey]core.PlanningSession
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
@@ -1472,6 +1507,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
 		"evidence_ids":          decision.EvidenceIDs,
 		"requirement_citations": decision.RequirementCitations,
+		"governance_assessment": decision.GovernanceAssessment,
 		"reviewer_model":        decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
@@ -3399,6 +3435,16 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 			if document, ok := m.referenceDocuments[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
 				records[node] = LineageNodeRecord{Title: document.Name}
 			}
+		case core.LineageSystemDesign, core.LineageSystemDesignVersion:
+			if document, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: document.Title, Slug: document.Slug}
+			}
+		case core.LineageDecision:
+			if decision, ok := m.decisions[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: decision.Statement}
+			}
+		case core.LineageRepositoryPath:
+			records[node] = LineageNodeRecord{Title: node.ID}
 		case core.LineagePlanningSession:
 			if session, ok := m.planningSessions[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
 				records[node] = LineageNodeRecord{Title: session.Title}
@@ -3415,7 +3461,7 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {
-	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion && node.Type != core.LineageSystemDesignVersion {
 		return node.ID
 	}
 	index := strings.LastIndex(node.ID, ":v")

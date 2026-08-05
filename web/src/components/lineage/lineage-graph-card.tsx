@@ -9,6 +9,10 @@ const nodeLabels: Record<LineageNodeType, string> = {
   requirement_version: 'Requirement version',
   reference_document: 'Reference document',
   reference_document_version: 'Reference document version',
+  system_design: 'System Design',
+  system_design_version: 'System Design version',
+  decision: 'Decision',
+  repository_path: 'Governed path',
   blueprint: 'Blueprint',
   blueprint_version: 'Blueprint version',
   task: 'Task',
@@ -34,6 +38,8 @@ const edgeLabels: Record<string, string> = {
   produced_verdict: 'produced verdict',
   supports: 'supports verdict',
   proved_by: 'proved by',
+  governs: 'governs',
+  proposed_by: 'proposed by',
 }
 
 export function LineageGraphCard({ graph, title = 'Lineage graph' }: { graph: LineageGraph; title?: string }) {

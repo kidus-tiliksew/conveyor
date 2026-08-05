@@ -7,6 +7,7 @@ import { CreateWorkspaceDialog } from './components/workspace/create-workspace-d
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
 import { RequirementsPage } from './pages/requirements'
+import { SystemDesignPage } from './pages/system-design'
 import { SettingsPage } from './pages/settings'
 import { TaskFullPage } from './pages/task-full'
 import { WorkspacePage } from './pages/workspace'
@@ -74,6 +75,15 @@ const requirementsRoute = createRoute({
   }),
   component: RequirementsPage,
 })
+const systemDesignRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/system-design',
+  validateSearch: (search: Record<string, unknown>): { document?: string; session?: string } => ({
+    document: typeof search.document === 'string' ? search.document : undefined,
+    session: typeof search.session === 'string' ? search.session : undefined,
+  }),
+  component: SystemDesignPage,
+})
 // The planning-side blueprint surface (spec §21.49): the list, and the
 // canonical detail route an anchor now owns. The task routes no longer render
 // an anchor — they redirect here once the task loads — so a blueprint has one
@@ -93,6 +103,7 @@ const routeTree = rootRoute.addChildren([
   activityRedirectRoute,
   workspaceRoute,
   requirementsRoute,
+  systemDesignRoute,
   blueprintsRoute,
   blueprintDetailRoute,
   planningRoute,
