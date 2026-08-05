@@ -32,6 +32,10 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, d
 	if err != nil {
 		return systemDesignView{}, err
 	}
+	return buildSystemDesignView(document, versions, events, drift), nil
+}
+
+func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDesignVersion, events []core.Event, drift []monitor.Drift) systemDesignView {
 	view := systemDesignView{Document: document, PendingVersions: []core.SystemDesignVersion{}, Versions: versions, Lineage: events, Drift: []monitor.Drift{}}
 	for _, item := range drift {
 		if item.SystemDesignID == document.ID {
@@ -47,7 +51,7 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, d
 			view.PendingVersions = append(view.PendingVersions, versions[i])
 		}
 	}
-	return view, nil
+	return view
 }
 
 func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +61,16 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]systemDesignView, 0, len(items))
+	versions, err := s.Store.ListSystemDesignVersionsByDocument(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	events, err := s.Store.ListSystemDesignEventsByDocument(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var drift []monitor.Drift
 	if s.Monitor != nil {
 		status, statusErr := s.Monitor.Status(r.Context())
@@ -67,12 +81,7 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		drift = status.Drift
 	}
 	for _, item := range items {
-		view, viewErr := s.systemDesignView(r, item, drift)
-		if viewErr != nil {
-			http.Error(w, viewErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		views = append(views, view)
+		views = append(views, buildSystemDesignView(item, versions[item.ID], events[item.ID], drift))
 	}
 	writeJSON(w, http.StatusOK, views)
 }

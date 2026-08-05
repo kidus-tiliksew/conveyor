@@ -22,12 +22,13 @@ const (
 	PostMergeFailure SignalKind = "post_merge_failure"
 	DirectPush       SignalKind = "direct_push"
 	ExternalPRMerge  SignalKind = "external_pr_merge"
+	LineagedMerge    SignalKind = "lineaged_merge"
 	Revert           SignalKind = "revert"
 )
 
 func (k SignalKind) Valid() bool {
 	switch k {
-	case PostMergeFailure, DirectPush, ExternalPRMerge, Revert:
+	case PostMergeFailure, DirectPush, ExternalPRMerge, LineagedMerge, Revert:
 		return true
 	default:
 		return false
@@ -35,7 +36,7 @@ func (k SignalKind) Valid() bool {
 }
 
 func (k SignalKind) Drift() bool {
-	return k == DirectPush || k == ExternalPRMerge || k == Revert
+	return k == DirectPush || k == ExternalPRMerge || k == LineagedMerge || k == Revert
 }
 
 type Observation struct {

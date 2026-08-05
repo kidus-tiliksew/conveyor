@@ -265,6 +265,22 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 	}
 	return out, rows.Err()
 }
+func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
+	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.SystemDesignVersion{}
+	for rows.Next() {
+		item, scanErr := scanSystemDesignVersion(rows, "", 0)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out[item.DocumentID] = append(out[item.DocumentID], item)
+	}
+	return out, rows.Err()
+}
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY id`, workspace(ctx), id)
 	if err != nil {
@@ -280,6 +296,48 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 		out = append(out, eventFromDB(row))
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.Event{}
+	for rows.Next() {
+		var row db.Event
+		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
+			return nil, err
+		}
+		var payload map[string]any
+		if json.Unmarshal(row.PayloadJson, &payload) != nil {
+			continue
+		}
+		if documentID, _ := payload["document_id"].(string); documentID != "" {
+			out[documentID] = append(out[documentID], eventFromDB(row))
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM system_design_versions WHERE workspace_id=$1 AND document_id=$2 AND version=$3)
+			AND CASE WHEN $5 <> '' THEN EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND id=$5)
+			ELSE EXISTS(SELECT 1 FROM planning_sessions WHERE workspace_id=$1 AND id=$4) END`,
+			workspace(ctx), documentID, version, sessionID, workOrderID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("%w: system design consultation target", store.ErrNotFound)
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace(ctx), "document_id": documentID, "version": version,
+			"session_id": sessionID, "work_order_id": workOrderID,
+		})})
+	})
 }
 
 func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {

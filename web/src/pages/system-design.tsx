@@ -13,6 +13,7 @@ import {
   fetchDecisions,
   fetchPlanningSession,
   fetchSystemDesigns,
+  SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSession, PlanningSessionGoal, SystemDesignVersion, SystemDesignView } from '../lib/types'
@@ -90,7 +91,7 @@ export function SystemDesignPage() {
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h1 className="text-base font-semibold">System Design</h1>
-            <p className="text-xs text-muted">How the system works</p>
+            <p className="text-xs text-muted">Confirmed guides for how the system works</p>
           </div>
           <Button
             size="sm"
@@ -132,9 +133,9 @@ export function SystemDesignPage() {
           <DesignCanvas item={selected} token={token} workspace={workspace} />
         ) : (
           <div className="mx-auto mt-24 max-w-md text-center">
-            <h2 className="text-lg font-semibold">Mechanism truth starts here</h2>
+            <h2 className="text-lg font-semibold">Document how this system works</h2>
             <p className="mt-2 text-sm text-muted">
-              Draft a maintained design in conversation. There is no freehand editor.
+              Use the assistant to draft a reviewable design, then confirm the version you want the team to follow.
             </p>
           </div>
         )}
@@ -213,17 +214,29 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
     mutationFn: (version: number) =>
       confirmSystemDesignVersion(token, item.document.id, version, item.document.current_version ?? 0),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+    onError: (error) => {
+      if (error instanceof SystemDesignConflictError)
+        void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
+    },
   })
   return (
     <article className="mx-auto max-w-4xl">
       <header className="mb-5 flex items-start justify-between gap-4">
         <div>
           <div className="flex gap-2">
-            <Badge>{item.document.category}</Badge>
-            {item.drift.length > 0 && <Badge variant="attention">Design drift · {item.drift.length}</Badge>}
+            <span title="The operator-defined group for this design">
+              <Badge>{item.document.category}</Badge>
+            </span>
+            {item.drift.length > 0 && (
+              <span title="Governed code changed without a matching design proposal">
+                <Badge variant="attention">Design drift · {item.drift.length}</Badge>
+              </span>
+            )}
           </div>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
-          <p className="mt-1 text-xs text-muted">Immutable versions · governed scope changes by proposal</p>
+          <p className="mt-1 text-xs text-muted">
+            Confirmed versions stay in history. Propose a revision to change governed scope.
+          </p>
         </div>
       </header>
       {item.drift.length > 0 && (
@@ -264,7 +277,9 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
       )}
       <section className="rounded-lg border border-border bg-background p-6">
         <div className="mb-4 flex flex-wrap gap-2">
-          <Badge variant="mono">Version {displayed?.version}</Badge>
+          <span title="The immutable revision number">
+            <Badge variant="mono">Version {displayed?.version}</Badge>
+          </span>
           {displayed?.confirmed ? (
             <Badge variant="positive">Confirmed</Badge>
           ) : (
@@ -272,7 +287,7 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
           )}
           {displayed?.governs.flatMap((scope) =>
             scope.paths.map((path) => (
-              <Badge key={`${scope.repository}:${path}`} variant="mono">
+              <Badge key={`${scope.repository}:${path}`} variant="mono" title="Repository path governed by this design">
                 {scope.repository}:{path}
               </Badge>
             )),

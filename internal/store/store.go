@@ -215,6 +215,9 @@ type Store interface {
 	GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error)
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
+	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
+	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
+	RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error
 
 	ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error)
 	ConfirmDecision(ctx context.Context, id string) (core.Decision, error)

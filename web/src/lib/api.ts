@@ -278,9 +278,24 @@ export async function confirmSystemDesignVersion(token: string, id: string, vers
     workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/confirm`),
     { method: 'POST', headers: { ...mutationHeaders(token), 'If-Match': `"${expected}"` } },
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) {
+    const body = await response.text()
+    let message = body.trim() || response.statusText
+    try {
+      const parsed = JSON.parse(body) as { message?: string }
+      message = parsed.message ?? message
+    } catch {
+      /* plain-text API error */
+    }
+    if (response.status === 409)
+      throw new SystemDesignConflictError(
+        'This design changed while you were reviewing it. The latest versions are loading; review them and try again.',
+      )
+    throw new Error(message)
+  }
   return response.json()
 }
+export class SystemDesignConflictError extends Error {}
 export function fetchDecisions() {
   return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions'))
 }

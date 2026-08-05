@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,59 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+type countingSystemDesignStore struct {
+	store.Store
+	lists, versionBatches, eventBatches, singularVersions, singularEvents int
+}
+
+func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
+	s.lists++
+	return s.Store.ListSystemDesigns(ctx)
+}
+func (s *countingSystemDesignStore) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
+	s.versionBatches++
+	return s.Store.ListSystemDesignVersionsByDocument(ctx)
+}
+func (s *countingSystemDesignStore) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
+	s.eventBatches++
+	return s.Store.ListSystemDesignEventsByDocument(ctx)
+}
+func (s *countingSystemDesignStore) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
+	s.singularVersions++
+	return s.Store.ListSystemDesignVersions(ctx, id)
+}
+func (s *countingSystemDesignStore) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
+	s.singularEvents++
+	return s.Store.ListSystemDesignEvents(ctx, id)
+}
+
+func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	for _, id := range []string{"design-a", "design-b", "design-c"} {
+		document, version, err := base.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{
+			Content: "# " + id + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = base.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counting := &countingSystemDesignStore{Store: base}
+	server := NewServer(counting)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
+		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.singularVersions, counting.singularEvents)
+	}
+}
 
 func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
