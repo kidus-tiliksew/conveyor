@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
@@ -212,6 +213,25 @@ type Decision struct {
 	CreatedAt            time.Time      `json:"created_at"`
 }
 
+// GovernanceDesignContext is the immutable portion of a confirmed System
+// Design version rendered to and validated for one review claim.
+type GovernanceDesignContext struct {
+	ID       string          `json:"id"`
+	Title    string          `json:"title"`
+	Category string          `json:"category"`
+	Version  int             `json:"version"`
+	Content  string          `json:"content"`
+	Governs  []GovernedScope `json:"governs"`
+}
+
+// GovernanceSnapshot pins both repository-scoped design authority and the
+// workspace-wide decision authority used by a review contract. Non-nil empty
+// slices distinguish a current empty snapshot from a legacy missing pin.
+type GovernanceSnapshot struct {
+	Designs   []GovernanceDesignContext `json:"designs"`
+	Decisions []Decision                `json:"decisions"`
+}
+
 var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)
 
 func ValidateDecision(decision Decision) error {
@@ -236,17 +256,53 @@ func ValidateDecision(decision Decision) error {
 // GovernanceAssessment is the separate design/decision review contract. The
 // lists classify distinct outcomes and are therefore normalized and disjoint.
 type GovernanceAssessment struct {
-	Applicable    bool     `json:"applicable"`
-	CitedIDs      []string `json:"cited_ids"`
-	UnknownIDs    []string `json:"unknown_ids"`
-	UngovernedIDs []string `json:"ungoverned_ids"`
-	SupersededIDs []string `json:"superseded_ids"`
-	Conflicts     []string `json:"conflicts"`
+	// Applicable is the legacy wire field. New callers use the two independent
+	// fields below; when supplied, applicable must agree with design_applicable.
+	Applicable       *bool    `json:"applicable,omitempty"`
+	DesignApplicable *bool    `json:"design_applicable,omitempty"`
+	DecisionCitable  *bool    `json:"decision_citable,omitempty"`
+	CitedIDs         []string `json:"cited_ids"`
+	UnknownIDs       []string `json:"unknown_ids"`
+	UngovernedIDs    []string `json:"ungoverned_ids"`
+	SupersededIDs    []string `json:"superseded_ids"`
+	Conflicts        []string `json:"conflicts"`
+	legacyApplicable bool
+}
+
+func (value *GovernanceAssessment) UnmarshalJSON(data []byte) error {
+	type wire GovernanceAssessment
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*value = GovernanceAssessment(decoded)
+	value.legacyApplicable = value.Applicable != nil && value.DesignApplicable == nil && value.DecisionCitable == nil
+	return nil
+}
+
+// UsesLegacyApplicable reports that the payload supplied only the historical
+// applicability bit. Validation maps that bit to design scope and derives
+// decision citability from the pinned authority for wire compatibility.
+func (value *GovernanceAssessment) UsesLegacyApplicable() bool {
+	return value != nil && value.legacyApplicable
 }
 
 func NormalizeGovernanceAssessment(value *GovernanceAssessment) error {
 	if value == nil {
 		return nil
+	}
+	if value.DesignApplicable == nil && value.DecisionCitable == nil {
+		if value.Applicable == nil {
+			return fmt.Errorf("governance assessment requires design_applicable and decision_citable (or legacy applicable)")
+		}
+		value.legacyApplicable = true
+		design, decision := *value.Applicable, *value.Applicable
+		value.DesignApplicable, value.DecisionCitable = &design, &decision
+	} else if value.DesignApplicable == nil || value.DecisionCitable == nil {
+		return fmt.Errorf("governance assessment requires both design_applicable and decision_citable")
+	}
+	if value.Applicable != nil && *value.Applicable != *value.DesignApplicable {
+		return fmt.Errorf("governance assessment legacy applicable must match design_applicable")
 	}
 	lists := []*[]string{&value.CitedIDs, &value.UnknownIDs, &value.UngovernedIDs, &value.SupersededIDs, &value.Conflicts}
 	seen := map[string]int{}
@@ -266,9 +322,6 @@ func NormalizeGovernanceAssessment(value *GovernanceAssessment) error {
 		}
 		sort.Strings(out)
 		*list = out
-	}
-	if !value.Applicable && (len(value.CitedIDs)+len(value.UnknownIDs)+len(value.UngovernedIDs)+len(value.SupersededIDs)+len(value.Conflicts) > 0) {
-		return fmt.Errorf("governance findings must be empty when applicable is false")
 	}
 	return nil
 }

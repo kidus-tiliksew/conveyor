@@ -2102,6 +2102,12 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
+		if order.GovernanceSnapshot == nil && claim.Governance != nil {
+			copy := *claim.Governance
+			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
+			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
+			order.GovernanceSnapshot = &copy
+		}
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
 				(candidate.Stage == core.StageImplement || (candidate.Stage == core.StageReview && candidate.ReviewRound == order.ReviewRound)) &&

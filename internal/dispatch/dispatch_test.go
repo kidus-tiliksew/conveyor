@@ -1207,6 +1207,59 @@ func boolInt(value bool) int {
 	return 0
 }
 
+func boolRef(value bool) *bool { return &value }
+
+func TestValidateGovernanceAssessmentUsesPinnedSplitAuthority(t *testing.T) {
+	snapshot := core.GovernanceSnapshot{
+		Designs: []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 2}},
+		Decisions: []core.Decision{
+			{ID: "DEC-1", Status: core.DecisionConfirmed},
+			{ID: "DEC-2", Status: core.DecisionSuperseded},
+		},
+	}
+	tests := []struct {
+		name       string
+		assessment core.GovernanceAssessment
+		wantError  string
+	}{
+		{name: "valid", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DESIGN-runtime", "DEC-1"}, SupersededIDs: []string{"DEC-2"}}},
+		{name: "known design unknown", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UnknownIDs: []string{"DESIGN-runtime"}}, wantError: `unknown_ids entry "DESIGN-runtime" is present in the pinned governing authority and belongs in cited_ids`},
+		{name: "known decision ungoverned", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UngovernedIDs: []string{"DEC-1"}}, wantError: `ungoverned_ids entry "DEC-1" is present in the pinned governing authority and belongs in cited_ids`},
+		{name: "superseded accepted only as finding", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DEC-2"}}, wantError: `cited id "DEC-2" is not confirmed governing authority in the pinned snapshot`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			review := pipeline.Review{GovernanceAssessment: &test.assessment}
+			err := validateGovernanceAssessment(snapshot, &review)
+			if test.wantError == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
+				t.Fatalf("error=%v want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateGovernanceAssessmentAllowsDecisionWithoutDesignAndIgnoresLiveRace(t *testing.T) {
+	decisionOnly := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed}}}
+	review := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(true), CitedIDs: []string{"DEC-1"}}}
+	if err := validateGovernanceAssessment(decisionOnly, &review); err != nil {
+		t.Fatalf("decision-only assessment rejected: %v", err)
+	}
+	legacyFalse := false
+	legacy := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{Applicable: &legacyFalse, CitedIDs: []string{"DEC-1"}}}
+	if err := validateGovernanceAssessment(decisionOnly, &legacy); err != nil || legacy.GovernanceAssessment.DecisionCitable == nil || !*legacy.GovernanceAssessment.DecisionCitable {
+		t.Fatalf("legacy decision-only mapping=%+v err=%v", legacy.GovernanceAssessment, err)
+	}
+	// A design confirmed after claim is intentionally absent from this pin.
+	emptyPin := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	contractFaithful := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(false)}}
+	if err := validateGovernanceAssessment(emptyPin, &contractFaithful); err != nil {
+		t.Fatalf("empty pinned authority rejected after hypothetical live change: %v", err)
+	}
+}
+
 func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 	for _, source := range []string{"github:acme/api#42", "https://github.com/acme/api/issues/42"} {
 		number, err := sourceIssueNumber("acme/api", source)
@@ -2091,7 +2144,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			if reviewPath == "external-mcp" {
 				err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "review", []core.ServedRequirementContext{})
 			} else {
-				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil)
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil, nil)
 			}
 			if err != nil {
 				t.Fatal(err)

@@ -402,9 +402,16 @@ func mcpTools() []map[string]any {
 		"unserved_ids": stringList, "conflicts": stringList,
 	}, "applicable", "cited_ids", "unknown_ids", "unserved_ids", "conflicts")
 	governanceAssessment := object(map[string]any{
-		"applicable": map[string]string{"type": "boolean"}, "cited_ids": stringList,
-		"unknown_ids": stringList, "ungoverned_ids": stringList, "superseded_ids": stringList, "conflicts": stringList,
-	}, "applicable", "cited_ids", "unknown_ids", "ungoverned_ids", "superseded_ids", "conflicts")
+		"applicable":        map[string]any{"type": "boolean", "description": "Legacy compatibility alias for design_applicable; new callers should send the split fields."},
+		"design_applicable": map[string]any{"type": "boolean", "description": "Whether the pinned System Design versions govern the task repository."},
+		"decision_citable":  map[string]any{"type": "boolean", "description": "Whether the pinned workspace decision authority contains confirmed decisions."},
+		"cited_ids":         stringList,
+		"unknown_ids":       stringList, "ungoverned_ids": stringList, "superseded_ids": stringList, "conflicts": stringList,
+	}, "cited_ids", "unknown_ids", "ungoverned_ids", "superseded_ids", "conflicts")
+	governanceAssessment["anyOf"] = []map[string]any{
+		{"required": []string{"design_applicable", "decision_citable"}},
+		{"required": []string{"applicable"}},
+	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "setup": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; an operator-attached agent claims it explicitly (spec §21.31)."}, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}, "description": "Deprecated (spec §21.31): manual maps to hold=true, auto is a no-op."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},

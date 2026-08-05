@@ -107,15 +107,19 @@ func TestMemoryReviewRequirementSnapshotSurvivesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := []core.ServedRequirementContext{{ID: "req-memory", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-1"}}}}
+	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "DESIGN-memory", Version: 3}}, Decisions: []core.Decision{}}
 	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "snapshot-session", ClientToken: "secret", Lease: time.Minute, Requirements: snapshot}); err != nil {
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "snapshot-session", ClientToken: "secret", Lease: time.Minute, Requirements: snapshot, Governance: governance}); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || len(reloaded.ServedRequirementSnapshot) != 1 || reloaded.ServedRequirementSnapshot[0].Version != 2 {
 		t.Fatalf("reloaded=%+v err=%v", reloaded.ServedRequirementSnapshot, err)
+	}
+	if reloaded.GovernanceSnapshot == nil || len(reloaded.GovernanceSnapshot.Designs) != 1 || reloaded.GovernanceSnapshot.Designs[0].Version != 3 {
+		t.Fatalf("reloaded governance=%+v", reloaded.GovernanceSnapshot)
 	}
 }
 

@@ -714,7 +714,8 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+	emptyGovernance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: emptyGovernance}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
@@ -767,6 +768,33 @@ func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestReviewWorkOrderContextRejectsLegacyClaimWithoutGovernanceSnapshot(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "legacy-governance-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "legacy-governance-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	if _, err = service.Get(ctx, job.ID, "legacy-governance-session"); err == nil || !strings.Contains(err.Error(), "pinned governance authority") || !strings.Contains(err.Error(), "release and reclaim") {
+		t.Fatalf("legacy governance context error=%v", err)
+	}
+}
+
 func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()
@@ -805,8 +833,8 @@ func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
 		t.Fatalf("peek=%+v err=%v", peek.ServedRequirements, err)
 	}
 	reloaded, err := st.GetWorkOrder(ctx, job.ID)
-	if err != nil || reloaded.ServedRequirementSnapshot != nil {
-		t.Fatalf("queued peek persisted snapshot=%+v err=%v", reloaded.ServedRequirementSnapshot, err)
+	if err != nil || reloaded.ServedRequirementSnapshot != nil || reloaded.GovernanceSnapshot != nil {
+		t.Fatalf("queued peek persisted snapshots requirements=%+v governance=%+v err=%v", reloaded.ServedRequirementSnapshot, reloaded.GovernanceSnapshot, err)
 	}
 }
 
@@ -855,6 +883,9 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	if len(claimed.ServedRequirementSnapshot) != 1 || claimed.ServedRequirementSnapshot[0].Version != 1 {
 		t.Fatalf("claim snapshot=%+v", claimed.ServedRequirementSnapshot)
 	}
+	if claimed.GovernanceSnapshot == nil {
+		t.Fatal("review claim did not pin governance authority")
+	}
 	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second"}}, Origin: core.RequirementOriginChat, OriginSessionID: "second"})
 	if err != nil {
 		t.Fatal(err)
@@ -868,6 +899,65 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	}
 	if !strings.Contains(context.RolePrompt, "req-claim-pin v1") || !strings.Contains(context.RolePrompt, "AC-1.1: Pinned criterion") || strings.Contains(context.RolePrompt, "req-claim-pin v2") {
 		t.Fatalf("review role did not render pinned authority: %s", context.RolePrompt)
+	}
+}
+
+func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "governance-claim-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Runtime v1\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```"
+	document, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-runtime", Title: "Runtime", Category: "Architecture"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Keep claims pinned.", Context: "Reviews race with operator confirmation.", AlternativesRejected: "Live verdict validation.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmDecision(ctx, decision.ID); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "governance-pin-session", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.Designs) != 1 || claimed.GovernanceSnapshot.Designs[0].Version != 1 || len(claimed.GovernanceSnapshot.Decisions) != 1 {
+		t.Fatalf("claim governance snapshot=%+v", claimed.GovernanceSnapshot)
+	}
+	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: strings.Replace(content, "v1", "v2", 1), Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	context, err := service.Get(ctx, job.ID, "governance-pin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=1`) || strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=2`) || !strings.Contains(context.RolePrompt, "# Pinned decision authority") {
+		t.Fatalf("review role did not use pinned governance authority: %s", context.RolePrompt)
 	}
 }
 

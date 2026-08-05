@@ -102,6 +102,32 @@ func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	}
 }
 
+func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
+	t.Parallel()
+	design := core.GovernanceDesignContext{ID: "DESIGN-runtime", Version: 3, Category: "Architecture", Content: strings.Repeat("mechanism ", MaxGovernanceContractBytes)}
+	snapshot := core.GovernanceSnapshot{
+		Designs:   []core.GovernanceDesignContext{design},
+		Decisions: []core.Decision{{ID: "DEC-2", Status: core.DecisionConfirmed, Statement: "Use pinned authority."}},
+	}
+	contract := RenderGovernanceContract(core.StageReview, snapshot)
+	if len(contract) > MaxGovernanceContractBytes {
+		t.Fatalf("contract bytes=%d cap=%d", len(contract), MaxGovernanceContractBytes)
+	}
+	for _, required := range []string{"Pinned System Design authority", "System Design DESIGN-runtime v3", "Governance authority omitted by prompt budget", "Pinned decision authority", "DEC-2 [confirmed]", "design_applicable", "decision_citable"} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("contract missing %q: %s", required, contract)
+		}
+	}
+	decisionsOnly := RenderGovernanceContract(core.StageReview, core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: snapshot.Decisions})
+	if !strings.Contains(decisionsOnly, "No confirmed System Design governed") || !strings.Contains(decisionsOnly, "# Pinned decision authority") {
+		t.Fatalf("decisions-only contract=%s", decisionsOnly)
+	}
+	implement := WithRequirementCitationContract("implement", core.StageImplement, nil)
+	if !strings.Contains(implement, "DEC-n") {
+		t.Fatalf("implement guidance=%s", implement)
+	}
+}
+
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {

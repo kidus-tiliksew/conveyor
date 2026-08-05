@@ -380,6 +380,7 @@ type WorkOrder struct {
 	RateLimitObservedAt       pgtype.Timestamptz `json:"rate_limit_observed_at"`
 	QueueBlockedAt            pgtype.Timestamptz `json:"queue_blocked_at"`
 	ServedRequirementSnapshot []byte             `json:"served_requirement_snapshot"`
+	GovernanceSnapshot        []byte             `json:"governance_snapshot"`
 }
 
 type WorkOrderRecovery struct {
