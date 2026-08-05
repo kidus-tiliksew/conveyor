@@ -23,7 +23,7 @@ type systemDesignView struct {
 	Drift           []monitor.Drift            `json:"drift"`
 }
 
-func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign) (systemDesignView, error) {
+func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, drift []monitor.Drift) (systemDesignView, error) {
 	versions, err := s.Store.ListSystemDesignVersions(r.Context(), document.ID)
 	if err != nil {
 		return systemDesignView{}, err
@@ -33,15 +33,9 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign) (
 		return systemDesignView{}, err
 	}
 	view := systemDesignView{Document: document, PendingVersions: []core.SystemDesignVersion{}, Versions: versions, Lineage: events, Drift: []monitor.Drift{}}
-	if s.Monitor != nil {
-		status, statusErr := s.Monitor.Status(r.Context())
-		if statusErr != nil {
-			return systemDesignView{}, statusErr
-		}
-		for _, drift := range status.Drift {
-			if drift.SystemDesignID == document.ID {
-				view.Drift = append(view.Drift, drift)
-			}
+	for _, item := range drift {
+		if item.SystemDesignID == document.ID {
+			view.Drift = append(view.Drift, item)
 		}
 	}
 	for i := range versions {
@@ -49,7 +43,7 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign) (
 			copy := versions[i]
 			view.CurrentVersion = &copy
 		}
-		if !versions[i].Confirmed {
+		if !versions[i].Confirmed && !versions[i].Dismissed {
 			view.PendingVersions = append(view.PendingVersions, versions[i])
 		}
 	}
@@ -63,8 +57,17 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]systemDesignView, 0, len(items))
+	var drift []monitor.Drift
+	if s.Monitor != nil {
+		status, statusErr := s.Monitor.Status(r.Context())
+		if statusErr != nil {
+			http.Error(w, statusErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		drift = status.Drift
+	}
 	for _, item := range items {
-		view, viewErr := s.systemDesignView(r, item)
+		view, viewErr := s.systemDesignView(r, item, drift)
 		if viewErr != nil {
 			http.Error(w, viewErr.Error(), http.StatusInternalServerError)
 			return
@@ -79,7 +82,16 @@ func (s *Server) getSystemDesign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	view, err := s.systemDesignView(r, item)
+	var drift []monitor.Drift
+	if s.Monitor != nil {
+		status, statusErr := s.Monitor.Status(r.Context())
+		if statusErr != nil {
+			http.Error(w, statusErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		drift = status.Drift
+	}
+	view, err := s.systemDesignView(r, item, drift)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -109,7 +121,17 @@ type systemDesignMutation struct {
 }
 
 func (input systemDesignMutation) version(id string) core.SystemDesignVersion {
-	return core.SystemDesignVersion{DocumentID: id, Content: input.Content, Origin: input.Origin, OriginSessionID: input.OriginSessionID, OriginTaskID: input.OriginTaskID}
+	return core.SystemDesignVersion{DocumentID: id, Content: input.Content, Origin: core.SystemDesignOriginOperator}
+}
+
+func validateOperatorSystemDesignMutation(input systemDesignMutation) error {
+	if input.Origin != "" && input.Origin != core.SystemDesignOriginOperator {
+		return fmt.Errorf("REST system design mutations support only operator origin")
+	}
+	if strings.TrimSpace(input.OriginSessionID) != "" || strings.TrimSpace(input.OriginTaskID) != "" {
+		return fmt.Errorf("REST system design mutations cannot name an origin session or task")
+	}
+	return nil
 }
 func (s *Server) createSystemDesign(w http.ResponseWriter, r *http.Request) {
 	var input systemDesignMutation
@@ -117,12 +139,25 @@ func (s *Server) createSystemDesign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	if input.Origin == "" {
-		input.Origin = core.SystemDesignOriginOperator
+	if err := validateOperatorSystemDesignMutation(input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Category) == "" {
+		http.Error(w, "system design id, title, and category are required", http.StatusBadRequest)
+		return
+	}
+	if err := core.ValidateSystemDesignID(input.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if version := input.version(input.ID); core.NormalizeSystemDesignVersion(&version) != nil {
+		http.Error(w, "invalid system design content", http.StatusBadRequest)
+		return
 	}
 	document, version, err := s.Store.CreateSystemDesign(r.Context(), core.SystemDesign{ID: strings.TrimSpace(input.ID), Title: strings.TrimSpace(input.Title), Category: strings.TrimSpace(input.Category)}, input.version(input.ID))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), systemDesignMutationStatus(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"document": document, "version": version})
@@ -133,12 +168,17 @@ func (s *Server) proposeSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	if input.Origin == "" {
-		input.Origin = core.SystemDesignOriginOperator
+	if err := validateOperatorSystemDesignMutation(input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if version := input.version(chi.URLParam(r, "id")); core.NormalizeSystemDesignVersion(&version) != nil {
+		http.Error(w, "invalid system design content", http.StatusBadRequest)
+		return
 	}
 	version, err := s.Store.ProposeSystemDesignVersion(r.Context(), input.version(chi.URLParam(r, "id")))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), systemDesignMutationStatus(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, version)
@@ -165,7 +205,7 @@ func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "system_design_version_conflict", "message": conflict.Error(), "document_id": conflict.DocumentID, "requested_version": conflict.Requested, "current_version": conflict.Current})
 			return
 		}
-		http.Error(w, err.Error(), http.StatusConflict)
+		http.Error(w, err.Error(), systemDesignMutationStatus(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"document": document, "version": confirmed})
@@ -196,12 +236,22 @@ func (s *Server) proposeDecision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	if input.Origin == "" {
-		input.Origin = core.DecisionOriginOperator
+	if input.Origin != "" && input.Origin != core.DecisionOriginOperator {
+		http.Error(w, "REST decision proposals support only operator origin", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(input.OriginSessionID) != "" || strings.TrimSpace(input.OriginTaskID) != "" {
+		http.Error(w, "REST decision proposals cannot name an origin session or task", http.StatusBadRequest)
+		return
+	}
+	input.Origin, input.OriginSessionID, input.OriginTaskID = core.DecisionOriginOperator, "", ""
+	if err := core.ValidateDecision(input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	item, err := s.Store.ProposeDecision(r.Context(), input)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), systemDesignMutationStatus(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
@@ -209,8 +259,20 @@ func (s *Server) proposeDecision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) confirmDecision(w http.ResponseWriter, r *http.Request) {
 	item, err := s.Store.ConfirmDecision(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("confirm decision: %v", err), http.StatusConflict)
+		http.Error(w, fmt.Sprintf("confirm decision: %v", err), systemDesignMutationStatus(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func systemDesignMutationStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, store.ErrSystemDesignIDConflict), errors.Is(err, store.ErrSystemDesignSlugConflict),
+		errors.Is(err, store.ErrDecisionIDConflict), errors.Is(err, store.ErrDecisionSupersessionConflict):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }

@@ -829,6 +829,9 @@ export interface SystemDesignVersion {
   confirmed: boolean
   confirmed_by?: string
   confirmed_at?: string
+  dismissed: boolean
+  dismissed_by?: string
+  dismissed_at?: string
   workspace: string
   created_at: string
 }

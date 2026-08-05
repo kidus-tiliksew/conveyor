@@ -34,7 +34,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
 	var views []systemDesignView
-	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 {
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 || len(views[0].Lineage) != 2 {
 		t.Fatalf("list status=%d views=%+v body=%s", list.Code, views, list.Body.String())
 	}
 
@@ -58,6 +58,20 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	}
 	if response := confirm(second.Version, 1); response.Code != http.StatusOK {
 		t.Fatalf("second confirm status=%d body=%s", response.Code, response.Body.String())
+	}
+	third, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Dispatch v3\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Dispatch v4\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := confirm(fourth.Version, second.Version); response.Code != http.StatusOK {
+		t.Fatalf("later confirm status=%d body=%s", response.Code, response.Body.String())
+	}
+	if skipped, getErr := st.GetSystemDesignVersion(ctx, document.ID, third.Version); getErr != nil || !skipped.Dismissed || skipped.Confirmed {
+		t.Fatalf("skipped version=%+v err=%v", skipped, getErr)
 	}
 
 	propose := func(body string) core.Decision {
@@ -85,5 +99,20 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	secondDecision := propose(`{"statement":"Project governance from the event log.","context":"All edges need provenance.","alternatives_rejected":"A mutable graph can drift.","origin":"operator","supersedes":"` + firstDecision.ID + `"}`)
 	if firstDecision.ID != "DEC-1" || secondDecision.ID != "DEC-2" {
 		t.Fatalf("decision identities first=%s second=%s", firstDecision.ID, secondDecision.ID)
+	}
+
+	spoof := httptest.NewRequest(http.MethodPost, "/v1/decisions", strings.NewReader(`{"statement":"Spoof.","context":"Bad provenance.","alternatives_rejected":"Server binding.","origin":"planning_session","origin_session_id":"forged"}`))
+	spoof.Header.Set("Authorization", "Bearer token")
+	spoofResponse := httptest.NewRecorder()
+	handler.ServeHTTP(spoofResponse, spoof)
+	if spoofResponse.Code != http.StatusBadRequest {
+		t.Fatalf("spoofed decision status=%d body=%s", spoofResponse.Code, spoofResponse.Body.String())
+	}
+	badID := httptest.NewRequest(http.MethodPost, "/v1/system-designs", strings.NewReader("{\"id\":\"bad/id\",\"title\":\"Bad\",\"category\":\"Architecture\",\"content\":\"# Bad\\n\\n```conveyor:governs\\n- repo: conveyor\\n  paths:\\n    - internal/**\\n```\"}"))
+	badID.Header.Set("Authorization", "Bearer token")
+	badIDResponse := httptest.NewRecorder()
+	handler.ServeHTTP(badIDResponse, badID)
+	if badIDResponse.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe design id status=%d body=%s", badIDResponse.Code, badIDResponse.Body.String())
 	}
 }

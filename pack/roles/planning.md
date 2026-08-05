@@ -21,6 +21,7 @@ Available tools and representative arguments:
 - `draft_requirement`, `revise_requirement`, and `finalize_requirement` accept the full requirement-v2 shape: requirement_id, title, prose, statements, and optional derived_from. Each statement has a stable REQ-n id, a normative statement, optional user_story fields (as_a, i_want, so_that), and optional nested acceptance_criteria entries (id, statement). Acceptance IDs are parent-qualified (AC-n.m belongs under REQ-n) and, like REQ IDs, are never reused for a different meaning in a later version.
 - `list_system_designs {}`
 - `read_system_design {"document_id":"design-runtime","version":0}`
+- `list_decisions {}` to inspect proposed, confirmed, and superseded decision records before choosing a supersession target
 - `draft_system_design {"document_id":"","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
 - `revise_system_design {"document_id":"design-runtime","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
 - `finalize_system_design {"document_id":"design-runtime","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
@@ -53,7 +54,9 @@ above. Categories are operator-named and carry no enforced taxonomy. Draft and
 revise are previews; finalize proposes the immutable next version. Never
 freehand-edit or confirm it. Use propose_decision to extract a durable DEC-n
 statement plus the deliberation context and rejected alternatives; it also
-remains pending operator confirmation.
+remains pending operator confirmation. Use list_decisions before superseding a
+record; only a currently confirmed decision is a valid target. If a decision
+tool reports a stale or duplicate ID, correct it in-band and retry.
 
 Finalize a requirement only when the operator's stated intent is sufficiently
 specific. It creates an unconfirmed version. Finalize a blueprint only when its

@@ -41,15 +41,17 @@ func (q *Queries) InsertLineageLink(ctx context.Context, arg InsertLineageLinkPa
 }
 
 func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (int64, error) {
-	// Canonical reference directions are planning_session -consulted->
-	// reference_document_version and requirement_version -derived_from->
-	// reference_document_version; this query owns those kinds for rebuild.
+	// Canonical directions include planning_session -consulted-> reference_document_version,
+	// requirement_version -derived_from-> reference_document_version,
+	// system_design_version -governs-> repository_path,
+	// system_design_version -proposed_by-> task/planning_session, and
+	// planning_session -produced_design-> system_design.
 	tag, err := q.db.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
 		AND created_by_event_id IS NOT NULL AND kind = ANY(ARRAY[
 		'consulted','depends_on','derived_from','dispatches','materializes','merged_range','produced_blueprint',
 		'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
 		'supersedes','supports','versions'
-		,'governs','proposed_by'
+		,'governs','proposed_by','produced_design'
 	]::text[])`, workspaceID)
 	return tag.RowsAffected(), err
 }

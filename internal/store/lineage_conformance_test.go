@@ -13,6 +13,11 @@ func TestMemoryLineageConformance(t *testing.T) {
 	storetest.RunLineageConformance(t, func(t *testing.T, repos []config.Repo) storetest.LineageFixture {
 		workspace := "lineage-" + core.NewTaskID()
 		st := store.NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: repos})
-		return storetest.LineageFixture{Store: st, Context: store.WithWorkspace(t.Context(), workspace), Workspace: workspace}
+		return storetest.LineageFixture{
+			Store:          st,
+			Context:        store.WithWorkspace(t.Context(), workspace),
+			ForeignContext: store.WithWorkspace(t.Context(), workspace+"-other"),
+			Workspace:      workspace,
+		}
 	})
 }
