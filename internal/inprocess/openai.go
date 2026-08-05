@@ -69,6 +69,7 @@ type Input struct {
 	Attachments               []Attachment
 	OutputSchema              *OutputSchema
 	ServedRequirementSnapshot []core.ServedRequirementContext
+	GovernanceSnapshot        *core.GovernanceSnapshot
 }
 
 // OutputSchema requests a strict Responses-compatible JSON-schema result.

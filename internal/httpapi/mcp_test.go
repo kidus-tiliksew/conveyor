@@ -464,6 +464,16 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			if !required["requirement_citations"] {
 				t.Fatalf("submit_review_verdict does not require requirement_citations: %s", data)
 			}
+			governance, ok := properties["governance_assessment"].(map[string]any)
+			if !ok || governance["additionalProperties"] != false || governance["anyOf"] == nil {
+				t.Fatalf("submit_review_verdict lacks strict compatible governance assessment: %s", data)
+			}
+			governanceProperties, _ := governance["properties"].(map[string]any)
+			for _, field := range []string{"applicable", "design_applicable", "decision_citable"} {
+				if _, exists := governanceProperties[field]; !exists {
+					t.Fatalf("submit_review_verdict governance assessment lacks %s: %s", field, data)
+				}
+			}
 		}
 	}
 }

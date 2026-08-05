@@ -550,6 +550,9 @@ type WorkOrder struct {
 	// review order. A non-nil empty slice means the task had no served
 	// requirements; nil is reserved for pre-snapshot compatibility handling.
 	ServedRequirementSnapshot []ServedRequirementContext `json:"served_requirement_snapshot,omitempty"`
+	// GovernanceSnapshot is the exact design and decision authority rendered
+	// for this review claim. Nil is reserved for legacy compatibility handling.
+	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and
@@ -610,6 +613,7 @@ type WorkOrderClaim struct {
 	ExecutionTimeout time.Duration
 	WorkerID         string
 	Requirements     []ServedRequirementContext
+	Governance       *GovernanceSnapshot
 }
 
 const (

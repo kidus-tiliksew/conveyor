@@ -1207,6 +1207,63 @@ func boolInt(value bool) int {
 	return 0
 }
 
+func boolRef(value bool) *bool { return &value }
+
+func emptyGovernanceAuthority() *core.GovernanceSnapshot {
+	return &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+}
+
+func TestValidateGovernanceAssessmentUsesPinnedSplitAuthority(t *testing.T) {
+	snapshot := core.GovernanceSnapshot{
+		Designs: []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 2}},
+		Decisions: []core.Decision{
+			{ID: "DEC-1", Status: core.DecisionConfirmed},
+			{ID: "DEC-2", Status: core.DecisionSuperseded},
+		},
+	}
+	tests := []struct {
+		name       string
+		assessment core.GovernanceAssessment
+		wantError  string
+	}{
+		{name: "valid", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DESIGN-runtime", "DEC-1"}, SupersededIDs: []string{"DEC-2"}}},
+		{name: "known design unknown", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UnknownIDs: []string{"DESIGN-runtime"}}, wantError: `unknown_ids entry "DESIGN-runtime" is present in the pinned governing authority and belongs in cited_ids`},
+		{name: "known decision ungoverned", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UngovernedIDs: []string{"DEC-1"}}, wantError: `ungoverned_ids entry "DEC-1" is present in the pinned governing authority and belongs in cited_ids`},
+		{name: "superseded accepted only as finding", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DEC-2"}}, wantError: `cited id "DEC-2" is not confirmed governing authority in the pinned snapshot`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			review := pipeline.Review{GovernanceAssessment: &test.assessment}
+			err := validateGovernanceAssessment(snapshot, &review)
+			if test.wantError == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
+				t.Fatalf("error=%v want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateGovernanceAssessmentAllowsDecisionWithoutDesignAndIgnoresLiveRace(t *testing.T) {
+	decisionOnly := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed}}}
+	review := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(true), CitedIDs: []string{"DEC-1"}}}
+	if err := validateGovernanceAssessment(decisionOnly, &review); err != nil {
+		t.Fatalf("decision-only assessment rejected: %v", err)
+	}
+	legacyFalse := false
+	legacy := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{Applicable: &legacyFalse, CitedIDs: []string{"DEC-1"}}}
+	if err := validateGovernanceAssessment(decisionOnly, &legacy); err != nil || legacy.GovernanceAssessment.DecisionCitable == nil || !*legacy.GovernanceAssessment.DecisionCitable {
+		t.Fatalf("legacy decision-only mapping=%+v err=%v", legacy.GovernanceAssessment, err)
+	}
+	// A design confirmed after claim is intentionally absent from this pin.
+	emptyPin := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	contractFaithful := pipeline.Review{GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(false)}}
+	if err := validateGovernanceAssessment(emptyPin, &contractFaithful); err != nil {
+		t.Fatalf("empty pinned authority rejected after hypothetical live change: %v", err)
+	}
+}
+
 func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 	for _, source := range []string{"github:acme/api#42", "https://github.com/acme/api/issues/42"} {
 		number, err := sourceIssueNumber("acme/api", source)
@@ -2035,7 +2092,7 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP}}}}
 	d := New(st, cfg, nil)
 	d.DisableMemoryQueueForTest()
-	if err := d.ApplyExternalReviewPinned(ctx, task, core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, ModelTier: "review"}, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "missing coverage", Feedback: "add the test"}, "review-1", "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+	if err := d.ApplyExternalReviewPinned(ctx, task, core.Job{ID: "review-1", TaskID: task.ID, Stage: core.StageReview, ModelTier: "review"}, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "missing coverage", Feedback: "add the test"}, "review-1", "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.DispatchNow(ctx, task.ID); err != nil {
@@ -2089,9 +2146,9 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			d.DisableMemoryQueueForTest()
 			review := pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: reviewPath, Feedback: "revise"}
 			if reviewPath == "external-mcp" {
-				err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "review", []core.ServedRequirementContext{})
+				err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority())
 			} else {
-				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil)
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil, nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -2190,7 +2247,7 @@ func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 1}, nil)
 	d.DisableMemoryQueueForTest()
-	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "stop", Feedback: "human help"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "stop", Feedback: "human help"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := st.GetTask(ctx, task.ID)
@@ -2241,7 +2298,7 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.ApplyExternalReviewPinned(ctx, task, job, result, job.ID, "external-session", "review", served.Requirements); err == nil || !strings.Contains(err.Error(), "assessment is required") {
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, result, job.ID, "external-session", "review", served.Requirements, emptyGovernanceAuthority()); err == nil || !strings.Contains(err.Error(), "assessment is required") {
 		t.Fatalf("external review error=%v, want retryable validation error", err)
 	}
 	if count, _ := st.CountEvents(ctx, task.ID, "review.output_invalid"); count != 0 {
@@ -2406,7 +2463,7 @@ func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *tes
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
 	d.DisableMemoryQueueForTest()
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "contract-faithful", RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-1", "AC-1.1"}}}
-	if err = d.ApplyExternalReviewPinned(ctx, task, job, review, order.ID, "review-session", "reviewer", order.ServedRequirementSnapshot); err != nil {
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, review, order.ID, "review-session", "reviewer", order.ServedRequirementSnapshot, emptyGovernanceAuthority()); err != nil {
 		t.Fatalf("pinned verdict rejected after confirmation moved: %v", err)
 	}
 }
@@ -2426,7 +2483,7 @@ func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 	flaky := &reviewAcceptanceFlakyStore{Store: base, failures: 1}
 	d := New(flaky, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	d.DisableMemoryQueueForTest()
-	err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{})
+	err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority())
 	if err == nil || !strings.Contains(err.Error(), "review acceptance unavailable") {
 		t.Fatalf("error = %v", err)
 	}
@@ -2440,7 +2497,7 @@ func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 			t.Fatalf("partial review acceptance event persisted: %s", event.Kind)
 		}
 	}
-	if err = d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 		t.Fatalf("recovery retry failed: %v", err)
 	}
 	publication, err := base.GetReviewPublication(ctx, job.ID)
@@ -2473,7 +2530,7 @@ func TestReviewForRepoWithoutGitHubDoesNotCreateOrReconcilePublication(t *testin
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "local", URL: "file:///tmp/local"}}}, nil)
 	d.DisableMemoryQueueForTest()
-	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.GetReviewPublication(ctx, job.ID); err == nil {
@@ -2506,7 +2563,7 @@ func TestExistingUnacceptedReviewEventRepairsRouting(t *testing.T) {
 	}
 	d := New(st, &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	d.DisableMemoryQueueForTest()
-	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "retry", Feedback: "fix it"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "retry", Feedback: "fix it"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
@@ -2550,7 +2607,7 @@ func TestExternalReviewApprovePreservesLevelRouting(t *testing.T) {
 			}
 			d := New(st, &config.Config{Workspace: "test", MaxBounces: 2}, nil)
 			d.DisableMemoryQueueForTest()
-			if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}); err != nil {
+			if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 				t.Fatal(err)
 			}
 			updated, err := st.GetTask(ctx, task.ID)
@@ -2585,7 +2642,7 @@ func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
 				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil
 			}
 			d.RequestMerge = func(context.Context, string, int) error { merged = true; return nil }
-			if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review-model", []core.ServedRequirementContext{}); err != nil {
+			if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}, job.ID, "review-session", "review-model", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
 				t.Fatal(err)
 			}
 			updated, _ := st.GetTask(ctx, task.ID)
@@ -2624,7 +2681,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
 			firstDispatcher := New(st, cfg, nil)
 			firstDispatcher.DisableMemoryQueueForTest()
-			if err := firstDispatcher.ApplyExternalReviewPinned(ctx, task, jobs[0], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat one passes", Feedback: "seat one evidence"}, orders[0].ID, "review-session-1", "gpt-review", orders[0].ServedRequirementSnapshot); err != nil {
+			if err := firstDispatcher.ApplyExternalReviewPinned(ctx, task, jobs[0], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat one passes", Feedback: "seat one evidence"}, orders[0].ID, "review-session-1", "gpt-review", orders[0].ServedRequirementSnapshot, emptyGovernanceAuthority()); err != nil {
 				t.Fatal(err)
 			}
 			if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskRunning {
@@ -2640,7 +2697,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 				return githubtrigger.PullRequest{Number: 7, State: map[bool]string{true: "closed", false: "open"}[merged], Merged: merged, Mergeable: "MERGEABLE"}, nil
 			}
 			restarted.RequestMerge = func(context.Context, string, int) error { merged = true; return nil }
-			if err := restarted.ApplyExternalReviewPinned(ctx, task, jobs[1], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat two passes", Feedback: "seat two evidence"}, orders[1].ID, "review-session-2", "claude-review", orders[1].ServedRequirementSnapshot); err != nil {
+			if err := restarted.ApplyExternalReviewPinned(ctx, task, jobs[1], pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat two passes", Feedback: "seat two evidence"}, orders[1].ID, "review-session-2", "claude-review", orders[1].ServedRequirementSnapshot, emptyGovernanceAuthority()); err != nil {
 				t.Fatal(err)
 			}
 			updated, _ := st.GetTask(ctx, task.ID)

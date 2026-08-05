@@ -66,7 +66,8 @@ func TestSystemDesignGovernedScopeParsingAndMatching(t *testing.T) {
 }
 
 func TestGovernanceAssessmentNormalizesDisjointFindings(t *testing.T) {
-	assessment := GovernanceAssessment{Applicable: true, CitedIDs: []string{"DEC-2", "DEC-1", "DEC-1"}, UnknownIDs: []string{"missing"}}
+	legacy := true
+	assessment := GovernanceAssessment{Applicable: &legacy, CitedIDs: []string{"DEC-2", "DEC-1", "DEC-1"}, UnknownIDs: []string{"missing"}}
 	if err := NormalizeGovernanceAssessment(&assessment); err != nil {
 		t.Fatal(err)
 	}
@@ -76,5 +77,25 @@ func TestGovernanceAssessmentNormalizesDisjointFindings(t *testing.T) {
 	assessment.Conflicts = []string{"missing"}
 	if err := NormalizeGovernanceAssessment(&assessment); err == nil {
 		t.Fatal("overlapping governance findings were accepted")
+	}
+}
+
+func TestGovernanceAssessmentSplitsDesignAndDecisionAuthority(t *testing.T) {
+	design, decisions := false, true
+	assessment := GovernanceAssessment{DesignApplicable: &design, DecisionCitable: &decisions, CitedIDs: []string{"DEC-2"}}
+	if err := NormalizeGovernanceAssessment(&assessment); err != nil {
+		t.Fatal(err)
+	}
+	if *assessment.DesignApplicable || !*assessment.DecisionCitable {
+		t.Fatalf("normalized split=%+v", assessment)
+	}
+	legacy := true
+	compat := GovernanceAssessment{Applicable: &legacy}
+	if err := NormalizeGovernanceAssessment(&compat); err != nil || !*compat.DesignApplicable || !*compat.DecisionCitable || !compat.UsesLegacyApplicable() {
+		t.Fatalf("legacy mapping=%+v err=%v", compat, err)
+	}
+	onlyDesign := true
+	if err := NormalizeGovernanceAssessment(&GovernanceAssessment{DesignApplicable: &onlyDesign}); err == nil || !strings.Contains(err.Error(), "both design_applicable and decision_citable") {
+		t.Fatalf("partial split error=%v", err)
 	}
 }
