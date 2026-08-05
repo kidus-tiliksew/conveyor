@@ -536,6 +536,11 @@ func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
 	return s.contextForOrder(ctx, order)
 }
 
+// contextForOrder renders claimed review authority from immutable claim-time
+// snapshots, following the migration 064/067 snapshot pattern; those pins bind
+// verdict validation. A queued review order exposed through the read-only peek
+// instead re-resolves live authority per request, persists nothing, and remains
+// advisory until claim (spec §21.47).
 func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Context, error) {
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -573,8 +578,12 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			return Context{}, fmt.Errorf("review work order %s predates pinned served-requirement authority; release and reclaim it through the current server", order.ID)
 		}
 		if order.ServedRequirementSnapshot != nil {
+			// Claimed review orders use the immutable served-requirement snapshot
+			// pinned at claim; it binds verdict validation (migration 064 pattern).
 			servedRequirements = order.ServedRequirementSnapshot
 		} else {
+			// A queued review peek resolves live served-requirement authority for
+			// this request only; it persists nothing and is advisory (spec §21.47).
 			servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve served requirements for queued review task %s: %w", task.ID, resolveErr)
@@ -599,9 +608,13 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			return Context{}, fmt.Errorf("review work order %s predates pinned governance authority; release and reclaim it through the current server", order.ID)
 		}
 		if order.GovernanceSnapshot != nil {
+			// Claimed review orders use the immutable governance snapshot pinned at
+			// claim; it binds verdict validation (migration 067 pattern).
 			pinned := *order.GovernanceSnapshot
 			governance = &pinned
 		} else {
+			// A queued review peek resolves live governance authority for this
+			// request only; it persists nothing and is advisory (spec §21.47).
 			live, resolveErr := store.GovernanceForRepository(ctx, s.Store, task.Repo)
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve governance for queued review task %s: %w", task.ID, resolveErr)
