@@ -531,6 +531,7 @@ const gateDetail = {
       cost_usd: 3.12,
       tokens_in: 410000,
       tokens_out: 52000,
+      usage_reported: false,
       self_reported: false,
     },
     {
@@ -551,6 +552,7 @@ const gateDetail = {
       cost_usd: 0.88,
       tokens_in: 120000,
       tokens_out: 9000,
+      usage_reported: false,
       self_reported: false,
     },
     {
@@ -570,6 +572,7 @@ const gateDetail = {
       cost_usd: 1.02,
       tokens_in: 133000,
       tokens_out: 11000,
+      usage_reported: false,
       self_reported: true,
     },
   ],
@@ -681,6 +684,7 @@ const runningDetail = {
       cost_usd: 0.44,
       tokens_in: 71000,
       tokens_out: 4200,
+      usage_reported: false,
       self_reported: false,
     },
     {
@@ -699,6 +703,7 @@ const runningDetail = {
       cost_usd: 0,
       tokens_in: 0,
       tokens_out: 0,
+      usage_reported: false,
       self_reported: false,
     },
   ],

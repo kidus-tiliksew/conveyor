@@ -128,6 +128,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               cost_usd: 0,
               tokens_in: 0,
               tokens_out: 0,
+              usage_reported: false,
               self_reported: true,
             },
           ],
@@ -178,6 +179,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                 cost_usd: 0,
                 tokens_in: 0,
                 tokens_out: 0,
+                usage_reported: false,
                 self_reported: true,
               },
             ],
@@ -226,6 +228,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                   cost_usd: 0,
                   tokens_in: 0,
                   tokens_out: 0,
+                  usage_reported: false,
                   self_reported: true,
                 },
               ],
@@ -264,6 +267,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     cost_usd: 0,
                     tokens_in: 0,
                     tokens_out: 0,
+                    usage_reported: false,
                     self_reported: true,
                   },
                   {
@@ -279,6 +283,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     cost_usd: 0,
                     tokens_in: 0,
                     tokens_out: 0,
+                    usage_reported: false,
                     self_reported: true,
                   },
                   {
@@ -295,6 +300,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     cost_usd: 0,
                     tokens_in: 0,
                     tokens_out: 0,
+                    usage_reported: false,
                     self_reported: true,
                   },
                 ],
@@ -342,6 +348,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                       cost_usd: 0,
                       tokens_in: 0,
                       tokens_out: 0,
+                      usage_reported: false,
                       self_reported: true,
                     },
                   ],
@@ -366,6 +373,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                               cost_usd: 0,
                               tokens_in: 0,
                               tokens_out: 0,
+                              usage_reported: false,
                               self_reported: true,
                             },
                           ]
@@ -384,6 +392,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                         cost_usd: 0,
                         tokens_in: 0,
                         tokens_out: 0,
+                        usage_reported: false,
                         self_reported: true,
                       },
                     ],
@@ -543,6 +552,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                             cost_usd: 0,
                             tokens_in: 0,
                             tokens_out: 0,
+                            usage_reported: false,
                             self_reported: true,
                             created_at: createdAt,
                             updated_at: '2026-07-15T12:01:00Z',
@@ -564,6 +574,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                             cost_usd: 0,
                             tokens_in: 0,
                             tokens_out: 0,
+                            usage_reported: false,
                             self_reported: true,
                             created_at: createdAt,
                             updated_at: '2026-07-15T12:03:00Z',
@@ -857,6 +868,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                   cost_usd: 0,
                                   tokens_in: 0,
                                   tokens_out: 0,
+                                  usage_reported: false,
                                   self_reported: true,
                                 },
                                 {
@@ -875,6 +887,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                   cost_usd: 0,
                                   tokens_in: 0,
                                   tokens_out: 0,
+                                  usage_reported: false,
                                   self_reported: true,
                                 },
                               ],
@@ -916,6 +929,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                     cost_usd: 0,
                                     tokens_in: 0,
                                     tokens_out: 0,
+                                    usage_reported: false,
                                     self_reported: true,
                                   },
                                 ],
@@ -953,6 +967,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                       cost_usd: 0,
                                       tokens_in: 0,
                                       tokens_out: 0,
+                                      usage_reported: false,
                                       self_reported: true,
                                     },
                                   ],
@@ -991,6 +1006,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                         cost_usd: 0,
                                         tokens_in: 0,
                                         tokens_out: 0,
+                                        usage_reported: false,
                                         self_reported: true,
                                       },
                                     ],
@@ -1050,6 +1066,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                           cost_usd: 0,
                                           tokens_in: 0,
                                           tokens_out: 0,
+                                          usage_reported: false,
                                           self_reported: true,
                                         },
                                         {
@@ -1070,6 +1087,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                           cost_usd: 0,
                                           tokens_in: 0,
                                           tokens_out: 0,
+                                          usage_reported: false,
                                           self_reported: true,
                                         },
                                       ],
@@ -1136,6 +1154,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                             cost_usd: 0,
                                             tokens_in: 0,
                                             tokens_out: 0,
+                                            usage_reported: false,
                                             self_reported: true,
                                           },
                                         ],
@@ -1159,6 +1178,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                               cost_usd: 0,
                                               tokens_in: 0,
                                               tokens_out: 0,
+                                              usage_reported: false,
                                               self_reported: true,
                                             },
                                           ],
@@ -1218,6 +1238,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                 cost_usd: 0,
                                                 tokens_in: 0,
                                                 tokens_out: 0,
+                                                usage_reported: false,
                                                 self_reported: true,
                                               },
                                               {
@@ -1236,6 +1257,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                 cost_usd: 0,
                                                 tokens_in: 0,
                                                 tokens_out: 0,
+                                                usage_reported: false,
                                                 self_reported: true,
                                               },
                                             ],
@@ -1285,6 +1307,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                     cost_usd: 0,
                                                     tokens_in: 0,
                                                     tokens_out: 0,
+                                                    usage_reported: false,
                                                     self_reported: true,
                                                   },
                                                   {
@@ -1302,6 +1325,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                     cost_usd: 0,
                                                     tokens_in: 0,
                                                     tokens_out: 0,
+                                                    usage_reported: false,
                                                     self_reported: true,
                                                   },
                                                 ],
@@ -1324,6 +1348,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                       cost_usd: 0,
                                                       tokens_in: 0,
                                                       tokens_out: 0,
+                                                      usage_reported: false,
                                                       self_reported: true,
                                                     },
                                                   ],
@@ -1653,6 +1678,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               cost_usd: 0,
               tokens_in: 0,
               tokens_out: 0,
+              usage_reported: false,
               self_reported: true,
             },
           ]
@@ -1745,6 +1771,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                   cost_usd: 0,
                   tokens_in: 0,
                   tokens_out: 0,
+                  usage_reported: false,
                   self_reported: true,
                 },
               ],
@@ -2484,6 +2511,8 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
     item.work_orders = item.work_orders.map((order, index) => ({
       ...order,
       task_id: 'usage-telemetry',
+      usage_reported: index < 2,
+      self_reported: index === 0,
       tokens_in: index === 0 ? 1200 : 0,
       tokens_out: index === 0 ? 300 : 0,
       cost_usd: index === 0 ? 1.25 : 0,
@@ -2521,7 +2550,7 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
   await page.goto('/tasks/usage-telemetry/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('1.2k in / 300 out · $1.25 · self-reported')).toBeVisible()
-  await expect(timeline.getByText('0 in / 0 out · $0.00 · self-reported')).toBeVisible()
+  await expect(timeline.getByText('0 in / 0 out · $0.00 · worker-reported')).toBeVisible()
   await expect(timeline.getByText('Usage unavailable')).toBeVisible()
 
   const technical = page.getByText('Show technical activity').locator('..')
@@ -2530,7 +2559,7 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
     '1.2k in / 300 out · $1.25 across 2 reported work orders · 1 order unavailable',
   )
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText(
-    '0 in / 0 out · $0.00 · self-reported',
+    '0 in / 0 out · $0.00 · worker-reported',
   )
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('Usage unavailable')
 })
