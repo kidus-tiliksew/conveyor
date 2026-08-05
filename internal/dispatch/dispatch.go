@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -34,15 +35,17 @@ import (
 var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
 
 type Dispatcher struct {
-	Store           store.Store
-	Cfg             *config.Config
-	Pack            *pack.Bundle
-	Agent           inprocess.Agent
-	ConfigProvider  func(context.Context) (*config.Config, error)
-	PublishIssue    func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
-	PublishReview   func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
-	ViewPullRequest func(context.Context, string, string) (github.PullRequest, error)
-	RequestMerge    func(context.Context, string, int) error
+	Store                store.Store
+	Cfg                  *config.Config
+	Pack                 *pack.Bundle
+	Agent                inprocess.Agent
+	ConfigProvider       func(context.Context) (*config.Config, error)
+	PublishIssue         func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
+	PublishReview        func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
+	ViewPullRequest      func(context.Context, string, string) (github.PullRequest, error)
+	RequestMerge         func(context.Context, string, int) error
+	ListPullRequestFiles func(context.Context, string, int) ([]string, error)
+	ObserveDesignMerge   func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
 	// (spec §21.4). Injectable for tests.
@@ -54,11 +57,12 @@ type Dispatcher struct {
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
 	return &Dispatcher{
 		Store: st, Cfg: cfg, Agent: agent, memoryQueue: make(chan queuedTask, 64), durableQueue: st.IsDurable(),
-		PublishIssue:    github.PublishIssue,
-		PublishReview:   github.PublishReview,
-		ViewPullRequest: github.PullRequestForBranch,
-		RequestMerge:    github.MergePullRequest,
-		ReviewDiff:      reviewBranchDiff,
+		PublishIssue:         github.PublishIssue,
+		PublishReview:        github.PublishReview,
+		ViewPullRequest:      github.PullRequestForBranch,
+		RequestMerge:         github.MergePullRequest,
+		ListPullRequestFiles: github.PullRequestFiles,
+		ReviewDiff:           reviewBranchDiff,
 	}
 }
 
@@ -1773,6 +1777,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged"})}); err != nil {
 			return err
 		}
+		d.observeConfirmedMerge(ctx, current, repo.GitHub, pr, "merge.reconciled")
 		return d.confirmTaskMerged(ctx, current.ID)
 	}
 	if pr.State != "open" {
@@ -1830,7 +1835,52 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA})}); err != nil {
 		return err
 	}
+	d.observeConfirmedMerge(ctx, current, repo.GitHub, confirmed, "merge.confirmed")
 	return d.confirmTaskMerged(ctx, current.ID)
+}
+
+// observeConfirmedMerge is deliberately non-gating: merge confirmation stays
+// authoritative when GitHub file retrieval or drift evaluation fails. The
+// observation commit is the PR head SHA recorded in the causal merge event,
+// even when the landed squash or merge-commit SHA differs.
+func (d *Dispatcher) observeConfirmedMerge(ctx context.Context, task core.Task, githubRepo string, pr github.PullRequest, eventKind string) {
+	if d.ObserveDesignMerge == nil {
+		return
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	eventID := int64(0)
+	if err == nil {
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Kind == eventKind {
+				eventID = events[i].ID
+				break
+			}
+		}
+	}
+	if err == nil && eventID == 0 {
+		err = fmt.Errorf("causal %s event was not readable after append", eventKind)
+	}
+	var paths []string
+	if err == nil {
+		paths, err = d.ListPullRequestFiles(ctx, githubRepo, pr.Number)
+	}
+	if err == nil {
+		err = d.ObserveDesignMerge(ctx, monitor.Observation{
+			Repository: task.Repo, Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:" + strconv.Itoa(pr.Number),
+			SourceURL: pr.URL, CommitSHA: pr.HeadSHA, PullRequestNumber: pr.Number,
+			ChangedPaths: paths, CausalEventID: eventID,
+		}, task.ID)
+	}
+	if err != nil {
+		if auditor, ok := d.Store.(interface {
+			AuditMonitor(context.Context, string, map[string]any) error
+		}); ok {
+			_ = auditor.AuditMonitor(ctx, "system_design.drift_evaluation_failed", map[string]any{
+				"task_id": task.ID, "merge_event_id": eventID, "repository": task.Repo,
+				"github_repository": githubRepo, "pull_request": pr.Number, "reason": err.Error(),
+			})
+		}
+	}
 }
 
 func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core.Task) (bool, error) {

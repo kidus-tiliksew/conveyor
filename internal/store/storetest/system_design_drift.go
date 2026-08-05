@@ -88,8 +88,146 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 					t.Fatalf("causal evidence id=%d want=%d", designDrift.CausalEventID, mergeEventID)
 				}
 			}
+			if test.proposal == "matching" {
+				activityFound := false
+				for _, activity := range status.Activity {
+					if activity.Kind == "system_design.drift_suppressed" && fmt.Sprint(activity.Payload["proposal_status"]) == "pending" {
+						activityFound = true
+					}
+				}
+				if !activityFound {
+					t.Fatalf("suppression audit missing: %+v", status.Activity)
+				}
+				if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "base_sha": "base-2", "head_sha": "head-2"})}); err != nil {
+					t.Fatal(err)
+				}
+				secondMergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")
+				if _, err := service.Process(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "merge-matching-second", SourceURL: "https://example.test/merge/head-2", CommitSHA: "head-2", ChangedPaths: []string{"internal/dispatch/second.go"}, CausalEventID: secondMergeEventID}); err != nil {
+					t.Fatal(err)
+				}
+				status, err = service.Status(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				secondDrift := false
+				for _, candidate := range status.Drift {
+					secondDrift = secondDrift || (candidate.SystemDesignID == document.ID && candidate.CommitSHA == "head-2")
+				}
+				if !secondDrift {
+					t.Fatalf("single-use proposal suppressed a later merge: %+v", status.Drift)
+				}
+			}
 		})
 	}
+
+	t.Run("deduplicated enriched observation evaluates and persists design drift", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+		service := driftService(t, st, ctx, workspace, now)
+		delivery := createDriftTask(t, st, ctx, workspace, "dedup-delivery")
+		document := createConfirmedDesign(t, st, ctx, "DESIGN-dedup", "internal/dispatch/**")
+		if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "dedup-head"})}); err != nil {
+			t.Fatal(err)
+		}
+		mergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")
+		base := monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:77", SourceURL: "https://example.test/pull/77", CommitSHA: "dedup-head"}
+		first, err := service.Process(ctx, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base.ChangedPaths, base.CausalEventID = []string{"internal/dispatch/service.go"}, mergeEventID
+		second, err := service.Process(ctx, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second.TaskID != first.TaskID || second.CausalEventID != mergeEventID || len(second.ChangedPaths) != 1 {
+			t.Fatalf("enriched observation not retained: first=%+v second=%+v", first, second)
+		}
+		status, err := service.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, drift := range status.Drift {
+			found = found || drift.SystemDesignID == document.ID
+		}
+		if !found {
+			t.Fatalf("enriched dedup did not evaluate design drift: %+v", status.Drift)
+		}
+	})
+
+	t.Run("design resolution requires confirmed same-document replacement and emits events", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		now := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+		service := driftService(t, st, ctx, workspace, now)
+		delivery := createDriftTask(t, st, ctx, workspace, "resolution-delivery")
+		document := createConfirmedDesign(t, st, ctx, "DESIGN-resolution", "internal/dispatch/**")
+		createConfirmedDesign(t, st, ctx, "DESIGN-unrelated-resolution", "cmd/**")
+		plainID := "plain-resolution-drift"
+		if _, _, err := st.(monitor.Store).RecordDrift(ctx, monitor.Drift{ID: plainID, WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.DirectPush, SourceURL: "https://example.test/commit/plain", TaskID: delivery.ID, DetectedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Resolve(ctx, plainID, "design_document_updated"); err == nil {
+			t.Fatal("design-less drift resolved as design_document_updated")
+		}
+		if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "resolution-head"})}); err != nil {
+			t.Fatal(err)
+		}
+		mergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")
+		if _, err := service.ProcessDesignMerge(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:88", SourceURL: "https://example.test/pull/88", CommitSHA: "resolution-head", ChangedPaths: []string{"internal/dispatch/service.go"}, CausalEventID: mergeEventID}, delivery.ID); err != nil {
+			t.Fatal(err)
+		}
+		status, _ := service.Status(ctx)
+		var driftID string
+		for _, drift := range status.Drift {
+			if drift.SystemDesignID == document.ID {
+				driftID = drift.ID
+			}
+		}
+		if driftID == "" {
+			t.Fatalf("design drift missing: %+v", status.Drift)
+		}
+		if _, err := service.Resolve(ctx, driftID, "design_document_updated"); err == nil {
+			t.Fatal("design drift resolved without a replacement version")
+		}
+		content := "# Replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"
+		replacement, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: content, Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = service.Resolve(ctx, driftID, "design_document_updated"); err == nil {
+			t.Fatal("design drift resolved against an unconfirmed replacement")
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = service.Resolve(ctx, driftID, "design_document_updated"); err != nil {
+			t.Fatal(err)
+		}
+		events, err := st.ListSystemDesignEvents(ctx, document.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		detected, resolved := false, false
+		for _, event := range events {
+			detected = detected || event.Kind == "system_design.drift_detected"
+			resolved = resolved || event.Kind == "system_design.drift_resolved"
+		}
+		if !detected || !resolved {
+			t.Fatalf("drift lifecycle events missing: %+v", events)
+		}
+	})
+}
+
+func driftService(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time) *monitor.Service {
+	t.Helper()
+	service := &monitor.Service{Store: st.(monitor.Store), WorkspaceID: workspace, Enabled: true, Repositories: map[string]struct{}{"conveyor": {}}, Now: func() time.Time { return now }}
+	service.Intake = func(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
+		id := core.NewTaskID()
+		task := core.Task{ID: id, Workspace: workspace, Repo: request.Repository, BaseBranch: "main", Branch: "conveyor/task-" + id, Source: request.Source, IntakeKey: request.IntakeKey, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+		return monitor.IntakeResult{Task: task, Created: true}, st.CreateTask(ctx, task)
+	}
+	return service
 }
 
 func createDriftTask(t *testing.T, st store.Store, ctx context.Context, workspace, suffix string) core.Task {

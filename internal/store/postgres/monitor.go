@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,43 +38,78 @@ func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) 
 	return exists, err
 }
 
-func (s *Store) FindCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64) (int64, bool, error) {
+func (s *Store) ClaimCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string) (monitor.ProposalSuppression, bool, error) {
 	if causalEventID <= 0 || commitSHA == "" {
-		return 0, false, nil
+		return monitor.ProposalSuppression{}, false, nil
 	}
-	var proposalEventID *int64
-	err := s.pool.QueryRow(ctx, `
-SELECT max(proposal.id)
-FROM events causal
-JOIN tasks causal_task
-  ON causal_task.workspace_id=causal.workspace_id
- AND causal_task.id=causal.task_id
-LEFT JOIN events proposal
-  ON proposal.workspace_id=causal.workspace_id
- AND proposal.id < causal.id
- AND proposal.kind='system_design.version_proposed'
- AND proposal.payload_json->>'document_id'=$2
- AND proposal.payload_json->>'origin_task_id'=causal.task_id
-WHERE causal.workspace_id=$1
-  AND causal.id=$3
-  AND causal.task_id IS NOT NULL
-  AND causal_task.repo_name=$4
-  AND causal.kind IN ('merge.confirmed','merge.reconciled')
-  AND causal.payload_json->>'head_sha'=$5
-GROUP BY causal.id`, workspace(ctx), documentID, causalEventID, repository, commitSHA).Scan(&proposalEventID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	if proposalEventID == nil {
-		return 0, true, nil
-	}
-	return *proposalEventID, true, nil
+	var result monitor.ProposalSuppression
+	valid := false
+	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		var causalTaskID string
+		if err := tx.QueryRow(ctx, `SELECT causal.task_id FROM events causal
+			JOIN tasks causal_task ON causal_task.workspace_id=causal.workspace_id AND causal_task.id=causal.task_id
+			WHERE causal.workspace_id=$1 AND causal.id=$2 AND causal_task.repo_name=$3
+			AND causal.kind IN ('merge.confirmed','merge.reconciled')
+			AND causal.payload_json->>'head_sha'=$4`, workspace(ctx), causalEventID, repository, commitSHA).Scan(&causalTaskID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		valid = true
+		var eventID int64
+		var version int
+		var confirmed bool
+		if err := tx.QueryRow(ctx, `SELECT proposal.id,(proposal.payload_json->>'version')::integer,version.confirmed
+			FROM events proposal
+			JOIN system_design_versions version ON version.workspace_id=proposal.workspace_id
+			 AND version.document_id=proposal.payload_json->>'document_id'
+			 AND version.version=(proposal.payload_json->>'version')::integer
+			WHERE proposal.workspace_id=$1 AND proposal.id<$2 AND proposal.kind='system_design.version_proposed'
+			 AND proposal.payload_json->>'document_id'=$3 AND proposal.payload_json->>'origin_task_id'=$4
+			ORDER BY proposal.id DESC LIMIT 1`, workspace(ctx), causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, eventID); err != nil {
+			return err
+		}
+		var existingDrift, existingStatus string
+		err := tx.QueryRow(ctx, `SELECT payload_json->>'drift_id',payload_json->>'proposal_status'
+			FROM monitor_activity WHERE workspace_id=$1 AND kind='system_design.drift_suppressed'
+			 AND payload_json->>'proposal_event_id'=$2 ORDER BY id LIMIT 1`, workspace(ctx), strconv.FormatInt(eventID, 10)).Scan(&existingDrift, &existingStatus)
+		if err == nil {
+			if existingDrift == driftID {
+				result = monitor.ProposalSuppression{EventID: eventID, Status: existingStatus}
+			}
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		status := "pending"
+		if confirmed {
+			status = "confirmed"
+		}
+		payload, err := json.Marshal(map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": eventID, "proposal_status": status, "proposal_version": version, "matching_paths": matchingPaths})
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO monitor_activity(workspace_id,kind,payload_json) VALUES($1,'system_design.drift_suppressed',$2::jsonb)`, workspace(ctx), string(payload)); err != nil {
+			return err
+		}
+		result = monitor.ProposalSuppression{EventID: eventID, Status: status}
+		return nil
+	})
+	return result, valid, err
 }
 
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
+	if observation.ChangedPaths == nil {
+		observation.ChangedPaths = []string{}
+	}
 	contextJSON, err := json.Marshal(observation.Context)
 	if err != nil {
 		return monitor.ObservationRecord{}, false, err
@@ -90,12 +126,12 @@ func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (m
 	tag, err := s.pool.Exec(ctx, `
 INSERT INTO monitor_observations (
  workspace_id,identity,repository,kind,occurrence_id,source_url,commit_sha,
- pull_request_number,check_run_id,requirement_id,observed_at,context_json,hint_context_json,created_at,updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12::jsonb,$13::jsonb,$11,$11)
+ pull_request_number,check_run_id,requirement_id,changed_paths,causal_event_id,observed_at,context_json,hint_context_json,created_at,updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14::jsonb,$15::jsonb,$13,$13)
 ON CONFLICT (workspace_id,identity) DO NOTHING`,
 		workspace(ctx), identity, observation.Repository, observation.Kind, observation.OccurrenceID,
 		observation.SourceURL, observation.CommitSHA, observation.PullRequestNumber, observation.CheckRunID,
-		observation.RequirementID, observation.ObservedAt, string(contextJSON), hints)
+		observation.RequirementID, observation.ChangedPaths, nullableMonitorEventID(observation.CausalEventID), observation.ObservedAt, string(contextJSON), hints)
 	if err != nil {
 		return monitor.ObservationRecord{}, false, err
 	}
@@ -103,8 +139,10 @@ ON CONFLICT (workspace_id,identity) DO NOTHING`,
 	if !fresh {
 		if _, err = s.pool.Exec(ctx, `
 UPDATE monitor_observations SET deduplicated_count=deduplicated_count+1,
+ changed_paths=CASE WHEN cardinality($4::text[])>0 THEN $4 ELSE changed_paths END,
+ causal_event_id=COALESCE($5,causal_event_id),
  state='deduplicated', updated_at=$3
-WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, observation.ObservedAt); err != nil {
+WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, observation.ObservedAt, observation.ChangedPaths, nullableMonitorEventID(observation.CausalEventID)); err != nil {
 			return monitor.ObservationRecord{}, false, err
 		}
 	}
@@ -120,11 +158,11 @@ func (s *Store) getObservation(ctx context.Context, identity string) (monitor.Ob
 	var taskID *string
 	err := s.pool.QueryRow(ctx, `
 SELECT repository,kind,occurrence_id,source_url,commit_sha,pull_request_number,check_run_id,
-	 COALESCE(requirement_id,''),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
+	 COALESCE(requirement_id,''),changed_paths,COALESCE(causal_event_id,0),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
  deduplicated_count,forge_error_category,last_error,created_at,updated_at
 FROM monitor_observations WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity).
 		Scan(&record.Repository, &kind, &record.OccurrenceID, &record.SourceURL, &record.CommitSHA,
-			&record.PullRequestNumber, &record.CheckRunID, &record.RequirementID, &record.ObservedAt,
+			&record.PullRequestNumber, &record.CheckRunID, &record.RequirementID, &record.ChangedPaths, &record.CausalEventID, &record.ObservedAt,
 			&contextJSON, &hintsJSON, &taskID, &record.TaskOutcome, &record.State, &record.DeduplicatedCount,
 			&record.ForgeErrorCategory, &record.LastError, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
@@ -164,18 +202,32 @@ func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.D
 	if err != nil {
 		return monitor.Drift{}, false, err
 	}
-	tag, err := s.pool.Exec(ctx, `
+	fresh := false
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		tag, insertErr := tx.Exec(ctx, `
 INSERT INTO repository_drift (
  workspace_id,id,repository,kind,source_url,commit_sha,requirement_id,system_design_id,system_design_version,causal_event_id,matching_paths,task_id,detected_at
 ) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),NULLIF($9,0),NULLIF($10,0),$11,$12,$13)
 ON CONFLICT (workspace_id,id) DO NOTHING`,
-		workspace(ctx), drift.ID, drift.Repository, drift.Kind, drift.SourceURL,
-		drift.CommitSHA, drift.RequirementID, drift.SystemDesignID, drift.SystemDesignVersion, drift.CausalEventID, matchingPaths, drift.TaskID, drift.DetectedAt)
+			workspace(ctx), drift.ID, drift.Repository, drift.Kind, drift.SourceURL,
+			drift.CommitSHA, drift.RequirementID, drift.SystemDesignID, drift.SystemDesignVersion, drift.CausalEventID, matchingPaths, drift.TaskID, drift.DetectedAt)
+		if insertErr != nil {
+			return insertErr
+		}
+		fresh = tag.RowsAffected() == 1
+		if fresh && drift.SystemDesignID != "" {
+			return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.drift_detected", At: drift.DetectedAt, Payload: core.JSONPayload(map[string]any{
+				"workspace_id": workspace(ctx), "document_id": drift.SystemDesignID, "version": drift.SystemDesignVersion,
+				"drift_id": drift.ID, "causal_event_id": drift.CausalEventID, "matching_paths": drift.MatchingPaths,
+			})})
+		}
+		return nil
+	})
 	if err != nil {
 		return monitor.Drift{}, false, err
 	}
 	current, err := s.getDrift(ctx, drift.ID)
-	return current, tag.RowsAffected() == 1, err
+	return current, fresh, err
 }
 
 func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) {
@@ -287,16 +339,50 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 				return err
 			}
 		}
+		if outcome == "design_document_updated" {
+			if drift.SystemDesignID == "" {
+				return fmt.Errorf("drift %s cannot resolve as design_document_updated without a system design", id)
+			}
+			var currentVersion *int
+			if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), drift.SystemDesignID).Scan(&currentVersion); err != nil {
+				return err
+			}
+			if currentVersion == nil || *currentVersion <= drift.SystemDesignVersion {
+				return fmt.Errorf("drift %s requires a confirmed replacement version for system design %s", id, drift.SystemDesignID)
+			}
+			var confirmed bool
+			if err := tx.QueryRow(ctx, `SELECT confirmed FROM system_design_versions WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), drift.SystemDesignID, *currentVersion).Scan(&confirmed); err != nil {
+				return err
+			}
+			if !confirmed {
+				return fmt.Errorf("drift %s requires a confirmed replacement version for system design %s", id, drift.SystemDesignID)
+			}
+		}
 		if _, err := tx.Exec(ctx, `UPDATE repository_drift SET resolved_at=$3,outcome=$4
 			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, outcome); err != nil {
 			return err
 		}
 		drift.Outcome, drift.ResolvedAt = outcome, now
-		return insertEvent(ctx, q, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
+		if err := insertEvent(ctx, q, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
 			"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
-		})})
+		})}); err != nil {
+			return err
+		}
+		if drift.SystemDesignID != "" {
+			return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.drift_resolved", At: now, Payload: core.JSONPayload(map[string]any{
+				"workspace_id": workspace(ctx), "document_id": drift.SystemDesignID, "drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
+			})})
+		}
+		return nil
 	})
 	return drift, err
+}
+
+func nullableMonitorEventID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {

@@ -213,6 +213,31 @@ func TestMergePullRequestUsesNormalGitHubMerge(t *testing.T) {
 	}
 }
 
+func TestPullRequestFilesReturnsNormalizedAuthoritativePaths(t *testing.T) {
+	paths, err := pullRequestFiles(t.Context(), "acme/api", 12, func(_ context.Context, args ...string) ([]byte, error) {
+		if got := strings.Join(args, " "); got != "api --paginate --slurp repos/acme/api/pulls/12/files?per_page=100" {
+			t.Fatalf("args = %s", got)
+		}
+		return []byte(`[[{"filename":"internal\\dispatch\\service.go"}],[{"filename":"cmd/main.go"},{"filename":"cmd/main.go"}]]`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cmd/main.go", "internal/dispatch/service.go"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths=%v want=%v", paths, want)
+	}
+}
+
+func TestPullRequestFilesRejectsNonRelativePath(t *testing.T) {
+	_, err := pullRequestFiles(t.Context(), "acme/api", 12, func(context.Context, ...string) ([]byte, error) {
+		return []byte(`[[{"filename":"../secret"}]]`), nil
+	})
+	if err == nil || ErrorCategory(err) != ForgeResponse {
+		t.Fatalf("error=%v category=%q", err, ErrorCategory(err))
+	}
+}
+
 func TestForgeBoundariesClassifyStableFailureCategories(t *testing.T) {
 	t.Run("issue publication transport", func(t *testing.T) {
 		calls := 0

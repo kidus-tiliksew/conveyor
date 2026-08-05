@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -272,6 +273,46 @@ type PullRequest struct {
 	Merged    bool
 	HeadSHA   string
 	BaseSHA   string
+}
+
+// PullRequestFiles returns GitHub's authoritative repository-relative file
+// list for a pull request. Dispatch uses this only after merge confirmation;
+// paths are never inferred from task or design metadata.
+func PullRequestFiles(ctx context.Context, repo string, number int) ([]string, error) {
+	return pullRequestFiles(ctx, repo, number, gh)
+}
+
+func pullRequestFiles(ctx context.Context, repo string, number int, run ghRunner) ([]string, error) {
+	if number <= 0 || strings.Count(repo, "/") != 1 {
+		return nil, fmt.Errorf("list pull request files: invalid repository or pull request")
+	}
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d/files?per_page=100", repo, number)
+	out, err := run(ctx, "api", "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("list pull request files for %s#%d: %w", repo, number, forgeCallError(err))
+	}
+	var pages [][]struct {
+		Filename string `json:"filename"`
+	}
+	if err = json.Unmarshal(out, &pages); err != nil || pages == nil {
+		return nil, forgeResponseError("parse pull request files for %s#%d", repo, number)
+	}
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, page := range pages {
+		for _, file := range page {
+			name := strings.TrimPrefix(strings.TrimSpace(strings.ReplaceAll(file.Filename, "\\", "/")), "./")
+			if name == "" || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") {
+				return nil, forgeResponseError("pull request files for %s#%d contain non-repository-relative path %q", repo, number, file.Filename)
+			}
+			if !seen[name] {
+				seen[name] = true
+				paths = append(paths, name)
+			}
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // PullRequestForBranch resolves the pull request attached to one assigned

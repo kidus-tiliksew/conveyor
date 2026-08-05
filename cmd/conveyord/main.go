@@ -233,6 +233,10 @@ func main() {
 				return current.Workspace, current.Monitor.Enabled, scoped, nil
 			},
 		}
+		d.ObserveDesignMerge = func(ctx context.Context, observation monitor.Observation, taskID string) error {
+			_, err := srv.Monitor.ProcessDesignMerge(ctx, observation, taskID)
+			return err
+		}
 	}
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
 	if pgStore != nil {
