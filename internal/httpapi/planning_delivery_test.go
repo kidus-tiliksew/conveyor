@@ -220,7 +220,7 @@ func TestInProductRequirementBlueprintDeliveryPath(t *testing.T) {
 		if err = dispatcher.ApplyExternalReviewPinned(ctx, started.Task, reviewJob, pipeline.Review{
 			Verdict: "approve", ReasonCode: "approved", Summary: "child review passed",
 			RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
-		}, reviewJob.ID, "review-session", "reviewer", served.Requirements); err != nil {
+		}, reviewJob.ID, "review-session", "reviewer", served.Requirements, &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}); err != nil {
 			t.Fatal(err)
 		}
 		current, getErr := st.GetTask(ctx, child.ID)

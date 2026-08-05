@@ -690,6 +690,16 @@ type flakyReviewAcceptanceStore struct {
 	failures int
 }
 
+type governanceReadTrapStore struct {
+	store.Store
+	reads int
+}
+
+func (st *governanceReadTrapStore) ListSystemDesigns(context.Context) ([]core.SystemDesign, error) {
+	st.reads++
+	return nil, errors.New("live governance authority must not be read")
+}
+
 func (st *flakyReviewAcceptanceStore) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
 	if st.failures > 0 {
 		st.failures--
@@ -1948,7 +1958,7 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	if err := base.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
@@ -1982,6 +1992,42 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	}
 	if publication, getErr := base.GetReviewPublication(ctx, job.ID); getErr != nil || publication.State != core.ReviewPublicationQueued {
 		t.Fatalf("publication=%+v err=%v", publication, getErr)
+	}
+}
+
+func TestSubmitVerdictRejectsMissingGovernancePinAndKeepsClaim(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	base := store.NewMemory()
+	task := core.Task{ID: "legacy-governance-verdict", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
+	if err := base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "legacy-verdict-session", ClientToken: "secret", Model: "reviewer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	trap := &governanceReadTrapStore{Store: base}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	dispatcher := dispatch.New(trap, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: trap, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	design, decisions := false, false
+	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "contract faithful", GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &design, DecisionCitable: &decisions}}
+	if _, err := service.SubmitVerdict(ctx, job.ID, "legacy-verdict-session", review); err == nil || !strings.Contains(err.Error(), "predates pinned governance authority") || !strings.Contains(err.Error(), "release and reclaim") {
+		t.Fatalf("legacy verdict error=%v", err)
+	}
+	if trap.reads != 0 {
+		t.Fatalf("legacy verdict read live governance %d times", trap.reads)
+	}
+	order, err := base.GetWorkOrder(ctx, job.ID)
+	if err != nil || order.State != core.WorkOrderClaimed {
+		t.Fatalf("order after rejected legacy verdict=%+v err=%v", order, err)
 	}
 }
 

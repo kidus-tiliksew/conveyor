@@ -832,20 +832,12 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 
 // ApplyExternalReviewPinned completes an MCP review against the immutable
 // citation authority stored on its claimed work order.
-func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governanceSnapshots ...*core.GovernanceSnapshot) error {
+func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot) error {
 	if servedRequirements == nil {
 		return fmt.Errorf("review work order %s predates pinned served-requirement authority; release and reclaim it through the current server", reviewWorkOrderID)
 	}
-	var governance *core.GovernanceSnapshot
-	if len(governanceSnapshots) > 0 {
-		governance = governanceSnapshots[0]
-	}
 	if governance == nil {
-		live, resolveErr := store.GovernanceForRepository(ctx, d.Store, task.Repo)
-		if resolveErr != nil {
-			return resolveErr
-		}
-		governance = &live
+		return fmt.Errorf("review work order %s predates pinned governance authority; release and reclaim it through the current server", reviewWorkOrderID)
 	}
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
