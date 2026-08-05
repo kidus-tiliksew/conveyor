@@ -212,6 +212,24 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			rateLimit = &status
 		}
 		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, cost, rateLimit)
+	case "propose_system_design_revision":
+		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		return s.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+			DocumentID: stringArg("document_id"), Content: stringArg("content"),
+			Origin: core.SystemDesignOriginImplementation, OriginTaskID: order.TaskID,
+		})
+	case "propose_decision":
+		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		return s.Store.ProposeDecision(ctx, core.Decision{
+			Statement: stringArg("statement"), Context: stringArg("context"), AlternativesRejected: stringArg("alternatives_rejected"),
+			Supersedes: stringArg("supersedes"), Origin: core.DecisionOriginImplementation, OriginTaskID: order.TaskID,
+		})
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_spec":
@@ -238,6 +256,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		payload, marshalErr := json.Marshal(map[string]any{
 			"verdict": args["verdict"], "reason_code": args["reason_code"], "summary": args["summary"],
 			"feedback": args["feedback"], "requirement_citations": args["requirement_citations"],
+			"governance_assessment": args["governance_assessment"],
 		})
 		if marshalErr != nil {
 			return nil, marshalErr
@@ -267,6 +286,20 @@ func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, work
 		return store.ErrWorkOrderClaimLost
 	}
 	return nil
+}
+
+func (s *Server) implementationGovernanceOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrder, error) {
+	if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, workOrderID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	order, err := s.WorkOrders.AuthorizeClaimed(ctx, workOrderID, sessionID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if order.Stage != core.StageImplement {
+		return core.WorkOrder{}, fmt.Errorf("governance proposals require a claimed implement work order")
+	}
+	return order, nil
 }
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
@@ -368,6 +401,10 @@ func mcpTools() []map[string]any {
 		"cited_ids":  stringList, "unknown_ids": stringList,
 		"unserved_ids": stringList, "conflicts": stringList,
 	}, "applicable", "cited_ids", "unknown_ids", "unserved_ids", "conflicts")
+	governanceAssessment := object(map[string]any{
+		"applicable": map[string]string{"type": "boolean"}, "cited_ids": stringList,
+		"unknown_ids": stringList, "ungoverned_ids": stringList, "superseded_ids": stringList, "conflicts": stringList,
+	}, "applicable", "cited_ids", "unknown_ids", "ungoverned_ids", "superseded_ids", "conflicts")
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace under an optional named execution setup, generate its title from body with the trusted control-plane AI integration, and enqueue the existing triage pipeline. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "setup": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; an operator-attached agent claims it explicitly (spec §21.31)."}, "mode": map[string]any{"type": "string", "enum": []string{"auto", "manual"}, "description": "Deprecated (spec §21.31): manual maps to hold=true, auto is a no-op."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
@@ -380,10 +417,12 @@ func mcpTools() []map[string]any {
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
+		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
+		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_spec", "description": "Validate and submit a structured specification for a claimed spec order. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": str, "acceptance": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "criterion": str, "verify": str, "ref": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"id", "criterion", "verify"}, "additionalProperties": false}}, "decomposition": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "acceptance", "decomposition")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
-		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, and REQ-n/AC-n.m citation assessment. Cited IDs are validated against the requirement version(s) pinned to the review order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations")},
+		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "governance_assessment": governanceAssessment}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "governance_assessment")},
 	}
 }

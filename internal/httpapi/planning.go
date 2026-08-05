@@ -34,8 +34,9 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 	// No title is accepted: the session is named by its goal and then by the
 	// artifact it produces (spec §21.57 change 3).
 	var request struct {
-		RequirementContextID string `json:"requirement_context_id"`
-		Model                string `json:"model"`
+		RequirementContextID  string `json:"requirement_context_id"`
+		SystemDesignContextID string `json:"system_design_context_id"`
+		Model                 string `json:"model"`
 		// Goal is accepted once at creation and never updated (spec §21.57).
 		Goal      string                      `json:"goal"`
 		Promotion *core.RequirementDerivation `json:"promotion"`
@@ -46,6 +47,7 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.RequirementContextID = strings.TrimSpace(request.RequirementContextID)
+	request.SystemDesignContextID = strings.TrimSpace(request.SystemDesignContextID)
 	request.Model = strings.TrimSpace(request.Model)
 	goal, err := core.NormalizePlanningSessionGoal(
 		core.PlanningSessionGoal(strings.TrimSpace(request.Goal)))
@@ -56,10 +58,11 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 	var session core.PlanningSession
 	if s.Planning != nil && s.Planning.ConfigProvider != nil {
 		session, err = s.Planning.CreateSession(r.Context(), planning.CreateSessionInput{
-			RequirementContextID: request.RequirementContextID,
-			ModelOverride:        request.Model,
-			Goal:                 goal,
-			Promotion:            request.Promotion,
+			RequirementContextID:  request.RequirementContextID,
+			SystemDesignContextID: request.SystemDesignContextID,
+			ModelOverride:         request.Model,
+			Goal:                  goal,
+			Promotion:             request.Promotion,
 		})
 	} else {
 		if request.Promotion != nil {
@@ -75,8 +78,9 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 		}
 		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
-			RequirementContextID: request.RequirementContextID,
-			Promotion:            request.Promotion,
+			RequirementContextID:  request.RequirementContextID,
+			SystemDesignContextID: request.SystemDesignContextID,
+			Promotion:             request.Promotion,
 		})
 	}
 	if err != nil {

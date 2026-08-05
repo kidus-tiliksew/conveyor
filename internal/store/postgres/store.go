@@ -561,6 +561,8 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}
 	referenceNodes := map[string][]core.LineageNode{}
+	designNodes := map[string][]core.LineageNode{}
+	decisionNodes := map[string][]core.LineageNode{}
 	sessionNodes := map[string][]core.LineageNode{}
 	orderNodes := map[string][]core.LineageNode{}
 	for _, node := range nodes {
@@ -572,6 +574,13 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 			requirementNodes[baseID] = append(requirementNodes[baseID], node)
 		case core.LineageReferenceDocument, core.LineageReferenceDocumentVersion:
 			referenceNodes[baseID] = append(referenceNodes[baseID], node)
+		case core.LineageSystemDesign, core.LineageSystemDesignVersion:
+			designNodes[baseID] = append(designNodes[baseID], node)
+		case core.LineageDecision:
+			decisionNodes[baseID] = append(decisionNodes[baseID], node)
+		case core.LineageRepositoryPath:
+			recordsPlaceholder := node
+			_ = recordsPlaceholder
 		case core.LineagePlanningSession:
 			sessionNodes[baseID] = append(sessionNodes[baseID], node)
 		case core.LineageWorkOrder:
@@ -579,6 +588,11 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 		}
 	}
 	records := make(map[core.LineageNode]store.LineageNodeRecord, len(nodes))
+	for _, node := range nodes {
+		if node.Type == core.LineageRepositoryPath {
+			records[node] = store.LineageNodeRecord{Title: node.ID}
+		}
+	}
 	if err := s.queryLineageTaskRecords(ctx, taskNodes, records); err != nil {
 		return nil, err
 	}
@@ -604,6 +618,44 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 			return nil, rowsErr
 		}
 	}
+	if len(designNodes) > 0 {
+		rows, queryErr := s.pool.Query(ctx, `SELECT id,title,slug FROM system_designs WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(designNodes))
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, title, slug string
+			if scanErr := rows.Scan(&id, &title, &slug); scanErr != nil {
+				return nil, scanErr
+			}
+			for _, node := range designNodes[id] {
+				records[node] = store.LineageNodeRecord{Title: title, Slug: slug}
+			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, rowsErr
+		}
+	}
+	if len(decisionNodes) > 0 {
+		rows, queryErr := s.pool.Query(ctx, `SELECT id,statement FROM decisions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(decisionNodes))
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, title string
+			if scanErr := rows.Scan(&id, &title); scanErr != nil {
+				return nil, scanErr
+			}
+			for _, node := range decisionNodes[id] {
+				records[node] = store.LineageNodeRecord{Title: title}
+			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, rowsErr
+		}
+	}
 	if err := s.queryLineageSessionRecords(ctx, sessionNodes, records); err != nil {
 		return nil, err
 	}
@@ -614,7 +666,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {
-	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion {
+	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion && node.Type != core.LineageSystemDesignVersion {
 		return node.ID
 	}
 	index := strings.LastIndex(node.ID, ":v")
@@ -4375,6 +4427,7 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
 		"evidence_ids":          decision.EvidenceIDs,
 		"requirement_citations": decision.RequirementCitations,
+		"governance_assessment": decision.GovernanceAssessment,
 		"reviewer_model":        decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,

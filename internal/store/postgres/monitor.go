@@ -37,6 +37,42 @@ func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) 
 	return exists, err
 }
 
+func (s *Store) FindCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64) (int64, bool, error) {
+	if causalEventID <= 0 || commitSHA == "" {
+		return 0, false, nil
+	}
+	var proposalEventID *int64
+	err := s.pool.QueryRow(ctx, `
+SELECT max(proposal.id)
+FROM events causal
+JOIN tasks causal_task
+  ON causal_task.workspace_id=causal.workspace_id
+ AND causal_task.id=causal.task_id
+LEFT JOIN events proposal
+  ON proposal.workspace_id=causal.workspace_id
+ AND proposal.id < causal.id
+ AND proposal.kind='system_design.version_proposed'
+ AND proposal.payload_json->>'document_id'=$2
+ AND proposal.payload_json->>'origin_task_id'=causal.task_id
+WHERE causal.workspace_id=$1
+  AND causal.id=$3
+  AND causal.task_id IS NOT NULL
+  AND causal_task.repo_name=$4
+  AND causal.kind IN ('merge.confirmed','merge.reconciled')
+  AND causal.payload_json->>'head_sha'=$5
+GROUP BY causal.id`, workspace(ctx), documentID, causalEventID, repository, commitSHA).Scan(&proposalEventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if proposalEventID == nil {
+		return 0, true, nil
+	}
+	return *proposalEventID, true, nil
+}
+
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
 	contextJSON, err := json.Marshal(observation.Context)
 	if err != nil {
@@ -121,13 +157,20 @@ WHERE workspace_id=$1 AND identity=$2 AND (task_id IS NULL OR task_id=$3)`,
 }
 
 func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if drift.MatchingPaths == nil {
+		drift.MatchingPaths = []string{}
+	}
+	matchingPaths, err := json.Marshal(drift.MatchingPaths)
+	if err != nil {
+		return monitor.Drift{}, false, err
+	}
 	tag, err := s.pool.Exec(ctx, `
 INSERT INTO repository_drift (
- workspace_id,id,repository,kind,source_url,commit_sha,requirement_id,task_id,detected_at
-) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9)
+ workspace_id,id,repository,kind,source_url,commit_sha,requirement_id,system_design_id,system_design_version,causal_event_id,matching_paths,task_id,detected_at
+) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),NULLIF($9,0),NULLIF($10,0),$11,$12,$13)
 ON CONFLICT (workspace_id,id) DO NOTHING`,
 		workspace(ctx), drift.ID, drift.Repository, drift.Kind, drift.SourceURL,
-		drift.CommitSHA, drift.RequirementID, drift.TaskID, drift.DetectedAt)
+		drift.CommitSHA, drift.RequirementID, drift.SystemDesignID, drift.SystemDesignVersion, drift.CausalEventID, matchingPaths, drift.TaskID, drift.DetectedAt)
 	if err != nil {
 		return monitor.Drift{}, false, err
 	}
@@ -140,10 +183,10 @@ func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) 
 	var kind string
 	var resolvedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),task_id,detected_at,resolved_at,outcome
+SELECT id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome
 FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
 		Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
-			&drift.RequirementID, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)
+			&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)
 	if err != nil {
 		return monitor.Drift{}, err
 	}
@@ -155,7 +198,7 @@ FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
 }
 
 func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.Drift, error) {
-	if outcome != "requirements_amended" && outcome != "conflict_resolved" && outcome != "change_reverted" {
+	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
 	}
 	var drift monitor.Drift
@@ -163,10 +206,10 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 		var kind string
 		var resolvedAt *time.Time
 		if err := tx.QueryRow(ctx, `SELECT id,repository,kind,source_url,commit_sha,
-			COALESCE(requirement_id,''),task_id,detected_at,resolved_at,outcome
+			COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome
 			FROM repository_drift WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).
 			Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
-				&drift.RequirementID, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome); err != nil {
+				&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("drift %s not found", id)
 			}

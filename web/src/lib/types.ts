@@ -117,6 +117,10 @@ export type LineageNodeType =
   | 'requirement_version'
   | 'reference_document'
   | 'reference_document_version'
+  | 'system_design'
+  | 'system_design_version'
+  | 'decision'
+  | 'repository_path'
   | 'blueprint'
   | 'blueprint_version'
   | 'task'
@@ -436,6 +440,10 @@ export interface RepositoryDrift {
   source_url: string
   commit_sha?: string
   task_id: string
+  system_design_id?: string
+  system_design_version?: number
+  causal_event_id?: number
+  matching_paths?: string[]
   detected_at: string
 }
 export interface MonitorStatus {
@@ -684,7 +692,7 @@ export interface RequirementDerivation {
 }
 
 /** The artifact a session declares it is working toward (spec §21.57). */
-export type PlanningSessionGoal = 'requirement' | 'blueprint' | 'open'
+export type PlanningSessionGoal = 'requirement' | 'system_design' | 'blueprint' | 'open'
 
 export interface PlanningSession {
   id: string
@@ -692,6 +700,8 @@ export interface PlanningSession {
   status: 'active' | 'finalized' | 'abandoned'
   /** Declared once at creation; sessions predating the goal read as `open`. */
   goal?: PlanningSessionGoal
+  system_design_context_id?: string
+  produced_system_design_id?: string
   requirement_context_id?: string
   promotion?: RequirementDerivation
   produced_requirement_id?: string
@@ -792,4 +802,53 @@ export interface RequirementView {
   }
   migrated_seed: boolean
   confirmation_eligible: boolean
+}
+
+export interface GovernedScope {
+  repository: string
+  paths: string[]
+}
+export interface SystemDesign {
+  id: string
+  slug: string
+  title: string
+  category: string
+  current_version?: number
+  workspace: string
+  created_at: string
+  updated_at: string
+}
+export interface SystemDesignVersion {
+  document_id: string
+  version: number
+  content: string
+  governs: GovernedScope[]
+  origin: 'planning_session' | 'implementation_deliberation' | 'operator'
+  origin_session_id?: string
+  origin_task_id?: string
+  confirmed: boolean
+  confirmed_by?: string
+  confirmed_at?: string
+  workspace: string
+  created_at: string
+}
+export interface SystemDesignView {
+  document: SystemDesign
+  current_version?: SystemDesignVersion
+  pending_versions: SystemDesignVersion[]
+  versions: SystemDesignVersion[]
+  lineage: TaskEvent[]
+  drift: RepositoryDrift[]
+}
+export interface Decision {
+  id: string
+  statement: string
+  context: string
+  alternatives_rejected: string
+  status: 'proposed' | 'confirmed' | 'superseded'
+  origin: 'planning_session' | 'implementation_deliberation' | 'operator'
+  supersedes?: string
+  superseded_by?: string
+  workspace: string
+  created_at: string
 }

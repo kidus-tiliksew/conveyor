@@ -37,6 +37,7 @@ type Review struct {
 	Summary              string                              `json:"summary"`
 	Feedback             string                              `json:"feedback"`
 	RequirementCitations *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
+	GovernanceAssessment *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
 }
 
 type AcceptanceCriterion struct {
@@ -113,6 +114,11 @@ func ParseReview(output string) (Review, error) {
 		value.RequirementCitations.UnknownIDs = nonNilStrings(value.RequirementCitations.UnknownIDs)
 		value.RequirementCitations.UnservedIDs = nonNilStrings(value.RequirementCitations.UnservedIDs)
 		value.RequirementCitations.Conflicts = nonNilStrings(value.RequirementCitations.Conflicts)
+	}
+	if value.GovernanceAssessment != nil {
+		if err := core.NormalizeGovernanceAssessment(value.GovernanceAssessment); err != nil {
+			return value, err
+		}
 	}
 	return value, nil
 }

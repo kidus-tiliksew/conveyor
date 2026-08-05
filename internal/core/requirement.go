@@ -198,13 +198,14 @@ func (s PlanningSessionStatus) Valid() bool {
 type PlanningSessionGoal string
 
 const (
-	PlanningGoalRequirement PlanningSessionGoal = "requirement"
-	PlanningGoalBlueprint   PlanningSessionGoal = "blueprint"
-	PlanningGoalOpen        PlanningSessionGoal = "open"
+	PlanningGoalRequirement  PlanningSessionGoal = "requirement"
+	PlanningGoalBlueprint    PlanningSessionGoal = "blueprint"
+	PlanningGoalSystemDesign PlanningSessionGoal = "system_design"
+	PlanningGoalOpen         PlanningSessionGoal = "open"
 )
 
 func (g PlanningSessionGoal) Valid() bool {
-	return g == PlanningGoalRequirement || g == PlanningGoalBlueprint ||
+	return g == PlanningGoalRequirement || g == PlanningGoalBlueprint || g == PlanningGoalSystemDesign ||
 		g == PlanningGoalOpen
 }
 
@@ -232,6 +233,8 @@ func (g PlanningSessionGoal) ProvisionalTitle() string {
 		return "Drafting requirement…"
 	case PlanningGoalBlueprint:
 		return "Planning work…"
+	case PlanningGoalSystemDesign:
+		return "Designing system…"
 	default:
 		return "Exploring…"
 	}
@@ -258,19 +261,21 @@ type PlanningSession struct {
 	PinnedRevisions         map[string]string `json:"pinned_revisions,omitempty"`
 	// RequirementContextID is set when the session was opened from a
 	// requirement ("Plan work"), which is what auto-proposes a serves link.
-	RequirementContextID string `json:"requirement_context_id,omitempty"`
+	RequirementContextID  string `json:"requirement_context_id,omitempty"`
+	SystemDesignContextID string `json:"system_design_context_id,omitempty"`
 	// Promotion is immutable operator-selected provenance for a guided
 	// product-overview promotion. The planning model must reproduce it exactly
 	// when finalizing the pending requirement version.
 	Promotion *RequirementDerivation `json:"promotion,omitempty"`
 	// ProducedRequirementID and ProducedTaskID are mutually exclusive.
-	ProducedRequirementID string    `json:"produced_requirement_id,omitempty"`
-	ProducedTaskID        string    `json:"produced_task_id,omitempty"`
-	TranscriptArtifactID  string    `json:"transcript_artifact_id,omitempty"`
-	Workspace             string    `json:"workspace"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-	FinalizedAt           time.Time `json:"finalized_at,omitempty"`
+	ProducedRequirementID  string    `json:"produced_requirement_id,omitempty"`
+	ProducedTaskID         string    `json:"produced_task_id,omitempty"`
+	ProducedSystemDesignID string    `json:"produced_system_design_id,omitempty"`
+	TranscriptArtifactID   string    `json:"transcript_artifact_id,omitempty"`
+	Workspace              string    `json:"workspace"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+	FinalizedAt            time.Time `json:"finalized_at,omitempty"`
 }
 
 // PlanningMessageRole mirrors the AI SDK message roles the transport restores.

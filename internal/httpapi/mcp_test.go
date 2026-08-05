@@ -83,6 +83,62 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	}
 }
 
+func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "task-governance", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: "order-governance", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: "implementer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Dispatch\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-governance"}
+	revisionArgs := maps.Clone(identity)
+	revisionArgs["document_id"] = document.ID
+	revisionArgs["content"] = "# Dispatch v2\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/workorder/**\n```"
+	result, err := server.callMCPTool(request, "propose_system_design_revision", revisionArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := result.(core.SystemDesignVersion)
+	if revision.Origin != core.SystemDesignOriginImplementation || revision.OriginTaskID != task.ID || revision.Confirmed {
+		t.Fatalf("revision=%+v", revision)
+	}
+	decisionArgs := maps.Clone(identity)
+	decisionArgs["statement"] = "Project governance from events."
+	decisionArgs["context"] = "Lineage must rebuild."
+	decisionArgs["alternatives_rejected"] = "Mutable edges drift."
+	result, err = server.callMCPTool(request, "propose_decision", decisionArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := result.(core.Decision)
+	if decision.ID != "DEC-1" || decision.Origin != core.DecisionOriginImplementation || decision.OriginTaskID != task.ID || decision.Status != core.DecisionProposed {
+		t.Fatalf("decision=%+v", decision)
+	}
+	wrongSession := maps.Clone(decisionArgs)
+	wrongSession["session_id"] = "stale-session"
+	if _, err = server.callMCPTool(request, "propose_decision", wrongSession); err == nil {
+		t.Fatal("stale implementation session proposed a decision")
+	}
+}
+
 func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
@@ -342,7 +398,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "upload_transcript", "submit_spec", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_spec", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}

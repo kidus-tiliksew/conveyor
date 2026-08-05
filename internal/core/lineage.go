@@ -24,6 +24,10 @@ const (
 	LineageRequirementVersion       LineageNodeType = "requirement_version"
 	LineageReferenceDocument        LineageNodeType = "reference_document"
 	LineageReferenceDocumentVersion LineageNodeType = "reference_document_version"
+	LineageSystemDesign             LineageNodeType = "system_design"
+	LineageSystemDesignVersion      LineageNodeType = "system_design_version"
+	LineageDecision                 LineageNodeType = "decision"
+	LineageRepositoryPath           LineageNodeType = "repository_path"
 	LineageBlueprint                LineageNodeType = "blueprint"
 	LineageBlueprintVersion         LineageNodeType = "blueprint_version"
 	LineageTask                     LineageNodeType = "task"
@@ -37,6 +41,7 @@ const (
 func (nodeType LineageNodeType) Valid() bool {
 	switch nodeType {
 	case LineagePlanningSession, LineageRequirement, LineageRequirementVersion, LineageReferenceDocument, LineageReferenceDocumentVersion,
+		LineageSystemDesign, LineageSystemDesignVersion, LineageDecision, LineageRepositoryPath,
 		LineageBlueprint, LineageBlueprintVersion, LineageTask, LineageWorkOrder,
 		LineagePullRequest, LineageCommitRange, LineageEvidence, LineageVerdict:
 		return true

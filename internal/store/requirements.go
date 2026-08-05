@@ -25,6 +25,7 @@ type PlanningFinalizeRequest struct {
 	// RequirementID and TaskID are mutually exclusive.
 	RequirementID        string
 	TaskID               string
+	SystemDesignID       string
 	TranscriptArtifactID string
 	// Title is the produced artifact's title, which replaces the session's
 	// goal-derived provisional title (spec §21.57 change 3). An empty title
@@ -61,11 +62,17 @@ func NormalizeRequirementVersionDocument(version *core.RequirementVersion) error
 // Validate keeps the produced-artifact contract exclusive. A session that
 // produced nothing is abandoned, not finalized.
 func (r PlanningFinalizeRequest) Validate() error {
-	if r.RequirementID != "" && r.TaskID != "" {
-		return fmt.Errorf("planning session produces a requirement or a blueprint task, never both")
+	produced := 0
+	for _, id := range []string{r.RequirementID, r.TaskID, r.SystemDesignID} {
+		if id != "" {
+			produced++
+		}
 	}
-	if r.RequirementID == "" && r.TaskID == "" {
-		return fmt.Errorf("planning session finalize requires a produced requirement or blueprint task")
+	if produced > 1 {
+		return fmt.Errorf("planning session produces a requirement, a system design, or a blueprint task, never more than one")
+	}
+	if produced == 0 {
+		return fmt.Errorf("planning session finalize requires a produced requirement, system design, or blueprint task")
 	}
 	return nil
 }
@@ -434,6 +441,11 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 			return core.PlanningSession{}, fmt.Errorf("requirement %s not found", session.RequirementContextID)
 		}
 	}
+	if session.SystemDesignContextID != "" {
+		if _, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: session.SystemDesignContextID}]; !ok {
+			return core.PlanningSession{}, fmt.Errorf("system design %s not found", session.SystemDesignContextID)
+		}
+	}
 	goal, err := core.NormalizePlanningSessionGoal(session.Goal)
 	if err != nil {
 		return core.PlanningSession{}, err
@@ -444,6 +456,8 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 	session.Status = core.PlanningSessionActive
 	session.ProducedRequirementID = ""
 	session.ProducedTaskID = ""
+	session.ProducedSystemDesignID = ""
+	session.ProducedSystemDesignID = ""
 	session.TranscriptArtifactID = ""
 	session.FinalizedAt = time.Time{}
 	if session.CreatedAt.IsZero() {
@@ -454,9 +468,10 @@ func (m *memory) CreatePlanningSession(ctx context.Context, session core.Plannin
 	m.planningSessions[key] = clonePlanningSession(session)
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.created", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
-		"requirement_context_id": session.RequirementContextID,
-		"promotion":              session.Promotion,
-		"goal":                   string(session.Goal),
+		"requirement_context_id":   session.RequirementContextID,
+		"system_design_context_id": session.SystemDesignContextID,
+		"promotion":                session.Promotion,
+		"goal":                     string(session.Goal),
 	})})
 	return clonePlanningSession(session), nil
 }
@@ -620,6 +635,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		// contradiction, not a retry, so it must not overwrite what was stored.
 		if session.ProducedRequirementID == request.RequirementID &&
 			session.ProducedTaskID == request.TaskID &&
+			session.ProducedSystemDesignID == request.SystemDesignID &&
 			session.TranscriptArtifactID == request.TranscriptArtifactID {
 			return clonePlanningSession(session), nil
 		}
@@ -647,6 +663,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 			return core.PlanningSession{}, fmt.Errorf("task %s not found", request.TaskID)
 		}
 	}
+	if request.SystemDesignID != "" {
+		if _, exists := m.systemDesigns[memoryScopedKey{workspace: workspace, id: request.SystemDesignID}]; !exists {
+			return core.PlanningSession{}, fmt.Errorf("system design %s not found", request.SystemDesignID)
+		}
+	}
 	if request.TranscriptArtifactID != "" {
 		if _, exists := m.artifacts[memoryArtifactKey{workspace: workspace, id: request.TranscriptArtifactID}]; !exists {
 			return core.PlanningSession{}, fmt.Errorf("artifact %s not found", request.TranscriptArtifactID)
@@ -672,6 +693,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	session.Status = core.PlanningSessionFinalized
 	session.ProducedRequirementID = request.RequirementID
 	session.ProducedTaskID = request.TaskID
+	session.ProducedSystemDesignID = request.SystemDesignID
 	session.TranscriptArtifactID = request.TranscriptArtifactID
 	if title := strings.TrimSpace(request.Title); title != "" {
 		session.Title = title
@@ -681,9 +703,10 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	m.planningSessions[key] = session
 	m.appendEventLocked(ctx, core.Event{Kind: "planning_session.finalized", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "session_id": session.ID, "title": session.Title,
-		"produced_requirement_id": session.ProducedRequirementID,
-		"produced_task_id":        session.ProducedTaskID,
-		"transcript_artifact_id":  session.TranscriptArtifactID,
+		"produced_requirement_id":   session.ProducedRequirementID,
+		"produced_task_id":          session.ProducedTaskID,
+		"produced_system_design_id": session.ProducedSystemDesignID,
+		"transcript_artifact_id":    session.TranscriptArtifactID,
 	})})
 	if session.RequirementContextID != "" && session.ProducedTaskID != "" {
 		servesKey := requirementServesKey(workspace, session.ProducedTaskID, session.RequirementContextID)

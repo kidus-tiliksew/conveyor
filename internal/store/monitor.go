@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -37,6 +38,57 @@ func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error)
 	defer m.mu.RUnlock()
 	_, exists := m.requirements[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}]
 	return exists, nil
+}
+
+func (m *memory) FindCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64) (int64, bool, error) {
+	if causalEventID <= 0 || strings.TrimSpace(commitSHA) == "" {
+		return 0, false, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var causal core.Event
+	var causalTask core.Task
+	for taskID, events := range m.events {
+		if taskID == "" {
+			continue
+		}
+		task, ok := m.tasks[taskID]
+		if !ok || task.Workspace != workspace {
+			continue
+		}
+		for _, event := range events {
+			if event.ID == causalEventID {
+				causal = event
+				causalTask = task
+				break
+			}
+		}
+	}
+	if causal.TaskID == "" || causalTask.Repo != strings.TrimSpace(repository) || (causal.Kind != "merge.confirmed" && causal.Kind != "merge.reconciled") {
+		return 0, false, nil
+	}
+	var merge struct {
+		HeadSHA string `json:"head_sha"`
+	}
+	if json.Unmarshal(causal.Payload, &merge) != nil || merge.HeadSHA != strings.TrimSpace(commitSHA) {
+		return 0, false, nil
+	}
+	var latest int64
+	for _, event := range m.events[""] {
+		if event.ID >= causalEventID || event.Kind != "system_design.version_proposed" {
+			continue
+		}
+		var proposal struct {
+			WorkspaceID  string `json:"workspace_id"`
+			DocumentID   string `json:"document_id"`
+			OriginTaskID string `json:"origin_task_id"`
+		}
+		if json.Unmarshal(event.Payload, &proposal) == nil && proposal.WorkspaceID == workspace && proposal.DocumentID == documentID && proposal.OriginTaskID == causal.TaskID && event.ID > latest {
+			latest = event.ID
+		}
+	}
+	return latest, true, nil
 }
 
 func (m *memory) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
@@ -110,7 +162,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 		return monitor.Drift{}, fmt.Errorf("drift %s not found", id)
 	}
 	outcome = strings.TrimSpace(outcome)
-	if outcome != "requirements_amended" && outcome != "conflict_resolved" && outcome != "change_reverted" {
+	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
 	}
 	if !drift.ResolvedAt.IsZero() {

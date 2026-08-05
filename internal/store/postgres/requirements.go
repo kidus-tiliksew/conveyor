@@ -498,6 +498,7 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 	session.Status = core.PlanningSessionActive
 	session.ProducedRequirementID = ""
 	session.ProducedTaskID = ""
+	session.ProducedSystemDesignID = ""
 	session.TranscriptArtifactID = ""
 	session.FinalizedAt = time.Time{}
 	if session.CreatedAt.IsZero() {
@@ -522,12 +523,12 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO planning_sessions
-			(workspace_id,id,title,status,goal,requirement_context_id,model,effort,
+			(workspace_id,id,title,status,goal,requirement_context_id,system_design_context_id,model,effort,
 			 exploration_output_tokens,exploration_tokens_used,primary_repo,pinned_revisions,
 			 promotion,created_at,updated_at)
-			VALUES ($1,$2,$3,'active',$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			VALUES ($1,$2,$3,'active',$4,NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 			session.Workspace, session.ID, session.Title, string(session.Goal),
-			session.RequirementContextID,
+			session.RequirementContextID, session.SystemDesignContextID,
 			session.Model, session.Effort, session.ExplorationOutputTokens,
 			session.ExplorationTokensUsed, session.PrimaryRepo, pins, promotion,
 			session.CreatedAt, session.UpdatedAt); err != nil {
@@ -535,10 +536,11 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 		}
 		return insertRequirementEvent(ctx, q, "planning_session.created", map[string]any{
 			"workspace_id": session.Workspace, "session_id": session.ID, "title": session.Title,
-			"requirement_context_id": session.RequirementContextID,
-			"goal":                   string(session.Goal),
-			"promotion":              session.Promotion,
-			"model":                  session.Model, "effort": session.Effort,
+			"requirement_context_id":   session.RequirementContextID,
+			"system_design_context_id": session.SystemDesignContextID,
+			"goal":                     string(session.Goal),
+			"promotion":                session.Promotion,
+			"model":                    session.Model, "effort": session.Effort,
 			"exploration_output_tokens": session.ExplorationOutputTokens,
 			"primary_repo":              session.PrimaryRepo, "pinned_revisions": session.PinnedRevisions,
 		})
@@ -722,6 +724,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			// a contradiction, not a retry, so the stored lineage stands.
 			if existing.ProducedRequirementID == request.RequirementID &&
 				existing.ProducedTaskID == request.TaskID &&
+				existing.ProducedSystemDesignID == request.SystemDesignID &&
 				existing.TranscriptArtifactID == request.TranscriptArtifactID {
 				session = existing
 				return nil
@@ -739,11 +742,11 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
 			SET status='finalized', produced_requirement_id=NULLIF($3,''),
-			    produced_task_id=NULLIF($4,''), transcript_artifact_id=NULLIF($5,''),
-			    title=COALESCE(NULLIF($7,''),title),
-			    finalized_at=$6, updated_at=$6
+			    produced_task_id=NULLIF($4,''), produced_system_design_id=NULLIF($5,''), transcript_artifact_id=NULLIF($6,''),
+			    title=COALESCE(NULLIF($8,''),title),
+			    finalized_at=$7, updated_at=$7
 			WHERE workspace_id=$1 AND id=$2`,
-			workspace(ctx), request.SessionID, request.RequirementID, request.TaskID,
+			workspace(ctx), request.SessionID, request.RequirementID, request.TaskID, request.SystemDesignID,
 			request.TranscriptArtifactID, now, strings.TrimSpace(request.Title)); err != nil {
 			return err
 		}
@@ -759,9 +762,10 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 		}
 		if err = insertRequirementEvent(ctx, q, "planning_session.finalized", map[string]any{
 			"workspace_id": workspace(ctx), "session_id": session.ID, "title": session.Title,
-			"produced_requirement_id": session.ProducedRequirementID,
-			"produced_task_id":        session.ProducedTaskID,
-			"transcript_artifact_id":  session.TranscriptArtifactID,
+			"produced_requirement_id":   session.ProducedRequirementID,
+			"produced_task_id":          session.ProducedTaskID,
+			"produced_system_design_id": session.ProducedSystemDesignID,
+			"transcript_artifact_id":    session.TranscriptArtifactID,
 		}); err != nil {
 			return err
 		}
@@ -867,7 +871,7 @@ const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,sta
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
-	COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),
+	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),
 	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
 	exploration_tokens_used,primary_repo,pinned_revisions,promotion,created_at,updated_at,finalized_at
 	FROM planning_sessions`
@@ -944,7 +948,7 @@ func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 	var pins []byte
 	var promotion []byte
 	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status, &goal,
-		&session.RequirementContextID, &session.ProducedRequirementID, &session.ProducedTaskID,
+		&session.RequirementContextID, &session.SystemDesignContextID, &session.ProducedRequirementID, &session.ProducedTaskID, &session.ProducedSystemDesignID,
 		&session.TranscriptArtifactID, &session.Model, &session.Effort,
 		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
 		&session.PrimaryRepo, &pins, &promotion, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
