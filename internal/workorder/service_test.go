@@ -1025,6 +1025,44 @@ func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	}
 }
 
+func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "worker-fallback-usage")
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
+		SessionID: "worker-session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reported.TokensIn != 144 || reported.TokensOut != 21 || reported.SelfReported {
+		t.Fatalf("reported fallback = %+v", reported)
+	}
+	if _, err = service.UsageFromWorkerFallback(ctx, claimed.ID, "other-session", 1, 1, 0); err == nil {
+		t.Fatal("fallback accepted another session")
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "work_order.usage_reported" && strings.Contains(string(event.Payload), `"self_reported":false`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fallback provenance event missing: %+v", events)
+	}
+}
+
 func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

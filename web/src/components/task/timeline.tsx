@@ -838,6 +838,7 @@ function JobEntry({
   if (!job.started_at) return null
   const running = job.state === 'running'
   const warning = tone === 'warning'
+  const providerUsage = job.runner === 'in-process'
   const stage = stageLabels[job.stage] ?? job.stage
   const note = [
     order?.required_effort ? `effort ${order.required_effort}` : undefined,
@@ -870,7 +871,7 @@ function JobEntry({
             {duration(job.started_at, job.ended_at)}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
-          {order && (
+          {order && !providerUsage && (
             <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
               {usageText(order, usageAvailable === true)}
             </span>
@@ -906,10 +907,16 @@ function JobEntry({
             tokensIn={job.tokens_in}
             tokensOut={job.tokens_out}
             note={note || undefined}
-            usageAvailable={order ? usageAvailable : job.tokens_in + job.tokens_out > 0}
-            usageProvenance={order ? usageProvenance(order) : 'provider-reported'}
+            usageAvailable={
+              providerUsage
+                ? job.tokens_in + job.tokens_out > 0
+                : order
+                  ? usageAvailable
+                  : job.tokens_in + job.tokens_out > 0
+            }
+            usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
           />
-          {order && <span>{usageText(order, usageAvailable === true)}</span>}
+          {order && !providerUsage && <span>{usageText(order, usageAvailable === true)}</span>}
         </div>
       </article>
     </li>

@@ -2535,6 +2535,59 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('Usage unavailable')
 })
 
+test('in-process jobs retain provider usage when the matching work order has no telemetry report', async ({ page }) => {
+  await page.route('**/v1/tasks/provider-usage/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'provider-usage'
+    item.jobs = [
+      {
+        id: 'provider-usage-spec',
+        task_id: 'provider-usage',
+        stage: 'spec',
+        harness: 'codex',
+        model_tier: 'gpt-spec',
+        runner: 'in-process',
+        confinement: 'none',
+        cost_usd: 0,
+        tokens_in: 17,
+        tokens_out: 3,
+        state: 'done',
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    item.work_orders = [
+      {
+        ...item.work_orders[0],
+        id: 'provider-usage-spec',
+        task_id: 'provider-usage',
+        job_id: 'provider-usage-spec',
+        state: 'completed',
+      },
+    ]
+    item.events = [
+      {
+        id: 1,
+        task_id: 'provider-usage',
+        job_id: 'provider-usage-spec',
+        kind: 'job.summary',
+        actor_id: 'runner',
+        actor_role: 'runner',
+        payload: { summary: 'Provider usage remains attached to this in-process attempt.' },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/provider-usage/full')
+  const job = page.locator('article').filter({ hasText: 'Provider usage remains attached' })
+  await expect(job).toContainText('gpt-spec')
+  await expect(job.getByRole('tooltip')).toContainText('17 in / 3 out · provider-reported')
+  await expect(job).not.toContainText('Usage unavailable')
+  await expect(job).not.toContainText('$0.00')
+})
+
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
   await page.goto('/tasks/overflowing/full')
 

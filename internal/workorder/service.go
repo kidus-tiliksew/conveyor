@@ -837,7 +837,19 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 }
 
 func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
-	order, err := s.authorizedForObservation(ctx, id, session)
+	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, rateLimit, true)
+}
+
+// UsageFromWorkerFallback records a stable machine-readable harness total
+// without turning telemetry into lifecycle authority (DEC-1). The exact worker
+// session may finish its terminal handoff before Codex emits turn.completed, so
+// this narrow path admits that same session after submission or completion.
+func (s *Service) UsageFromWorkerFallback(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64) (core.WorkOrder, error) {
+	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, nil, false)
+}
+
+func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus, selfReported bool) (core.WorkOrder, error) {
+	order, err := s.authorizedForUsage(ctx, id, session, !selfReported)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -847,7 +859,7 @@ func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, to
 	order.TokensIn = tokensIn
 	order.TokensOut = tokensOut
 	order.CostUSD = cost
-	order.SelfReported = true
+	order.SelfReported = selfReported
 	if rateLimit != nil {
 		status := *rateLimit
 		status.Status = strings.TrimSpace(status.Status)
@@ -877,12 +889,42 @@ func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, to
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.usage_reported",
 		Payload: core.JSONPayload(map[string]any{
 			"work_order_id": order.ID, "tokens_in": tokensIn, "tokens_out": tokensOut,
-			"cost_usd": cost, "rate_limit": rateLimit,
+			"cost_usd": cost, "rate_limit": rateLimit, "self_reported": selfReported,
 		}),
 	}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return order, nil
+}
+
+func (s *Service) authorizedForUsage(ctx context.Context, id, session string, workerFallback bool) (core.WorkOrder, error) {
+	if !workerFallback {
+		return s.authorizedForObservation(ctx, id, session)
+	}
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if session == "" || order.SessionID != session {
+		return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
+	}
+	switch order.State {
+	case core.WorkOrderSubmitted, core.WorkOrderCompleted:
+		return order, nil
+	case core.WorkOrderClaimed:
+		if !order.LeaseExpiresAt.After(time.Now()) {
+			return core.WorkOrder{}, fmt.Errorf("work order lease expired")
+		}
+		return order, nil
+	case core.WorkOrderTimedOut:
+		return core.WorkOrder{}, store.ErrWorkOrderTimedOut
+	case core.WorkOrderStale:
+		return core.WorkOrder{}, store.ErrWorkOrderStale
+	case core.WorkOrderCancelled:
+		return core.WorkOrder{}, store.ErrWorkOrderCancelled
+	default:
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not observable by its worker session", id)
+	}
 }
 
 func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript string) (core.Artifact, error) {
