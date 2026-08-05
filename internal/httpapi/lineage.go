@@ -153,6 +153,14 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 	case core.LineageReferenceDocument:
 		_, err := s.Store.GetReferenceDocument(r.Context(), node.ID)
 		found = err == nil
+	case core.LineageSystemDesign:
+		_, err := s.Store.GetSystemDesign(r.Context(), node.ID)
+		found = err == nil
+	case core.LineageDecision:
+		_, err := s.Store.GetDecision(r.Context(), node.ID)
+		found = err == nil
+	case core.LineageRepositoryPath:
+		return s.Store.LineageNodeExists(r.Context(), node)
 	case core.LineagePlanningSession:
 		_, err := s.Store.GetPlanningSession(r.Context(), node.ID)
 		found = err == nil
@@ -181,6 +189,12 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 		id, version, ok := versionNodeID(node.ID)
 		if ok {
 			_, err := s.Store.GetReferenceDocumentVersion(r.Context(), id, version)
+			found = err == nil
+		}
+	case core.LineageSystemDesignVersion:
+		id, version, ok := versionNodeID(node.ID)
+		if ok {
+			_, err := s.Store.GetSystemDesignVersion(r.Context(), id, version)
 			found = err == nil
 		}
 	case core.LineagePullRequest, core.LineageCommitRange, core.LineageVerdict:
@@ -295,6 +309,22 @@ func lineageNodeLabel(
 	case core.LineageReferenceDocumentVersion:
 		if id, version, ok := versionNodeID(node.ID); ok && exists {
 			return fmt.Sprintf("%s reference document v%d", firstLabel(record.Title, id), version)
+		}
+	case core.LineageSystemDesign:
+		if exists {
+			return firstLabel(record.Title, record.Slug, node.ID)
+		}
+	case core.LineageSystemDesignVersion:
+		if id, version, ok := versionNodeID(node.ID); ok && exists {
+			return fmt.Sprintf("%s system design v%d", firstLabel(record.Title, id), version)
+		}
+	case core.LineageDecision:
+		if exists {
+			return firstLabel(record.Title, "Decision "+node.ID)
+		}
+	case core.LineageRepositoryPath:
+		if exists {
+			return firstLabel(record.Title, node.ID)
 		}
 	case core.LineagePullRequest:
 		return "Pull request " + node.ID

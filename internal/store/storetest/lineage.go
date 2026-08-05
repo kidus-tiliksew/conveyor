@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -15,10 +16,11 @@ import (
 )
 
 type LineageFixture struct {
-	Store      store.Store
-	Context    context.Context
-	Workspace  string
-	SeedLegacy func(*testing.T, string) (int, func(*testing.T))
+	Store          store.Store
+	Context        context.Context
+	ForeignContext context.Context
+	Workspace      string
+	SeedLegacy     func(*testing.T, string) (int, func(*testing.T))
 }
 
 type LineageFactory func(*testing.T, []config.Repo) LineageFixture
@@ -58,6 +60,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertEligibleReviewSupport(t, st, ctx, fixture.Workspace, "external-mcp")
 	assertLineageArtifactOrderingAndBounds(t, st, ctx, fixture.Workspace)
 	assertReferenceDocumentLineage(t, st, ctx)
+	assertSystemDesignEventIsolation(t, st, ctx, fixture.ForeignContext, fixture.Workspace)
 	assertSystemDesignAndDecisionLineage(t, st, ctx, parent.ID)
 	for _, event := range []core.Event{
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
@@ -112,8 +115,43 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	}
 }
 
+func assertSystemDesignEventIsolation(t *testing.T, st store.Store, ctx, foreignCtx context.Context, workspace string) {
+	t.Helper()
+	if foreignCtx == nil {
+		t.Fatal("lineage conformance fixture must provide a foreign workspace context")
+	}
+	documentID := "shared-" + core.NewTaskID()
+	for _, createCtx := range []context.Context{ctx, foreignCtx} {
+		if _, _, err := st.CreateSystemDesign(createCtx,
+			core.SystemDesign{ID: documentID, Title: "Workspace-local design", Category: "Architecture"},
+			core.SystemDesignVersion{Content: "# Workspace-local design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```", Origin: core.SystemDesignOriginOperator}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := st.ListSystemDesignEvents(ctx, documentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("system-design timeline returned %d events, want created and proposed only: %+v", len(events), events)
+	}
+	for _, event := range events {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["workspace_id"] != workspace || payload["document_id"] != documentID {
+			t.Fatalf("cross-workspace system-design event leaked: %+v", event)
+		}
+	}
+}
+
 func assertSystemDesignAndDecisionLineage(t *testing.T, st store.Store, ctx context.Context, originTaskID string) {
 	t.Helper()
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Design provenance", Goal: core.PlanningGoalSystemDesign})
+	if err != nil {
+		t.Fatal(err)
+	}
 	documentID := "design-" + core.NewTaskID()
 	document, first, err := st.CreateSystemDesign(ctx,
 		core.SystemDesign{ID: documentID, Title: "Dispatch ownership", Category: "Architecture"},
@@ -131,9 +169,43 @@ func assertSystemDesignAndDecisionLineage(t *testing.T, st store.Store, ctx cont
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, second.Version, first.Version); err != nil {
 		t.Fatal(err)
 	}
+	third, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Dispatch ownership\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginPlanning, OriginSessionID: session.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, third.Version, second.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.FinalizePlanningSession(ctx, store.PlanningFinalizeRequest{SessionID: session.ID, SystemDesignID: document.ID, Title: document.Title}); err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Dispatch ownership v4\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fifth, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Dispatch ownership v5\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, fifth.Version, third.Version); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := st.ListSystemDesignVersions(ctx, document.ID)
+	if err != nil || !versions[fourth.Version-1].Dismissed || versions[fourth.Version-1].Confirmed || !versions[fifth.Version-1].Confirmed {
+		t.Fatalf("multi-pending versions=%+v err=%v", versions, err)
+	}
+	if _, err = st.ProposeDecision(ctx, core.Decision{ID: "DEC-2147483648", Statement: "Reject oversized IDs.", Context: "Sequence storage is int32.", AlternativesRejected: "Overflowing the high-water mark.", Origin: core.DecisionOriginImplementation, OriginTaskID: originTaskID}); err == nil {
+		t.Fatal("oversized decision id was accepted")
+	}
 	firstDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Keep dispatch event-derived.", Context: "Lineage must rebuild from durable history.", AlternativesRejected: "Volunteered edges lose provenance.", Origin: core.DecisionOriginImplementation, OriginTaskID: originTaskID})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if firstDecision.ID != "DEC-1" {
+		t.Fatalf("invalid explicit id advanced sequence: first=%s", firstDecision.ID)
+	}
+	if _, err = st.ProposeDecision(ctx, core.Decision{ID: firstDecision.ID, Statement: "Duplicate.", Context: "IDs are immutable.", AlternativesRejected: "Overwriting history.", Origin: core.DecisionOriginImplementation, OriginTaskID: originTaskID}); !errors.Is(err, store.ErrDecisionIDConflict) {
+		t.Fatalf("duplicate decision error=%v", err)
 	}
 	if firstDecision, err = st.ConfirmDecision(ctx, firstDecision.ID); err != nil {
 		t.Fatal(err)
@@ -142,7 +214,18 @@ func assertSystemDesignAndDecisionLineage(t *testing.T, st store.Store, ctx cont
 	if err != nil {
 		t.Fatal(err)
 	}
+	competingDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Compete for the same predecessor.", Context: "Proposals must not reserve confirmation slots.", AlternativesRejected: "Proposal-time uniqueness deadlocks recovery.", Origin: core.DecisionOriginImplementation, OriginTaskID: originTaskID, Supersedes: firstDecision.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err = st.ConfirmDecision(ctx, secondDecision.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmDecision(ctx, competingDecision.ID); !errors.Is(err, store.ErrDecisionSupersessionConflict) {
+		t.Fatalf("competing confirmation error=%v, want typed supersession conflict", err)
+	}
+	planningDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Record planning provenance.", Context: "Production planning emits session origins.", AlternativesRejected: "Task-only coverage misses the live path.", Origin: core.DecisionOriginPlanning, OriginSessionID: session.ID})
+	if err != nil {
 		t.Fatal(err)
 	}
 	links, err := st.ListLineageLinks(ctx)
@@ -150,25 +233,34 @@ func assertSystemDesignAndDecisionLineage(t *testing.T, st store.Store, ctx cont
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"system_design:versions":             false,
-		"system_design_version:supersedes":   false,
-		"system_design_version:governs-path": false,
-		"system_design_version:governs-task": false,
-		"decision:proposed_by":               false,
-		"decision:supersedes":                false,
+		"system_design:versions":                 false,
+		"system_design_version:supersedes":       false,
+		"system_design_version:governs-path":     false,
+		"system_design_version:proposed-task":    false,
+		"system_design_version:proposed-session": false,
+		"planning_session:produced-design":       false,
+		"decision:proposed_by-task":              false,
+		"decision:proposed_by-session":           false,
+		"decision:supersedes":                    false,
 	}
 	for _, link := range links {
 		switch {
-		case link.SrcType == core.LineageSystemDesign && link.SrcID == document.ID && link.DstType == core.LineageSystemDesignVersion && link.Kind == "versions":
+		case link.SrcType == core.LineageSystemDesign && link.SrcID == document.ID && link.DstType == core.LineageSystemDesignVersion && link.DstID == core.SystemDesignVersionLineageID(document.ID, third.Version) && link.Kind == "versions":
 			want["system_design:versions"] = link.CreatedByEventID > 0
-		case link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(document.ID, second.Version) && link.DstType == core.LineageSystemDesignVersion && link.Kind == "supersedes":
+		case link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(document.ID, third.Version) && link.DstType == core.LineageSystemDesignVersion && link.DstID == core.SystemDesignVersionLineageID(document.ID, second.Version) && link.Kind == "supersedes":
 			want["system_design_version:supersedes"] = link.CreatedByEventID > 0
-		case link.SrcType == core.LineageSystemDesignVersion && link.DstType == core.LineageRepositoryPath && link.Kind == "governs":
+		case link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(document.ID, third.Version) && link.DstType == core.LineageRepositoryPath && link.DstID == core.RepoPathComponentLineageID("conveyor", "internal/dispatch/**") && link.Kind == "governs":
 			want["system_design_version:governs-path"] = link.CreatedByEventID > 0
-		case link.SrcType == core.LineageSystemDesignVersion && link.DstType == core.LineageTask && link.DstID == originTaskID && link.Kind == "governs":
-			want["system_design_version:governs-task"] = link.CreatedByEventID > 0
+		case link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(document.ID, second.Version) && link.DstType == core.LineageTask && link.DstID == originTaskID && link.Kind == "proposed_by":
+			want["system_design_version:proposed-task"] = link.CreatedByEventID > 0
+		case link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(document.ID, third.Version) && link.DstType == core.LineagePlanningSession && link.DstID == session.ID && link.Kind == "proposed_by":
+			want["system_design_version:proposed-session"] = link.CreatedByEventID > 0
+		case link.SrcType == core.LineagePlanningSession && link.SrcID == session.ID && link.DstType == core.LineageSystemDesign && link.DstID == document.ID && link.Kind == "produced_design":
+			want["planning_session:produced-design"] = link.CreatedByEventID > 0
 		case link.SrcType == core.LineageDecision && link.SrcID == secondDecision.ID && link.DstType == core.LineageTask && link.Kind == "proposed_by":
-			want["decision:proposed_by"] = link.CreatedByEventID > 0
+			want["decision:proposed_by-task"] = link.CreatedByEventID > 0
+		case link.SrcType == core.LineageDecision && link.SrcID == planningDecision.ID && link.DstType == core.LineagePlanningSession && link.DstID == session.ID && link.Kind == "proposed_by":
+			want["decision:proposed_by-session"] = link.CreatedByEventID > 0
 		case link.SrcType == core.LineageDecision && link.SrcID == secondDecision.ID && link.DstType == core.LineageDecision && link.DstID == firstDecision.ID && link.Kind == "supersedes":
 			want["decision:supersedes"] = link.CreatedByEventID > 0
 		}
@@ -339,7 +431,7 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 
 func assertCanonicalVocabulary(t *testing.T) {
 	t.Helper()
-	want := []string{"consulted", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "produced_blueprint", "produced_requirement", "produced_verdict", "proposed_by", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
+	want := []string{"consulted", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "produced_blueprint", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
 	got := store.CanonicalLineageKinds()
 	if len(got) != len(want) {
 		t.Fatalf("canonical lineage vocabulary=%v, want %v", got, want)

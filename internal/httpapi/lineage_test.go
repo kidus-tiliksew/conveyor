@@ -54,6 +54,43 @@ func TestLineageLabelsUseBoundedNodesAndReusePlanningSessions(t *testing.T) {
 	}
 }
 
+func TestLineageSystemDesignDecisionAndRepositoryNodesResolveDirectlyWithLabels(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-labelled", Title: "Labelled architecture", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Labelled\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version, 0); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Use direct graph labels.", Context: "Opaque IDs are hard to scan.", AlternativesRejected: "Linear edge scans.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []core.LineageNode{
+		{Type: core.LineageSystemDesign, ID: document.ID},
+		{Type: core.LineageSystemDesignVersion, ID: core.SystemDesignVersionLineageID(document.ID, version.Version)},
+		{Type: core.LineageDecision, ID: decision.ID},
+		{Type: core.LineageRepositoryPath, ID: core.RepoPathComponentLineageID("conveyor", "internal/httpapi/**")},
+	}
+	server := NewServer(st)
+	request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	for _, node := range nodes {
+		exists, existsErr := server.lineageNodeExists(request, node)
+		if existsErr != nil || !exists {
+			t.Fatalf("node=%+v exists=%t err=%v", node, exists, existsErr)
+		}
+	}
+	labels, err := server.lineageNodeLabels(request, nodes, []core.Artifact{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labels[nodes[0]] != document.Title || !strings.Contains(labels[nodes[1]], document.Title) || labels[nodes[2]] != decision.Statement || labels[nodes[3]] != nodes[3].ID {
+		t.Fatalf("labels=%+v", labels)
+	}
+}
+
 func (s failingLineageStore) RebuildLineage(context.Context, core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
 	return core.LineageRebuildResult{}, s.err
 }

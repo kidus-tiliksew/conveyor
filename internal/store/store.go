@@ -27,20 +27,23 @@ var (
 	// ErrNotFound classifies a missing durable planning resource independently
 	// of the backing store, so callers can distinguish model-supplied bad IDs
 	// from unavailable infrastructure.
-	ErrNotFound                    = errors.New("resource not found")
-	ErrWorkspaceConflict           = errors.New("workspace id or name already exists")
-	ErrRequirementSlugConflict     = errors.New("requirement slug already exists")
-	ErrSystemDesignSlugConflict    = errors.New("system design slug already exists")
-	ErrRequirementServesTransition = errors.New("invalid requirement serves-link transition")
-	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict         = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid              = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
-	ErrTaskTerminal                = errors.New("task is already terminal")
-	ErrLineageRebuildValidation    = errors.New("invalid lineage rebuild request")
-	ErrLineageRebuildConflict      = errors.New("lineage rebuild request conflicts with a prior request")
+	ErrNotFound                     = errors.New("resource not found")
+	ErrWorkspaceConflict            = errors.New("workspace id or name already exists")
+	ErrRequirementSlugConflict      = errors.New("requirement slug already exists")
+	ErrSystemDesignIDConflict       = errors.New("system design id already exists")
+	ErrSystemDesignSlugConflict     = errors.New("system design slug already exists")
+	ErrDecisionIDConflict           = errors.New("decision id already exists")
+	ErrDecisionSupersessionConflict = errors.New("decision supersession conflicts with current state")
+	ErrRequirementServesTransition  = errors.New("invalid requirement serves-link transition")
+	ErrWorkOrderStale               = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut            = errors.New("work order execution deadline exceeded")
+	ErrReviewRetryConflict          = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid               = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized           = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled           = errors.New("work order was cancelled")
+	ErrTaskTerminal                 = errors.New("task is already terminal")
+	ErrLineageRebuildValidation     = errors.New("invalid lineage rebuild request")
+	ErrLineageRebuildConflict       = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and

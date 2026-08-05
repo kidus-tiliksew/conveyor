@@ -52,15 +52,15 @@ export function SystemDesignPage() {
     return [...groups.entries()]
   }, [designs.data])
   const start = useMutation({
-    mutationFn: (goal: PlanningSessionGoal) =>
+    mutationFn: ({ goal, contextId }: { goal: PlanningSessionGoal; contextId?: string }) =>
       createPlanningSession(token, {
         goal,
-        system_design_context_id: goal === 'system_design' ? selected?.document.id : undefined,
+        system_design_context_id: contextId,
       }),
-    onSuccess: (session) => {
+    onSuccess: (session, variables) => {
       void navigate({
         to: '/system-design',
-        search: { document: selected?.document.id, session: session.id },
+        search: { document: variables.contextId ?? selected?.document.id, session: session.id },
         replace: true,
       })
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -96,7 +96,7 @@ export function SystemDesignPage() {
             size="sm"
             variant="secondary"
             disabled={!token || start.isPending}
-            onClick={() => start.mutate('system_design')}
+            onClick={() => start.mutate({ goal: 'system_design' })}
           >
             <Sparkles />
             Draft
@@ -167,7 +167,7 @@ export function SystemDesignPage() {
             size="sm"
             variant="secondary"
             disabled={!token || !selected || start.isPending}
-            onClick={() => start.mutate('system_design')}
+            onClick={() => start.mutate({ goal: 'system_design', contextId: selected?.document.id })}
           >
             <PenLine />
             Revise
@@ -176,7 +176,7 @@ export function SystemDesignPage() {
             size="sm"
             variant="secondary"
             disabled={!token || !selected || start.isPending}
-            onClick={() => start.mutate('open')}
+            onClick={() => start.mutate({ goal: 'open', contextId: selected?.document.id })}
           >
             <MessageCircleQuestion />
             Q&amp;A
@@ -208,11 +208,10 @@ export function SystemDesignPage() {
 
 function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; token: string; workspace: string }) {
   const client = useQueryClient()
-  const pending = item.pending_versions[item.pending_versions.length - 1]
-  const displayed = pending ?? item.current_version ?? item.versions[item.versions.length - 1]
+  const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const confirm = useMutation({
-    mutationFn: () =>
-      confirmSystemDesignVersion(token, item.document.id, pending.version, item.document.current_version ?? 0),
+    mutationFn: (version: number) =>
+      confirmSystemDesignVersion(token, item.document.id, version, item.document.current_version ?? 0),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
   })
   return (
@@ -226,19 +225,13 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
           <h2 className="mt-2 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
           <p className="mt-1 text-xs text-muted">Immutable versions · governed scope changes by proposal</p>
         </div>
-        {pending && (
-          <Button disabled={!token || confirm.isPending} onClick={() => confirm.mutate()}>
-            <Check />
-            {confirm.isPending ? 'Confirming…' : `Confirm version ${pending.version}`}
-          </Button>
-        )}
       </header>
       {item.drift.length > 0 && (
         <section
           className="mb-4 rounded-md border border-attention/30 bg-attention-soft/30 p-3"
           aria-label="Design drift"
         >
-          <p className="text-sm font-semibold">Governed code changed without a causally linked design proposal.</p>
+          <p className="text-sm font-semibold">Governed code changed without a related design proposal.</p>
           <p className="mt-1 text-xs text-muted">
             {[...new Set(item.drift.flatMap((entry) => entry.matching_paths ?? []))].join(', ')}
           </p>
@@ -247,7 +240,28 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
       {confirm.error && (
         <p className="mb-4 text-sm text-failure">{errorMessage(confirm.error, 'Could not confirm this version.')}</p>
       )}
-      {pending && item.current_version && <DesignDiff from={item.current_version} to={pending} />}
+      {item.pending_versions.length > 0 && (
+        <section className="mb-5 space-y-4" aria-label="Pending design revisions">
+          <h3 className="text-sm font-semibold">Pending revisions</h3>
+          {item.pending_versions.map((pending) => (
+            <div key={pending.version} className="rounded-lg border border-attention/30 bg-attention-soft/20 p-4">
+              <div className="mb-3 flex items-center justify-between gap-4">
+                <p className="text-sm font-medium">Version {pending.version}</p>
+                <Button disabled={!token || confirm.isPending} onClick={() => confirm.mutate(pending.version)}>
+                  <Check />
+                  {confirm.isPending && confirm.variables === pending.version
+                    ? 'Confirming…'
+                    : `Confirm version ${pending.version}`}
+                </Button>
+              </div>
+              {item.current_version && <DesignDiff from={item.current_version} to={pending} />}
+            </div>
+          ))}
+          {item.pending_versions.length > 1 && (
+            <p className="text-xs text-muted">Confirming a later revision dismisses any earlier pending revisions.</p>
+          )}
+        </section>
+      )}
       <section className="rounded-lg border border-border bg-background p-6">
         <div className="mb-4 flex flex-wrap gap-2">
           <Badge variant="mono">Version {displayed?.version}</Badge>
@@ -271,7 +285,8 @@ function DesignCanvas({ item, token, workspace }: { item: SystemDesignView; toke
         <ol className="mt-3 space-y-2">
           {item.versions.map((version) => (
             <li key={version.version} className="text-sm">
-              <span className="font-mono">v{version.version}</span> · {version.confirmed ? 'confirmed' : 'pending'}{' '}
+              <span className="font-mono">v{version.version}</span> ·{' '}
+              {version.confirmed ? 'confirmed' : version.dismissed ? 'dismissed' : 'pending'}{' '}
               <details>
                 <summary className="cursor-pointer text-xs text-primary">Read version</summary>
                 <div className="mt-2 rounded-md bg-surface p-4">

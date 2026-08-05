@@ -5,6 +5,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,8 +57,22 @@ type SystemDesignVersion struct {
 	Confirmed       bool               `json:"confirmed"`
 	ConfirmedBy     string             `json:"confirmed_by,omitempty"`
 	ConfirmedAt     time.Time          `json:"confirmed_at,omitempty"`
+	Dismissed       bool               `json:"dismissed"`
+	DismissedBy     string             `json:"dismissed_by,omitempty"`
+	DismissedAt     time.Time          `json:"dismissed_at,omitempty"`
 	Workspace       string             `json:"workspace"`
 	CreatedAt       time.Time          `json:"created_at"`
+}
+
+var systemDesignIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ValidateSystemDesignID keeps document identifiers safe in chi route
+// segments and unambiguous inside the colon-delimited lineage vocabulary.
+func ValidateSystemDesignID(id string) error {
+	if !systemDesignIDPattern.MatchString(strings.TrimSpace(id)) {
+		return fmt.Errorf("system design id must use letters, numbers, dot, underscore, or hyphen")
+	}
+	return nil
 }
 
 type SystemDesignVersionDiff struct {
@@ -217,6 +232,12 @@ var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)
 func ValidateDecision(decision Decision) error {
 	if decision.ID != "" && !decisionIDPattern.MatchString(decision.ID) {
 		return fmt.Errorf("decision id must use DEC-n")
+	}
+	if decision.ID != "" {
+		ordinal, err := strconv.ParseInt(strings.TrimPrefix(decision.ID, "DEC-"), 10, 32)
+		if err != nil || ordinal < 1 {
+			return fmt.Errorf("decision id numeric part must fit int32")
+		}
 	}
 	if strings.TrimSpace(decision.Statement) == "" || strings.TrimSpace(decision.Context) == "" || strings.TrimSpace(decision.AlternativesRejected) == "" {
 		return fmt.Errorf("decision statement, context, and alternatives_rejected are required")

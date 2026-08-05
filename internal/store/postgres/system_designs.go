@@ -21,6 +21,9 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 	if document.ID == "" || document.Title == "" || document.Category == "" {
 		return document, first, fmt.Errorf("system design id, title, and category are required")
 	}
+	if err := core.ValidateSystemDesignID(document.ID); err != nil {
+		return document, first, err
+	}
 	if document.Slug == "" {
 		document.Slug = core.RequirementSlug(document.Title)
 	}
@@ -32,6 +35,7 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 	document.CreatedAt, document.UpdatedAt = now, now
 	first.Workspace, first.DocumentID, first.Version = workspace(ctx), document.ID, 1
 	first.Confirmed, first.ConfirmedBy, first.ConfirmedAt, first.CreatedAt = false, "", time.Time{}, now
+	first.Dismissed, first.DismissedBy, first.DismissedAt = false, "", time.Time{}
 	governs, _ := json.Marshal(first.Governs)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO system_designs (workspace_id,id,slug,title,category,current_version,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,NULL,$6,$6)`, workspace(ctx), document.ID, document.Slug, document.Title, document.Category, now); err != nil {
@@ -48,7 +52,12 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
+			switch pgErr.ConstraintName {
+			case "system_designs_pkey":
+				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignIDConflict, document.ID)
+			case "system_designs_workspace_id_slug_key":
+				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
+			}
 		}
 	}
 	return document, first, err
@@ -102,6 +111,7 @@ func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.Sys
 		}
 		version.Workspace, version.Version, version.Confirmed = workspace(ctx), latest+1, false
 		version.ConfirmedBy, version.ConfirmedAt, version.CreatedAt = "", time.Time{}, time.Now().UTC()
+		version.Dismissed, version.DismissedBy, version.DismissedAt = false, "", time.Time{}
 		governs, _ := json.Marshal(version.Governs)
 		if _, err := tx.Exec(ctx, `INSERT INTO system_design_versions (workspace_id,document_id,version,content,governs,origin,origin_session_id,origin_task_id,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, workspace(ctx), version.DocumentID, version.Version, version.Content, governs, string(version.Origin), nullString(version.OriginSessionID), nullString(version.OriginTaskID), version.CreatedAt); err != nil {
 			return err
@@ -146,6 +156,9 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 			document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID)
 			return err
 		}
+		if confirmed.Dismissed {
+			return &store.SystemDesignVersionConflict{DocumentID: documentID, Requested: version, Current: currentVersion}
+		}
 		if version < currentVersion {
 			return &store.SystemDesignVersionConflict{DocumentID: documentID, Requested: version, Current: currentVersion}
 		}
@@ -153,6 +166,24 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 			return err
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		dismissedRows, dismissErr := tx.Query(ctx, `UPDATE system_design_versions SET dismissed=true,dismissed_by=$4,dismissed_at=$5 WHERE workspace_id=$1 AND document_id=$2 AND version<$3 AND confirmed=false AND dismissed=false RETURNING version`, workspace(ctx), documentID, version, actor.ID, now)
+		if dismissErr != nil {
+			return dismissErr
+		}
+		var dismissed []int
+		for dismissedRows.Next() {
+			var dismissedVersion int
+			if err = dismissedRows.Scan(&dismissedVersion); err != nil {
+				dismissedRows.Close()
+				return err
+			}
+			dismissed = append(dismissed, dismissedVersion)
+		}
+		if err = dismissedRows.Err(); err != nil {
+			dismissedRows.Close()
+			return err
+		}
+		dismissedRows.Close()
 		if _, err = tx.Exec(ctx, `UPDATE system_design_versions SET confirmed=true,confirmed_by=$4,confirmed_at=$5 WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version, actor.ID, now); err != nil {
 			return err
 		}
@@ -164,13 +195,18 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		if err != nil {
 			return err
 		}
+		for _, dismissedVersion := range dismissed {
+			if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": dismissedVersion, "dismissed_by": actor.ID, "confirmed_version": version})}); err != nil {
+				return err
+			}
+		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})})
 	})
 	return document, confirmed, err
 }
 
 const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,created_at,updated_at FROM system_designs`
-const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,created_at FROM system_design_versions`
+const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,dismissed,coalesce(dismissed_by,''),dismissed_at,created_at FROM system_design_versions`
 
 func scanSystemDesign(row pgx.Row, id string) (core.SystemDesign, error) {
 	var item core.SystemDesign
@@ -189,7 +225,8 @@ func scanSystemDesignVersion(row pgx.Row, id string, version int) (core.SystemDe
 	var raw []byte
 	var origin string
 	var confirmedAt *time.Time
-	err := row.Scan(&item.Workspace, &item.DocumentID, &item.Version, &item.Content, &raw, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Confirmed, &item.ConfirmedBy, &confirmedAt, &item.CreatedAt)
+	var dismissedAt *time.Time
+	err := row.Scan(&item.Workspace, &item.DocumentID, &item.Version, &item.Content, &raw, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Confirmed, &item.ConfirmedBy, &confirmedAt, &item.Dismissed, &item.DismissedBy, &dismissedAt, &item.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s has no version %d", store.ErrNotFound, id, version)
 	}
@@ -202,6 +239,9 @@ func scanSystemDesignVersion(row pgx.Row, id string, version int) (core.SystemDe
 	}
 	if confirmedAt != nil {
 		item.ConfirmedAt = *confirmedAt
+	}
+	if dismissedAt != nil {
+		item.DismissedAt = *dismissedAt
 	}
 	return item, nil
 }
@@ -265,7 +305,7 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 				return notFound(err, "decision %s", decision.Supersedes)
 			}
 			if status != string(core.DecisionConfirmed) {
-				return fmt.Errorf("decision %s can supersede only a confirmed decision", decision.ID)
+				return fmt.Errorf("%w: decision %s can supersede only a confirmed decision", store.ErrDecisionSupersessionConflict, decision.ID)
 			}
 		}
 		decision.Workspace, decision.Status, decision.CreatedAt = workspace(ctx), core.DecisionProposed, time.Now().UTC()
@@ -275,6 +315,17 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.proposed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": decision.ID, "origin": decision.Origin, "origin_session_id": decision.OriginSessionID, "origin_task_id": decision.OriginTaskID, "supersedes": decision.Supersedes})})
 	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if pgErr.ConstraintName == "decisions_pkey" {
+				return decision, fmt.Errorf("%w: %s", store.ErrDecisionIDConflict, decision.ID)
+			}
+			if pgErr.ConstraintName == "decisions_confirmed_supersedes_key" {
+				return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
+			}
+		}
+	}
 	return decision, err
 }
 
@@ -290,10 +341,17 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 			return nil
 		}
 		if decision.Status != core.DecisionProposed {
-			return fmt.Errorf("decision %s is %s and cannot be confirmed", id, decision.Status)
+			return fmt.Errorf("%w: decision %s is %s and cannot be confirmed", store.ErrDecisionSupersessionConflict, id, decision.Status)
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		if decision.Supersedes != "" {
+			var predecessorStatus string
+			if err = tx.QueryRow(ctx, `SELECT status FROM decisions WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), decision.Supersedes).Scan(&predecessorStatus); err != nil {
+				return notFound(err, "decision %s", decision.Supersedes)
+			}
+			if predecessorStatus != string(core.DecisionConfirmed) {
+				return fmt.Errorf("%w: %s is no longer confirmed", store.ErrDecisionSupersessionConflict, decision.Supersedes)
+			}
 			if _, err = tx.Exec(ctx, `UPDATE decisions SET status='superseded',superseded_by=$3 WHERE workspace_id=$1 AND id=$2 AND status='confirmed'`, workspace(ctx), decision.Supersedes, id); err != nil {
 				return err
 			}
@@ -304,6 +362,12 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 		decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes})})
 	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "decisions_confirmed_supersedes_key" {
+			return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
+		}
+	}
 	return decision, err
 }
 

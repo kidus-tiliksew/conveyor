@@ -20,12 +20,15 @@ func (m *memory) CreateSystemDesign(ctx context.Context, document core.SystemDes
 	if document.ID == "" || document.Title == "" || document.Category == "" {
 		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("system design id, title, and category are required")
 	}
+	if err := core.ValidateSystemDesignID(document.ID); err != nil {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, err
+	}
 	if document.Slug == "" {
 		document.Slug = core.RequirementSlug(document.Title)
 	}
 	key := memoryScopedKey{workspace: workspace, id: document.ID}
 	if _, exists := m.systemDesigns[key]; exists {
-		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("system design %s already exists", document.ID)
+		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", ErrSystemDesignIDConflict, document.ID)
 	}
 	for existingKey, existing := range m.systemDesigns {
 		if existingKey.workspace == workspace && existing.Slug == document.Slug {
@@ -42,6 +45,7 @@ func (m *memory) CreateSystemDesign(ctx context.Context, document core.SystemDes
 	}
 	first.Workspace, first.DocumentID, first.Version = workspace, document.ID, 1
 	first.Confirmed, first.ConfirmedBy, first.ConfirmedAt = false, "", time.Time{}
+	first.Dismissed, first.DismissedBy, first.DismissedAt = false, "", time.Time{}
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
 	}
@@ -100,6 +104,7 @@ func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.Sy
 	versions := m.systemDesignVersions[key]
 	version.Workspace, version.Version, version.Confirmed = workspace, len(versions)+1, false
 	version.ConfirmedBy, version.ConfirmedAt = "", time.Time{}
+	version.Dismissed, version.DismissedBy, version.DismissedAt = false, "", time.Time{}
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = time.Now().UTC()
 	}
@@ -138,6 +143,9 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: system design %s has no version %d", ErrNotFound, documentID, version)
 	}
 	confirmed := versions[version-1]
+	if confirmed.Dismissed {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignVersionConflict{DocumentID: documentID, Requested: version, Current: document.CurrentVersion}
+	}
 	if confirmed.Confirmed && document.CurrentVersion == version {
 		return document, confirmed, nil
 	}
@@ -148,12 +156,25 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		return core.SystemDesign{}, core.SystemDesignVersion{}, err
 	}
 	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	dismissed := make([]int, 0)
+	for index := range versions {
+		if versions[index].Version < version && !versions[index].Confirmed && !versions[index].Dismissed {
+			versions[index].Dismissed, versions[index].DismissedBy, versions[index].DismissedAt = true, actor.ID, now
+			dismissed = append(dismissed, versions[index].Version)
+		}
+	}
 	confirmed.Confirmed, confirmed.ConfirmedBy, confirmed.ConfirmedAt = true, actor.ID, now
 	versions[version-1] = confirmed
 	m.systemDesignVersions[key] = versions
 	predecessor := document.CurrentVersion
 	document.CurrentVersion, document.UpdatedAt = version, now
 	m.systemDesigns[key] = document
+	for _, dismissedVersion := range dismissed {
+		m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace, "document_id": documentID, "version": dismissedVersion,
+			"dismissed_by": actor.ID, "confirmed_version": version,
+		})})
+	}
 	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "document_id": documentID, "version": version, "supersedes_version": predecessor,
 		"confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID,
@@ -183,9 +204,11 @@ func (m *memory) ListSystemDesignEvents(ctx context.Context, documentID string) 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := []core.Event{}
+	workspace := workspaceOrDefault(ctx, "")
 	for _, event := range m.events[""] {
 		var payload map[string]any
-		if json.Unmarshal(event.Payload, &payload) == nil && payload["document_id"] == documentID {
+		if strings.HasPrefix(event.Kind, "system_design.") && json.Unmarshal(event.Payload, &payload) == nil &&
+			payload["workspace_id"] == workspace && payload["document_id"] == documentID {
 			out = append(out, event)
 		}
 	}
@@ -213,12 +236,12 @@ func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (c
 	}
 	key := memoryScopedKey{workspace: workspace, id: decision.ID}
 	if _, exists := m.decisions[key]; exists {
-		return core.Decision{}, fmt.Errorf("decision %s already exists", decision.ID)
+		return core.Decision{}, fmt.Errorf("%w: %s", ErrDecisionIDConflict, decision.ID)
 	}
 	if decision.Supersedes != "" {
 		predecessor, ok := m.decisions[memoryScopedKey{workspace: workspace, id: decision.Supersedes}]
 		if !ok || predecessor.Status != core.DecisionConfirmed {
-			return core.Decision{}, fmt.Errorf("decision %s can supersede only a confirmed decision", decision.ID)
+			return core.Decision{}, fmt.Errorf("%w: decision %s can supersede only a confirmed decision", ErrDecisionSupersessionConflict, decision.ID)
 		}
 	}
 	decision.Workspace, decision.Status = workspace, core.DecisionProposed
@@ -247,17 +270,25 @@ func (m *memory) ConfirmDecision(ctx context.Context, id string) (core.Decision,
 		return decision, nil
 	}
 	if decision.Status != core.DecisionProposed {
-		return core.Decision{}, fmt.Errorf("decision %s is %s and cannot be confirmed", id, decision.Status)
+		return core.Decision{}, fmt.Errorf("%w: decision %s is %s and cannot be confirmed", ErrDecisionSupersessionConflict, id, decision.Status)
 	}
-	actor, now := ActorFromContext(ctx), time.Now().UTC()
-	decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
-	m.decisions[key] = decision
 	if decision.Supersedes != "" {
 		priorKey := memoryScopedKey{workspace: workspace, id: decision.Supersedes}
-		prior := m.decisions[priorKey]
+		prior, exists := m.decisions[priorKey]
+		if !exists || prior.Status != core.DecisionConfirmed || prior.SupersededBy != "" {
+			return core.Decision{}, fmt.Errorf("%w: %s is no longer confirmed", ErrDecisionSupersessionConflict, decision.Supersedes)
+		}
+		actor, now := ActorFromContext(ctx), time.Now().UTC()
 		prior.Status, prior.SupersededBy = core.DecisionSuperseded, decision.ID
 		m.decisions[priorKey] = prior
+		decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
+		m.decisions[key] = decision
+	} else {
+		actor, now := ActorFromContext(ctx), time.Now().UTC()
+		decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
+		m.decisions[key] = decision
 	}
+	actor := ActorFromContext(ctx)
 	m.appendEventLocked(ctx, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes,
 	})})

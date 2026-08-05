@@ -85,6 +85,9 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		if taskID := text("produced_task_id"); taskID != "" {
 			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageBlueprint, taskID, "produced_blueprint"))
 		}
+		if designID := text("produced_system_design_id"); designID != "" {
+			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageSystemDesign, designID, "produced_design"))
+		}
 		return emit(links...)
 	case "requirement.serves_confirmed":
 		return emit(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
@@ -143,7 +146,10 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			}
 		}
 		if taskID := text("origin_task_id"); taskID != "" {
-			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineageTask, taskID, "governs"))
+			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineageTask, taskID, "proposed_by"))
+		}
+		if sessionID := text("origin_session_id"); sessionID != "" {
+			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineagePlanningSession, sessionID, "proposed_by"))
 		}
 		return emit(links...)
 	case "decision.proposed":
@@ -255,13 +261,16 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"versions": {}, "supersedes": {}, "submitted_as": {}, "submitted_range": {},
 	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
 	"consulted": {}, "derived_from": {},
-	"governs": {}, "proposed_by": {},
+	"governs": {}, "proposed_by": {}, "produced_design": {},
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed
 // only by kind: planning_session -consulted-> reference_document_version and
-// requirement_version -derived_from-> reference_document_version. Keep this
-// mirror aligned with the Postgres delete vocabularies below.
+// requirement_version -derived_from-> reference_document_version,
+// system_design_version -governs-> repository_path,
+// system_design_version -proposed_by-> task/planning_session, and
+// planning_session -produced_design-> system_design. Keep this mirror aligned
+// with the Postgres delete vocabularies below.
 
 func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }
 

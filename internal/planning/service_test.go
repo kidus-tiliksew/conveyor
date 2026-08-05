@@ -2217,6 +2217,43 @@ func TestReferenceConsultationFailureIsNonFatalAndNotRetriedPerPrompt(t *testing
 	}
 }
 
+func TestSystemDesignContextReportsOmittedDocuments(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, id := range []string{"design-a", "design-b"} {
+		document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + id + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (&Service{Store: st}).systemDesignContext(ctx, "conveyor", lineagecontext.Budget{RenderableBytes: 4096, ArtifactRefs: 1})
+	if err != nil || result.OmittedCount != 1 || !strings.Contains(result.Prompt, "System Design context truncation: omitted_count=1") {
+		t.Fatalf("system design context=%+v err=%v", result, err)
+	}
+}
+
+func TestDecisionToolContractListsDecisionsAndKeepsExpectedConflictsRecoverable(t *testing.T) {
+	hint := expectedToolArguments("propose_decision")
+	for _, want := range []string{"Use event-derived projections", "Lineage must rebuild", "Volunteered edges"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("decision exemplar omitted %q: %s", want, hint)
+		}
+	}
+	if _, err := planningToolTarget("list_decisions"); err != nil {
+		t.Fatalf("list_decisions target: %v", err)
+	}
+	for _, expected := range []error{store.ErrNotFound, store.ErrDecisionIDConflict, store.ErrDecisionSupersessionConflict, store.ErrSystemDesignSlugConflict} {
+		err := planningStoreError(fmt.Errorf("specific reason: %w", expected))
+		var infrastructure *planningInfrastructureError
+		if errors.As(err, &infrastructure) {
+			t.Fatalf("expected authoring error became infrastructure: %v", err)
+		}
+	}
+}
+
 func TestPromotionFinalizeValidationRecoversInBandThenFinalizesV2(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

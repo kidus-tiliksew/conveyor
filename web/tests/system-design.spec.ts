@@ -151,7 +151,9 @@ test('System Design renders category, diff, readback, drift, decisions, and auth
 
   await page.getByText('Prior versions').click()
   await page.getByText('Read version').first().click()
-  await expect(page.getByText('The dispatcher owns durable stage transitions.', { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('list').getByText('The dispatcher owns durable stage transitions.', { exact: true }),
+  ).toBeVisible()
 
   await page.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmed).toBe(true)
@@ -165,7 +167,7 @@ test('System Design renders category, diff, readback, drift, decisions, and auth
   await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
 })
 
-test('System Design starts a new assistant-authored document without a freehand editor', async ({ page }) => {
+test('System Design Draft starts a second document without revising the selected corpus', async ({ page }) => {
   await initialize(page)
   let creationInput: Record<string, unknown> = {}
   await page.route('**/v1/**', async (route) => {
@@ -173,7 +175,8 @@ test('System Design starts a new assistant-authored document without a freehand 
     if (handled) return await handled
     const request = route.request()
     const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs' || url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/planning-sessions' && request.method() === 'POST') {
       creationInput = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>
       return route.fulfill({
@@ -205,7 +208,8 @@ test('System Design starts a new assistant-authored document without a freehand 
   })
 
   await page.goto('/system-design')
+  await expect(page.locator('textarea')).toHaveCount(0)
   await page.getByRole('button', { name: 'Draft' }).click()
   await expect.poll(() => creationInput).toEqual({ goal: 'system_design' })
-  await expect(page.locator('textarea')).toHaveCount(0)
+  await expect(page.locator('textarea')).toHaveCount(1)
 })

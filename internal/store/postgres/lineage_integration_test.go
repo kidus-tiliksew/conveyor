@@ -218,7 +218,12 @@ func TestPostgresLineageConformance(t *testing.T) {
 	storetest.RunLineageConformance(t, func(t *testing.T, _ []config.Repo) storetest.LineageFixture {
 		st, ctx, workspace := newPhase61IntegrationStore(t)
 		t.Cleanup(st.Close)
-		return storetest.LineageFixture{Store: st, Context: ctx, Workspace: workspace,
+		foreignWorkspace := workspace + "-other"
+		foreignCtx := store.WithWorkspace(t.Context(), foreignWorkspace)
+		if _, err := st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreignWorkspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+			t.Fatal(err)
+		}
+		return storetest.LineageFixture{Store: st, Context: ctx, ForeignContext: foreignCtx, Workspace: workspace,
 			SeedLegacy: func(t *testing.T, taskID string) (int, func(*testing.T)) {
 				session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Migrated context"})
 				if err != nil {
