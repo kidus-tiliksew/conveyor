@@ -37,6 +37,42 @@ func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) 
 	return exists, err
 }
 
+func (s *Store) FindCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64) (int64, bool, error) {
+	if causalEventID <= 0 || commitSHA == "" {
+		return 0, false, nil
+	}
+	var proposalEventID *int64
+	err := s.pool.QueryRow(ctx, `
+SELECT max(proposal.id)
+FROM events causal
+JOIN tasks causal_task
+  ON causal_task.workspace_id=causal.workspace_id
+ AND causal_task.id=causal.task_id
+LEFT JOIN events proposal
+  ON proposal.workspace_id=causal.workspace_id
+ AND proposal.id < causal.id
+ AND proposal.kind='system_design.version_proposed'
+ AND proposal.payload_json->>'document_id'=$2
+ AND proposal.payload_json->>'origin_task_id'=causal.task_id
+WHERE causal.workspace_id=$1
+  AND causal.id=$3
+  AND causal.task_id IS NOT NULL
+  AND causal_task.repo_name=$4
+  AND causal.kind IN ('merge.confirmed','merge.reconciled')
+  AND causal.payload_json->>'head_sha'=$5
+GROUP BY causal.id`, workspace(ctx), documentID, causalEventID, repository, commitSHA).Scan(&proposalEventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if proposalEventID == nil {
+		return 0, true, nil
+	}
+	return *proposalEventID, true, nil
+}
+
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
 	contextJSON, err := json.Marshal(observation.Context)
 	if err != nil {

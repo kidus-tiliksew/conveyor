@@ -39,21 +39,20 @@ func (k SignalKind) Drift() bool {
 }
 
 type Observation struct {
-	WorkspaceID             string            `json:"workspace_id"`
-	Repository              string            `json:"repository"`
-	Kind                    SignalKind        `json:"kind"`
-	OccurrenceID            string            `json:"occurrence_id"`
-	SourceURL               string            `json:"source_url"`
-	CommitSHA               string            `json:"commit_sha,omitempty"`
-	PullRequestNumber       int               `json:"pull_request_number,omitempty"`
-	CheckRunID              string            `json:"check_run_id,omitempty"`
-	RequirementID           string            `json:"requirement_id,omitempty"`
-	ChangedPaths            []string          `json:"changed_paths,omitempty"`
-	ProposedSystemDesignIDs []string          `json:"proposed_system_design_ids,omitempty"`
-	CausalEventID           int64             `json:"causal_event_id,omitempty"`
-	ObservedAt              time.Time         `json:"observed_at"`
-	Context                 map[string]string `json:"context,omitempty"`
-	Hints                   *HintContext      `json:"hints,omitempty"`
+	WorkspaceID       string            `json:"workspace_id"`
+	Repository        string            `json:"repository"`
+	Kind              SignalKind        `json:"kind"`
+	OccurrenceID      string            `json:"occurrence_id"`
+	SourceURL         string            `json:"source_url"`
+	CommitSHA         string            `json:"commit_sha,omitempty"`
+	PullRequestNumber int               `json:"pull_request_number,omitempty"`
+	CheckRunID        string            `json:"check_run_id,omitempty"`
+	RequirementID     string            `json:"requirement_id,omitempty"`
+	ChangedPaths      []string          `json:"changed_paths,omitempty"`
+	CausalEventID     int64             `json:"causal_event_id,omitempty"`
+	ObservedAt        time.Time         `json:"observed_at"`
+	Context           map[string]string `json:"context,omitempty"`
+	Hints             *HintContext      `json:"hints,omitempty"`
 }
 
 func (o *Observation) Normalize(workspace string, now time.Time) error {
@@ -188,6 +187,9 @@ type Store interface {
 	AuditMonitor(context.Context, string, map[string]any) error
 	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
+	// FindCausalSystemDesignProposal returns the latest qualifying proposal
+	// event ID and whether causalEventID resolved to the named repo/head merge.
+	FindCausalSystemDesignProposal(context.Context, string, string, string, int64) (int64, bool, error)
 }
 
 var (
@@ -348,16 +350,19 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 	if len(observation.ChangedPaths) == 0 {
 		return nil
 	}
-	proposed := map[string]bool{}
-	for _, id := range observation.ProposedSystemDesignIDs {
-		proposed[strings.TrimSpace(id)] = true
-	}
 	documents, err := s.Store.ListSystemDesigns(ctx)
 	if err != nil {
 		return err
 	}
 	for _, document := range documents {
-		if document.CurrentVersion == 0 || proposed[document.ID] {
+		if document.CurrentVersion == 0 {
+			continue
+		}
+		proposalEventID, causalEventValid, proposalErr := s.Store.FindCausalSystemDesignProposal(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID)
+		if proposalErr != nil {
+			return proposalErr
+		}
+		if proposalEventID != 0 {
 			continue
 		}
 		version, getErr := s.Store.GetSystemDesignVersion(ctx, document.ID, document.CurrentVersion)
@@ -384,12 +389,16 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		sort.Strings(matches)
 		matches = compactStrings(matches)
 		id := "design:" + document.ID + ":" + observation.Identity()
-		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: document.ID, SystemDesignVersion: version.Version, CausalEventID: observation.CausalEventID, MatchingPaths: matches, TaskID: taskID, DetectedAt: observation.ObservedAt})
+		causalEventID := int64(0)
+		if causalEventValid {
+			causalEventID = observation.CausalEventID
+		}
+		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: document.ID, SystemDesignVersion: version.Version, CausalEventID: causalEventID, MatchingPaths: matches, TaskID: taskID, DetectedAt: observation.ObservedAt})
 		if recordErr != nil {
 			return recordErr
 		}
 		if fresh {
-			_ = s.Store.AuditMonitor(ctx, "system_design.drift_detected", map[string]any{"drift_id": id, "document_id": document.ID, "version": version.Version, "causal_event_id": observation.CausalEventID, "matching_paths": matches})
+			_ = s.Store.AuditMonitor(ctx, "system_design.drift_detected", map[string]any{"drift_id": id, "document_id": document.ID, "version": version.Version, "causal_event_id": causalEventID, "matching_paths": matches})
 		}
 	}
 	return nil
