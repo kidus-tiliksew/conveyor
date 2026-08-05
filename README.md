@@ -46,8 +46,12 @@ in-flight implementation. See [conveyor.example.yaml](conveyor.example.yaml).
 
 ## Run locally
 
-Requirements: Go 1.24, Node/npm, Docker with Compose, and an authenticated
+Requirements: Go 1.24, Node/npm, PostgreSQL 15 or newer, Docker with Compose, and an authenticated
 `gh` CLI when GitHub issue intake or PR creation is enabled.
+
+Conveyor checks the connected PostgreSQL server version before applying
+migrations or starting normal service work. Servers older than PostgreSQL 15
+are rejected with an error that reports the required and detected versions.
 
 ```sh
 cp conveyor.example.yaml conveyor.yaml

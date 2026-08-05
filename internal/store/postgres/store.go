@@ -42,6 +42,27 @@ type Store struct {
 
 type sideEffectConnKey struct{}
 
+const minimumPostgresVersionNum = 150000
+
+func requireSupportedPostgres(ctx context.Context, pool *pgxpool.Pool) error {
+	var raw string
+	if err := pool.QueryRow(ctx, `SHOW server_version_num`).Scan(&raw); err != nil {
+		return fmt.Errorf("read Postgres server version: %w", err)
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil {
+		return fmt.Errorf("parse Postgres server version %q: %w", raw, err)
+	}
+	return validatePostgresVersion(version)
+}
+
+func validatePostgresVersion(version int) error {
+	if version < minimumPostgresVersionNum {
+		return fmt.Errorf("Postgres 15 or newer is required; detected server_version_num %d", version)
+	}
+	return nil
+}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -50,6 +71,10 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("connect Postgres: %w", err)
+	}
+	if err := requireSupportedPostgres(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		pool.Close()

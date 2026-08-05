@@ -124,6 +124,13 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case "reference_document.consulted":
 		id, version, sessionID := text("document_id"), number("version"), text("session_id")
 		return emit(link(core.LineagePlanningSession, sessionID, core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(id, version), "consulted"))
+	case "system_design.consulted":
+		id, version := text("document_id"), number("version")
+		destination := core.SystemDesignVersionLineageID(id, version)
+		if workOrderID := text("work_order_id"); workOrderID != "" {
+			return emit(link(core.LineageWorkOrder, workOrderID, core.LineageSystemDesignVersion, destination, "consulted"))
+		}
+		return emit(link(core.LineagePlanningSession, text("session_id"), core.LineageSystemDesignVersion, destination, "consulted"))
 	case "system_design.version_confirmed":
 		id, version, predecessor := text("document_id"), number("version"), number("supersedes_version")
 		versionID := core.SystemDesignVersionLineageID(id, version)

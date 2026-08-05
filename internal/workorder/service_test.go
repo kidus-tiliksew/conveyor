@@ -969,6 +969,22 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	if !strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=1`) || strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=2`) || !strings.Contains(context.RolePrompt, "# Pinned decision authority") {
 		t.Fatalf("review role did not use pinned governance authority: %s", context.RolePrompt)
 	}
+	if _, err = service.Get(ctx, job.ID, "governance-pin-session"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consulted := 0
+	for _, event := range events {
+		if event.Kind == "system_design.consulted" && strings.Contains(string(event.Payload), `"work_order_id":"`+job.ID+`"`) && strings.Contains(string(event.Payload), `"version":1`) {
+			consulted++
+		}
+	}
+	if consulted != 1 {
+		t.Fatalf("work-order consultation events=%d, want one", consulted)
+	}
 }
 
 func TestUsagePersistsHighReportWithoutGating(t *testing.T) {

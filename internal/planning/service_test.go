@@ -2229,9 +2229,30 @@ func TestSystemDesignContextReportsOmittedDocuments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := (&Service{Store: st}).systemDesignContext(ctx, "conveyor", lineagecontext.Budget{RenderableBytes: 4096, ArtifactRefs: 1})
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-system-design-context", PrimaryRepo: "conveyor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	result, err := service.systemDesignContext(ctx, session.ID, "conveyor", lineagecontext.Budget{RenderableBytes: 4096, ArtifactRefs: 1})
 	if err != nil || result.OmittedCount != 1 || !strings.Contains(result.Prompt, "System Design context truncation: omitted_count=1") {
 		t.Fatalf("system design context=%+v err=%v", result, err)
+	}
+	if _, err = service.systemDesignContext(ctx, session.ID, "conveyor", lineagecontext.Budget{RenderableBytes: 4096, ArtifactRefs: 1}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consulted := 0
+	for _, event := range events {
+		if event.Kind == "system_design.consulted" {
+			consulted++
+		}
+	}
+	if consulted != 1 {
+		t.Fatalf("system design consulted events=%d, want one", consulted)
 	}
 }
 

@@ -749,7 +749,7 @@ func TestMergeConfirmedProducesDesignDriftFromAuthoritativePRFiles(t *testing.T)
 	if len(status.Drift) != 1 || status.Drift[0].SystemDesignID != document.ID || status.Drift[0].CommitSHA != "reviewed-pr-head" || status.Drift[0].CausalEventID == 0 {
 		t.Fatalf("production design drift=%+v", status.Drift)
 	}
-	if len(status.Observations) != 1 || status.Observations[0].CommitSHA != "reviewed-pr-head" || !reflect.DeepEqual(status.Observations[0].ChangedPaths, []string{"internal/dispatch/dispatch.go"}) {
+	if len(status.Observations) != 1 || status.Observations[0].Kind != monitor.LineagedMerge || status.Observations[0].OccurrenceID != "pr:12" || status.Observations[0].CommitSHA != "reviewed-pr-head" || !reflect.DeepEqual(status.Observations[0].ChangedPaths, []string{"internal/dispatch/dispatch.go"}) {
 		t.Fatalf("merge observation=%+v", status.Observations)
 	}
 }
@@ -1240,6 +1240,35 @@ func TestValidateGovernanceAssessmentUsesPinnedSplitAuthority(t *testing.T) {
 			}
 			if test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
 				t.Fatalf("error=%v want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateGovernanceAssessmentRejectsPinnedContractMismatches(t *testing.T) {
+	pinned := core.GovernanceSnapshot{
+		Designs:   []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 2}},
+		Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed}, {ID: "DEC-2", Status: core.DecisionSuperseded}},
+	}
+	empty := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	tests := []struct {
+		name       string
+		snapshot   core.GovernanceSnapshot
+		assessment *core.GovernanceAssessment
+		want       string
+	}{
+		{name: "design applicability mismatch", snapshot: pinned, assessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(true)}, want: "design_applicable=false"},
+		{name: "decision citability mismatch", snapshot: pinned, assessment: &core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(false)}, want: "decision_citable=false"},
+		{name: "assessment absent with authority", snapshot: pinned, assessment: nil, want: "governance_assessment is required"},
+		{name: "finding against empty pin", snapshot: empty, assessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(false), UnknownIDs: []string{"DESIGN-missing"}}, want: "findings must be empty"},
+		{name: "confirmed id listed as superseded", snapshot: pinned, assessment: &core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), SupersededIDs: []string{"DEC-1"}}, want: `superseded id "DEC-1" is not a superseded decision`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			review := pipeline.Review{GovernanceAssessment: test.assessment}
+			err := validateGovernanceAssessment(test.snapshot, &review)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want %q", err, test.want)
 			}
 		})
 	}

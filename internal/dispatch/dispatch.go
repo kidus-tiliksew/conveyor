@@ -699,14 +699,6 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	return input, nil
 }
 
-func (d *Dispatcher) governanceContract(ctx context.Context, task core.Task, stage core.Stage) (string, error) {
-	snapshot, err := store.GovernanceForRepository(ctx, d.Store, task.Repo)
-	if err != nil {
-		return "", err
-	}
-	return pack.RenderGovernanceContract(stage, snapshot), nil
-}
-
 type lineageContextMemoKey struct{}
 
 // The memo is installed for one synchronous dispatch call and is never shared
@@ -1843,7 +1835,7 @@ func (d *Dispatcher) observeConfirmedMerge(ctx context.Context, task core.Task, 
 	}
 	if err == nil {
 		err = d.ObserveDesignMerge(ctx, monitor.Observation{
-			Repository: task.Repo, Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:" + strconv.Itoa(pr.Number),
+			Repository: task.Repo, Kind: monitor.LineagedMerge, OccurrenceID: "pr:" + strconv.Itoa(pr.Number),
 			SourceURL: pr.URL, CommitSHA: pr.HeadSHA, PullRequestNumber: pr.Number,
 			ChangedPaths: paths, CausalEventID: eventID,
 		}, task.ID)

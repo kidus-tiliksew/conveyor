@@ -213,3 +213,34 @@ test('System Design Draft starts a second document without revising the selected
   await expect.poll(() => creationInput).toEqual({ goal: 'system_design' })
   await expect(page.locator('textarea')).toHaveCount(1)
 })
+
+test('stale System Design confirmation refreshes the list and explains the retry', async ({ page }) => {
+  await initialize(page)
+  let designReads = 0
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/system-designs') {
+      designReads++
+      return route.fulfill({ json: [design] })
+    }
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm')
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: 'system_design_version_conflict',
+          message: 'system design design-dispatch current version changed from 1 to 2',
+          current_version: 2,
+        },
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design')
+  await page.getByRole('button', { name: 'Confirm version 2' }).click()
+  await expect(page.getByText(/latest versions are loading; review them and try again/i)).toBeVisible()
+  await expect.poll(() => designReads).toBeGreaterThanOrEqual(2)
+})

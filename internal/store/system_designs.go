@@ -200,6 +200,19 @@ func (m *memory) ListSystemDesignVersions(ctx context.Context, documentID string
 	return append([]core.SystemDesignVersion(nil), versions...), nil
 }
 
+func (m *memory) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := map[string][]core.SystemDesignVersion{}
+	for key, versions := range m.systemDesignVersions {
+		if key.workspace == workspace {
+			out[key.id] = append([]core.SystemDesignVersion(nil), versions...)
+		}
+	}
+	return out, nil
+}
+
 func (m *memory) ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -213,6 +226,52 @@ func (m *memory) ListSystemDesignEvents(ctx context.Context, documentID string) 
 		}
 	}
 	return out, nil
+}
+
+func (m *memory) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := map[string][]core.Event{}
+	workspace := workspaceOrDefault(ctx, "")
+	for _, event := range m.events[""] {
+		var payload map[string]any
+		if !strings.HasPrefix(event.Kind, "system_design.") || json.Unmarshal(event.Payload, &payload) != nil || payload["workspace_id"] != workspace {
+			continue
+		}
+		if documentID, _ := payload["document_id"].(string); documentID != "" {
+			out[documentID] = append(out[documentID], event)
+		}
+	}
+	return out, nil
+}
+
+func (m *memory) RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: documentID}
+	found := false
+	for _, candidate := range m.systemDesignVersions[key] {
+		if candidate.Version == version {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: system design %s version %d", ErrNotFound, documentID, version)
+	}
+	if workOrderID != "" {
+		if _, ok := m.workOrders[workOrderID]; !ok {
+			return fmt.Errorf("%w: work order %s", ErrNotFound, workOrderID)
+		}
+	} else if _, ok := m.planningSessions[memoryScopedKey{workspace: workspace, id: sessionID}]; !ok {
+		return fmt.Errorf("%w: planning session %s", ErrNotFound, sessionID)
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "document_id": documentID, "version": version,
+		"session_id": sessionID, "work_order_id": workOrderID,
+	})})
+	return nil
 }
 
 func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {

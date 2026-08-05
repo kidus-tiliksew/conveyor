@@ -878,7 +878,7 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 	role = strings.ReplaceAll(role, "{{MAX_CALLS_PER_STEP}}", strconv.Itoa(maxCalls))
 	lineagePrompt := ""
 	contextBudget := lineagecontext.BudgetFromConfig(cfg)
-	designs, designErr := s.systemDesignContext(ctx, session.PrimaryRepo, contextBudget)
+	designs, designErr := s.systemDesignContext(ctx, session.ID, session.PrimaryRepo, contextBudget)
 	if designErr != nil {
 		return "", designErr
 	}
@@ -980,7 +980,7 @@ type referenceContextResult struct {
 	ExhaustionReasons []string
 }
 
-func (s *Service) systemDesignContext(ctx context.Context, primaryRepo string, budget lineagecontext.Budget) (referenceContextResult, error) {
+func (s *Service) systemDesignContext(ctx context.Context, sessionID, primaryRepo string, budget lineagecontext.Budget) (referenceContextResult, error) {
 	documents, err := s.Store.ListSystemDesigns(ctx)
 	if err != nil {
 		return referenceContextResult{}, fmt.Errorf("list planning system designs: %w", err)
@@ -1018,6 +1018,7 @@ func (s *Service) systemDesignContext(ctx context.Context, primaryRepo string, b
 		entries.WriteString(entry)
 		result.RenderedBytes += len(entry)
 		result.ArtifactRefs++
+		s.recordSystemDesignConsultedOnce(ctx, sessionID, document.ID, version.Version)
 	}
 	if result.ArtifactRefs > 0 {
 		var prompt strings.Builder
@@ -1029,6 +1030,23 @@ func (s *Service) systemDesignContext(ctx context.Context, primaryRepo string, b
 		result.Prompt = prompt.String()
 	}
 	return result, nil
+}
+
+func (s *Service) recordSystemDesignConsultedOnce(ctx context.Context, sessionID, documentID string, version int) {
+	key := "system-design\x00" + sessionID + "\x00" + documentID + "\x00" + strconv.Itoa(version)
+	s.consultedMu.Lock()
+	if s.consulted == nil {
+		s.consulted = map[string]struct{}{}
+	}
+	if _, exists := s.consulted[key]; exists {
+		s.consultedMu.Unlock()
+		return
+	}
+	s.consulted[key] = struct{}{}
+	s.consultedMu.Unlock()
+	// Consultation is observational provenance and must not make prompt
+	// construction fail or retry in a loop.
+	_ = s.Store.RecordSystemDesignConsulted(ctx, documentID, version, sessionID, "")
 }
 
 func (s *Service) referenceContext(ctx context.Context, sessionID string, budget lineagecontext.Budget) (referenceContextResult, error) {

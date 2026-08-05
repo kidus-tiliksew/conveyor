@@ -73,7 +73,8 @@ func (s *Store) ClaimCausalSystemDesignProposal(ctx context.Context, documentID,
 			}
 			return err
 		}
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, eventID); err != nil {
+		lockKey := "conveyor:design-proposal:" + strconv.FormatInt(eventID, 10)
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
 			return err
 		}
 		var existingDrift, existingStatus string
