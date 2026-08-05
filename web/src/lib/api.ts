@@ -259,16 +259,12 @@ export async function uploadArtifact(
 }
 
 export function fetchReferenceDocuments() {
-  return fetch(workspaceURL('/v1/reference-documents')).then(async (response) => {
-    if (!response.ok) throw new Error(await response.text())
-    return response.json() as Promise<import('./types').ReferenceDocument[]>
-  })
+  return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents'))
 }
 export function fetchReferenceDocumentVersions(id: string) {
-  return fetch(workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`)).then(async (response) => {
-    if (!response.ok) throw new Error(await response.text())
-    return response.json() as Promise<import('./types').ReferenceDocumentVersion[]>
-  })
+  return getJSON<import('./types').ReferenceDocumentVersion[]>(
+    workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`),
+  )
 }
 export async function uploadReferenceDocument(token: string, file: File, id?: string) {
   const body = new FormData()
