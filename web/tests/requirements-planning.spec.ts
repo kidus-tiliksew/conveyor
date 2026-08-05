@@ -1014,6 +1014,7 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
 test('promotion selects immutable provenance for new REQ and existing nested AC sessions', async ({ page }) => {
   await initShell(page)
   let existing = false
+  let documentAuthorization = ''
   const created: Record<string, unknown>[] = []
   const existingRequirement = {
     ...requirement,
@@ -1035,10 +1036,13 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/reference-documents')
+    if (url.pathname === '/v1/reference-documents') {
+      documentAuthorization = route.request().headers().authorization ?? ''
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
       return route.fulfill({
         json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
       })
+    }
     if (url.pathname === '/v1/reference-documents/ref-overview/versions')
       return route.fulfill({
         json: [
@@ -1092,6 +1096,7 @@ test('promotion selects immutable provenance for new REQ and existing nested AC 
 
   await page.goto('/requirements')
   await page.getByRole('button', { name: 'Promote overview' }).click()
+  await expect.poll(() => documentAuthorization).toBe('Bearer test-token')
   await expect(page.getByRole('dialog', { name: 'Promote product overview' })).toBeVisible()
   await expect(page.getByLabel('Section').getByRole('option', { name: 'Hidden instruction' })).toHaveCount(0)
   await expect(page.getByLabel('Section').getByRole('option', { name: 'Four-space code' })).toHaveCount(0)
@@ -1128,16 +1133,21 @@ test('reference documents upload safely, load history on demand, compare both si
 }) => {
   await initShell(page)
   let versionRequests = 0
+  let listAuthorization = ''
+  let versionAuthorization = ''
   let uploadRequests = 0
   let deleteRequests = 0
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'GET')
+    if (url.pathname === '/v1/reference-documents' && route.request().method() === 'GET') {
+      listAuthorization = route.request().headers().authorization ?? ''
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
       return route.fulfill({
         json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
       })
+    }
     if (url.pathname === '/v1/reference-documents' && route.request().method() === 'POST') {
       uploadRequests++
       if (uploadRequests === 2)
@@ -1146,6 +1156,8 @@ test('reference documents upload safely, load history on demand, compare both si
     }
     if (url.pathname === '/v1/reference-documents/ref-overview/versions') {
       versionRequests++
+      versionAuthorization = route.request().headers().authorization ?? ''
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
       return route.fulfill({
         json: [
           {
@@ -1180,6 +1192,7 @@ test('reference documents upload safely, load history on demand, compare both si
   await page.goto('/requirements')
   const overviewSummary = page.locator('summary').filter({ hasText: 'Product overview' })
   await expect(overviewSummary).toBeVisible()
+  expect(listAuthorization).toBe('Bearer test-token')
   expect(versionRequests).toBe(0)
 
   const addInput = page.locator('label').filter({ hasText: 'Add Markdown' }).locator('input[type=file]')
@@ -1190,6 +1203,7 @@ test('reference documents upload safely, load history on demand, compare both si
 
   await overviewSummary.click()
   await expect.poll(() => versionRequests).toBe(1)
+  expect(versionAuthorization).toBe('Bearer test-token')
   await page.getByLabel('Read version').selectOption('1')
   await expect(page.getByText('Removed section.')).toBeVisible()
   await page.getByLabel('Read version').selectOption('2')
