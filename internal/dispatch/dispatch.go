@@ -1075,6 +1075,28 @@ func validateReviewCitations(result *pipeline.Review, servedRequirements []core.
 			return fmt.Errorf("review requirement_citations cited id %q is not present in the confirmed served requirement version", id)
 		}
 	}
+	// The finding lists are disjoint classifications of cited IDs: an ID in
+	// the pinned served set always belongs in cited_ids, so its presence in
+	// unknown_ids or unserved_ids contradicts the contract. unserved_ids is
+	// not a ledger of served criteria the diff left unexercised.
+	seen := map[string]string{}
+	for _, id := range result.RequirementCitations.CitedIDs {
+		seen[id] = "cited_ids"
+	}
+	for _, list := range []struct {
+		name string
+		ids  []string
+	}{{"unknown_ids", result.RequirementCitations.UnknownIDs}, {"unserved_ids", result.RequirementCitations.UnservedIDs}} {
+		for _, id := range list.ids {
+			if servedIDs[id] {
+				return fmt.Errorf("review requirement_citations %s entry %q is present in the pinned served requirement version and belongs in cited_ids", list.name, id)
+			}
+			if prior, duplicated := seen[id]; duplicated {
+				return fmt.Errorf("review requirement_citations id %q appears in both %s and %s; the finding lists are disjoint", id, prior, list.name)
+			}
+			seen[id] = list.name
+		}
+	}
 	return nil
 }
 
