@@ -2588,7 +2588,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
-redispatch_count, progress, cost_usd, tokens_in, tokens_out, self_reported,
+redispatch_count, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
@@ -2666,8 +2666,8 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$44,$45,$46)`,
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,false,false,$43,$43,$44,$45)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
 			nullableTimeValue(order.LeaseExpiresAt), order.ReviewRound, order.ReviewSeat,
@@ -2678,7 +2678,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt),
 			order.AutomaticRetryCount, nullableTimeValue(order.NextRetryAt), order.RetrySuppressed,
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
-			order.TokensOut, true, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			order.TokensOut, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
 		if err != nil {
 			return err
 		}
@@ -2748,8 +2748,8 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 				automatic_retry_count, next_retry_at, retry_suppressed,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-				self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$20,$20,$21,$22)`,
+				usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, order.State,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
@@ -2836,8 +2836,8 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$16,$16,$17,$18)`,
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
@@ -2967,8 +2967,8 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,true,$20,$20,$21,$22)`,
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 			order.ID, workspaceID, request.TaskID, job.ID, core.StageReview, core.WorkOrderQueued,
 			order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
@@ -3943,16 +3943,16 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			execution_deadline=$13, last_attempt_id=$14, last_attempt_outcome=$15, last_failure_category=$16, last_failure_message=$17, last_failure_detail=$18,
 			last_failure_exit_status=$19, last_failure_at=$20, automatic_retry_count=$21,
 			next_retry_at=$22, retry_suppressed=$23, retry_suppression_reason=$24, redispatch_count=$25, progress=$26,
-			cost_usd=$27, tokens_in=$28, tokens_out=$29, self_reported=$30,
-			rate_limit=$31, rate_limit_observed_at=$32, updated_at=now()
-			WHERE workspace_id=$33 AND id=$34`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
+			cost_usd=$27, tokens_in=$28, tokens_out=$29, usage_reported=$30, self_reported=$31,
+			rate_limit=$32, rate_limit_observed_at=$33, updated_at=now()
+			WHERE workspace_id=$34 AND id=$35`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
 			nullableTimeValue(order.ExecutionDeadline), order.LastAttemptID, order.LastAttemptOutcome, order.LastFailureCategory, order.LastFailureMessage, order.LastFailureDetail,
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
 			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
-			order.CostUSD, order.TokensIn, order.TokensOut, order.SelfReported,
+			order.CostUSD, order.TokensIn, order.TokensOut, order.UsageReported, order.SelfReported,
 			rateLimitJSON(order.RateLimit), nullableTimeValue(order.RateLimitObservedAt), workspace(ctx), order.ID)
 		if err != nil {
 			return err
@@ -4513,7 +4513,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.RedispatchCount, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(harnessConfig) > 0 && string(harnessConfig) != "{}" {
 		var snapshot core.HarnessSnapshot

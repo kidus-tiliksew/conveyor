@@ -307,7 +307,7 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported := result.(core.WorkOrder)
-	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.SelfReported {
+	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("fallback replaced agent usage: %+v", reported)
 	}
 }
@@ -346,7 +346,7 @@ func TestMCPUsageSurfacesForImplementationAndReviewOrders(t *testing.T) {
 				t.Fatal(err)
 			}
 			reported := result.(core.WorkOrder)
-			if reported.TokensIn != 1200 || reported.TokensOut != 300 || reported.CostUSD != 1.25 || !reported.SelfReported {
+			if reported.TokensIn != 1200 || reported.TokensOut != 300 || reported.CostUSD != 1.25 || !reported.UsageReported || !reported.SelfReported {
 				t.Fatalf("reported %s usage=%+v", stage, reported)
 			}
 		})

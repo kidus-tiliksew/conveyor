@@ -217,7 +217,7 @@ func enableCodexJSONOutput(harness config.Harness, argv []string) ([]string, *co
 
 func reportCodexUsageFallback(c *client, credential, orderID, sessionID string, order core.WorkOrder, usage *codexUsageCollector) {
 	totals, ok := usage.Usage()
-	if !ok || order.TokensIn != 0 || order.TokensOut != 0 || order.CostUSD != 0 {
+	if !ok || order.UsageReported {
 		return
 	}
 	// The terminal Codex usage event is emitted after the agent's terminal MCP

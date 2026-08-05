@@ -1009,11 +1009,18 @@ func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
 	}}
+	if claimed.UsageReported || claimed.SelfReported {
+		t.Fatalf("newly claimed order asserted usage = %+v", claimed)
+	}
+	progressed, progressErr := service.Progress(ctx, claimed.ID, "session", "starting")
+	if progressErr != nil || progressed.UsageReported || progressed.SelfReported {
+		t.Fatalf("progress changed usage provenance = %+v err=%v", progressed, progressErr)
+	}
 	reported, err := service.Usage(ctx, claimed.ID, "session", 100_000_000, 25_000_000, 20_000)
 	if err != nil {
 		t.Fatalf("usage error = %v", err)
 	}
-	if reported.CostUSD != 20_000 {
+	if reported.CostUSD != 20_000 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("returned cost = %v", reported.CostUSD)
 	}
 	stored, getErr := st.GetWorkOrder(ctx, claimed.ID)
@@ -1042,7 +1049,7 @@ func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reported.TokensIn != 144 || reported.TokensOut != 21 || reported.SelfReported {
+	if reported.TokensIn != 144 || reported.TokensOut != 21 || !reported.UsageReported || reported.SelfReported {
 		t.Fatalf("reported fallback = %+v", reported)
 	}
 	if _, err = service.UsageFromWorkerFallback(ctx, claimed.ID, "other-session", 1, 1, 0); err == nil {
@@ -1079,7 +1086,7 @@ func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reported.TokensIn != 0 || reported.TokensOut != 0 || !reported.SelfReported {
+	if reported.TokensIn != 0 || reported.TokensOut != 0 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("fallback replaced measured-zero agent report: %+v", reported)
 	}
 	events, err := st.ListEvents(ctx, order.TaskID)

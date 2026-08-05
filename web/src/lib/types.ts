@@ -606,6 +606,7 @@ export interface WorkOrder {
   cost_usd: number
   tokens_in: number
   tokens_out: number
+  usage_reported: boolean
   self_reported: boolean
   rate_limit?: RateLimitStatus
   rate_limit_observed_at?: string

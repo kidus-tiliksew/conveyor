@@ -241,12 +241,7 @@ function CurrentExecutionSummary({
 function reportedUsageOrderIDs(item: ActivityItem): Set<string> {
   // Usage availability and aggregation are presentation-only. They never feed
   // a lifecycle or admission decision (DEC-1).
-  return new Set(
-    item.events
-      .filter((event) => event.kind === 'work_order.usage_reported')
-      .map((event) => event.payload?.work_order_id)
-      .filter((id): id is string => typeof id === 'string'),
-  )
+  return new Set((item.work_orders ?? []).filter((order) => order.usage_reported).map((order) => order.id))
 }
 
 function usageProvenance(order: WorkOrder): string {

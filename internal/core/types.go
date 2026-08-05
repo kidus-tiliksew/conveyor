@@ -539,6 +539,7 @@ type WorkOrder struct {
 	CostUSD                float64          `json:"cost_usd"`
 	TokensIn               int64            `json:"tokens_in"`
 	TokensOut              int64            `json:"tokens_out"`
+	UsageReported          bool             `json:"usage_reported"`
 	SelfReported           bool             `json:"self_reported"`
 	RateLimit              *RateLimitStatus `json:"rate_limit,omitempty"`
 	RateLimitObservedAt    time.Time        `json:"rate_limit_observed_at,omitempty"`

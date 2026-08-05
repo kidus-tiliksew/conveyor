@@ -308,7 +308,7 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
-			State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
+			State: core.WorkOrderQueued, Claimable: true,
 			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
 			ReviewKind: func() string {
 				if task.ApprovalStale {
@@ -430,7 +430,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	}
 	order := core.WorkOrder{
 		ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage,
-		State: core.WorkOrderQueued, Claimable: true, SelfReported: true,
+		State: core.WorkOrderQueued, Claimable: true,
 		RequiredModel: effectiveModel, RequiredHarness: route.Harness,
 		RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig,
 		ReasonCode: reasonCode, BaselineSHA: task.ApprovedHeadSHA,

@@ -834,7 +834,6 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 	if len(order.Progress) > 4000 {
 		order.Progress = order.Progress[:4000]
 	}
-	order.SelfReported = true
 	if err = guardedUpdateWorkOrder(ctx, s.Store, order, taskops.WorkOrderMetadataCommand); err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -884,6 +883,10 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 	order.TokensIn = tokensIn
 	order.TokensOut = tokensOut
 	order.CostUSD = cost
+	// Usage is observational telemetry only and never lifecycle authority (DEC-1).
+	// Persist availability separately so an explicit zero remains distinguishable
+	// from a session that never reported usage.
+	order.UsageReported = true
 	order.SelfReported = selfReported
 	if rateLimit != nil {
 		status := *rateLimit

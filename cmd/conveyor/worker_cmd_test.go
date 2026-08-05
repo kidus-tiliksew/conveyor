@@ -140,7 +140,7 @@ func TestReportCodexUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
 	_, _ = invalid.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":"bad","output_tokens":3}}` + "\n"))
 	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, invalid)
 	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, &codexUsageCollector{})
-	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{TokensIn: 1}, valid)
+	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{UsageReported: true}, valid)
 
 	mu.Lock()
 	defer mu.Unlock()
