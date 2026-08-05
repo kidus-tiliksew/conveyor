@@ -788,8 +788,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
 		}
 		renewed := reconciled.WorkOrder
-		// Replacement semantics avoid double-counting. An agent report remains
-		// authoritative whenever it already supplied any cumulative value.
+		// The service checks current persisted provenance before applying this
+		// fallback, so a report emitted by the agent during the child run wins.
 		reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, renewed, codexUsage)
 		if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
 			reason := "harness exited before completing work order"

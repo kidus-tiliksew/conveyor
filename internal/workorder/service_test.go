@@ -1063,6 +1063,40 @@ func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testi
 	}
 }
 
+func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "worker-fallback-preserves-agent-usage")
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
+		SessionID: "worker-session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Usage(ctx, claimed.ID, "worker-session", 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reported.TokensIn != 0 || reported.TokensOut != 0 || !reported.SelfReported {
+		t.Fatalf("fallback replaced measured-zero agent report: %+v", reported)
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageEvents := 0
+	for _, event := range events {
+		if event.Kind == "work_order.usage_reported" {
+			usageEvents++
+		}
+	}
+	if usageEvents != 1 {
+		t.Fatalf("usage events=%d want=1", usageEvents)
+	}
+}
+
 func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

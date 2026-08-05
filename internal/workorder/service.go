@@ -856,6 +856,18 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 	if tokensIn < 0 || tokensOut < 0 || cost < 0 {
 		return core.WorkOrder{}, fmt.Errorf("usage values cannot be negative")
 	}
+	if !selfReported {
+		reported, reportErr := s.hasAgentUsageReport(ctx, order)
+		if reportErr != nil {
+			return core.WorkOrder{}, reportErr
+		}
+		if reported {
+			// The agent's cumulative report is authoritative over the worker's
+			// post-run fallback, including when the agent reported measured zero.
+			// Usage remains observational and never affects lifecycle (DEC-1).
+			return order, nil
+		}
+	}
 	order.TokensIn = tokensIn
 	order.TokensOut = tokensOut
 	order.CostUSD = cost
@@ -895,6 +907,26 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 		return core.WorkOrder{}, err
 	}
 	return order, nil
+}
+
+func (s *Service) hasAgentUsageReport(ctx context.Context, order core.WorkOrder) (bool, error) {
+	events, err := s.Store.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		return false, fmt.Errorf("inspect existing usage reports: %w", err)
+	}
+	for _, event := range events {
+		if event.Kind != "work_order.usage_reported" || event.JobID != order.JobID {
+			continue
+		}
+		var payload struct {
+			WorkOrderID  string `json:"work_order_id"`
+			SelfReported bool   `json:"self_reported"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == order.ID && payload.SelfReported {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) authorizedForUsage(ctx context.Context, id, session string, workerFallback bool) (core.WorkOrder, error) {

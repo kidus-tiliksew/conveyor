@@ -265,6 +265,53 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	}
 }
 
+func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-worker-fallback", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	args := map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"tokens_in": 100.0, "tokens_out": 25.0, "cost_usd": 0.5,
+	}
+	if _, err := server.callMCPTool(request, "report_usage", args); err != nil {
+		t.Fatal(err)
+	}
+	workerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
+	fallback := maps.Clone(args)
+	fallback["tokens_in"] = 500.0
+	fallback["tokens_out"] = 125.0
+	fallback["cost_usd"] = 0.0
+	fallback["source"] = "worker_fallback"
+	result, err := server.callMCPTool(workerRequest, "report_usage", fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := result.(core.WorkOrder)
+	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.SelfReported {
+		t.Fatalf("fallback replaced agent usage: %+v", reported)
+	}
+}
+
 func TestMCPUsageSurfacesForImplementationAndReviewOrders(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
