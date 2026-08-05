@@ -40,12 +40,12 @@ func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error)
 	return exists, nil
 }
 
-func (m *memory) FindCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64) (int64, bool, error) {
+func (m *memory) ClaimCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string) (monitor.ProposalSuppression, bool, error) {
 	if causalEventID <= 0 || strings.TrimSpace(commitSHA) == "" {
-		return 0, false, nil
+		return monitor.ProposalSuppression{}, false, nil
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
 	var causal core.Event
 	var causalTask core.Task
@@ -66,15 +66,16 @@ func (m *memory) FindCausalSystemDesignProposal(ctx context.Context, documentID,
 		}
 	}
 	if causal.TaskID == "" || causalTask.Repo != strings.TrimSpace(repository) || (causal.Kind != "merge.confirmed" && causal.Kind != "merge.reconciled") {
-		return 0, false, nil
+		return monitor.ProposalSuppression{}, false, nil
 	}
 	var merge struct {
 		HeadSHA string `json:"head_sha"`
 	}
 	if json.Unmarshal(causal.Payload, &merge) != nil || merge.HeadSHA != strings.TrimSpace(commitSHA) {
-		return 0, false, nil
+		return monitor.ProposalSuppression{}, false, nil
 	}
 	var latest int64
+	var proposalVersion int
 	for _, event := range m.events[""] {
 		if event.ID >= causalEventID || event.Kind != "system_design.version_proposed" {
 			continue
@@ -83,12 +84,49 @@ func (m *memory) FindCausalSystemDesignProposal(ctx context.Context, documentID,
 			WorkspaceID  string `json:"workspace_id"`
 			DocumentID   string `json:"document_id"`
 			OriginTaskID string `json:"origin_task_id"`
+			Version      int    `json:"version"`
 		}
 		if json.Unmarshal(event.Payload, &proposal) == nil && proposal.WorkspaceID == workspace && proposal.DocumentID == documentID && proposal.OriginTaskID == causal.TaskID && event.ID > latest {
 			latest = event.ID
+			proposalVersion = proposal.Version
 		}
 	}
-	return latest, true, nil
+	if latest == 0 {
+		return monitor.ProposalSuppression{}, true, nil
+	}
+	for _, activity := range m.monitorActivity[workspace] {
+		if activity.Kind != "system_design.drift_suppressed" || payloadInt64(activity.Payload["proposal_event_id"]) != latest {
+			continue
+		}
+		if fmt.Sprint(activity.Payload["drift_id"]) == driftID {
+			return monitor.ProposalSuppression{EventID: latest, Status: fmt.Sprint(activity.Payload["proposal_status"])}, true, nil
+		}
+		return monitor.ProposalSuppression{}, true, nil
+	}
+	status := "pending"
+	versions := m.systemDesignVersions[memoryScopedKey{workspace: workspace, id: documentID}]
+	if proposalVersion > 0 && proposalVersion <= len(versions) && versions[proposalVersion-1].Confirmed {
+		status = "confirmed"
+	}
+	m.nextMonitorActivityID++
+	m.monitorActivity[workspace] = append(m.monitorActivity[workspace], monitor.Activity{
+		ID: m.nextMonitorActivityID, WorkspaceID: workspace, Kind: "system_design.drift_suppressed", At: time.Now().UTC(),
+		Payload: map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": latest, "proposal_status": status, "matching_paths": append([]string(nil), matchingPaths...)},
+	})
+	return monitor.ProposalSuppression{EventID: latest, Status: status}, true, nil
+}
+
+func payloadInt64(value any) int64 {
+	switch value := value.(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	default:
+		return 0
+	}
 }
 
 func (m *memory) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
@@ -100,6 +138,12 @@ func (m *memory) Observe(ctx context.Context, observation monitor.Observation) (
 	}
 	key := monitorKey(workspace, observation.Identity())
 	if current, ok := m.monitorObservations[key]; ok {
+		if len(observation.ChangedPaths) > 0 {
+			current.ChangedPaths = append([]string(nil), observation.ChangedPaths...)
+		}
+		if observation.CausalEventID > 0 {
+			current.CausalEventID = observation.CausalEventID
+		}
 		current.DeduplicatedCount++
 		current.UpdatedAt = observation.ObservedAt
 		current.State = "deduplicated"
@@ -146,6 +190,12 @@ func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.
 		return current, false, nil
 	}
 	m.monitorDrift[key] = drift
+	if drift.SystemDesignID != "" {
+		m.appendEventLocked(ctx, core.Event{Kind: "system_design.drift_detected", At: drift.DetectedAt, Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace, "document_id": drift.SystemDesignID, "version": drift.SystemDesignVersion,
+			"drift_id": drift.ID, "causal_event_id": drift.CausalEventID, "matching_paths": drift.MatchingPaths,
+		})})
+	}
 	return drift, true, nil
 }
 
@@ -210,11 +260,30 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 			"origin_drift_id": proposal.OriginDriftID, "statement_count": len(proposal.Statements),
 		})})
 	}
+	if outcome == "design_document_updated" {
+		if drift.SystemDesignID == "" {
+			return monitor.Drift{}, fmt.Errorf("drift %s cannot resolve as design_document_updated without a system design", id)
+		}
+		designKey := memoryScopedKey{workspace: workspace, id: drift.SystemDesignID}
+		document, exists := m.systemDesigns[designKey]
+		if !exists || document.CurrentVersion <= drift.SystemDesignVersion {
+			return monitor.Drift{}, fmt.Errorf("drift %s requires a confirmed replacement version for system design %s", id, drift.SystemDesignID)
+		}
+		versions := m.systemDesignVersions[designKey]
+		if document.CurrentVersion > len(versions) || !versions[document.CurrentVersion-1].Confirmed {
+			return monitor.Drift{}, fmt.Errorf("drift %s requires a confirmed replacement version for system design %s", id, drift.SystemDesignID)
+		}
+	}
 	drift.Outcome, drift.ResolvedAt = outcome, now
 	m.monitorDrift[key] = drift
 	m.appendEventLocked(ctx, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
 		"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
 	})})
+	if drift.SystemDesignID != "" {
+		m.appendEventLocked(ctx, core.Event{Kind: "system_design.drift_resolved", At: now, Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace, "document_id": drift.SystemDesignID, "drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
+		})})
+	}
 	return drift, nil
 }
 

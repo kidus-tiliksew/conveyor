@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
@@ -708,6 +709,78 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	}
 	if merges != 1 || views != 2 {
 		t.Fatalf("idempotent retry merges=%d views=%d", merges, views)
+	}
+}
+
+func TestMergeConfirmedProducesDesignDriftFromAuthoritativePRFiles(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	content := "# Dispatch design\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/dispatch/**\n```"
+	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	service := &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "test", Enabled: true, Repositories: map[string]struct{}{"app": {}}}
+	d.ObserveDesignMerge = func(ctx context.Context, observation monitor.Observation, taskID string) error {
+		_, observeErr := service.ProcessDesignMerge(ctx, observation, taskID)
+		return observeErr
+	}
+	d.ListPullRequestFiles = func(_ context.Context, repo string, number int) ([]string, error) {
+		if repo != "acme/app" || number != 12 {
+			t.Fatalf("file request repo=%s number=%d", repo, number)
+		}
+		return []string{"internal/dispatch/dispatch.go"}, nil
+	}
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: map[bool]string{true: "closed", false: "open"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, BaseSHA: "landed-base", HeadSHA: "reviewed-pr-head"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { return nil }
+	if err = d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Drift) != 1 || status.Drift[0].SystemDesignID != document.ID || status.Drift[0].CommitSHA != "reviewed-pr-head" || status.Drift[0].CausalEventID == 0 {
+		t.Fatalf("production design drift=%+v", status.Drift)
+	}
+	if len(status.Observations) != 1 || status.Observations[0].CommitSHA != "reviewed-pr-head" || !reflect.DeepEqual(status.Observations[0].ChangedPaths, []string{"internal/dispatch/dispatch.go"}) {
+		t.Fatalf("merge observation=%+v", status.Observations)
+	}
+}
+
+func TestMergeFileFailureIsAuditedAndNonGating(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	d.ObserveDesignMerge = func(context.Context, monitor.Observation, string) error {
+		t.Fatal("observation should not run without files")
+		return nil
+	}
+	d.ListPullRequestFiles = func(context.Context, string, int) ([]string, error) { return nil, errors.New("files unavailable") }
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: map[bool]string{true: "closed", false: "open"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, HeadSHA: "head"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { return nil }
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil || current.State != core.TaskMerged {
+		t.Fatalf("task=%+v status_err=%v", current, err)
+	}
+	found := false
+	for _, activity := range status.Activity {
+		found = found || (activity.Kind == "system_design.drift_evaluation_failed" && fmt.Sprint(activity.Payload["pull_request"]) == "12")
+	}
+	if !found {
+		t.Fatalf("failure audit missing: %+v", status.Activity)
 	}
 }
 

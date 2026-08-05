@@ -101,6 +101,9 @@ func ParseGovernedScopes(content string) ([]GovernedScope, error) {
 			if glob == "" || strings.HasPrefix(glob, "/") || glob == ".." || strings.HasPrefix(glob, "../") || strings.Contains(glob, "/../") {
 				return nil, fmt.Errorf("governed path %q must be repository-relative", glob)
 			}
+			if strings.ContainsAny(glob, "[]") {
+				return nil, fmt.Errorf("governed path glob %q uses unsupported character-class syntax", glob)
+			}
 			if _, err := path.Match(strings.ReplaceAll(glob, "**", "*"), "validation"); err != nil {
 				return nil, fmt.Errorf("invalid governed path glob %q: %w", glob, err)
 			}

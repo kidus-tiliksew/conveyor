@@ -63,9 +63,16 @@ func (o *Observation) Normalize(workspace string, now time.Time) error {
 	o.CommitSHA = strings.TrimSpace(o.CommitSHA)
 	o.CheckRunID = strings.TrimSpace(o.CheckRunID)
 	o.RequirementID = strings.TrimSpace(o.RequirementID)
-	for i := range o.ChangedPaths {
-		o.ChangedPaths[i] = strings.TrimSpace(strings.ReplaceAll(o.ChangedPaths[i], "\\", "/"))
+	paths := make([]string, 0, len(o.ChangedPaths))
+	for _, changed := range o.ChangedPaths {
+		changed = strings.TrimPrefix(strings.TrimSpace(strings.ReplaceAll(changed, "\\", "/")), "./")
+		if changed == "" || strings.HasPrefix(changed, "/") || changed == ".." || strings.HasPrefix(changed, "../") || strings.Contains(changed, "/../") {
+			return fmt.Errorf("changed path %q must be repository-relative", changed)
+		}
+		paths = append(paths, changed)
 	}
+	sort.Strings(paths)
+	o.ChangedPaths = compactStrings(paths)
 	if o.WorkspaceID == "" {
 		o.WorkspaceID = workspace
 	}
@@ -161,6 +168,11 @@ type Activity struct {
 	At          time.Time      `json:"at"`
 }
 
+type ProposalSuppression struct {
+	EventID int64
+	Status  string
+}
+
 type TaskRequest struct {
 	Body       string
 	Repository string
@@ -187,9 +199,10 @@ type Store interface {
 	AuditMonitor(context.Context, string, map[string]any) error
 	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
-	// FindCausalSystemDesignProposal returns the latest qualifying proposal
-	// event ID and whether causalEventID resolved to the named repo/head merge.
-	FindCausalSystemDesignProposal(context.Context, string, string, string, int64) (int64, bool, error)
+	// ClaimCausalSystemDesignProposal atomically consumes the latest qualifying
+	// same-task proposal for one governed merge. The commit is the PR head SHA
+	// recorded in merge.confirmed, not the landed squash or merge-commit SHA.
+	ClaimCausalSystemDesignProposal(context.Context, string, string, string, int64, string, []string) (ProposalSuppression, bool, error)
 }
 
 var (
@@ -234,6 +247,49 @@ func (s *Service) Resolve(ctx context.Context, id, outcome string) (Drift, error
 		})
 	}
 	return drift, err
+}
+
+// ProcessDesignMerge records a Conveyor-owned merge observation and evaluates
+// only system-design drift. The delivery already has a durable task, so this
+// path must not create a second intake task.
+func (s *Service) ProcessDesignMerge(ctx context.Context, observation Observation, deliveryTaskID string) (ObservationRecord, error) {
+	workspace, enabled, repositories := s.WorkspaceID, s.Enabled, s.Repositories
+	if s.ResolveScope != nil {
+		var err error
+		workspace, enabled, repositories, err = s.ResolveScope(ctx)
+		if err != nil {
+			return ObservationRecord{}, err
+		}
+	}
+	if !enabled {
+		return ObservationRecord{}, errors.New("monitor is disabled for this workspace")
+	}
+	if s.Store == nil || strings.TrimSpace(deliveryTaskID) == "" {
+		return ObservationRecord{}, errors.New("monitor storage and delivery task are required")
+	}
+	now := time.Now().UTC()
+	if s.Now != nil {
+		now = s.Now().UTC()
+	}
+	if err := observation.Normalize(workspace, now); err != nil {
+		return ObservationRecord{}, err
+	}
+	if _, ok := repositories[observation.Repository]; !ok {
+		return ObservationRecord{}, fmt.Errorf("repository %q is outside configured monitor scope", observation.Repository)
+	}
+	record, fresh, err := s.Store.Observe(ctx, observation)
+	if err != nil {
+		return ObservationRecord{}, err
+	}
+	_ = s.Store.AuditMonitor(ctx, "system_design.drift_evaluated", map[string]any{
+		"identity": observation.Identity(), "delivery_task_id": deliveryTaskID, "causal_event_id": observation.CausalEventID,
+		"repository": observation.Repository, "changed_paths": observation.ChangedPaths, "fresh": fresh,
+	})
+	if err = s.recordSystemDesignDrift(ctx, observation, deliveryTaskID); err != nil {
+		return ObservationRecord{}, err
+	}
+	_ = s.Store.RecordMonitorSuccess(ctx, now)
+	return record, nil
 }
 
 func (s *Service) Process(ctx context.Context, observation Observation) (ObservationRecord, error) {
@@ -287,6 +343,11 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			"identity": observation.Identity(), "occurrence_id": observation.OccurrenceID,
 			"deduplicated_count": record.DeduplicatedCount,
 		})
+		if observation.Kind.Drift() && len(observation.ChangedPaths) > 0 {
+			if err = s.recordSystemDesignDrift(ctx, observation, record.TaskID); err != nil {
+				return ObservationRecord{}, err
+			}
+		}
 		_ = s.Store.RecordMonitorSuccess(ctx, now)
 		return record, nil
 	}
@@ -358,13 +419,6 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		if document.CurrentVersion == 0 {
 			continue
 		}
-		proposalEventID, causalEventValid, proposalErr := s.Store.FindCausalSystemDesignProposal(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID)
-		if proposalErr != nil {
-			return proposalErr
-		}
-		if proposalEventID != 0 {
-			continue
-		}
 		version, getErr := s.Store.GetSystemDesignVersion(ctx, document.ID, document.CurrentVersion)
 		if getErr != nil {
 			return getErr
@@ -389,6 +443,13 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		sort.Strings(matches)
 		matches = compactStrings(matches)
 		id := "design:" + document.ID + ":" + observation.Identity()
+		suppression, causalEventValid, proposalErr := s.Store.ClaimCausalSystemDesignProposal(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, matches)
+		if proposalErr != nil {
+			return proposalErr
+		}
+		if suppression.EventID != 0 {
+			continue
+		}
 		causalEventID := int64(0)
 		if causalEventValid {
 			causalEventID = observation.CausalEventID
