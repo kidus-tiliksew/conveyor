@@ -73,6 +73,85 @@ func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testin
 	}
 }
 
+func TestCodexUsageCollectorAcceptsOnlyValidTurnCompletedJSONL(t *testing.T) {
+	collector := &codexUsageCollector{}
+	_, _ = collector.Write([]byte(`{"type":"item.completed","usage":{"input_tokens":1,"output_tokens":2}}` + "\n"))
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":21262,`))
+	_, _ = collector.Write([]byte(`"output_tokens":5}}` + "\n" + `not-json` + "\n"))
+
+	usage, ok := collector.Usage()
+	if !ok || usage != (codexUsageTotals{TokensIn: 21262, TokensOut: 5}) {
+		t.Fatalf("usage=%+v available=%v", usage, ok)
+	}
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":7}}` + "\n"))
+	if got, _ := collector.Usage(); got != usage {
+		t.Fatalf("invalid terminal payload replaced usage: %+v", got)
+	}
+}
+
+func TestEnableCodexJSONOutputIsNarrowAndIdempotent(t *testing.T) {
+	original := []string{"codex", "exec", "prompt", "config"}
+	got, collector := enableCodexJSONOutput(config.Harness{Name: "codex"}, original)
+	want := []string{"codex", "exec", "--json", "prompt", "config"}
+	if collector == nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("codex argv=%q collector=%v", got, collector != nil)
+	}
+	got, collector = enableCodexJSONOutput(config.Harness{Name: "codex"}, got)
+	if collector == nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("idempotent argv=%q collector=%v", got, collector != nil)
+	}
+	got, collector = enableCodexJSONOutput(config.Harness{Name: "claude"}, original)
+	if collector != nil || !reflect.DeepEqual(got, original) {
+		t.Fatalf("non-codex argv=%q collector=%v", got, collector != nil)
+	}
+}
+
+func TestReportCodexUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	var arguments map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" || r.Header.Get("Authorization") != "Bearer worker-token" {
+			t.Errorf("unexpected request %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		var request struct {
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		calls++
+		arguments = request.Params.Arguments
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, workspace: "demo"}
+
+	valid := &codexUsageCollector{}
+	_, _ = valid.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":21,"output_tokens":3}}` + "\n"))
+	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, valid)
+
+	invalid := &codexUsageCollector{}
+	_, _ = invalid.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":"bad","output_tokens":3}}` + "\n"))
+	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, invalid)
+	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, &codexUsageCollector{})
+	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{TokensIn: 1}, valid)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("fallback calls=%d want=1", calls)
+	}
+	if arguments["source"] != "worker_fallback" || arguments["workspace_id"] != "demo" || arguments["tokens_in"] != float64(21) || arguments["tokens_out"] != float64(3) {
+		t.Fatalf("fallback arguments=%v", arguments)
+	}
+}
+
 func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *testing.T) {
 	directory := t.TempDir()
 	jsonPath, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportJSONFile)

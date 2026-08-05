@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -135,6 +136,96 @@ func loadOrEnrollWorker(c *client, pairing, name string) (workerCredentialFile, 
 type childResult struct {
 	stage core.Stage
 	err   error
+}
+
+type codexUsageTotals struct {
+	TokensIn  int64
+	TokensOut int64
+}
+
+// codexUsageCollector accepts only Codex's documented JSONL turn.completed
+// event. It deliberately ignores every other child line instead of growing a
+// general harness-output scraper.
+type codexUsageCollector struct {
+	mu      sync.Mutex
+	pending []byte
+	latest  *codexUsageTotals
+}
+
+func (c *codexUsageCollector) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending = append(c.pending, p...)
+	for {
+		newline := bytes.IndexByte(c.pending, '\n')
+		if newline < 0 {
+			if len(c.pending) > 64*1024 {
+				c.pending = nil
+			}
+			return len(p), nil
+		}
+		line := bytes.TrimSpace(c.pending[:newline])
+		c.pending = c.pending[newline+1:]
+		var event struct {
+			Type  string `json:"type"`
+			Usage *struct {
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(line, &event) != nil || event.Type != "turn.completed" || event.Usage == nil || event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 {
+			continue
+		}
+		c.latest = &codexUsageTotals{TokensIn: event.Usage.InputTokens, TokensOut: event.Usage.OutputTokens}
+	}
+}
+
+func (c *codexUsageCollector) Usage() (codexUsageTotals, bool) {
+	if c == nil {
+		return codexUsageTotals{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.latest == nil {
+		return codexUsageTotals{}, false
+	}
+	return *c.latest, true
+}
+
+func enableCodexJSONOutput(harness config.Harness, argv []string) ([]string, *codexUsageCollector) {
+	if harness.Name != "codex" {
+		return argv, nil
+	}
+	for _, arg := range argv {
+		if arg == "--json" {
+			return argv, &codexUsageCollector{}
+		}
+	}
+	insertAt := len(argv)
+	for index, arg := range argv[1:] {
+		if arg == "exec" || arg == "--" {
+			insertAt = index + 2
+			break
+		}
+	}
+	withJSON := make([]string, 0, len(argv)+1)
+	withJSON = append(withJSON, argv[:insertAt]...)
+	withJSON = append(withJSON, "--json")
+	withJSON = append(withJSON, argv[insertAt:]...)
+	return withJSON, &codexUsageCollector{}
+}
+
+func reportCodexUsageFallback(c *client, credential, orderID, sessionID string, order core.WorkOrder, usage *codexUsageCollector) {
+	totals, ok := usage.Usage()
+	if !ok || order.TokensIn != 0 || order.TokensOut != 0 || order.CostUSD != 0 {
+		return
+	}
+	// The terminal Codex usage event is emitted after the agent's terminal MCP
+	// call, so this is intentionally best effort and bounded independently of
+	// the child lifecycle.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.reportWorkerFallbackUsageContext(ctx, credential, orderID, sessionID, totals.TokensIn, totals.TokensOut)
 }
 
 type workerReconnectPolicy struct {
@@ -553,6 +644,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		_ = release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
+	argv, codexUsage := enableCodexJSONOutput(item.Harness, argv)
 	childAddress := c.base
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
@@ -604,7 +696,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	}
 	outputRedactor := redact.New([]string{credential, childAddress, sessionID, clientToken})
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
-	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdout, failureTail), Redactor: outputRedactor}
+	stdoutDestinations := []io.Writer{stdout, failureTail}
+	if codexUsage != nil {
+		stdoutDestinations = append(stdoutDestinations, codexUsage)
+	}
+	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdoutDestinations...), Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
 	// permanently disarms output-start liveness (spec §21.42).
@@ -666,6 +762,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	claimFinalized := false
 	handleChildExit := func(waitErr error) error {
 		waitErr = processGroup.terminate(&waitErr)
+		flushOutput()
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
@@ -691,6 +788,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
 		}
 		renewed := reconciled.WorkOrder
+		// The service checks current persisted provenance before applying this
+		// fallback, so a report emitted by the agent during the child run wins.
+		reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, renewed, codexUsage)
 		if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
 			reason := "harness exited before completing work order"
 			if item.Order.Stage == core.StageReview {

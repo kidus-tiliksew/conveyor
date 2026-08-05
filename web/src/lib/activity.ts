@@ -355,7 +355,15 @@ export type TimelineEntry =
       href?: string
       alarm?: boolean
     }
-  | { type: 'order'; at: string; key: string; title: string; detail?: string; tone: 'waiting' | 'active' | 'alarm' }
+  | {
+      type: 'order'
+      at: string
+      key: string
+      title: string
+      detail?: string
+      tone: 'waiting' | 'active' | 'alarm'
+      order: WorkOrder
+    }
   | { type: 'intervention'; at: string; intervention: Intervention }
   | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
 
@@ -818,7 +826,7 @@ const genericSummaries = new Set([
 // become entries of their own.
 function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
   const stage = order.stage === 'spec' ? 'Spec' : order.stage === 'implement' ? 'Implementation' : 'Review'
-  const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}` }
+  const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order }
   switch (order.state) {
     case 'queued':
       return {

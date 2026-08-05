@@ -7,6 +7,13 @@ artifacts to ground claims in the actual codebase, but make no edits, commits,
 pushes, or branch changes. Complete the stage only by calling `submit_spec`
 with the structured result and observing success.
 
+Usage telemetry is best-effort and cumulative. When current token and cost
+figures are available, call `report_usage` at natural checkpoints during a
+long session and immediately before `submit_spec`, using the cumulative
+`tokens_in`, `tokens_out`, and `cost_usd` for this work order. If those figures
+are unavailable, continue normally: missing usage must never block spec
+submission.
+
 Ground the spec in what you actually verify. Use the checkout to confirm
 file-level details and existing APIs, while keeping the contract focused on
 behavior, boundaries, and acceptance rather than incidental implementation

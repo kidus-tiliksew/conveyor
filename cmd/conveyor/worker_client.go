@@ -146,6 +146,34 @@ func (c *client) reconcileWorkerOrderReadOnlyContext(ctx context.Context, creden
 	err := c.workerDoContext(ctx, http.MethodGet, path, nil, &result, credential)
 	return result, err
 }
+
+func (c *client) reportWorkerFallbackUsageContext(ctx context.Context, credential, id, sessionID string, tokensIn, tokensOut int64) error {
+	payload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "report_usage",
+			"arguments": map[string]any{
+				"workspace_id": c.workspace, "work_order_id": id, "session_id": sessionID,
+				"tokens_in": tokensIn, "tokens_out": tokensOut, "cost_usd": 0, "source": "worker_fallback",
+			},
+		},
+	})
+	var envelope struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := c.workerDoContext(ctx, http.MethodPost, "/mcp", payload, &envelope, credential); err != nil {
+		return err
+	}
+	if envelope.Error != nil {
+		return fmt.Errorf("report worker fallback usage: MCP %d: %s", envelope.Error.Code, envelope.Error.Message)
+	}
+	return nil
+}
 func (c *client) releaseWorkerOrder(credential, id string, release core.WorkOrderRelease) error {
 	return c.releaseWorkerOrderContext(context.Background(), credential, id, release)
 }
