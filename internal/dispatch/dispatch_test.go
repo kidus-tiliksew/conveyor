@@ -2254,6 +2254,33 @@ func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
 			t.Fatalf("validation error=%v", err)
 		}
 	})
+	// Regression for the first live citation-validated review (task
+	// 260805-98aa4c): the reviewer filed pinned-served ACs under unserved_ids,
+	// repurposing the field as "served but not exercised by this diff".
+	t.Run("served id filed under unserved is rejected", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-1"}, UnservedIDs: []string{"AC-1.1"}}}
+		if err := validateReviewCitations(&result, served); err == nil || !strings.Contains(err.Error(), `unserved_ids entry "AC-1.1" is present in the pinned served requirement version`) {
+			t.Fatalf("validation error=%v", err)
+		}
+	})
+	t.Run("served id filed under unknown is rejected", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, UnknownIDs: []string{"AC-1.1"}}}
+		if err := validateReviewCitations(&result, served); err == nil || !strings.Contains(err.Error(), `unknown_ids entry "AC-1.1" is present in the pinned served requirement version`) {
+			t.Fatalf("validation error=%v", err)
+		}
+	})
+	t.Run("finding lists must be disjoint", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, UnknownIDs: []string{"REQ-9"}, UnservedIDs: []string{"REQ-9"}}}
+		if err := validateReviewCitations(&result, served); err == nil || !strings.Contains(err.Error(), `appears in both unknown_ids and unserved_ids`) {
+			t.Fatalf("validation error=%v", err)
+		}
+	})
+	t.Run("genuinely unserved and unknown ids are accepted", func(t *testing.T) {
+		result := pipeline.Review{RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"AC-1.1"}, UnknownIDs: []string{"REQ-404"}, UnservedIDs: []string{"REQ-9"}}}
+		if err := validateReviewCitations(&result, served); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
