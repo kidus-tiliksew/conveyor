@@ -209,6 +209,75 @@ func (m *memory) ListSystemDesignVersions(ctx context.Context, documentID string
 	return append([]core.SystemDesignVersion(nil), versions...), nil
 }
 
+func (m *memory) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := make([]core.GovernanceDesignContext, 0)
+	for key, document := range m.systemDesigns {
+		if key.workspace != workspace || document.CurrentVersion < 1 {
+			continue
+		}
+		versions := m.systemDesignVersions[key]
+		if document.CurrentVersion > len(versions) {
+			continue
+		}
+		version := versions[document.CurrentVersion-1]
+		for _, scope := range version.Governs {
+			if scope.Repository == repository {
+				out = append(out, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...)})
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *memory) ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := make([]core.SystemDesignVersion, 0)
+	for key, versions := range m.systemDesignVersions {
+		if key.workspace != workspace {
+			continue
+		}
+		for _, version := range versions {
+			if version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == taskID && !version.Confirmed && !version.Dismissed {
+				out = append(out, version)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DocumentID != out[j].DocumentID {
+			return out[i].DocumentID < out[j].DocumentID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out, nil
+}
+
+func (m *memory) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := make([]core.Event, 0)
+	for _, event := range m.events[""] {
+		if event.Kind != "system_design.version_proposed" {
+			continue
+		}
+		var payload struct {
+			WorkspaceID  string `json:"workspace_id"`
+			OriginTaskID string `json:"origin_task_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkspaceID == workspace && payload.OriginTaskID == taskID {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
 func (m *memory) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

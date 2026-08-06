@@ -410,6 +410,19 @@ const (
 	WorkOrderTimedOut  WorkOrderState = "timed_out"
 )
 
+// WorkOrderActiveForConflictDispatch is the single reason-coded admission
+// definition for merge-conflict fix work. Holds reserve queued orders from the
+// worker supervisor; they do not make the order inactive (spec §21.31).
+func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
+	if order.State == WorkOrderClaimed {
+		return true
+	}
+	// An expired or otherwise terminal child can be projected back to queued
+	// while recovery is deliberately suppressed. It has no pending attempt and
+	// must not block a new episode-local dispatch.
+	return order.State == WorkOrderQueued && !order.RetrySuppressed
+}
+
 // HarnessSnapshot is the immutable worker execution contract captured for a
 // spec, implementation, or review order when it is created. Workspace hot reloads
 // must not alter an in-flight command, model arguments, effort arguments, or

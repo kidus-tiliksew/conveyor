@@ -67,6 +67,31 @@ func TestQueuedWorkOrderJSONOmitsExecutionAndLeaseClocks(t *testing.T) {
 	}
 }
 
+func TestWorkOrderActiveForConflictDispatchLifecycleConformance(t *testing.T) {
+	tests := []struct {
+		name  string
+		order WorkOrder
+		want  bool
+	}{
+		{name: "queued", order: WorkOrder{State: WorkOrderQueued}, want: true},
+		{name: "queued held task remains active", order: WorkOrder{State: WorkOrderQueued, Claimable: false}, want: true},
+		{name: "claimed", order: WorkOrder{State: WorkOrderClaimed}, want: true},
+		{name: "expired attempt projection", order: WorkOrder{State: WorkOrderQueued, RetrySuppressed: true, LastAttemptOutcome: WorkOrderOutcomeExpired}},
+		{name: "cancelled", order: WorkOrder{State: WorkOrderCancelled}},
+		{name: "submitted", order: WorkOrder{State: WorkOrderSubmitted}},
+		{name: "completed", order: WorkOrder{State: WorkOrderCompleted}},
+		{name: "stale", order: WorkOrder{State: WorkOrderStale}},
+		{name: "timed out", order: WorkOrder{State: WorkOrderTimedOut}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := WorkOrderActiveForConflictDispatch(test.order); got != test.want {
+				t.Fatalf("active=%t, want %t for %+v", got, test.want, test.order)
+			}
+		})
+	}
+}
+
 func TestJSONPayloadUsesStableFallback(t *testing.T) {
 	payload := JSONPayload(make(chan int))
 	if string(payload) != `{"marshal_error":true}` {

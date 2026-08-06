@@ -50,6 +50,26 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 	}
 }
 
+func TestTransitionConflictDispatchSelectsInitialAndRecoveryEdges(t *testing.T) {
+	tests := []struct {
+		from    TaskState
+		command TaskCommand
+	}{
+		{from: TaskApproved, command: TaskConflictDispatch},
+		{from: TaskQueued, command: TaskRecoverRefresh},
+		{from: TaskRunning, command: TaskRecoverRefresh},
+	}
+	for _, test := range tests {
+		to, command, err := TransitionConflictDispatch(test.from)
+		if err != nil || to != TaskQueued || command != test.command {
+			t.Fatalf("from %s: to=%s command=%s err=%v", test.from, to, command, err)
+		}
+	}
+	if _, _, err := TransitionConflictDispatch(TaskAwaiting); err == nil {
+		t.Fatal("awaiting task accepted conflict dispatch recovery")
+	}
+}
+
 func TestWorkOrderLifecycleW1ThroughW15(t *testing.T) {
 	tests := []struct {
 		name    string

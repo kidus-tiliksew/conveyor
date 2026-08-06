@@ -307,6 +307,43 @@ func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 	}
 }
 
+func TestMemoryConflictFixCommandFailureLeavesNoPartialOutcome(t *testing.T) {
+	ctx := WithWorkspace(context.Background(), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "conflict-atomic-memory", Workspace: "demo", State: core.TaskApproved, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	request := ConflictFixRequest{
+		TaskID: task.ID, Job: job,
+		WorkOrder:    core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ReasonCode: "merge-conflict", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now},
+		Intervention: core.Intervention{TaskID: task.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict"},
+		ApprovedHead: "approved", NewHead: "conflicting",
+	}
+	_, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (ConflictFixResult, error) {
+		return st.CreateConflictFixCommand(ctx, lease, request)
+	})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("command error=%v", err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	if current.State != core.TaskApproved || current.NextStage != core.StageReview || len(orders) != 0 || len(interventions) != 0 {
+		t.Fatalf("partial outcome: task=%+v orders=%+v interventions=%+v", current, orders, interventions)
+	}
+	for _, kind := range []string{"task.state_changed", "pipeline.transition_decided", "merge.conflict_fix_dispatched"} {
+		if count, _ := st.CountEvents(ctx, task.ID, kind); count != 0 {
+			t.Fatalf("%s events=%d, want 0", kind, count)
+		}
+	}
+}
+
 func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 	t.Parallel()
 	ctx := WithWorkspace(t.Context(), "demo")
@@ -406,6 +443,30 @@ func TestLatestForgeFailureTracksOnlyUnresolvedOperatorEvidence(t *testing.T) {
 	events = append(events, core.Event{Kind: "review.publication_published", JobID: "review-1", At: at.Add(5 * time.Second), Payload: core.JSONPayload(map[string]any{"review_work_order_id": "review-1"})})
 	if failure = LatestForgeFailure(events); failure != nil {
 		t.Fatalf("resolved failures remain actionable: %+v", failure)
+	}
+}
+
+func TestLatestForgeFailureSurfacesConflictDispatchAndRecoveryBlockers(t *testing.T) {
+	at := time.Now().UTC()
+	events := []core.Event{{
+		Kind: "merge.conflict_recovery_blocked", At: at,
+		Payload: core.JSONPayload(map[string]any{"error": "latest review round has interrupted seats"}),
+	}}
+	failure := LatestForgeFailure(events)
+	if failure == nil || failure.Category != "interrupted_review_recovery" || failure.Surface != "Merge conflict recovery" {
+		t.Fatalf("recovery failure=%+v", failure)
+	}
+	events = append(events,
+		core.Event{Kind: "merge.conflict_fix_dispatched", At: at.Add(time.Second)},
+		core.Event{Kind: "merge.conflict_dispatch_exhausted", At: at.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{"error": "work order insert failed"})},
+	)
+	failure = LatestForgeFailure(events)
+	if failure == nil || failure.Category != "conflict_dispatch_exhausted" || failure.Detail != "work order insert failed" || failure.Surface != "Merge conflict dispatch" {
+		t.Fatalf("dispatch failure=%+v", failure)
+	}
+	events = append(events, core.Event{Kind: "merge.conflict_cleared", At: at.Add(3 * time.Second)})
+	if failure = LatestForgeFailure(events); failure != nil {
+		t.Fatalf("cleared conflict remains actionable: %+v", failure)
 	}
 }
 

@@ -92,7 +92,7 @@ func TestDoneCriteriaContractRendersPlanAndTaskFallback(t *testing.T) {
 	t.Parallel()
 	plan := "## Approach\nShip.\n\n## Files touched\n- file.go\n\n## Ordering\n1. Edit.\n\n## Risks\n- None.\n\n## Done criteria\n- Tests pass."
 	review := DoneCriteriaContract(core.StageReview, plan, "fallback body", true)
-	for _, required := range []string{"Tests pass", "beside the pinned served-requirement acceptance criteria", "done_criteria_coverage", "four disjoint observation lists"} {
+	for _, required := range []string{"Tests pass", "beside the pinned served-requirement acceptance criteria", "done_criteria_coverage", "verbatim-trimmed", "evidence-backed", "cannot be established", "four lists are disjoint"} {
 		if !strings.Contains(review, required) {
 			t.Fatalf("review contract missing %q: %s", required, review)
 		}
@@ -101,6 +101,26 @@ func TestDoneCriteriaContractRendersPlanAndTaskFallback(t *testing.T) {
 	for _, required := range []string{"Task body is done", "applicable=false", "all four finding lists empty"} {
 		if !strings.Contains(fallback, required) {
 			t.Fatalf("fallback contract missing %q: %s", required, fallback)
+		}
+	}
+	legacy := "## Definition of done\n\n- Legacy checks pass.\n\n```conveyor:spec\n{}\n```"
+	if HasExecutionPlan(legacy) || strings.Contains(DoneCriteriaContract(core.StageReview, legacy, "legacy task body", false), "applicable=true") {
+		t.Fatalf("legacy spec with a done heading was treated as an execution plan")
+	}
+	if !HasExecutionPlan(plan) {
+		t.Fatalf("valid plan was not recognized")
+	}
+}
+
+func TestGovernanceContractExplainsAttachmentPinDowngrade(t *testing.T) {
+	t.Parallel()
+	contract := RenderGovernanceContract(core.StageReview, core.GovernanceSnapshot{
+		Designs:         []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 2, Category: "Architecture", Content: "# Runtime", PinnedAtAttachment: true}},
+		ResolutionNotes: []string{"pending proposal DESIGN-runtime v3 has no valid proposal event and was omitted"},
+	})
+	for _, required := range []string{"pinned_at_attachment=true", "older confirmed version is binding", "Governance resolution notes", "confer no authority"} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("governance contract missing %q: %s", required, contract)
 		}
 	}
 }

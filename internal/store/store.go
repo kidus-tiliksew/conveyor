@@ -149,6 +149,10 @@ type Store interface {
 	// order. It returns false when the same order already exists, making River
 	// redelivery and concurrent dispatch idempotent without a session lock.
 	CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error)
+	// CreateConflictFixCommand atomically admits one reason-coded conflict-fix
+	// attempt and persists its redirect, task transition, job, work order, and
+	// dispatch audit. A returned existing order is an idempotent success.
+	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
 	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error
 	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
@@ -223,6 +227,9 @@ type Store interface {
 	GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error)
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
+	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
+	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
+	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
 	RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error
@@ -262,6 +269,25 @@ type Store interface {
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// ApprovedExecutionDocument resolves the immutable approved document that
+// governs implementation and review. Legacy materialized children inherit the
+// exact parent blueprint version that created them; new task-centric work uses
+// the task's own approved plan (spec §21.58 change 4).
+func ApprovedExecutionDocument(ctx context.Context, st Store, task core.Task) (core.SpecVersion, bool, error) {
+	approved, ok, err := st.GetApprovedSpecVersion(ctx, task.ID)
+	if err != nil || ok || task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
+		return approved, ok, err
+	}
+	approved, ok, err = st.GetSpecVersion(ctx, task.ParentTaskID, task.OriginSpecVersion)
+	if err != nil {
+		return approved, false, err
+	}
+	if !ok || !approved.Approved {
+		return core.SpecVersion{}, false, fmt.Errorf("approved blueprint %s version %d not found for child task %s", task.ParentTaskID, task.OriginSpecVersion, task.ID)
+	}
+	return approved, true, nil
 }
 
 // LineageNodeRecord is the minimal entity projection needed to label a
@@ -435,6 +461,7 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 	var issue *ForgeFailure
 	reviews := make(map[string]*ForgeFailure)
 	var merge *ForgeFailure
+	var conflict *ForgeFailure
 	for _, event := range events {
 		var payload struct {
 			ReviewWorkOrderID  string `json:"review_work_order_id"`
@@ -471,6 +498,16 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 			}
 		case "merge.confirmed", "merge.reconciled":
 			merge = nil
+		case "merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched":
+			conflict = nil
+		case "merge.conflict_recovery_blocked":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				conflict = &ForgeFailure{Category: "interrupted_review_recovery", Detail: payload.Error, Surface: "Merge conflict recovery", At: event.At}
+			}
+		case "merge.conflict_dispatch_exhausted":
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				conflict = &ForgeFailure{Category: "conflict_dispatch_exhausted", Detail: payload.Error, Surface: "Merge conflict dispatch", At: event.At}
+			}
 		}
 	}
 	var latest *ForgeFailure
@@ -485,6 +522,7 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 		consider(review)
 	}
 	consider(merge)
+	consider(conflict)
 	return latest
 }
 
@@ -584,6 +622,22 @@ type InterruptedReviewRecoveryResult struct {
 	ReviewRound     int              `json:"review_round"`
 	RecoveredOrders []core.WorkOrder `json:"recovered_orders"`
 	RetainedOrders  []core.WorkOrder `json:"retained_orders"`
+}
+
+var ErrConflictReviewRecovery = errors.New("interrupted review recovery owns conflict dispatch")
+
+type ConflictFixRequest struct {
+	TaskID       string
+	Job          core.Job
+	WorkOrder    core.WorkOrder
+	Intervention core.Intervention
+	ApprovedHead string
+	NewHead      string
+}
+
+type ConflictFixResult struct {
+	WorkOrder core.WorkOrder
+	Created   bool
 }
 
 type memoryInterruptedReviewRecovery struct {
@@ -1779,6 +1833,94 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	return true, nil
 }
 
+func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error) {
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
+		return ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
+	}
+	if request.TaskID == "" || request.Job.TaskID != request.TaskID || request.Job.Stage != core.StageImplement ||
+		request.WorkOrder.ID != request.Job.ID || request.WorkOrder.JobID != request.Job.ID ||
+		request.WorkOrder.TaskID != request.TaskID || request.WorkOrder.Stage != core.StageImplement ||
+		request.WorkOrder.ReasonCode != "merge-conflict" || request.Intervention.TaskID != request.TaskID ||
+		request.Intervention.Action != core.InterventionRedirect || request.Intervention.ReasonCode != "merge-conflict" {
+		return ConflictFixResult{}, fmt.Errorf("invalid conflict-fix command for task %s", request.TaskID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[request.TaskID]
+	if !ok {
+		return ConflictFixResult{}, fmt.Errorf("task %s not found", request.TaskID)
+	}
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
+		return ConflictFixResult{}, fmt.Errorf("task %s belongs to workspace %s, not %s", request.TaskID, task.Workspace, selected)
+	}
+	var taskOrders []core.WorkOrder
+	for _, existing := range m.workOrders {
+		if existing.TaskID != request.TaskID {
+			continue
+		}
+		taskOrders = append(taskOrders, existing)
+		if existing.Stage == core.StageImplement && existing.ReasonCode == "merge-conflict" && core.WorkOrderActiveForConflictDispatch(existing) {
+			return ConflictFixResult{WorkOrder: existing}, nil
+		}
+	}
+	if InterruptedReviewRecoveryNeeded(CurrentReviewOrders(taskOrders, m.events[request.TaskID])) != nil {
+		return ConflictFixResult{}, ErrConflictReviewRecovery
+	}
+	state, transitionCommand, err := core.TransitionConflictDispatch(task.State)
+	if err != nil {
+		return ConflictFixResult{}, err
+	}
+	if _, exists := m.workOrders[request.WorkOrder.ID]; exists {
+		return ConflictFixResult{}, fmt.Errorf("work order %s already exists", request.WorkOrder.ID)
+	}
+	if _, _, exists := m.findJobLocked(request.Job.ID); exists {
+		return ConflictFixResult{}, fmt.Errorf("job %s already exists", request.Job.ID)
+	}
+	now := time.Now().UTC()
+	intervention := request.Intervention
+	actor := ActorFromContext(ctx)
+	if intervention.ActorID == "" {
+		intervention.ActorID = actor.ID
+	}
+	if intervention.ActorRole == "" {
+		intervention.ActorRole = actor.Role
+	}
+	if intervention.At.IsZero() {
+		intervention.At = now
+	}
+	order := request.WorkOrder
+	if order.CreatedAt.IsZero() {
+		order.CreatedAt = now
+	}
+	if order.QueueEnteredAt.IsZero() {
+		order.QueueEnteredAt = order.CreatedAt
+	}
+	if order.QueueDeadline.IsZero() {
+		order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
+	}
+	order.State, order.Claimable, order.UpdatedAt = core.WorkOrderQueued, true, now
+	if m.taskBlockedLocked(order.TaskID) {
+		order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
+	}
+
+	fromState, fromStage := task.State, task.NextStage
+	task.State, task.NextStage, task.RecoveryStage = state, core.StageImplement, ""
+	m.tasks[task.ID] = task
+	m.nextReviewID++
+	intervention.ID = m.nextReviewID
+	m.interventions[task.ID] = append(m.interventions[task.ID], intervention)
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": transitionCommand})})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": core.StageImplement, "recovery_stage": "", "state": state})})
+	m.jobs[task.ID] = append(m.jobs[task.ID], request.Job)
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "job.created", Payload: core.JSONPayload(request.Job)})
+	m.workOrders[order.ID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageImplement, "execution": "mcp", "reason_code": "merge-conflict"})})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "merge.conflict_fix_dispatched", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": "merge-conflict", "approved_head": request.ApprovedHead, "new_head": request.NewHead, "work_order_id": order.ID})})
+	return ConflictFixResult{WorkOrder: order, Created: true}, nil
+}
+
 func (m *memory) taskBlockedLocked(taskID string) bool {
 	for dependencyID := range m.dependencies[taskID] {
 		if dependency, exists := m.tasks[dependencyID]; exists && dependency.State != core.TaskMerged {
@@ -2166,6 +2308,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
 			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
 			copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+			copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
 			order.GovernanceSnapshot = &copy
 		}
 		for _, candidate := range m.workOrders {

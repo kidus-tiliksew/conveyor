@@ -289,6 +289,65 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
+	scope, _ := json.Marshal([]map[string]string{{"repository": repository}})
+	rows, err := s.pool.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
+		FROM system_designs d JOIN system_design_versions v
+		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+		WHERE d.workspace_id=$1 AND v.governs @> $2::jsonb ORDER BY d.id`, workspace(ctx), scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.GovernanceDesignContext, 0)
+	for rows.Next() {
+		var item core.GovernanceDesignContext
+		var governs []byte
+		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &item.Content, &governs); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(governs, &item.Governs); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.SystemDesignVersion, 0)
+	for rows.Next() {
+		item, scanErr := scanSystemDesignVersion(rows, "", 0)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind='system_design.version_proposed' AND payload_json->>'origin_task_id'=$2 ORDER BY id`, workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.Event, 0)
+	for rows.Next() {
+		var row db.Event
+		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
+			return nil, err
+		}
+		out = append(out, eventFromDB(row))
+	}
+	return out, rows.Err()
+}
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
 	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
 	if err != nil {

@@ -42,3 +42,29 @@ func TestSystemDesignOwnershipForeignKeysIntegration(t *testing.T) {
 		t.Fatalf("remaining versions=%d err=%v", versions, err)
 	}
 }
+
+func TestListGovernanceDesignsFiltersBeforeLoadingContentIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "postgres-governance-scope-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}, {Name: "other", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct{ id, repo string }{{"design-conveyor", "conveyor"}, {"design-other", "other"}} {
+		document, version, createErr := st.CreateSystemDesign(ctx, core.SystemDesign{ID: fixture.id, Title: fixture.id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + fixture.id + "\n\n```conveyor:governs\n- repo: " + fixture.repo + "\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, _, createErr = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); createErr != nil {
+			t.Fatal(createErr)
+		}
+	}
+	designs, err := st.ListGovernanceDesigns(ctx, "conveyor")
+	if err != nil || len(designs) != 1 || designs[0].ID != "design-conveyor" || designs[0].Content == "" {
+		t.Fatalf("repository-scoped governance=%+v err=%v", designs, err)
+	}
+}

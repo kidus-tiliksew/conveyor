@@ -195,16 +195,16 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
-func (s *observedTaskLockStore) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
-	created, err := s.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
+func (s *observedTaskLockStore) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
+	result, err := s.Store.CreateConflictFixCommand(ctx, lease, request)
 	if err != nil {
-		return false, err
+		return store.ConflictFixResult{}, err
 	}
-	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
+	if result.Created {
 		close(s.orderCreated)
 		<-s.releaseOrder
 	}
-	return created, nil
+	return result, nil
 }
 
 func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
@@ -332,6 +332,91 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.claimed"); countErr != nil || count != 1 {
 		t.Fatalf("work_order.claimed events = %d, err = %v", count, countErr)
+	}
+}
+
+func TestConflictFixCommandRollsBackPostgresOnOrderCreationFailureIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	root := t.Context()
+	st, err := storepg.Open(root, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	suffix := core.NewTaskID()
+	workspace := "conflict-atomic-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(root, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Conflict atomic "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithWorkspace(root, workspace)
+	task := core.Task{
+		ID: "conflict-atomic-" + suffix, Workspace: workspace, Repo: "repo", Title: "Atomic conflict fix",
+		BaseBranch: "main", Branch: "conveyor/conflict-atomic-" + suffix,
+		State: core.TaskApproved, NextStage: core.StageReview, CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create only the job identity so the command fails at durable order
+	// materialization after attempting its earlier writes. The Postgres
+	// transaction must roll all of those attempted writes back.
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	request := store.ConflictFixRequest{
+		TaskID: task.ID,
+		Job:    job,
+		WorkOrder: core.WorkOrder{
+			ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement,
+			State: core.WorkOrderQueued, ReasonCode: "merge-conflict",
+			QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+		},
+		Intervention: core.Intervention{
+			TaskID: task.ID, ActorID: "system", ActorRole: core.ActorSystem,
+			Action: core.InterventionRedirect, ReasonCode: "merge-conflict",
+		},
+		ApprovedHead: "approved-head", NewHead: "conflicting-head",
+	}
+	beforeTransitions, err := st.CountEvents(ctx, task.ID, "task.state_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
+	_, err = taskops.ExecuteWorkOrder(systemCtx, st, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ConflictFixResult, error) {
+		return st.CreateConflictFixCommand(systemCtx, lease, request)
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("command error=%v, want duplicate job failure", err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved || current.NextStage != core.StageReview {
+		t.Fatalf("task after rollback=%+v err=%v", current, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("orders after rollback=%+v err=%v", orders, err)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	if err != nil || len(interventions) != 0 {
+		t.Fatalf("interventions after rollback=%+v err=%v", interventions, err)
+	}
+	for kind, want := range map[string]int{
+		"task.state_changed":            beforeTransitions,
+		"pipeline.transition_decided":   0,
+		"merge.conflict_fix_dispatched": 0,
+	} {
+		if count, countErr := st.CountEvents(ctx, task.ID, kind); countErr != nil || count != want {
+			t.Fatalf("%s events=%d want=%d err=%v", kind, count, want, countErr)
+		}
 	}
 }
 
