@@ -96,6 +96,7 @@ export function PlanningPage() {
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
       void client.invalidateQueries({ queryKey: ['tasks', workspace] })
+      void client.invalidateQueries({ queryKey: ['activity', workspace] })
     },
   })
 
@@ -197,6 +198,10 @@ export function PlanningPage() {
                 summary={selected}
                 token={token}
                 workspace={workspace}
+                onFinalized={() => {
+                  void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
+                  void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
+                }}
               />
               {selectedBundle && (
                 <section

@@ -10,7 +10,7 @@ export type GroupKey = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | '
 export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
   { key: 'human', label: 'Needs operator' },
   { key: 'triage', label: 'Triage' },
-  { key: 'spec', label: 'Spec' },
+  { key: 'spec', label: 'Plan' },
   { key: 'implement', label: 'Implementing' },
   { key: 'review', label: 'Reviewing' },
   { key: 'verify', label: 'Verifying' },
@@ -51,7 +51,7 @@ export const defaultReasonCode: Record<InterventionAction, string> = {
 
 export const stageLabels: Record<string, string> = {
   triage: 'Triage',
-  spec: 'Spec',
+  spec: 'Plan',
   implement: 'Implement',
   review: 'Code review',
   verify: 'Verify',

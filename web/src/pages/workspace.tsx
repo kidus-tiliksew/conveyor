@@ -565,7 +565,7 @@ function ExecutionTab({
           <div className="space-y-3">
             <div className="flex items-center gap-3">
               <Switch
-                aria-label="Spec approval"
+                aria-label="Plan approval"
                 checked={draft.execution.spec_approval}
                 onChange={(checked) => update({ execution: { ...draft.execution, spec_approval: checked } })}
               />

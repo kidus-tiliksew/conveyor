@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -91,8 +92,12 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
 			return taskCreateResult{}, err
 		} else if found {
-			existing.Context, _ = store.TaskContextForTask(ctx, s.Store, existing.ID)
-			if !sameIntakeRequest(existing, originalReq) {
+			active, intake, contextErr := s.taskContextsForRetry(ctx, existing.ID)
+			if contextErr != nil {
+				return taskCreateResult{}, contextErr
+			}
+			existing.Context = active
+			if !sameIntakeRequest(existing, originalReq, intake) {
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
 			return taskCreateResult{Task: existing}, nil
@@ -173,13 +178,23 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		NextStage:     core.StageTriage,
 		CreatedAt:     time.Now().UTC(),
 	}
+	// The create event is immutable retry authority. Keep the intake-time IDs
+	// on its task payload so later context edits do not change the meaning of
+	// an otherwise byte-identical idempotent retry.
+	task.Context = intakeTaskContext(attached)
 	if err := s.Store.CreateTaskWithDependenciesAndContext(ctx, task, req.DependsOn, attached); err != nil {
 		// A concurrent retry may win the unique intake-key race between the
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {
-			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr == nil && found {
-				existing.Context, _ = store.TaskContextForTask(ctx, s.Store, existing.ID)
-				if sameIntakeRequest(existing, originalReq) {
+			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr != nil {
+				return taskCreateResult{}, getErr
+			} else if found {
+				active, intake, contextErr := s.taskContextsForRetry(ctx, existing.ID)
+				if contextErr != nil {
+					return taskCreateResult{}, contextErr
+				}
+				existing.Context = active
+				if sameIntakeRequest(existing, originalReq, intake) {
 					return taskCreateResult{Task: existing}, nil
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
@@ -227,7 +242,7 @@ func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool
 	return hold, specApproval, mergeApproval
 }
 
-func sameIntakeRequest(task core.Task, req createTaskReq) bool {
+func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
 		return false
 	}
@@ -245,17 +260,7 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	if !reflect.DeepEqual(actual, expected) {
 		return false
 	}
-	actualRequirements := make([]string, 0, len(task.Context.Requirements))
-	for _, item := range task.Context.Requirements {
-		actualRequirements = append(actualRequirements, item.ID)
-	}
-	actualDesigns := make([]string, 0, len(task.Context.Designs))
-	for _, item := range task.Context.Designs {
-		actualDesigns = append(actualDesigns, item.ID)
-	}
-	sort.Strings(actualRequirements)
-	sort.Strings(actualDesigns)
-	if !reflect.DeepEqual(actualRequirements, req.RequirementIDs) || !reflect.DeepEqual(actualDesigns, req.SystemDesignIDs) {
+	if !reflect.DeepEqual(intake.RequirementIDs, req.RequirementIDs) || !reflect.DeepEqual(intake.DesignIDs, req.SystemDesignIDs) {
 		return false
 	}
 	if (req.Hold || req.Mode == core.TaskModeManual) && !task.Hold {
@@ -280,6 +285,50 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 		}
 	}
 	return true
+}
+
+func intakeTaskContext(input store.TaskContextInput) core.TaskContext {
+	result := core.TaskContext{
+		Requirements: make([]core.TaskRequirementContext, 0, len(input.RequirementIDs)),
+		Designs:      make([]core.TaskDesignContext, 0, len(input.DesignIDs)),
+	}
+	for _, id := range input.RequirementIDs {
+		result.Requirements = append(result.Requirements, core.TaskRequirementContext{ID: id})
+	}
+	for _, id := range input.DesignIDs {
+		result.Designs = append(result.Designs, core.TaskDesignContext{ID: id})
+	}
+	return result
+}
+
+func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.TaskContext, store.TaskContextInput, error) {
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return core.TaskContext{}, store.TaskContextInput{}, err
+	}
+	active, err := store.TaskContextFromEvents(ctx, s.Store, events)
+	if err != nil {
+		return core.TaskContext{}, store.TaskContextInput{}, err
+	}
+	for _, event := range events {
+		if event.Kind != "task.created" {
+			continue
+		}
+		var created core.Task
+		if err := json.Unmarshal(event.Payload, &created); err != nil {
+			return core.TaskContext{}, store.TaskContextInput{}, fmt.Errorf("decode task.created context: %w", err)
+		}
+		intake := store.TaskContextInput{}
+		for _, requirement := range created.Context.Requirements {
+			intake.RequirementIDs = append(intake.RequirementIDs, requirement.ID)
+		}
+		for _, design := range created.Context.Designs {
+			intake.DesignIDs = append(intake.DesignIDs, design.ID)
+		}
+		intake, err = store.NormalizeTaskContextInput(intake)
+		return active, intake, err
+	}
+	return core.TaskContext{}, store.TaskContextInput{}, fmt.Errorf("task %s has no task.created event", taskID)
 }
 
 func taskContextCreateError(err error) *taskCreateError {

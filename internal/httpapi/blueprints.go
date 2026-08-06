@@ -2,13 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"sort"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // blueprintView is the dashboard read model for one blueprint anchor
@@ -95,71 +92,6 @@ func (s *Server) listBlueprints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, views)
-}
-
-func (s *Server) proposeBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Confirm bool `json:"confirm"`
-	}
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	if !s.requireBlueprintTask(w, r, chi.URLParam(r, "id")) {
-		return
-	}
-	link, err := s.Store.ProposeRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"), core.RequirementServesOperator, request.Confirm)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-	writeJSON(w, http.StatusOK, link)
-}
-
-func (s *Server) confirmBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
-	s.transitionBlueprintRequirementServes(w, r, core.RequirementServesConfirmed)
-}
-
-func (s *Server) dismissBlueprintRequirementServes(w http.ResponseWriter, r *http.Request) {
-	s.transitionBlueprintRequirementServes(w, r, core.RequirementServesDismissed)
-}
-
-func (s *Server) transitionBlueprintRequirementServes(w http.ResponseWriter, r *http.Request, target core.RequirementServesState) {
-	var (
-		link core.RequirementServesLink
-		err  error
-	)
-	if target == core.RequirementServesConfirmed {
-		link, err = s.Store.ConfirmRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"))
-	} else {
-		link, err = s.Store.DismissRequirementServes(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "requirement_id"))
-	}
-	if err != nil {
-		status := http.StatusUnprocessableEntity
-		if errors.Is(err, store.ErrRequirementServesTransition) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
-		return
-	}
-	writeJSON(w, http.StatusOK, link)
-}
-
-func (s *Server) requireBlueprintTask(w http.ResponseWriter, r *http.Request, taskID string) bool {
-	if _, err := s.Store.GetTask(r.Context(), taskID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return false
-	}
-	if _, exists, err := s.Store.GetLatestSpecVersion(r.Context(), taskID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return false
-	} else if !exists {
-		http.Error(w, "serves relations require an existing blueprint specification", http.StatusUnprocessableEntity)
-		return false
-	}
-	return true
 }
 
 func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]blueprintView, error) {

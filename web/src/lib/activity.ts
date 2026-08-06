@@ -234,7 +234,7 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
     return undefined
   }
 
-  const stage = order.stage === 'spec' ? 'Specification' : order.stage === 'review' ? 'Review' : 'Implementation'
+  const stage = order.stage === 'spec' ? 'Plan' : order.stage === 'review' ? 'Review' : 'Implementation'
   if (order.state === 'claimed') {
     return {
       kind: 'running',
