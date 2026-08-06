@@ -62,19 +62,6 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 		if core.TaskTerminal(core.TaskState(state)) {
 			return store.ErrTaskTerminal
 		}
-		combined := store.TaskContextInput{
-			RequirementIDs: append(append([]string{}, add.RequirementIDs...), remove.RequirementIDs...),
-			DesignIDs:      append(append([]string{}, add.DesignIDs...), remove.DesignIDs...),
-		}
-		combined, err = store.NormalizeTaskContextInput(combined)
-		if err != nil {
-			return err
-		}
-		versions, err := validateTaskContextTx(ctx, tx, workspace(ctx), combined)
-		if err != nil {
-			return err
-		}
-		now := time.Now().UTC()
 		rows, err := q.ListEvents(ctx, db.ListEventsParams{TaskID: pgtype.Text{String: taskID, Valid: true}, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return err
@@ -83,7 +70,22 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 		for i := range rows {
 			events[i] = eventFromDB(rows[i])
 		}
-		_, activeDesigns := store.ActiveTaskContextReferences(events)
+		activeRequirements, activeDesigns := store.ActiveTaskContextReferences(events)
+		versions, err := validateTaskContextTx(ctx, tx, workspace(ctx), add)
+		if err != nil {
+			return err
+		}
+		for _, id := range remove.RequirementIDs {
+			if !activeRequirements[id] {
+				return &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "is not attached to this task"}
+			}
+		}
+		for _, id := range remove.DesignIDs {
+			if activeDesigns[id] == 0 {
+				return &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "is not attached to this task"}
+			}
+		}
+		now := time.Now().UTC()
 		appendEvent := func(kind string, payload map[string]any) error {
 			return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)})
 		}

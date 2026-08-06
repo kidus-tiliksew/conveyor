@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -13,9 +14,62 @@ import (
 
 const (
 	PlanningBundleFinalized = "planning_bundle.finalized"
+	PlanningBundleRevised   = "planning_bundle.revised"
 	PlanningBundleApproved  = "planning_bundle.approved"
 	PlanningBundleRejected  = "planning_bundle.rejected"
 )
+
+// PlanningBundleConflictError classifies lifecycle and identity conflicts so
+// HTTP callers can return a stable 409 without exposing adapter errors.
+type PlanningBundleConflictError struct{ Message string }
+
+func (e *PlanningBundleConflictError) Error() string { return e.Message }
+
+type bundleContextVersions struct {
+	Designs             map[string]int
+	PendingRequirements map[string]int
+	PendingDesigns      map[string]int
+}
+
+func pendingBundleDocuments(bundle core.PlanningBundle) (map[string]int, map[string]int) {
+	requirements, designs := map[string]int{}, map[string]int{}
+	for _, document := range bundle.Documents {
+		switch document.Kind {
+		case core.PlanningBundleRequirement:
+			requirements[document.ID] = document.Version
+		case core.PlanningBundleSystemDesign:
+			designs[document.ID] = document.Version
+		}
+	}
+	return requirements, designs
+}
+
+// PreparePlanningBundleRevision preserves generated task identities across an
+// idempotent retry or an unapproved preview revision. The row is replaceable
+// only while pending; planning_bundle.revised retains the append-only audit.
+func PreparePlanningBundleRevision(existing core.PlanningBundle, incoming *core.PlanningBundle) {
+	ids := map[string]string{}
+	for _, member := range existing.Tasks {
+		ids[member.MemberID] = member.CreatedTaskID
+	}
+	for i := range incoming.Tasks {
+		if incoming.Tasks[i].CreatedTaskID == "" {
+			incoming.Tasks[i].CreatedTaskID = ids[strings.TrimSpace(incoming.Tasks[i].MemberID)]
+		}
+	}
+}
+
+func PlanningBundleContentEqual(left, right core.PlanningBundle) bool {
+	strip := func(bundle core.PlanningBundle) core.PlanningBundle {
+		bundle.Workspace, bundle.Status, bundle.CreatedBy, bundle.DecidedBy = "", "", "", ""
+		bundle.CreatedAt, bundle.DecidedAt = time.Time{}, time.Time{}
+		for i := range bundle.Documents {
+			bundle.Documents[i].Title, bundle.Documents[i].Status = "", ""
+		}
+		return bundle
+	}
+	return reflect.DeepEqual(strip(left), strip(right))
+}
 
 func ValidatePlanningBundleShape(bundle *core.PlanningBundle) error {
 	bundle.ID, bundle.SessionID, bundle.Title = strings.TrimSpace(bundle.ID), strings.TrimSpace(bundle.SessionID), strings.TrimSpace(bundle.Title)
@@ -135,12 +189,19 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	bundle.Workspace = workspaceOrDefault(ctx, bundle.Workspace)
+	key := memoryScopedKey{workspace: bundle.Workspace, id: strings.TrimSpace(bundle.ID)}
+	existing, exists := m.planningBundles[key]
+	if exists {
+		PreparePlanningBundleRevision(existing, &bundle)
+	}
 	if err := ValidatePlanningBundleShape(&bundle); err != nil {
 		return core.PlanningBundle{}, err
 	}
-	key := memoryScopedKey{workspace: bundle.Workspace, id: bundle.ID}
-	if existing, ok := m.planningBundles[key]; ok {
+	if exists && PlanningBundleContentEqual(existing, bundle) {
 		return existing, nil
+	}
+	if exists && existing.Status != core.PlanningBundlePending {
+		return core.PlanningBundle{}, &PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", bundle.ID, existing.Status)}
 	}
 	for i := range bundle.Documents {
 		doc := &bundle.Documents[i]
@@ -167,14 +228,55 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 			doc.Title, doc.Status = decision.Statement, "pending"
 		}
 	}
+	if _, err := m.validatePlanningBundleContextsLocked(bundle); err != nil {
+		return core.PlanningBundle{}, err
+	}
 	bundle.Status = core.PlanningBundlePending
 	bundle.CreatedBy = ActorFromContext(ctx).ID
-	if bundle.CreatedAt.IsZero() {
+	if exists {
+		bundle.CreatedAt, bundle.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else if bundle.CreatedAt.IsZero() {
 		bundle.CreatedAt = time.Now().UTC()
 	}
 	m.planningBundles[key] = bundle
-	m.appendEventLocked(ctx, core.Event{Kind: PlanningBundleFinalized, At: bundle.CreatedAt, Payload: core.JSONPayload(map[string]any{"bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents})})
+	kind, at := PlanningBundleFinalized, bundle.CreatedAt
+	payload := map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents}
+	if exists {
+		kind, at = PlanningBundleRevised, time.Now().UTC()
+		payload["previous_documents"] = existing.Documents
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: kind, At: at, Payload: core.JSONPayload(payload)})
 	return bundle, nil
+}
+
+func (m *memory) validatePlanningBundleContextsLocked(bundle core.PlanningBundle) (map[string]bundleContextVersions, error) {
+	pendingRequirements, pendingDesigns := pendingBundleDocuments(bundle)
+	result := map[string]bundleContextVersions{}
+	for _, member := range bundle.Tasks {
+		versions := bundleContextVersions{Designs: map[string]int{}, PendingRequirements: map[string]int{}, PendingDesigns: map[string]int{}}
+		for _, id := range member.Context.RequirementIDs {
+			if version := pendingRequirements[id]; version > 0 {
+				versions.PendingRequirements[id] = version
+				continue
+			}
+			if _, err := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{RequirementIDs: []string{id}}); err != nil {
+				return nil, err
+			}
+		}
+		for _, id := range member.Context.DesignIDs {
+			if version := pendingDesigns[id]; version > 0 {
+				versions.Designs[id], versions.PendingDesigns[id] = version, version
+				continue
+			}
+			confirmed, err := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{DesignIDs: []string{id}})
+			if err != nil {
+				return nil, err
+			}
+			versions.Designs[id] = confirmed[id]
+		}
+		result[member.MemberID] = versions
+	}
+	return result, nil
 }
 
 func (m *memory) GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
@@ -213,24 +315,25 @@ func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.Pla
 		return bundle, nil
 	}
 	if bundle.Status != core.PlanningBundlePending {
-		return core.PlanningBundle{}, fmt.Errorf("planning bundle %s is %s", id, bundle.Status)
+		return core.PlanningBundle{}, &PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", id, bundle.Status)}
 	}
 	byMember := map[string]core.PlanningBundleTask{}
 	for _, member := range bundle.Tasks {
 		byMember[member.MemberID] = member
 		if _, exists := m.tasks[member.CreatedTaskID]; exists {
-			return core.PlanningBundle{}, fmt.Errorf("bundle task identity %s already exists", member.CreatedTaskID)
+			return core.PlanningBundle{}, &PlanningBundleConflictError{Message: fmt.Sprintf("bundle task identity %s already exists", member.CreatedTaskID)}
 		}
-		if _, err := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{RequirementIDs: member.Context.RequirementIDs, DesignIDs: member.Context.DesignIDs}); err != nil {
-			return core.PlanningBundle{}, err
-		}
+	}
+	contextVersions, err := m.validatePlanningBundleContextsLocked(bundle)
+	if err != nil {
+		return core.PlanningBundle{}, err
 	}
 	now := time.Now().UTC()
 	for _, member := range bundle.Tasks {
 		task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupName: member.SetupName, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.created", At: now, Payload: core.JSONPayload(task)})
-		versions, _ := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{RequirementIDs: member.Context.RequirementIDs, DesignIDs: member.Context.DesignIDs})
+		versions := contextVersions[member.MemberID]
 		for _, dep := range member.DependsOn {
 			dependencyID := byMember[dep].CreatedTaskID
 			if m.dependencies[task.ID] == nil {
@@ -240,15 +343,23 @@ func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.Pla
 			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: now, Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})})
 		}
 		for _, reqID := range member.Context.RequirementIDs {
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": reqID})})
+			payload := map[string]any{"id": reqID}
+			if pending := versions.PendingRequirements[reqID]; pending > 0 {
+				payload["pending_version"], payload["unconfirmed"] = pending, true
+			}
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(payload)})
 		}
 		for _, designID := range member.Context.DesignIDs {
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": designID, "version": versions[designID]})})
+			payload := map[string]any{"id": designID, "version": versions.Designs[designID]}
+			if versions.PendingDesigns[designID] > 0 {
+				payload["unconfirmed"] = true
+			}
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(payload)})
 		}
 	}
 	bundle.Status, bundle.DecidedAt, bundle.DecidedBy = core.PlanningBundleApproved, now, ActorFromContext(ctx).ID
 	m.planningBundles[key] = bundle
-	m.appendEventLocked(ctx, core.Event{Kind: PlanningBundleApproved, At: now, Payload: core.JSONPayload(map[string]any{"bundle_id": bundle.ID, "created_task_ids": createdBundleTaskIDs(bundle)})})
+	m.appendEventLocked(ctx, core.Event{Kind: PlanningBundleApproved, At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "created_task_ids": createdBundleTaskIDs(bundle)})})
 	return bundle, nil
 }
 
@@ -264,11 +375,11 @@ func (m *memory) RejectPlanningBundle(ctx context.Context, id string) (core.Plan
 		return bundle, nil
 	}
 	if bundle.Status != core.PlanningBundlePending {
-		return core.PlanningBundle{}, fmt.Errorf("planning bundle %s is %s", id, bundle.Status)
+		return core.PlanningBundle{}, &PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", id, bundle.Status)}
 	}
 	bundle.Status, bundle.DecidedAt, bundle.DecidedBy = core.PlanningBundleRejected, time.Now().UTC(), ActorFromContext(ctx).ID
 	m.planningBundles[key] = bundle
-	m.appendEventLocked(ctx, core.Event{Kind: PlanningBundleRejected, At: bundle.DecidedAt, Payload: core.JSONPayload(map[string]any{"bundle_id": bundle.ID})})
+	m.appendEventLocked(ctx, core.Event{Kind: PlanningBundleRejected, At: bundle.DecidedAt, Payload: core.JSONPayload(map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID})})
 	return bundle, nil
 }
 

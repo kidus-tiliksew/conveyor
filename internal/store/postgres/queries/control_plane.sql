@@ -216,7 +216,10 @@ ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
 -- requirement_version -derived_from-> reference_document_version,
 -- system_design_version -governs-> repository_path,
 -- system_design_version -proposed_by-> task/planning_session, and
--- planning_session -produced_design-> system_design.
+-- planning_session -produced_design-> system_design,
+-- planning_session -produced_bundle-> planning_bundle,
+-- planning_bundle -proposes-> requirement_version/system_design_version/decision,
+-- and planning_bundle -creates-> task.
 DELETE FROM links WHERE workspace_id = $1
   AND created_by_event_id IS NOT NULL
   AND kind = ANY(ARRAY[

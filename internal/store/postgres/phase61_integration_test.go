@@ -823,6 +823,14 @@ func TestPlanningBundleApprovalTransactionIntegration(t *testing.T) {
 	}
 }
 
+func TestPlanningBundleConformanceIntegration(t *testing.T) {
+	storetest.RunPlanningBundleConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
+		st, ctx, workspace := newPhase61IntegrationStore(t)
+		t.Cleanup(st.Close)
+		return st, ctx, workspace
+	})
+}
+
 func newPhase61IntegrationStore(t *testing.T) (*Store, context.Context, string) {
 	t.Helper()
 	st, err := Open(t.Context(), integrationDatabaseURL(t))
