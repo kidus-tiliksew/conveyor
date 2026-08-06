@@ -133,12 +133,35 @@ the graph.
    blocking columns, child rollups, attached-context links, plan
    status. The view imports no barred fields: no priority, no
    assignee, no declared phases (§6.3, §21.31, §21.46).
-2. Staleness and lineage simplification to the task-level chain;
-   Blueprints surface becomes a historical lens or folds into Tasks;
-   board relationship decided by use (retain as pipeline lens).
-3. Cleanup: retired code paths removed, docs/CLAUDE.md updated,
-   §21.40-style body restatement of §§4, 9, 13 if drift between body
-   and practice warrants it.
+2. Staleness and lineage simplification to the task-level chain
+   *(landed)*: requirement staleness walks delivery edges at task level
+   (§21.58 change 6) — `serves` straight onto the task, with the legacy
+   blueprint chain retained so historical records read as before — and
+   the Tasks list projects the derived §21.34 stalled state so a row
+   says why it cannot move, beside rather than instead of its
+   needs-operator badge. Blueprints read as history: the surface keeps
+   its §21.49 place and rules, the label and copy say what it is.
+   Board retained as the pipeline lens.
+3. Cleanup *(partial)*: docs/CLAUDE.md updated. Deliberately **not**
+   done: retiring the canonical-blueprint redirect, the anchor's
+   parent-reference door, or the surface's navigation slot. All three
+   are pinned by normative §13.3 and §21.49 changes 1–2 — anchor detail
+   must suppress checkout, assigned branch, and hold, and an anchor
+   rendered on the task routes gets all three plus a Redispatch button
+   that can never dispatch (`dispatch.go` returns early for anchors).
+   Retiring them needs a §21 amendment, not a code-only edit. A
+   §21.40-style body restatement of §§4, 9, 13 remains available if
+   further drift between body and practice warrants it.
+
+   Follow-ups worth filing, found while implementing 8.4 item 2:
+   - `requirementView.ServingBlueprints` and `Lineage` still read only
+     the blueprint `serves` projection, so a task-level-served
+     requirement reports delivery with no corroborating record beside
+     it. The requirement view needs a serving-**tasks** read.
+   - The staleness neighborhood budget is a fixed `MaxNodes: 256` and
+     `ListLineageNeighborhood` drops the truncation flag, so a
+     requirement attached to very many tasks can silently under-report
+     delivery.
 
 **Exit criterion:** the Tasks view is the daily operating surface for
 a multi-task delivery with dependencies, plans, and context visible;

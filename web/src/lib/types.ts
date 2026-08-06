@@ -240,10 +240,19 @@ export interface TaskOperationsItem {
   task: Task
   latest_stage?: Stage
   last_event_at: string
+  stalled?: TaskStalledSummary
   needs_attention: boolean
   unsatisfiable_task_ids?: string[]
   child_rollup?: TaskChildRollup
   plan: TaskPlanStatus
+}
+
+// The list-scoped stalled projection: the reason a row cannot move, without
+// the work order the detail surfaces render (spec §21.58 change 7).
+export interface TaskStalledSummary {
+  needed: boolean
+  reason: string
+  last_failure?: string
 }
 
 export interface StalledState {

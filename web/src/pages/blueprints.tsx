@@ -8,7 +8,9 @@ import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
 // Historical Blueprints lens (spec §21.58 change 2): retained records remain
-// queryable, but this surface offers no creation path.
+// queryable, but this surface offers no creation path. Phase 8.4 took it out of
+// the primary navigation — it is reached from Tasks, and it says plainly where
+// live delivery is managed instead.
 export function BlueprintsPage() {
   const { workspace } = useWorkspaceSelection()
   const { data: blueprints, isLoading, error } = useBlueprints()
@@ -24,7 +26,11 @@ export function BlueprintsPage() {
             </div>
             <p className="mt-1 max-w-2xl text-sm text-muted">
               Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
-              through planning bundles.
+              through planning bundles and managed in{' '}
+              <Link to="/tasks" className="text-primary hover:underline">
+                Tasks
+              </Link>
+              .
             </p>
           </div>
         </header>

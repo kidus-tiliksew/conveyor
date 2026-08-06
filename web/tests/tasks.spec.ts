@@ -66,6 +66,30 @@ const operations = [
   },
   {
     task: {
+      id: 'task-stuck',
+      workspace: 'demo',
+      source: 'cli',
+      title: 'Stuck conveyor change',
+      repo: 'conveyor',
+      branch: 'conveyor/task-stuck',
+      state: 'queued',
+      next_stage: 'implement',
+      created_at: '2026-08-02T10:00:00Z',
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-03T09:00:00Z',
+    // The list-scoped summary: the reason, never the work order (§21.58
+    // change 7). The detail surfaces are where the order itself renders.
+    stalled: {
+      needed: true,
+      reason: 'dispatch is failing repeatedly',
+      last_failure: 'harness exited before completing work order',
+    },
+    needs_attention: true,
+    plan: { state: 'approved', version: 1 },
+  },
+  {
+    task: {
       id: 'task-bounced',
       workspace: 'demo',
       source: 'cli',
@@ -105,7 +129,7 @@ function rows(page: Page) {
 // state, repository, and free text.
 test('tasks view lists every task and filters by state, repository, and free text', async ({ page }) => {
   await openTasks(page)
-  await expect(rows(page)).toHaveCount(4)
+  await expect(rows(page)).toHaveCount(5)
   // The board's stage columns are not this surface.
   await expect(page.getByRole('heading', { name: 'Needs operator' })).toHaveCount(0)
 
@@ -202,6 +226,23 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
   )
   await page.reload()
   await expect(page.getByText('task operations unavailable')).toBeVisible()
+})
+
+// Staleness renders from the durable §21.34 state the projection carries, and
+// it says why the task cannot move (spec §21.58 change 7). It sits beside the
+// needs-operator badge rather than replacing it: a task can hold at a gate and
+// carry a stalled order at once, and a row that hides one of those misreads.
+test('tasks view reports why a stalled task cannot move on its own', async ({ page }) => {
+  await openTasks(page)
+  const stuck = rows(page).filter({ hasText: 'Stuck conveyor change' })
+  await expect(
+    stuck.getByText('Stalled — dispatch is failing repeatedly: harness exited before completing work order'),
+  ).toBeVisible()
+  await expect(stuck.getByText('Needs operator')).toBeVisible()
+
+  const healthy = rows(page).filter({ hasText: 'Shipped web change' })
+  await expect(healthy.getByText('Stalled', { exact: false })).toHaveCount(0)
+  await expect(healthy.getByText('Needs operator')).toHaveCount(0)
 })
 
 // AC-1.5: no barred field appears on the surface, and none is offered as a

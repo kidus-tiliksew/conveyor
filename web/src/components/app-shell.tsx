@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
-  Blocks,
   FolderGit2,
+  History,
   Kanban,
   ListChecks,
   MessageSquare,
@@ -220,7 +220,10 @@ function NavSidebar() {
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
-        <NavItem to="/blueprints" icon={Blocks} label="Blueprints" />
+        {/* The §21.49 planning-side surface keeps its place; only the label
+            moved on, because §21.58 change 2 retires the blueprint noun for
+            new work while preserving the records as history. */}
+        <NavItem to="/blueprints" icon={History} label="Blueprint history" />
         <NavItem to="/planning" icon={MessageSquare} label="Planning" />
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
