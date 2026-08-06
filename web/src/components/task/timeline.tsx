@@ -28,7 +28,7 @@ import {
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
-import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
+import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
@@ -275,6 +275,12 @@ function usageText(order: WorkOrder, available: boolean): string {
     .join(' · ')
 }
 
+function technicalUsageText(order: WorkOrder, available: boolean): string {
+  if (!available) return 'Usage unavailable'
+  const provenance = order.self_reported ? 'self-reported' : 'worker-reported'
+  return `${compactTokens(order.tokens_in)} in / ${compactTokens(order.tokens_out)} out · ${usd(order.cost_usd)} · ${provenance}`
+}
+
 function TechnicalActivity({ item }: { item: ActivityItem }) {
   const events = technicalActivity(item)
   const reported = reportedUsageOrderIDs(item)
@@ -284,8 +290,9 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
     (sum, order) => ({
       tokensIn: sum.tokensIn + order.tokens_in,
       tokensOut: sum.tokensOut + order.tokens_out,
+      costUSD: sum.costUSD + order.cost_usd,
     }),
-    { tokensIn: 0, tokensOut: 0 },
+    { tokensIn: 0, tokensOut: 0, costUSD: 0 },
   )
   return (
     <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
@@ -297,7 +304,7 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
           <p className="font-medium text-foreground">Task usage</p>
           <p className="mt-1 font-mono text-[11px] tabular-nums">
             {measured.length > 0
-              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
+              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out · ${usd(totals.costUSD)} across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
               : 'Usage unavailable for every work order'}
             {orders.length > measured.length
               ? ` · ${orders.length - measured.length} ${orders.length - measured.length === 1 ? 'order' : 'orders'} unavailable`
@@ -308,7 +315,7 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
               <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
                 <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
                 <code className="text-faint">{order.id}</code>
-                <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
+                <span className="ml-auto">{technicalUsageText(order, reported.has(order.id))}</span>
               </li>
             ))}
           </ul>
