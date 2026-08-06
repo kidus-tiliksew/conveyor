@@ -5,7 +5,7 @@
 - Task: `260806-9f5495`
 - Out-of-pipeline commit: `ecc0674665ea6653af899d30b85db14d2ce81a4e`
 - Source: <https://github.com/kidus-tiliksew/conveyor/commit/ecc0674665ea6653af899d30b85db14d2ce81a4e>
-- Resolution: pending operator decision
+- Resolution: retained — accepted by amendment as spec §21.60 (v2.20, August 6, 2026)
 
 The commit added `.claude/skills/conveyor-plan/SKILL.md` and
 `.claude/skills/conveyor-file-tasks/SKILL.md`. It did not add or modify

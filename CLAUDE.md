@@ -1,7 +1,7 @@
 # Conveyor — agent notes
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.19,
-accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.59
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) (v2.20,
+accepted — the v2.0 consolidated restatement of v1.0–v1.40 plus §21.41–§21.60
 through Phase 5 closure, the accepted Phase 6, the §21.47 dependency
 semantics, §21.48 worktree containment, the §21.49 blueprint
 presentation surface, §21.50–§21.52 planning repo exploration
@@ -40,7 +40,7 @@ silent edits.
 
 Planning documents (requirements, System Design, decisions, overviews)
 and task filing can be driven from an operator-side agent session — the
-headless twin of in-product planning (spec §21.5/§21.46). The canonical
+headless twin of in-product planning, accepted as spec §21.60. The canonical
 playbooks are [docs/playbooks/conveyor-planning.md](docs/playbooks/conveyor-planning.md)
 and [docs/playbooks/conveyor-task-filing.md](docs/playbooks/conveyor-task-filing.md);
 `.claude/skills/` wraps them for Claude Code, and `AGENTS.md` is a
