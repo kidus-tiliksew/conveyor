@@ -31,7 +31,14 @@ informative tier feeds planning without pretending to be normative.*
    link; the agent proposes promotions when uploads contain
    enforceable claims.
 
-**Exit criterion:** a requirement drafted with user stories and nested
+**Exit criterion met August 5, 2026:** req-260805-3f9a04 (REQ-1, user
+story, AC-1.1–1.4) promoted from the Product Overview's
+#document-history section via promotion session session-260805-3f9a04,
+confirmed with the derived_from anchor edge; consulted edge live;
+superseded v2's two-sided diff and v1 readback verified in the authed
+UI; cited as [REQ-1, AC-1.2, AC-1.3] in the validated citation record
+of task 260805-98aa4c's review (pinned-version contract). Original
+criterion: a requirement drafted with user stories and nested
 ACs is confirmed and cited; an uploaded overview document is consulted
 by a session, superseded by re-upload with a visible diff, and one of
 its claims is promoted into a requirement with the anchor link.
@@ -59,7 +66,17 @@ read, propose against, and are held to.*
    `derived_from`, `supersedes` edges; document nodes labeled and
    traversable.
 
-**Exit criterion:** a System Design document proposed by a planning
+**Exit criterion met August 6, 2026:** design-260805-973cd4 ("Work-order
+lifecycle and MCP surface") proposed by session-260805-973cd4 and
+confirmed (v1; v3 revision proposed from implementation deliberation,
+confirmed, v2 auto-dismissed); drift row
+design:design-260805-973cd4:lineaged_merge:conveyor:pr:293 raised by a
+revision-less merge into internal/workorder/** through the merge-time
+producer; DEC-1 (usage telemetry observational-only) extracted in
+session, confirmed, cited four times in merged Go. Attestation
+followed the 8.2 review + three-task fix wave + verification (PRs
+#270, #274–#277) and the residuals (#279, #284). Original criterion: a
+System Design document proposed by a planning
 session is confirmed; a merge touching its component without a doc
 update raises the drift signal; a decision extracted from a session is
 confirmed and cited from code.
