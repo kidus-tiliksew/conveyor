@@ -26,6 +26,22 @@ type InsertLineageLinkParams struct {
 	CreatedAt        pgtype.Timestamptz
 }
 
+type DeleteLineageLinkParams struct {
+	WorkspaceID string
+	SrcType     string
+	SrcID       string
+	DstType     string
+	DstID       string
+	Kind        string
+}
+
+func (q *Queries) DeleteLineageLink(ctx context.Context, arg DeleteLineageLinkParams) error {
+	_, err := q.db.Exec(ctx, `DELETE FROM links
+		WHERE workspace_id=$1 AND src_type=$2 AND src_id=$3 AND dst_type=$4 AND dst_id=$5 AND kind=$6`,
+		arg.WorkspaceID, arg.SrcType, arg.SrcID, arg.DstType, arg.DstID, arg.Kind)
+	return err
+}
+
 func (q *Queries) InsertLineageLink(ctx context.Context, arg InsertLineageLinkParams) error {
 	_, err := q.db.Exec(ctx, `INSERT INTO links
         (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at)

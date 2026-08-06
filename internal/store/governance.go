@@ -51,3 +51,38 @@ func GovernanceForRepository(ctx context.Context, st Store, repository string) (
 	sort.Slice(snapshot.Decisions, func(i, j int) bool { return snapshot.Decisions[i].ID < snapshot.Decisions[j].ID })
 	return snapshot, nil
 }
+
+// GovernanceForTask merges repository-glob authority with the task's pinned
+// design attachments. Document identity deduplicates overlaps deterministically.
+func GovernanceForTask(ctx context.Context, st Store, taskID, repository string) (core.GovernanceSnapshot, error) {
+	snapshot, err := GovernanceForRepository(ctx, st, repository)
+	if err != nil {
+		return snapshot, err
+	}
+	attached, err := TaskContextForTask(ctx, st, taskID)
+	if err != nil {
+		return snapshot, err
+	}
+	byID := map[string]core.GovernanceDesignContext{}
+	for _, design := range snapshot.Designs {
+		byID[design.ID] = design
+	}
+	for _, item := range attached.Designs {
+		document, getErr := st.GetSystemDesign(ctx, item.ID)
+		if getErr != nil {
+			return snapshot, getErr
+		}
+		version, getErr := st.GetSystemDesignVersion(ctx, item.ID, item.Version)
+		if getErr != nil {
+			return snapshot, getErr
+		}
+		byID[item.ID] = core.GovernanceDesignContext{ID: item.ID, Title: document.Title, Category: document.Category,
+			Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...)}
+	}
+	snapshot.Designs = snapshot.Designs[:0]
+	for _, design := range byID {
+		snapshot.Designs = append(snapshot.Designs, design)
+	}
+	sort.Slice(snapshot.Designs, func(i, j int) bool { return snapshot.Designs[i].ID < snapshot.Designs[j].ID })
+	return snapshot, nil
+}

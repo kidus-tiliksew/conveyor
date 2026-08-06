@@ -182,7 +182,7 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		if getErr != nil {
 			return core.WorkOrder{}, getErr
 		}
-		governance, resolveErr := store.GovernanceForRepository(ctx, s.Store, task.Repo)
+		governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 		if resolveErr != nil {
 			return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
 		}
@@ -616,14 +616,14 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		} else {
 			// A queued review peek resolves live governance authority for this
 			// request only; it persists nothing and is advisory (spec §21.47).
-			live, resolveErr := store.GovernanceForRepository(ctx, s.Store, task.Repo)
+			live, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve governance for queued review task %s: %w", task.ID, resolveErr)
 			}
 			governance = &live
 		}
 	} else if order.Stage == core.StageImplement {
-		live, resolveErr := store.GovernanceForRepository(ctx, s.Store, task.Repo)
+		live, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 		if resolveErr != nil {
 			return Context{}, fmt.Errorf("resolve governance for task %s: %w", task.ID, resolveErr)
 		}

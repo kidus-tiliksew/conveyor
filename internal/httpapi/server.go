@@ -151,6 +151,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
+			r.With(s.requireMutationAuth).Post("/tasks/{id}/context", s.updateTaskContext)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)
 			r.With(s.requireMutationAuth).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
@@ -569,17 +570,19 @@ func reviewable(state core.TaskState) bool {
 }
 
 type createTaskReq struct {
-	Body          string               `json:"body"`
-	Repo          string               `json:"repo"`
-	BaseBranch    string               `json:"base_branch"`
-	Source        string               `json:"source"`
-	Level         core.EscalationLevel `json:"level"`
-	Mode          core.TaskMode        `json:"mode"` // deprecated §21.31: manual→hold, auto→no-op
-	Hold          bool                 `json:"hold"`
-	SpecApproval  *bool                `json:"spec_approval,omitempty"`
-	MergeApproval *bool                `json:"merge_approval,omitempty"`
-	Setup         string               `json:"setup,omitempty"`
-	DependsOn     []string             `json:"depends_on,omitempty"`
+	Body            string               `json:"body"`
+	Repo            string               `json:"repo"`
+	BaseBranch      string               `json:"base_branch"`
+	Source          string               `json:"source"`
+	Level           core.EscalationLevel `json:"level"`
+	Mode            core.TaskMode        `json:"mode"` // deprecated §21.31: manual→hold, auto→no-op
+	Hold            bool                 `json:"hold"`
+	SpecApproval    *bool                `json:"spec_approval,omitempty"`
+	MergeApproval   *bool                `json:"merge_approval,omitempty"`
+	Setup           string               `json:"setup,omitempty"`
+	DependsOn       []string             `json:"depends_on,omitempty"`
+	RequirementIDs  []string             `json:"requirement_ids,omitempty"`
+	SystemDesignIDs []string             `json:"system_design_ids,omitempty"`
 }
 
 func (req *createTaskReq) UnmarshalJSON(data []byte) error {
@@ -684,6 +687,11 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	t.Context, err = store.TaskContextForTask(r.Context(), s.Store, t.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
@@ -888,6 +896,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events, err := s.Store.ListEvents(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	task.Context, err = store.TaskContextFromEvents(r.Context(), s.Store, events)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

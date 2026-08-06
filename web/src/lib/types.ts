@@ -70,8 +70,14 @@ export interface Task {
   dependencies?: TaskRelation[]
   blocking_task_ids?: string[]
   children?: TaskRelation[]
+  context?: TaskContext
   github?: GitHubLifecycle
   created_at: string
+}
+
+export interface TaskContext {
+  requirements?: Array<{ id: string; title: string; version: number }>
+  designs?: Array<{ id: string; title: string; version: number }>
 }
 
 export interface TaskRelation {

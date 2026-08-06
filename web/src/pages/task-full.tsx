@@ -7,6 +7,7 @@ import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskHeader } from '../components/task/task-header'
+import { TaskContextCard } from '../components/task/task-context-card'
 import { Timeline } from '../components/task/timeline'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
@@ -74,6 +75,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           aria-label="Specification"
           className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
         >
+          <TaskContextCard context={item.task.context} />
           {item.spec ? (
             <SpecCard spec={item.spec} collapsible={false} routeVariant="full" />
           ) : (

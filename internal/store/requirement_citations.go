@@ -32,7 +32,7 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 	if err != nil {
 		return ServedRequirementsResult{}, err
 	}
-	roots := []core.LineageNode{{Type: core.LineageBlueprint, ID: task.ID}}
+	roots := []core.LineageNode{{Type: core.LineageBlueprint, ID: task.ID}, {Type: core.LineageTask, ID: task.ID}}
 	if task.ParentTaskID != "" {
 		roots = append(roots, core.LineageNode{Type: core.LineageBlueprint, ID: task.ParentTaskID})
 	}
@@ -61,14 +61,16 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 		return ServedRequirementsResult{}, &AuthorityBudgetError{TaskID: taskID, Limit: limit}
 	}
 	governingBlueprints := map[string]bool{task.ID: true}
+	governingTasks := map[string]bool{task.ID: true}
 	if task.ParentTaskID != "" {
 		governingBlueprints[task.ParentTaskID] = true
 	}
 	seen := map[string]bool{}
 	result := []core.ServedRequirementContext{}
 	for _, link := range links {
-		if link.Kind != "serves" || link.SrcType != core.LineageRequirement ||
-			link.DstType != core.LineageBlueprint || !governingBlueprints[link.DstID] || seen[link.SrcID] {
+		if link.Kind != "serves" || link.SrcType != core.LineageRequirement || seen[link.SrcID] ||
+			!((link.DstType == core.LineageBlueprint && governingBlueprints[link.DstID]) ||
+				(link.DstType == core.LineageTask && governingTasks[link.DstID])) {
 			continue
 		}
 		seen[link.SrcID] = true

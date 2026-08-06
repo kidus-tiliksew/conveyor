@@ -154,11 +154,31 @@ type Task struct {
 	Dependencies       []TaskRelation        `json:"dependencies,omitempty"`
 	BlockingTaskIDs    []string              `json:"blocking_task_ids,omitempty"`
 	Children           []TaskRelation        `json:"children,omitempty"`
+	Context            TaskContext           `json:"context,omitempty"`
 	// FeatureID is deprecated migration history. Live task context and child
 	// materialization use requirement/lineage records instead (spec §21.46).
 	FeatureID string           `json:"feature_id,omitempty"`
 	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection (spec §21.12 change 5)
 	CreatedAt time.Time        `json:"created_at"`
+}
+
+// TaskContext is the operator-attached desired-state authority carried by a
+// task independently of blueprint ancestry (spec §21.58 change 3).
+type TaskContext struct {
+	Requirements []TaskRequirementContext `json:"requirements,omitempty"`
+	Designs      []TaskDesignContext      `json:"designs,omitempty"`
+}
+
+type TaskRequirementContext struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Version int    `json:"version"`
+}
+
+type TaskDesignContext struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Version int    `json:"version"`
 }
 
 // TaskRelation is the compact live reference used by dependency and blueprint

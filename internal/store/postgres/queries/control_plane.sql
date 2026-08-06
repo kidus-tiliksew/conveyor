@@ -197,6 +197,15 @@ DO UPDATE SET
     created_at = LEAST(links.created_at, EXCLUDED.created_at),
     legacy_created_by_event = NULL;
 
+-- name: DeleteLineageLink :exec
+DELETE FROM links
+WHERE workspace_id = $1
+  AND src_type = $2
+  AND src_id = $3
+  AND dst_type = $4
+  AND dst_id = $5
+  AND kind = $6;
+
 -- name: ListLineageLinks :many
 SELECT * FROM links
 WHERE workspace_id = $1
