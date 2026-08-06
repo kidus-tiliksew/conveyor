@@ -50,6 +50,7 @@ type Dispatcher struct {
 	// the in-process review fallback, which has no checkout of its own
 	// (spec §21.4). Injectable for tests.
 	ReviewDiff   func(context.Context, *config.Config, core.Task) (string, error)
+	Now          func() time.Time
 	memoryQueue  chan queuedTask
 	durableQueue bool
 }
@@ -63,6 +64,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		RequestMerge:         github.MergePullRequest,
 		ListPullRequestFiles: github.PullRequestFiles,
 		ReviewDiff:           reviewBranchDiff,
+		Now:                  func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -215,7 +217,11 @@ func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage c
 		if order.Stage != stage || (reasonCode != "" && order.ReasonCode != reasonCode) {
 			continue
 		}
-		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed {
+		active := order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed
+		if reasonCode == "merge-conflict" {
+			active = core.WorkOrderActiveForConflictDispatch(order)
+		}
+		if active {
 			return order, true, nil
 		}
 	}
@@ -1522,39 +1528,27 @@ type mergeConflictEpisode struct {
 	NewHead      string `json:"new_head"`
 }
 
+type mergeConflictDispatchState struct {
+	Failures        int
+	NextRetryAt     time.Time
+	Exhausted       bool
+	RecoveryBlocked bool
+}
+
 // currentMergeConflictEpisode reads the append-only task history while the
-// caller holds the task lock. A cleared readiness or a terminal conflict-fix
-// workflow ends the prior episode; ordinary polling and active-order events do
-// not. This keeps GET-driven readiness checks observationally idempotent.
+// caller holds the task lock. Only clearing the conflict or observing a new
+// approved/head pair ends the prior episode; terminal attempts remain inside
+// the unresolved episode and may be retried under its backoff budget.
 func (d *Dispatcher) currentMergeConflictEpisode(ctx context.Context, taskID string) (mergeConflictEpisode, bool, error) {
 	events, err := d.Store.ListEvents(ctx, taskID)
 	if err != nil {
 		return mergeConflictEpisode{}, false, err
 	}
-	terminalJobs := make(map[string]bool)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		switch event.Kind {
 		case "merge.conflict_cleared":
 			return mergeConflictEpisode{}, false, nil
-		case "approval.stale":
-			var payload struct {
-				ReasonCode string `json:"reason_code"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.ReasonCode == "merge-conflict" {
-				return mergeConflictEpisode{}, false, nil
-			}
-		case "work_order.updated":
-			var order core.WorkOrder
-			if json.Unmarshal(event.Payload, &order) == nil && (order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderTimedOut || order.State == core.WorkOrderStale) {
-				terminalJobs[event.JobID] = true
-			}
-		case "work_order.timed_out", "work_order.stale", "work_order.expired":
-			terminalJobs[event.JobID] = true
-		case "merge.conflict_fix_dispatched":
-			if terminalJobs[event.JobID] {
-				return mergeConflictEpisode{}, false, nil
-			}
 		case "merge.blocked":
 			var episode mergeConflictEpisode
 			if err := json.Unmarshal(event.Payload, &episode); err != nil {
@@ -1564,6 +1558,53 @@ func (d *Dispatcher) currentMergeConflictEpisode(ctx context.Context, taskID str
 		}
 	}
 	return mergeConflictEpisode{}, false, nil
+}
+
+func sameConflictEpisode(payload json.RawMessage, episode mergeConflictEpisode) bool {
+	var candidate mergeConflictEpisode
+	return json.Unmarshal(payload, &candidate) == nil && candidate == episode
+}
+
+func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, episode mergeConflictEpisode) (mergeConflictDispatchState, error) {
+	events, err := d.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return mergeConflictDispatchState{}, err
+	}
+	state := mergeConflictDispatchState{}
+	inside := false
+	for _, event := range events {
+		switch event.Kind {
+		case "merge.conflict_cleared":
+			inside, state = false, mergeConflictDispatchState{}
+		case "merge.blocked":
+			inside = sameConflictEpisode(event.Payload, episode)
+			state = mergeConflictDispatchState{}
+		case "merge.conflict_fix_dispatched":
+			if inside && sameConflictEpisode(event.Payload, episode) {
+				state.Failures, state.NextRetryAt, state.Exhausted = 0, time.Time{}, false
+			}
+		case "merge.conflict_dispatch_failed":
+			if !inside || !sameConflictEpisode(event.Payload, episode) {
+				continue
+			}
+			var payload struct {
+				FailureCount int       `json:"failure_count"`
+				NextRetryAt  time.Time `json:"next_retry_at"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				state.Failures, state.NextRetryAt = payload.FailureCount, payload.NextRetryAt
+			}
+		case "merge.conflict_dispatch_exhausted":
+			if inside && sameConflictEpisode(event.Payload, episode) {
+				state.Exhausted = true
+			}
+		case "merge.conflict_recovery_blocked":
+			if inside && sameConflictEpisode(event.Payload, episode) {
+				state.RecoveryBlocked = true
+			}
+		}
+	}
+	return state, nil
 }
 
 func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead string) error {
@@ -1602,10 +1643,27 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	// The forge operation above is observational. Durable conflict dispatch
-	// enters the transaction-locked command plane without holding a session
-	// advisory lock, preventing lock-order inversion with River.
-	return d.dispatchConflictFixLocked(ctx, current, pr, cfg)
+	// The forge operation above is observational. Re-enter the task lock and
+	// refresh state before the durable command so watcher and River paths share
+	// one serialized admission decision.
+	var result core.WorkOrder
+	err = d.Store.WithTaskSideEffectLock(ctx, current.ID, func(lockedCtx context.Context) error {
+		var lockedErr error
+		current, lockedErr = d.Store.GetTask(lockedCtx, current.ID)
+		if lockedErr != nil {
+			return lockedErr
+		}
+		approved := current.ApprovedHeadSHA
+		if approved == "" {
+			approved = current.ReviewedHeadSHA
+		}
+		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA); lockedErr != nil {
+			return lockedErr
+		}
+		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg)
+		return lockedErr
+	})
+	return result, err
 }
 
 func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
@@ -1619,6 +1677,45 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if pr.Mergeable != "CONFLICTING" {
 		return core.WorkOrder{}, fmt.Errorf("pull request is not conflicting (%s)", pr.Mergeable)
 	}
+	episode, present, err := d.currentMergeConflictEpisode(ctx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if !present {
+		approved := current.ApprovedHeadSHA
+		if approved == "" {
+			approved = current.ReviewedHeadSHA
+		}
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+			return core.WorkOrder{}, err
+		}
+		episode = mergeConflictEpisode{ApprovedHead: approved, NewHead: pr.HeadSHA}
+	}
+	orders, err := d.Store.ListTaskWorkOrders(ctx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	events, err := d.Store.ListEvents(ctx, current.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	dispatchState, err := d.conflictDispatchState(ctx, current.ID, episode)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if recovery := store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(orders, events)); recovery != nil {
+		if !dispatchState.RecoveryBlocked {
+			err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.conflict_recovery_blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": episode.ApprovedHead, "new_head": episode.NewHead, "review_round": recovery.ReviewRound, "error": recovery.Reason})})
+		}
+		return core.WorkOrder{}, err
+	}
+	now := time.Now().UTC()
+	if d.Now != nil {
+		now = d.Now().UTC()
+	}
+	if dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt)) {
+		return core.WorkOrder{}, nil
+	}
 	if current.ApprovedHeadSHA == "" {
 		head := current.ReviewedHeadSHA
 		if head == "" {
@@ -1631,37 +1728,79 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	}
 	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
 	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
-	if err = d.Store.CreateIntervention(systemCtx, intervention); err != nil {
-		return core.WorkOrder{}, err
-	}
-	if err = d.transition(systemCtx, current.ID, core.TaskConflictDispatch, core.StageImplement, ""); err != nil {
-		return core.WorkOrder{}, err
-	}
-	current, err = d.Store.GetTask(systemCtx, current.ID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
 	if current.SetupContract.Name != "" {
 		cfg = cfg.WithSetup(current.SetupContract)
 	}
-	if err = d.createWorkOrder(systemCtx, cfg, current, cfg.Routing.Stages[string(core.StageImplement)], "merge-conflict"); err != nil {
+	if _, err = store.ServedRequirementsForTask(systemCtx, d.Store, current.ID, config.ServedRequirementAuthorityNodes(cfg)); err != nil {
 		return core.WorkOrder{}, err
 	}
-	orders, err := d.Store.ListTaskWorkOrders(systemCtx, current.ID)
+	prior, err := d.Store.ListJobs(systemCtx, current.ID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	var result core.WorkOrder
-	for i := len(orders) - 1; i >= 0; i-- {
-		if orders[i].ReasonCode == "merge-conflict" {
-			result = orders[i]
-			break
+	attempt := 1
+	for _, job := range prior {
+		if job.Stage == core.StageImplement {
+			attempt++
 		}
 	}
-	if err = d.Store.AppendEvent(systemCtx, core.Event{TaskID: current.ID, JobID: result.JobID, Kind: "merge.conflict_fix_dispatched", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": current.ApprovedHeadSHA, "new_head": pr.HeadSHA, "work_order_id": result.ID})}); err != nil {
+	route := cfg.Routing.Stages[string(core.StageImplement)]
+	jobID := fmt.Sprintf("%s-%s-%d", current.ID, core.StageImplement, attempt)
+	effectiveModel := cfg.EffectiveModel(string(core.StageImplement))
+	job := core.Job{ID: jobID, TaskID: current.ID, Stage: core.StageImplement, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
+	queueTimeout := cfg.WorkOrderQueueTimeout
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	var harnessConfig *core.HarnessSnapshot
+	if route.Harness != "" {
+		var found bool
+		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
+		if !found {
+			return core.WorkOrder{}, fmt.Errorf("%s route references unavailable harness %q", core.StageImplement, route.Harness)
+		}
+		if route.Effort != "" {
+			harnessConfig.Effort = route.Effort
+			harnessConfig.EffortArgv = append([]string(nil), harnessConfig.EffortArgs[route.Effort]...)
+		}
+	}
+	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredModel: effectiveModel, RequiredHarness: route.Harness, RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig, ReasonCode: "merge-conflict", BaselineSHA: current.ApprovedHeadSHA, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: pr.HeadSHA}
+	var result store.ConflictFixResult
+	_, err = taskops.ExecuteWorkOrder(systemCtx, d.Store, current.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
+		var commandErr error
+		result, commandErr = d.Store.CreateConflictFixCommand(systemCtx, lease, request)
+		return result.Created, commandErr
+	})
+	if errors.Is(err, store.ErrConflictReviewRecovery) {
+		if !dispatchState.RecoveryBlocked {
+			err = d.Store.AppendEvent(systemCtx, core.Event{TaskID: current.ID, Kind: "merge.conflict_recovery_blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": episode.ApprovedHead, "new_head": episode.NewHead, "error": err.Error()})})
+		}
 		return core.WorkOrder{}, err
 	}
-	return result, nil
+	if err != nil {
+		failures := dispatchState.Failures + 1
+		delay := time.Minute << (failures - 1)
+		if delay > 15*time.Minute {
+			delay = 15 * time.Minute
+		}
+		nextRetry := now.Add(delay)
+		payload := map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": episode.ApprovedHead, "new_head": episode.NewHead, "failure_count": failures, "next_retry_at": nextRetry, "error": err.Error()}
+		if eventErr := d.Store.AppendEvent(systemCtx, core.Event{TaskID: current.ID, Kind: "merge.conflict_dispatch_failed", Payload: core.JSONPayload(payload)}); eventErr != nil {
+			return core.WorkOrder{}, fmt.Errorf("conflict dispatch failed: %v; record retry: %w", err, eventErr)
+		}
+		if failures >= 3 && !dispatchState.Exhausted {
+			payload["retry_suppressed"] = true
+			if eventErr := d.Store.AppendEvent(systemCtx, core.Event{TaskID: current.ID, Kind: "merge.conflict_dispatch_exhausted", Payload: core.JSONPayload(payload)}); eventErr != nil {
+				return core.WorkOrder{}, fmt.Errorf("conflict dispatch failed: %v; record exhaustion: %w", err, eventErr)
+			}
+		}
+		return core.WorkOrder{}, err
+	}
+	if result.Created {
+		d.Enqueue(systemCtx, current.ID)
+	}
+	return result.WorkOrder, nil
 }
 
 // MergeApprovedTask performs the final human-gate transition. A durable-store

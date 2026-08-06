@@ -156,6 +156,19 @@ func TransitionTask(from TaskState, command TaskCommand) (TaskState, error) {
 	return TaskState(to), err
 }
 
+// TransitionConflictDispatch selects the canonical first-dispatch or recovery
+// edge for an unresolved conflict episode. A terminal conflict-fix attempt can
+// leave the task queued or running; those projections recover on the existing
+// refresh machinery instead of replaying the approved-only dispatch edge.
+func TransitionConflictDispatch(from TaskState) (TaskState, TaskCommand, error) {
+	command := TaskConflictDispatch
+	if from != TaskApproved {
+		command = TaskRecoverRefresh
+	}
+	to, err := TransitionTask(from, command)
+	return to, command, err
+}
+
 func TransitionWorkOrder(from WorkOrderState, command WorkOrderCommand) (WorkOrderState, error) {
 	to, err := transition(WorkOrderLifecycle, workOrderLifecycleTable, string(from), string(command))
 	return WorkOrderState(to), err
