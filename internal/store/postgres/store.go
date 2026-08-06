@@ -1390,7 +1390,9 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 	if err != nil {
 		return core.SpecVersion{}, false, err
 	}
-	return specFromDB(row), true, nil
+	spec := specFromDB(row)
+	spec.LegacyGate, err = s.legacySpecGateVersion(ctx, taskID, spec.Version)
+	return spec, true, err
 }
 
 func (s *Store) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
@@ -1409,7 +1411,9 @@ WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, versio
 	if err != nil {
 		return core.SpecVersion{}, false, err
 	}
-	return specFromDB(row), true, nil
+	spec := specFromDB(row)
+	spec.LegacyGate, err = s.legacySpecGateVersion(ctx, taskID, spec.Version)
+	return spec, true, err
 }
 
 // GetApprovedSpecVersion returns the newest approved spec version, which is
@@ -1435,12 +1439,29 @@ LIMIT 1`, taskID, workspace(ctx)).Scan(&row.TaskID, &row.Version, &row.Content,
 	if err != nil {
 		return core.SpecVersion{}, false, err
 	}
-	return specFromDB(row), true, nil
+	spec := specFromDB(row)
+	spec.LegacyGate, err = s.legacySpecGateVersion(ctx, taskID, spec.Version)
+	return spec, true, err
+}
+
+func (s *Store) legacySpecGateVersion(ctx context.Context, taskID string, version int) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM legacy_spec_gate_versions
+		WHERE workspace_id=$1 AND task_id=$2 AND spec_version=$3
+	)`, workspace(ctx), taskID, version).Scan(&exists)
+	return exists, err
 }
 
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
-	_, err := s.ApproveSpecVersionAndMaterialize(ctx, taskID, version)
-	return err
+	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		if _, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
+			TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx),
+		}); err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	})
 }
 
 func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {

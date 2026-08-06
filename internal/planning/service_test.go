@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +20,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -1273,63 +1273,14 @@ func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
 	}
 }
 
-func TestServiceFinalizesBlueprintAtExistingGateContract(t *testing.T) {
-	ctx, st, session := planningFixture(t, "session-260730-b4c5d6")
-	args := blueprintArgs{
-		Title: "Bound retries", Repo: "conveyor",
-		Markdown: "## Intent\n\nBound retries.\n\n## Non-goals\n\nNo queue rewrite.",
-		Acceptance: []pipeline.AcceptanceCriterion{{
-			ID: "AC-1", Criterion: "Retries stop at the configured bound.", Verify: "test",
-		}},
-	}
-	agent := &scriptedAgent{outputs: []string{
-		`This is not a planning_step object.`,
-		decisionJSON(t, "", []toolCall{{
-			ID: "call-blueprint", Name: "finalize_blueprint", ArgumentsJSON: jsonString(t, args),
-		}}),
-	}}
-	var gotModel string
-	service := &Service{
-		Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt,
-		FinalizeBlueprint: func(
-			ctx context.Context,
-			sessionID, taskID, title, repo string,
-			spec pipeline.StructuredSpec,
-			model string,
-		) (core.Task, core.SpecVersion, error) {
-			gotModel = model
-			task := core.Task{
-				ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
-				Title: title, Repo: repo, State: core.TaskAwaiting, NextStage: core.StageImplement,
-			}
-			if err := st.CreateTask(ctx, task); err != nil {
-				return core.Task{}, core.SpecVersion{}, err
-			}
-			return task, core.SpecVersion{TaskID: taskID, Version: 1, Content: spec.Markdown}, nil
-		},
-	}
-	if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize the blueprint."}, func(map[string]any) error {
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	finalized, err := st.GetPlanningSession(ctx, session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotModel != "planner" || finalized.Status != core.PlanningSessionFinalized ||
-		finalized.ProducedTaskID != "260730-b4c5d6" || finalized.ProducedRequirementID != "" {
-		t.Fatalf("model=%q finalized=%+v", gotModel, finalized)
-	}
-	artifact, transcript, err := st.GetArtifact(ctx, finalized.TranscriptArtifactID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if artifact.TaskID != finalized.ProducedTaskID || artifact.Role != core.ArtifactRoleGeneratedAudit {
-		t.Fatalf("transcript artifact = %+v", artifact)
-	}
-	if !strings.Contains(string(transcript), `"role":"system"`) || !strings.Contains(string(transcript), `"type":"system-correction"`) {
-		t.Fatalf("archived correction attribution=%s", transcript)
+func TestBlueprintPlanningToolsAreRetired(t *testing.T) {
+	for _, name := range []string{"draft_blueprint", "revise_blueprint", "finalize_blueprint"} {
+		if _, err := planningToolTarget(name); err == nil || !strings.Contains(err.Error(), "unsupported planning tool") {
+			t.Fatalf("planningToolTarget(%q) error=%v", name, err)
+		}
+		if slices.Contains(toolNames(), name) {
+			t.Fatalf("retired planning tool %q remains discoverable", name)
+		}
 	}
 }
 
@@ -1358,7 +1309,6 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	}{
 		{core.PlanningGoalRequirement, "Drafting requirement…"},
 		{core.PlanningGoalSystemDesign, "Designing system…"},
-		{core.PlanningGoalBlueprint, "Planning work…"},
 		{core.PlanningGoalBundle, "Planning delivery…"},
 		{core.PlanningGoalOpen, "Exploring…"},
 		{"", "Exploring…"},
@@ -1380,6 +1330,9 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 			t.Fatalf("goal %q read back=%+v err=%v", test.goal, read, err)
 		}
 	}
+	if _, err := service.CreateSession(ctx, CreateSessionInput{Goal: core.PlanningGoalBlueprint}); err == nil || !strings.Contains(err.Error(), "historical") {
+		t.Fatalf("blueprint goal retirement error=%v", err)
+	}
 	// An unknown goal is refused before anything is persisted.
 	if _, err := service.CreateSession(ctx, CreateSessionInput{
 		Goal: core.PlanningSessionGoal("epic"),
@@ -1387,8 +1340,8 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 		t.Fatalf("unknown goal error=%v", err)
 	}
 	listed, err := st.ListPlanningSessions(ctx)
-	if err != nil || len(listed) != 6 {
-		t.Fatalf("listed=%d err=%v, want the six accepted sessions", len(listed), err)
+	if err != nil || len(listed) != 5 {
+		t.Fatalf("listed=%d err=%v, want the five accepted sessions", len(listed), err)
 	}
 }
 
@@ -1436,49 +1389,6 @@ func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
 		}
 	})
 
-	t.Run("blueprint", func(t *testing.T) {
-		ctx, st, session := goalPlanningFixture(t, "session-260802-title-bp", core.PlanningGoalBlueprint)
-		args := blueprintArgs{
-			Title: "Bound the retry loop", Repo: "conveyor",
-			Markdown: "## Intent\n\nBound retries.\n\n## Non-goals\n\nNo queue rewrite.",
-			Acceptance: []pipeline.AcceptanceCriterion{{
-				ID: "AC-1", Criterion: "Retries stop at the bound.", Verify: "test",
-			}},
-		}
-		service := &Service{
-			Store: st, Model: "planner", Prompt: testPlanningPrompt,
-			Agent: &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
-				ID: "call-blueprint", Name: "finalize_blueprint", ArgumentsJSON: jsonString(t, args),
-			}})}},
-			FinalizeBlueprint: func(
-				ctx context.Context,
-				sessionID, taskID, title, repo string,
-				spec pipeline.StructuredSpec,
-				model string,
-			) (core.Task, core.SpecVersion, error) {
-				task := core.Task{
-					ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
-					Title: title, Repo: repo, State: core.TaskAwaiting, NextStage: core.StageImplement,
-				}
-				if err := st.CreateTask(ctx, task); err != nil {
-					return core.Task{}, core.SpecVersion{}, err
-				}
-				return task, core.SpecVersion{TaskID: taskID, Version: 1, Content: spec.Markdown}, nil
-			},
-		}
-		if err := service.Run(ctx, session.ID, UserMessage{Content: "Finalize the blueprint."}, func(map[string]any) error {
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		finalized, err := st.GetPlanningSession(ctx, session.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if finalized.Title != "Bound the retry loop" || finalized.ProducedTaskID != "260802-title-bp" {
-			t.Fatalf("finalized session=%+v", finalized)
-		}
-	})
 }
 
 // AC-3: a non-open goal rejects the mismatched finalizer in band. The run
@@ -1489,11 +1399,12 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 		Title: "Bounded retries", Prose: "Retries stay explainable.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stop at the bound."}},
 	})
-	blueprintArgsJSON := jsonString(t, blueprintArgs{
-		Title: "Bound the retry loop", Repo: "conveyor",
-		Markdown: "## Intent\n\nBound retries.\n\n## Non-goals\n\nNo queue rewrite.",
-		Acceptance: []pipeline.AcceptanceCriterion{{
-			ID: "AC-1", Criterion: "Retries stop at the bound.", Verify: "test",
+	bundleArgsJSON := jsonString(t, bundleArgs{
+		Title:     "Delivery bundle",
+		Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: "req-existing", Version: 1}},
+		Tasks: []core.PlanningBundleTask{{
+			MemberID: "task-one", Title: "Deliver", Body: "Deliver the change.", Repo: "conveyor",
+			Context: core.PlanningBundleTaskContext{RequirementIDs: []string{"req-existing"}},
 		}},
 	})
 	tests := []struct {
@@ -1505,46 +1416,22 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 		expected  string
 	}{
 		{
-			name: "requirement goal refuses a blueprint", sessionID: "session-260802-goal-req",
+			name: "requirement goal refuses a bundle", sessionID: "session-260802-goal-req",
 			goal:     core.PlanningGoalRequirement,
-			rejected: toolCall{ID: "call-wrong", Name: "finalize_blueprint", ArgumentsJSON: blueprintArgsJSON},
+			rejected: toolCall{ID: "call-wrong", Name: "finalize_bundle", ArgumentsJSON: bundleArgsJSON},
 			accepted: toolCall{ID: "call-right", Name: "finalize_requirement", ArgumentsJSON: requirementArgsJSON},
 			expected: "finalize_requirement",
-		},
-		{
-			name: "blueprint goal refuses a requirement", sessionID: "session-260802-goal-bp",
-			goal:     core.PlanningGoalBlueprint,
-			rejected: toolCall{ID: "call-wrong", Name: "finalize_requirement", ArgumentsJSON: requirementArgsJSON},
-			accepted: toolCall{ID: "call-right", Name: "finalize_blueprint", ArgumentsJSON: blueprintArgsJSON},
-			expected: "finalize_blueprint",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, st, session := goalPlanningFixture(t, test.sessionID, test.goal)
-			blueprintFinalized := false
 			service := &Service{
 				Store: st, Model: "planner", Prompt: testPlanningPrompt,
 				Agent: &scriptedAgent{outputs: []string{
 					decisionJSON(t, "", []toolCall{test.rejected}),
 					decisionJSON(t, "", []toolCall{test.accepted}),
 				}},
-				FinalizeBlueprint: func(
-					ctx context.Context,
-					sessionID, taskID, title, repo string,
-					spec pipeline.StructuredSpec,
-					model string,
-				) (core.Task, core.SpecVersion, error) {
-					blueprintFinalized = true
-					task := core.Task{
-						ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
-						Title: title, Repo: repo, State: core.TaskAwaiting, NextStage: core.StageImplement,
-					}
-					if err := st.CreateTask(ctx, task); err != nil {
-						return core.Task{}, core.SpecVersion{}, err
-					}
-					return task, core.SpecVersion{TaskID: taskID, Version: 1, Content: spec.Markdown}, nil
-				},
 			}
 			var chunks []map[string]any
 			if err := service.Run(ctx, session.ID, UserMessage{Content: "Wrap this up."}, func(part map[string]any) error {
@@ -1569,15 +1456,6 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 				!strings.Contains(mismatch["message"].(string), test.expected) {
 				t.Fatalf("goal mismatch output=%+v", mismatch)
 			}
-			// The refused finalizer executed nothing.
-			if test.rejected.Name == "finalize_blueprint" && blueprintFinalized {
-				t.Fatal("a requirement-goal session finalized a blueprint")
-			}
-			if test.rejected.Name == "finalize_requirement" {
-				if _, err := st.GetRequirement(ctx, "req-"+strings.TrimPrefix(test.sessionID, "session-")); err == nil {
-					t.Fatal("a blueprint-goal session created a requirement")
-				}
-			}
 			finalized, err := st.GetPlanningSession(ctx, session.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -1585,12 +1463,8 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 			if finalized.Status != core.PlanningSessionFinalized {
 				t.Fatalf("session after corrected finalize=%+v", finalized)
 			}
-			if test.expected == "finalize_requirement" {
-				if finalized.ProducedRequirementID == "" || finalized.ProducedTaskID != "" {
-					t.Fatalf("produced lineage=%+v, want the requirement only", finalized)
-				}
-			} else if finalized.ProducedTaskID == "" || finalized.ProducedRequirementID != "" {
-				t.Fatalf("produced lineage=%+v, want the blueprint only", finalized)
+			if finalized.ProducedRequirementID == "" || finalized.ProducedTaskID != "" {
+				t.Fatalf("produced lineage=%+v, want the requirement only", finalized)
 			}
 			// The mismatch is durable in the transcript, so the correction
 			// survives a session restore.
@@ -1764,9 +1638,7 @@ func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing
 		name          string
 		sessionID     string
 		call          toolCall
-		finalizer     func(store.Store, *bool) BlueprintFinalizer
 		requirementID string
-		taskID        string
 	}{
 		{
 			name: "requirement", sessionID: "session-260730-abandon-req",
@@ -1781,53 +1653,16 @@ func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing
 			},
 			requirementID: "req-260730-abandon-req",
 		},
-		{
-			name: "blueprint", sessionID: "session-260730-abandon-task",
-			call: toolCall{
-				ID: "call-final", Name: "finalize_blueprint",
-				ArgumentsJSON: jsonString(t, blueprintArgs{
-					Title: "Must not survive", Repo: "conveyor",
-					Markdown: "## Intent\n\nLose the abandonment race.\n\n## Non-goals\n\nNo durable output.",
-					Acceptance: []pipeline.AcceptanceCriterion{{
-						ID: "AC-1", Criterion: "No output remains after abandonment.", Verify: "test",
-					}},
-				}),
-			},
-			taskID: "260730-abandon-task",
-			finalizer: func(st store.Store, called *bool) BlueprintFinalizer {
-				return func(
-					ctx context.Context,
-					sessionID, taskID, title, repo string,
-					_ pipeline.StructuredSpec,
-					_ string,
-				) (core.Task, core.SpecVersion, error) {
-					*called = true
-					task := core.Task{
-						ID: taskID, Workspace: "demo", Source: "planning:" + sessionID,
-						Title: title, Repo: repo, State: core.TaskAwaiting,
-					}
-					if err := st.CreateTask(ctx, task); err != nil {
-						return core.Task{}, core.SpecVersion{}, err
-					}
-					return task, core.SpecVersion{TaskID: taskID, Version: 1}, nil
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, st, session := planningFixture(t, tt.sessionID)
-			called := false
 			service := &Service{
 				Store: st, Agent: &scriptedAgent{outputs: []string{
 					decisionJSON(t, "", []toolCall{tt.call}),
 				}}, Model: "planner", Prompt: testPlanningPrompt,
 			}
-			if tt.finalizer != nil {
-				service.FinalizeBlueprint = tt.finalizer(st, &called)
-			}
-
 			// The model's final tool request is already durable and visible on
 			// the stream when abandonment wins. The finalization region must
 			// recheck active state before invoking any produced-write callback.
@@ -1841,17 +1676,9 @@ func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing
 			if err == nil || !strings.Contains(err.Error(), "abandoned") {
 				t.Fatalf("Run error=%v, want terminal abandonment", err)
 			}
-			if called {
-				t.Fatal("blueprint finalizer ran after abandonment won")
-			}
 			if tt.requirementID != "" {
 				if _, getErr := st.GetRequirement(ctx, tt.requirementID); getErr == nil {
 					t.Fatalf("requirement %s remained visible", tt.requirementID)
-				}
-			}
-			if tt.taskID != "" {
-				if _, getErr := st.GetTask(ctx, tt.taskID); getErr == nil {
-					t.Fatalf("task %s remained visible", tt.taskID)
 				}
 			}
 			artifacts, listErr := st.ListArtifacts(ctx)

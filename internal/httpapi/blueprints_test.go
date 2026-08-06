@@ -296,7 +296,7 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	}
 }
 
-func TestBlueprintServesLifecycleSupportsRetroactiveMultiRequirementLinks(t *testing.T) {
+func TestBlueprintServesMutationRoutesAreRetired(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	anchor := materializeBlueprint(t, st, "anchor-serves", []decompositionFixture{{ID: "SUB-1", Repo: "conveyor", Summary: "Deliver"}})
@@ -324,31 +324,10 @@ func TestBlueprintServesLifecycleSupportsRetroactiveMultiRequirementLinks(t *tes
 		return response
 	}
 	base := "/v1/blueprints/" + anchor.ID + "/requirements/"
-	for _, requirementID := range []string{"req-one", "req-two"} {
-		response := post(base+requirementID+"/serves", `{"confirm":true}`)
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"confirmed"`) {
-			t.Fatalf("retroactive confirm %s status=%d body=%s", requirementID, response.Code, response.Body.String())
-		}
-	}
-	if response := post(base+"req-dismissed/serves", `{}`); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"proposed"`) {
-		t.Fatalf("propose dismissed status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := post(base+"req-dismissed/serves/dismiss", ``); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"dismissed"`) {
-		t.Fatalf("dismiss status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := post(base+"req-dismissed/serves/confirm", ``); response.Code != http.StatusConflict {
-		t.Fatalf("confirm dismissed status=%d body=%s", response.Code, response.Body.String())
-	}
-	views := listBlueprintViews(t, handler)
-	if len(views) != 1 || len(views[0].Serves) != 2 || len(views[0].RequirementLinks) != 3 {
-		t.Fatalf("serves view=%+v", views)
-	}
-	for _, link := range views[0].RequirementLinks {
-		if link.CreatedByEventID == 0 || link.ProposedBy == "" {
-			t.Fatalf("link lacks proposal provenance: %+v", link)
-		}
-		if link.State != core.RequirementServesProposed && (link.DecisionEventID == 0 || link.DecidedBy == "") {
-			t.Fatalf("terminal link lacks decision provenance: %+v", link)
+	for _, suffix := range []string{"/serves", "/serves/confirm", "/serves/dismiss"} {
+		response := post(base+"req-one"+suffix, `{}`)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("retired route %s status=%d body=%s", suffix, response.Code, response.Body.String())
 		}
 	}
 }

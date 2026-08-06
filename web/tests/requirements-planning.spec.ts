@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 const requirement = {
   requirement: {
@@ -258,7 +258,7 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   await page.goto('/planning')
   await expect(page.getByLabel('Planning model')).toHaveValue('gpt-plan')
   await expect(page.getByLabel('Planning model').locator('option')).toHaveText(['gpt-plan', 'gpt-plan-fast'])
-  await page.getByLabel('Planning goal').selectOption('blueprint')
+  await page.getByLabel('Planning goal').selectOption('bundle')
   await page.getByLabel('Planning model').selectOption('gpt-plan-fast')
   await page.getByRole('button', { name: 'New session' }).click()
   // The goal and model are the only creation inputs: no caller title reaches
@@ -266,7 +266,7 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   await expect
     .poll(() => createdWith)
     .toEqual({
-      goal: 'blueprint',
+      goal: 'bundle',
       model: 'gpt-plan-fast',
     })
 })
@@ -911,7 +911,7 @@ test('requirements and planning render fetch failures instead of indefinite load
   await expect(page.getByText('Restoring sessions…')).toHaveCount(0)
 })
 
-test('a finalized blueprint session hands off to the ordinary spec gate', async ({ page }) => {
+test('a historical finalized blueprint session remains readable', async ({ page }) => {
   await initShell(page)
   const session = {
     id: 'session-blueprint',
@@ -1669,13 +1669,9 @@ test('session lists label goals and the requirements surface has no freehand edi
     page.getByRole('button', { name: /Exploring…/ }).getByText('Open exploration', { exact: true }),
   ).toBeVisible()
   // The standalone surface keeps only the goals with no document context.
-  await expect(page.getByLabel('Planning goal').locator('option')).toHaveText([
-    'Open exploration',
-    'Blueprint',
-    'Delivery bundle',
-  ])
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveText(['Open exploration', 'Delivery bundle'])
   // Requirement drafting moved beside the document, so it is not offered here.
-  await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(3)
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(2)
 
   await page.goto('/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()

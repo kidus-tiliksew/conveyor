@@ -547,8 +547,8 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 			_, callErr := service.SubmitForReview(ctx, job.ID, "owner-session")
 			return callErr
 		},
-		"submit spec": func() error {
-			_, callErr := service.SubmitSpec(ctx, job.ID, "owner-session", pipeline.StructuredSpec{})
+		"submit plan": func() error {
+			_, callErr := service.SubmitPlan(ctx, job.ID, "owner-session", pipeline.StructuredPlan{})
 			return callErr
 		},
 		"submit review verdict": func() error {
@@ -562,56 +562,10 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 	}
 }
 
-func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "submit-spec", Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	job := core.Job{ID: "submit-spec-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
-	if err := st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "spec-session", ClientToken: "secret", Agent: "codex", Model: "gpt-spec", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	d := &dispatch.Dispatcher{Store: st}
-	service := &Service{Store: st, Dispatcher: d}
-	invalid := pipeline.StructuredSpec{Markdown: "# Missing required sections", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Works", Verify: "test"}}}
-	if _, err := service.SubmitSpec(ctx, job.ID, "spec-session", invalid); err == nil {
-		t.Fatal("invalid spec submission succeeded")
-	}
-	claimed, _ := st.GetWorkOrder(ctx, job.ID)
-	if claimed.State != core.WorkOrderClaimed {
-		t.Fatalf("validation changed order state to %s", claimed.State)
-	}
-	if _, ok, _ := st.GetLatestSpecVersion(ctx, task.ID); ok {
-		t.Fatal("validation failure created a spec version")
-	}
-	valid := pipeline.StructuredSpec{Markdown: "## Intent\n\nShip it.\n\n## Non-goals\n\nNone.", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Works", Verify: "test"}}, Decomposition: []pipeline.DecompositionItem{}}
-	if _, err := service.SubmitSpec(ctx, job.ID, "spec-session", valid); err != nil {
-		t.Fatal(err)
-	}
-	version, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
-	if err != nil || !ok || version.Agent != "codex" || version.Model != "gpt-spec" {
-		t.Fatalf("version=%+v ok=%t err=%v", version, ok, err)
-	}
-	completed, _ := st.GetWorkOrder(ctx, job.ID)
-	current, _ := st.GetTask(ctx, task.ID)
-	if completed.State != core.WorkOrderCompleted || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement {
-		t.Fatalf("order=%+v task=%+v", completed, current)
-	}
-}
-
-func TestSubmitPlanAndTransitionalSubmitSpecUseSameLifecycle(t *testing.T) {
+func TestSubmitPlanUsesPlanLifecycle(t *testing.T) {
 	plan := pipeline.StructuredPlan{Markdown: "## Approach\nReuse it.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The plan is gated.", Decomposition: []pipeline.DecompositionItem{}}
-	sequences := map[bool][]string{}
-	for _, alias := range []bool{false, true} {
-		t.Run(map[bool]string{false: "submit_plan", true: "submit_spec_alias"}[alias], func(t *testing.T) {
+	for _, alias := range []bool{false} {
+		t.Run("submit_plan", func(t *testing.T) {
 			ctx := store.WithWorkspace(t.Context(), "demo")
 			st := store.NewMemory()
 			task := core.Task{ID: fmt.Sprintf("plan-%t", alias), Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
@@ -631,21 +585,13 @@ func TestSubmitPlanAndTransitionalSubmitSpecUseSameLifecycle(t *testing.T) {
 			service := &Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}}
 			invalid := pipeline.StructuredPlan{Markdown: strings.Replace(plan.Markdown, "## Done criteria", "## Results", 1), Decomposition: []pipeline.DecompositionItem{}}
 			var invalidErr error
-			if alias {
-				_, invalidErr = service.SubmitSpec(ctx, job.ID, "plan-session", pipeline.StructuredSpec{Markdown: invalid.Markdown, Acceptance: []pipeline.AcceptanceCriterion{}, Decomposition: invalid.Decomposition})
-			} else {
-				_, invalidErr = service.SubmitPlan(ctx, job.ID, "plan-session", invalid)
-			}
+			_, invalidErr = service.SubmitPlan(ctx, job.ID, "plan-session", invalid)
 			claimed, _ := st.GetWorkOrder(ctx, job.ID)
 			if invalidErr == nil || !strings.Contains(invalidErr.Error(), "done criteria heading") || claimed.State != core.WorkOrderClaimed {
 				t.Fatalf("invalid plan error=%v order=%+v", invalidErr, claimed)
 			}
 			var err error
-			if alias {
-				_, err = service.SubmitSpec(ctx, job.ID, "plan-session", pipeline.StructuredSpec{Markdown: plan.Markdown, Acceptance: []pipeline.AcceptanceCriterion{}, Decomposition: plan.Decomposition})
-			} else {
-				_, err = service.SubmitPlan(ctx, job.ID, "plan-session", plan)
-			}
+			_, err = service.SubmitPlan(ctx, job.ID, "plan-session", plan)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -659,13 +605,10 @@ func TestSubmitPlanAndTransitionalSubmitSpecUseSameLifecycle(t *testing.T) {
 			if listErr != nil {
 				t.Fatal(listErr)
 			}
-			for _, event := range events {
-				sequences[alias] = append(sequences[alias], event.Kind)
+			if len(events) == 0 {
+				t.Fatal("submit_plan recorded no lifecycle events")
 			}
 		})
-	}
-	if !reflect.DeepEqual(sequences[false], sequences[true]) {
-		t.Fatalf("submit_plan events=%v submit_spec alias events=%v", sequences[false], sequences[true])
 	}
 }
 

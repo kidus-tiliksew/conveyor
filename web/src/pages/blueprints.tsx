@@ -1,17 +1,14 @@
 import { Link } from '@tanstack/react-router'
-import { ArrowRight, Blocks, FileText, Sparkles } from 'lucide-react'
+import { ArrowRight, Blocks, FileText, History } from 'lucide-react'
 import { useBlueprints, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
-// The Blueprints surface (spec §21.49): approved plans presented as the
-// intent artifacts they are, beside Requirements on the planning side. An
-// anchor takes no work orders, so nothing here is a queue position — the
-// entry reports what was promised and how much of it has landed.
+// Historical Blueprints lens (spec §21.58 change 2): retained records remain
+// queryable, but this surface offers no creation path.
 export function BlueprintsPage() {
   const { workspace } = useWorkspaceSelection()
   const { data: blueprints, isLoading, error } = useBlueprints()
@@ -22,12 +19,12 @@ export function BlueprintsPage() {
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Blueprints</h1>
+              <h1 className="text-xl font-semibold tracking-tight">Blueprint history</h1>
               <Badge variant="mono">{blueprints?.length ?? 0}</Badge>
             </div>
             <p className="mt-1 max-w-2xl text-sm text-muted">
-              Approved plans and the tasks they fanned out into. A blueprint is a contract with a progress bar — the
-              board tracks its child tasks.
+              Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
+              through planning bundles.
             </p>
           </div>
         </header>
@@ -41,16 +38,11 @@ export function BlueprintsPage() {
         {blueprints?.length === 0 && (
           <Card className="mt-8 border-dashed">
             <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-              <Sparkles className="size-7 text-primary" />
-              <h2 className="mt-4 text-base font-semibold">No blueprints yet</h2>
+              <History className="size-7 text-primary" />
+              <h2 className="mt-4 text-base font-semibold">No historical blueprints</h2>
               <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                A blueprint appears here once an approved plan fans out into child tasks. Plan one to get started.
+                This workspace has no legacy blueprint records.
               </p>
-              <Link to="/planning" className="mt-5 inline-block">
-                <Button tabIndex={-1}>
-                  Plan a blueprint <ArrowRight />
-                </Button>
-              </Link>
             </CardContent>
           </Card>
         )}

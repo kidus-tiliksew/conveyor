@@ -55,6 +55,10 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if goal == core.PlanningGoalBlueprint {
+		http.Error(w, "blueprint planning is historical; use a bundle goal", http.StatusBadRequest)
+		return
+	}
 	var session core.PlanningSession
 	if s.Planning != nil && s.Planning.ConfigProvider != nil {
 		session, err = s.Planning.CreateSession(r.Context(), planning.CreateSessionInput{

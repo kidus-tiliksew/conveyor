@@ -6,7 +6,6 @@ import type { ActivityItem, BlueprintChild, BlueprintView } from '../../lib/type
 import { absoluteTime } from '../../lib/utils'
 import { AttachmentsCard } from '../task/attachments-card'
 import { SpecCard } from '../task/spec-card'
-import { CancelControl } from '../task/task-header'
 import { Timeline } from '../task/timeline'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -17,13 +16,12 @@ import { MarkdownProse } from '../ui/markdown-prose'
 // nothing will land on its branch, and it will never move through a stage
 // column. So it leads with the approved blueprint, reports delivery in
 // blueprint vocabulary, and shows none of the checkout, assigned-branch, or
-// hold affordances that would imply otherwise. Cancel stays — that is
-// lifecycle, and it behaves exactly as it does today.
+// hold or lifecycle affordances that would imply otherwise.
 export function BlueprintDetail({ view, item }: { view: BlueprintView; item: ActivityItem }) {
   return (
     <>
       <div className="shrink-0 border-b border-border px-6 py-4">
-        <BlueprintHeader view={view} item={item} />
+        <BlueprintHeader view={view} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
         <section
@@ -43,7 +41,7 @@ export function BlueprintDetail({ view, item }: { view: BlueprintView; item: Act
   )
 }
 
-function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityItem }) {
+function BlueprintHeader({ view }: { view: BlueprintView }) {
   const provenance = parseProvenance(view.task.source)
   const specVersion = view.governing_version || view.spec?.version
 
@@ -51,11 +49,10 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         <Badge variant="accent" className="gap-1">
-          <Blocks aria-hidden="true" /> Blueprint
+          <Blocks aria-hidden="true" /> Historical blueprint
         </Badge>
         <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
         {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
-        <CancelControl item={item} />
         {view.task.class && <Badge>{view.task.class}</Badge>}
         <Badge variant="accent">{provenance.label}</Badge>
       </div>
@@ -69,7 +66,7 @@ function BlueprintHeader({ view, item }: { view: BlueprintView; item: ActivityIt
           label="Serves"
           value={
             view.serves.length === 0 ? (
-              <span className="text-faint">No requirement linked yet</span>
+              <span className="text-faint">No historical requirement link</span>
             ) : (
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {view.serves.map((requirement) => (

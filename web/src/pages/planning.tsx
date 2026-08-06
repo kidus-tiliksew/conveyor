@@ -17,11 +17,9 @@ import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
 
-// "The free-form planning page remains for goal-`open` and blueprint-only
-// sessions" (spec §21.57 change 1) — requirement drafting moved beside the
-// document. Blueprint sessions still take a requirement context, just not from
-// this surface.
-const standaloneGoals: PlanningSessionGoal[] = ['open', 'blueprint', 'bundle']
+// Task fan-out now comes from reviewable delivery bundles. Blueprint remains
+// a historical document label, not a planning-session creation goal.
+const standaloneGoals: PlanningSessionGoal[] = ['open', 'bundle']
 
 export function PlanningPage() {
   const token = useOperatorToken()
@@ -107,8 +105,7 @@ export function PlanningPage() {
         <div>
           <h1 className="text-lg font-semibold tracking-tight">Planning</h1>
           <p className="mt-0.5 text-xs text-muted">
-            Open exploration and blueprints without a document. Requirement drafting lives beside the document, in
-            Requirements.
+            Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements.
           </p>
         </div>
         <form

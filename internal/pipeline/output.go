@@ -183,6 +183,39 @@ func ParsePlan(markdown string, decomposition []DecompositionItem) (Spec, error)
 	return Spec{Markdown: markdown, Acceptance: []AcceptanceCriterion{}, Decomposition: []DecompositionItem{}}, nil
 }
 
+// StructuredPlanSchema is the only model-output contract for newly dispatched
+// plan-stage work after the Phase 8.3 retirement flip.
+func StructuredPlanSchema() map[string]any {
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"markdown": map[string]any{"type": "string", "minLength": 1},
+			"decomposition": map[string]any{
+				"type": "array", "maxItems": 0,
+				"items": map[string]any{"type": "object"},
+			},
+		},
+		"required": []string{"markdown", "decomposition"},
+	}
+}
+
+func RenderStructuredPlan(output string) (Spec, error) {
+	var value StructuredPlan
+	decoder := json.NewDecoder(strings.NewReader(output))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return Spec{}, fmt.Errorf("structured plan: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Spec{}, fmt.Errorf("structured plan contains more than one JSON value")
+		}
+		return Spec{}, fmt.Errorf("structured plan has trailing data: %w", err)
+	}
+	return ParsePlan(value.Markdown, value.Decomposition)
+}
+
 // PlanDoneCriteria returns the done-criteria section, including its heading,
 // for review prompt rendering. The same heading rules as ParsePlan apply.
 func PlanDoneCriteria(markdown string) (string, bool) {

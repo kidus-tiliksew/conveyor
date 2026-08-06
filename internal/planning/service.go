@@ -42,32 +42,21 @@ type UserMessage struct {
 	Parts   json.RawMessage
 }
 
-type BlueprintFinalizer func(
-	context.Context,
-	string,
-	string,
-	string,
-	string,
-	pipeline.StructuredSpec,
-	string,
-) (core.Task, core.SpecVersion, error)
-
 type Service struct {
-	Store             store.Store
-	Agent             inprocess.Agent
-	ConfigProvider    func(context.Context) (*config.Config, error)
-	Git               *gitx.Manager
-	FinalizeBlueprint BlueprintFinalizer
-	Model             string
-	Effort            string
-	Prompt            string
-	MaxSteps          int
-	MaxCallsPerStep   int
-	MaxContextBytes   int
-	MaxToolBytes      int
-	MaxDuration       time.Duration
-	consultedMu       sync.Mutex
-	consulted         map[string]struct{}
+	Store           store.Store
+	Agent           inprocess.Agent
+	ConfigProvider  func(context.Context) (*config.Config, error)
+	Git             *gitx.Manager
+	Model           string
+	Effort          string
+	Prompt          string
+	MaxSteps        int
+	MaxCallsPerStep int
+	MaxContextBytes int
+	MaxToolBytes    int
+	MaxDuration     time.Duration
+	consultedMu     sync.Mutex
+	consulted       map[string]struct{}
 }
 
 type decision struct {
@@ -161,6 +150,9 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	goal, err := core.NormalizePlanningSessionGoal(input.Goal)
 	if err != nil {
 		return core.PlanningSession{}, err
+	}
+	if goal == core.PlanningGoalBlueprint {
+		return core.PlanningSession{}, fmt.Errorf("blueprint planning is historical; use a bundle goal")
 	}
 	if input.Promotion != nil {
 		if goal != core.PlanningGoalRequirement {
@@ -1136,7 +1128,7 @@ func (s *Service) lineageContext(ctx context.Context, budget lineagecontext.Budg
 // goal is advisory here and enforced at finalize time (spec §21.57 change 3);
 // the context document is advisory here and defaulted in requirementTool.
 func goalStatement(session core.PlanningSession) string {
-	statement := "This session's goal is open: finalize_requirement, finalize_system_design, finalize_blueprint, or finalize_bundle is legal. " +
+	statement := "This session's goal is open: finalize_requirement, finalize_system_design, or finalize_bundle is legal. " +
 		"Establish which artifact the operator wants before finalizing anything."
 	if expected := expectedFinalizeTool(session.Goal); expected != "" {
 		statement = "This session's goal is " + string(session.Goal) + ": " + expected +
@@ -1146,7 +1138,7 @@ func goalStatement(session core.PlanningSession) string {
 	if context := strings.TrimSpace(session.RequirementContextID); context != "" {
 		statement += " This session was opened from requirement " + context +
 			". A requirement you finalize here revises that document — pass requirement_id " + context +
-			", never a new one — and a blueprint you finalize here proposes serving it."
+			", never a new one — and bundle tasks attach it through task-level serves context."
 	}
 	if context := strings.TrimSpace(session.SystemDesignContextID); context != "" {
 		statement += " This session was opened from System Design " + context + ". A system design finalized here revises that document — pass document_id " + context + ", never a new one."
@@ -1391,7 +1383,6 @@ func toolNames() []string {
 		"read_approved_spec", "read_artifact", "read_task_lineage",
 		"draft_requirement", "revise_requirement", "finalize_requirement",
 		"list_system_designs", "read_system_design", "list_decisions", "draft_system_design", "revise_system_design", "finalize_system_design", "propose_decision",
-		"draft_blueprint", "revise_blueprint", "finalize_blueprint",
 		"finalize_bundle",
 	}
 }
@@ -1419,8 +1410,6 @@ func expectedFinalizeTool(goal core.PlanningSessionGoal) string {
 	switch goal {
 	case core.PlanningGoalRequirement:
 		return "finalize_requirement"
-	case core.PlanningGoalBlueprint:
-		return "finalize_blueprint"
 	case core.PlanningGoalSystemDesign:
 		return "finalize_system_design"
 	case core.PlanningGoalBundle:
@@ -1458,8 +1447,6 @@ func planningToolTarget(name string) (any, error) {
 		return &systemDesignArgs{}, nil
 	case "propose_decision":
 		return &decisionArgs{}, nil
-	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
-		return &blueprintArgs{}, nil
 	case "finalize_bundle":
 		return &bundleArgs{}, nil
 	default:
@@ -1590,17 +1577,6 @@ func validatePlanningToolArguments(call toolCall, maxBytes int) error {
 	case *decisionArgs:
 		if err := core.ValidateDecision(core.Decision{ID: args.ID, Statement: args.Statement, Context: args.Context, AlternativesRejected: args.AlternativesRejected, Origin: core.DecisionOriginPlanning, OriginSessionID: "schema-validation", Supersedes: args.Supersedes}); err != nil {
 			return err
-		}
-	case *blueprintArgs:
-		raw, err := json.Marshal(args.structured())
-		if err != nil {
-			return err
-		}
-		if _, err = pipeline.RenderStructuredSpec(string(raw)); err != nil {
-			return err
-		}
-		if strings.TrimSpace(args.Title) == "" || strings.TrimSpace(args.Repo) == "" {
-			return fmt.Errorf("blueprint title and repo are required")
 		}
 	case *bundleArgs:
 		bundle := core.PlanningBundle{ID: "schema-bundle", SessionID: "schema-session", Title: args.Title, Documents: args.Documents, Tasks: args.Tasks}
@@ -1759,8 +1735,6 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		return s.systemDesignTool(ctx, session, call)
 	case "propose_decision":
 		return s.decisionTool(ctx, session, call)
-	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
-		return s.blueprintTool(ctx, session, call, model)
 	case "finalize_bundle":
 		return s.bundleTool(ctx, session, call)
 	default:
@@ -2582,66 +2556,10 @@ func (s *Service) createRequirementWithAvailableSlug(
 		"allocate requirement slug for %q: suffix space exhausted", title)
 }
 
-type blueprintArgs struct {
-	Title         string                            `json:"title"`
-	Repo          string                            `json:"repo"`
-	Markdown      string                            `json:"markdown"`
-	Acceptance    []pipeline.AcceptanceCriterion    `json:"acceptance"`
-	Decomposition []core.BlueprintDecompositionItem `json:"decomposition"`
-}
-
 type bundleArgs struct {
 	Title     string                        `json:"title"`
 	Documents []core.PlanningBundleDocument `json:"documents"`
 	Tasks     []core.PlanningBundleTask     `json:"tasks"`
-}
-
-func (args blueprintArgs) structured() pipeline.StructuredSpec {
-	return pipeline.StructuredSpec{
-		Markdown: args.Markdown, Acceptance: args.Acceptance, Decomposition: args.Decomposition,
-	}
-}
-
-func (s *Service) blueprintTool(ctx context.Context, session core.PlanningSession, call toolCall, model string) (toolExecution, error) {
-	var args blueprintArgs
-	if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
-		return toolExecution{}, err
-	}
-	raw, err := json.Marshal(args.structured())
-	if err != nil {
-		return toolExecution{}, err
-	}
-	parsed, err := pipeline.RenderStructuredSpec(string(raw))
-	if err != nil {
-		return toolExecution{}, err
-	}
-	if strings.TrimSpace(args.Title) == "" || strings.TrimSpace(args.Repo) == "" {
-		return toolExecution{}, fmt.Errorf("blueprint title and repo are required")
-	}
-	if call.Name != "finalize_blueprint" {
-		return toolExecution{Output: map[string]any{
-			"title": strings.TrimSpace(args.Title), "repo": strings.TrimSpace(args.Repo),
-			"content": parsed.Markdown, "acceptance_count": len(parsed.Acceptance),
-			"decomposition_count": len(parsed.Decomposition),
-		}}, nil
-	}
-	if s.FinalizeBlueprint == nil {
-		return toolExecution{}, fmt.Errorf("blueprint finalization is unavailable")
-	}
-	taskID := plannedID(session.ID)
-	task, version, err := s.FinalizeBlueprint(
-		ctx, session.ID, taskID, args.Title, args.Repo, args.structured(), model,
-	)
-	if err != nil {
-		return toolExecution{}, err
-	}
-	return toolExecution{
-		Output: map[string]any{
-			"task": task, "spec": version,
-			"approval_required": task.State == core.TaskAwaiting,
-		},
-		Produced: &produced{TaskID: task.ID, Title: task.Title},
-	}, nil
 }
 
 func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, call toolCall) (toolExecution, error) {

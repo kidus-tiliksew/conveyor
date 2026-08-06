@@ -1135,7 +1135,7 @@ func TestRunHarnessChildMaterializesSpecRepositoryOutsideWorkerDirectory(t *test
 				http.Error(w, "wrong session", http.StatusForbidden)
 				return
 			}
-			if request.Params.Name == "submit_spec" {
+			if request.Params.Name == "submit_plan" {
 				state = core.WorkOrderCompleted
 			} else if request.Params.Name != "get_work_order" {
 				http.Error(w, "unexpected tool", http.StatusBadRequest)
@@ -1898,10 +1898,9 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		}
 	}
 	if strings.Contains(orderID, "spec") {
-		identity["markdown"] = "## Intent\nGrounded spec"
-		identity["acceptance"] = []any{}
+		identity["markdown"] = "## Approach\nGrounded plan.\n\n## Files touched\n- README.md\n\n## Ordering\n1. Verify the repository.\n\n## Risks\n- None.\n\n## Done criteria\n- The repository is verified."
 		identity["decomposition"] = []any{}
-		call("submit_spec", identity)
+		call("submit_plan", identity)
 	} else if strings.Contains(orderID, "implement") {
 		call("submit_for_review", identity)
 	} else {

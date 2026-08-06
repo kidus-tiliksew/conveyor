@@ -60,9 +60,8 @@ satisfy.)
   the documented mechanism (if yes, the agent should propose the design
   revision in-session; if no, say no revision is warranted — this steers
   the drift/suppression outcome).
-- Attach the requirement a task serves via the blueprint `serves` link
-  after its spec exists (`POST /v1/blueprints/{task}/requirements/{req}/serves`
-  with `{"confirm": true}`) — task-level serves arrives with Phase 8.3.
+- Attach the requirements a task serves directly at intake with
+  `requirement_ids` (or a planning-bundle task's `context.requirement_ids`).
 
 ## After filing
 
