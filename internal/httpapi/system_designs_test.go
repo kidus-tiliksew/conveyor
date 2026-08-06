@@ -154,6 +154,21 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	if firstDecision.ID != "DEC-1" || secondDecision.ID != "DEC-2" {
 		t.Fatalf("decision identities first=%s second=%s", firstDecision.ID, secondDecision.ID)
 	}
+	dismissDecision := httptest.NewRequest(http.MethodPost, "/v1/decisions/"+secondDecision.ID+"/dismiss", nil)
+	dismissDecision.Header.Set("Authorization", "Bearer token")
+	dismissDecision.Header.Set("X-Conveyor-Actor", "dashboard-operator")
+	dismissedDecision := httptest.NewRecorder()
+	handler.ServeHTTP(dismissedDecision, dismissDecision)
+	if dismissedDecision.Code != http.StatusOK || !strings.Contains(dismissedDecision.Body.String(), `"status":"dismissed"`) || !strings.Contains(dismissedDecision.Body.String(), `"dismissed_by":"dashboard-operator"`) {
+		t.Fatalf("dismiss decision status=%d body=%s", dismissedDecision.Code, dismissedDecision.Body.String())
+	}
+	confirmDismissed := httptest.NewRequest(http.MethodPost, "/v1/decisions/"+secondDecision.ID+"/confirm", nil)
+	confirmDismissed.Header.Set("Authorization", "Bearer token")
+	confirmDismissedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(confirmDismissedResponse, confirmDismissed)
+	if confirmDismissedResponse.Code != http.StatusConflict {
+		t.Fatalf("confirm dismissed decision status=%d body=%s", confirmDismissedResponse.Code, confirmDismissedResponse.Body.String())
+	}
 
 	spoof := httptest.NewRequest(http.MethodPost, "/v1/decisions", strings.NewReader(`{"statement":"Spoof.","context":"Bad provenance.","alternatives_rejected":"Server binding.","origin":"planning_session","origin_session_id":"forged"}`))
 	spoof.Header.Set("Authorization", "Bearer token")

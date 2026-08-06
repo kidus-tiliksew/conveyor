@@ -28,7 +28,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               ].join('\n\n')
             : '## Specification\n\nRegression marker at the bottom of the task content.'
   const reviewActivity =
-    taskId === 'attempt-recovery'
+    taskId === 'attempt-recovery' || taskId === 'decision-blocker'
       ? {
           jobs: [],
           events: [
@@ -99,7 +99,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               payload: {
                 attempt_id: 'attempt-2',
                 reason:
-                  'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                  taskId === 'decision-blocker'
+                    ? 'DEC-2 is proposed but not confirmed.'
+                    : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
                 outcome: 'released',
                 retry_suppressed: true,
               },
@@ -117,7 +119,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               last_attempt_id: 'attempt-2',
               last_attempt_outcome: 'released',
               last_failure_message:
-                'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                taskId === 'decision-blocker'
+                  ? 'DEC-2 is proposed but not confirmed.'
+                  : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
               last_failure_at: '2026-07-15T12:04:00Z',
               automatic_retry_count: 1,
               retry_suppressed: true,
@@ -3223,6 +3227,15 @@ test('dependency links follow the detail route variant and spec claiming stays a
   await expect(timeline.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
   await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
+})
+
+test('a pending decision blocker links directly to its System Design decision card', async ({ page }) => {
+  await page.goto('/tasks/decision-blocker/full')
+  const blocker = page.locator('section[aria-labelledby="current-execution-title"]')
+  const decision = blocker.getByRole('link', { name: 'Open DEC-2 in System Design' })
+  await expect(decision).toHaveAttribute('href', '/system-design#decision-dec-2')
+  await decision.click()
+  await expect(page).toHaveURL(/\/system-design#decision-dec-2$/)
 })
 
 test('recovery-needing work stays primary when dependencies are also unresolved', async ({ page }) => {

@@ -224,6 +224,19 @@ func assertSystemDesignAndDecisionLineage(t *testing.T, st store.Store, ctx cont
 	if _, err = st.ConfirmDecision(ctx, competingDecision.ID); !errors.Is(err, store.ErrDecisionSupersessionConflict) {
 		t.Fatalf("competing confirmation error=%v, want typed supersession conflict", err)
 	}
+	dismissed, err := st.DismissDecision(ctx, competingDecision.ID)
+	if err != nil || dismissed.Status != core.DecisionDismissed || dismissed.DismissedBy == "" || dismissed.DismissedAt.IsZero() {
+		t.Fatalf("dismissed decision=%+v err=%v", dismissed, err)
+	}
+	if _, err = st.DismissDecision(ctx, competingDecision.ID); err != nil {
+		t.Fatalf("idempotent dismissal error=%v", err)
+	}
+	if _, err = st.ConfirmDecision(ctx, competingDecision.ID); !errors.Is(err, store.ErrDecisionSupersessionConflict) {
+		t.Fatalf("dismissed confirmation error=%v, want typed lifecycle conflict", err)
+	}
+	if predecessor, getErr := st.GetDecision(ctx, secondDecision.ID); getErr != nil || predecessor.Status != core.DecisionConfirmed {
+		t.Fatalf("dismissal altered confirmed successor=%+v err=%v", predecessor, getErr)
+	}
 	planningDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Record planning provenance.", Context: "Production planning emits session origins.", AlternativesRejected: "Task-only coverage misses the live path.", Origin: core.DecisionOriginPlanning, OriginSessionID: session.ID})
 	if err != nil {
 		t.Fatal(err)

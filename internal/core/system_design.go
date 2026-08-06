@@ -208,6 +208,7 @@ type DecisionStatus string
 const (
 	DecisionProposed   DecisionStatus = "proposed"
 	DecisionConfirmed  DecisionStatus = "confirmed"
+	DecisionDismissed  DecisionStatus = "dismissed"
 	DecisionSuperseded DecisionStatus = "superseded"
 )
 
@@ -223,6 +224,8 @@ type Decision struct {
 	Supersedes           string         `json:"supersedes,omitempty"`
 	ConfirmedBy          string         `json:"confirmed_by,omitempty"`
 	ConfirmedAt          time.Time      `json:"confirmed_at,omitempty"`
+	DismissedBy          string         `json:"dismissed_by,omitempty"`
+	DismissedAt          time.Time      `json:"dismissed_at,omitempty"`
 	SupersededBy         string         `json:"superseded_by,omitempty"`
 	Workspace            string         `json:"workspace"`
 	CreatedAt            time.Time      `json:"created_at"`

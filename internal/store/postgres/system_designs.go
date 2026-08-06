@@ -367,7 +367,7 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 			}
 		}
 		decision.Workspace, decision.Status, decision.CreatedAt = workspace(ctx), core.DecisionProposed, time.Now().UTC()
-		decision.ConfirmedBy, decision.ConfirmedAt, decision.SupersededBy = "", time.Time{}, ""
+		decision.ConfirmedBy, decision.ConfirmedAt, decision.DismissedBy, decision.DismissedAt, decision.SupersededBy = "", time.Time{}, "", time.Time{}, ""
 		if _, err := tx.Exec(ctx, `INSERT INTO decisions(workspace_id,id,statement,context,alternatives_rejected,status,origin,origin_session_id,origin_task_id,supersedes,created_at) VALUES($1,$2,$3,$4,$5,'proposed',$6,$7,$8,$9,$10)`, workspace(ctx), decision.ID, decision.Statement, decision.Context, decision.AlternativesRejected, string(decision.Origin), nullString(decision.OriginSessionID), nullString(decision.OriginTaskID), nullString(decision.Supersedes), decision.CreatedAt); err != nil {
 			return err
 		}
@@ -429,19 +429,46 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 	return decision, err
 }
 
-const decisionSelect = `SELECT workspace_id,id,statement,context,alternatives_rejected,status,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),coalesce(supersedes,''),coalesce(confirmed_by,''),confirmed_at,coalesce(superseded_by,''),created_at FROM decisions`
+func (s *Store) DismissDecision(ctx context.Context, id string) (core.Decision, error) {
+	var decision core.Decision
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		decision, err = scanDecision(tx.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id), id)
+		if err != nil {
+			return err
+		}
+		if decision.Status == core.DecisionDismissed {
+			return nil
+		}
+		if decision.Status != core.DecisionProposed {
+			return fmt.Errorf("%w: decision %s is %s and cannot be dismissed", store.ErrDecisionSupersessionConflict, id, decision.Status)
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = tx.Exec(ctx, `UPDATE decisions SET status='dismissed',dismissed_by=$3,dismissed_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, actor.ID, now); err != nil {
+			return err
+		}
+		decision.Status, decision.DismissedBy, decision.DismissedAt = core.DecisionDismissed, actor.ID, now
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.dismissed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "dismissed_by": actor.ID, "supersedes": decision.Supersedes})})
+	})
+	return decision, err
+}
+
+const decisionSelect = `SELECT workspace_id,id,statement,context,alternatives_rejected,status,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),coalesce(supersedes,''),coalesce(confirmed_by,''),confirmed_at,coalesce(dismissed_by,''),dismissed_at,coalesce(superseded_by,''),created_at FROM decisions`
 
 func scanDecision(row pgx.Row, id string) (core.Decision, error) {
 	var item core.Decision
 	var status, origin string
-	var confirmedAt *time.Time
-	err := row.Scan(&item.Workspace, &item.ID, &item.Statement, &item.Context, &item.AlternativesRejected, &status, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Supersedes, &item.ConfirmedBy, &confirmedAt, &item.SupersededBy, &item.CreatedAt)
+	var confirmedAt, dismissedAt *time.Time
+	err := row.Scan(&item.Workspace, &item.ID, &item.Statement, &item.Context, &item.AlternativesRejected, &status, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Supersedes, &item.ConfirmedBy, &confirmedAt, &item.DismissedBy, &dismissedAt, &item.SupersededBy, &item.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: decision %s", store.ErrNotFound, id)
 	}
 	item.Status, item.Origin = core.DecisionStatus(status), core.DecisionOrigin(origin)
 	if confirmedAt != nil {
 		item.ConfirmedAt = *confirmedAt
+	}
+	if dismissedAt != nil {
+		item.DismissedAt = *dismissedAt
 	}
 	return item, err
 }

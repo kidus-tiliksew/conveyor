@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { Check, MessageCircleQuestion, PenLine, Sparkles } from 'lucide-react'
+import { Check, MessageCircleQuestion, PenLine, Sparkles, X } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
@@ -13,6 +13,7 @@ import {
   fetchDecisions,
   fetchPlanningSession,
   fetchSystemDesigns,
+  resolveDecision,
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
@@ -34,6 +35,15 @@ export function SystemDesignPage() {
     queryFn: fetchDecisions,
     enabled: Boolean(workspace),
   })
+  const resolve = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) => resolveDecision(token, id, action),
+    onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
+  })
+  useEffect(() => {
+    if (!decisions.data?.length || !window.location.hash) return
+    const anchor = window.location.hash.slice(1)
+    requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView({ block: 'start' }))
+  }, [decisions.data])
   const selected = designs.data?.find((item) => item.document.id === search.document)
   useEffect(() => {
     if (!designs.data?.length || selected) return
@@ -143,16 +153,76 @@ export function SystemDesignPage() {
           <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">Decision records</h2>
           <div className="mt-3 space-y-2">
             {(decisions.data ?? []).map((decision) => (
-              <article key={decision.id} className="rounded-md border border-border p-3">
-                <div className="flex gap-2">
-                  <Badge variant="mono">{decision.id}</Badge>
-                  <Badge>{decision.status}</Badge>
+              <article
+                id={`decision-${decision.id.toLowerCase()}`}
+                key={decision.id}
+                className={`scroll-mt-6 rounded-md border p-3 ${decision.status === 'dismissed' ? 'border-failure/25 bg-failure-soft/20' : 'border-border'}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex gap-2">
+                    <Badge variant="mono">{decision.id}</Badge>
+                    <Badge
+                      variant={
+                        decision.status === 'confirmed'
+                          ? 'positive'
+                          : decision.status === 'dismissed'
+                            ? 'failure'
+                            : 'default'
+                      }
+                    >
+                      {decision.status}
+                    </Badge>
+                  </div>
+                  {decision.status === 'proposed' && token && (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        disabled={resolve.isPending}
+                        onClick={() => resolve.mutate({ id: decision.id, action: 'confirm' })}
+                      >
+                        <Check />
+                        {resolve.isPending &&
+                        resolve.variables?.id === decision.id &&
+                        resolve.variables.action === 'confirm'
+                          ? 'Confirming…'
+                          : 'Confirm'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={resolve.isPending}
+                        onClick={() => resolve.mutate({ id: decision.id, action: 'dismiss' })}
+                      >
+                        <X />
+                        {resolve.isPending &&
+                        resolve.variables?.id === decision.id &&
+                        resolve.variables.action === 'dismiss'
+                          ? 'Dismissing…'
+                          : 'Dismiss'}
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 <p className="mt-2 text-sm font-medium">{decision.statement}</p>
                 <p className="mt-1 text-xs text-muted">{decision.context}</p>
+                {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
+                  <p className="mt-2 text-xs text-muted">
+                    Confirmed by {decision.confirmed_by} on {new Date(decision.confirmed_at).toLocaleString()}
+                  </p>
+                )}
+                {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
+                  <p className="mt-2 text-xs text-muted">
+                    Dismissed by {decision.dismissed_by} on {new Date(decision.dismissed_at).toLocaleString()}
+                  </p>
+                )}
               </article>
             ))}
           </div>
+          {resolve.error && (
+            <p className="mt-3 text-sm text-failure">
+              {errorMessage(resolve.error, 'Could not resolve this decision.')}
+            </p>
+          )}
         </section>
       </main>
       <aside

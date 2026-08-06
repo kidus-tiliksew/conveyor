@@ -172,6 +172,7 @@ function CurrentExecutionSummary({
 }) {
   const paused = state.status === 'paused'
   const relatedRoute = relatedTaskRoute(routeVariant)
+  const blockerDecision = state.blocker.match(/\bDEC-[1-9][0-9]*\b/)?.[0]
   return (
     <section
       aria-labelledby="current-execution-title"
@@ -221,7 +222,7 @@ function CurrentExecutionSummary({
                 ))}
               </span>
             ) : (
-              state.blocker
+              <DecisionBlockerText blocker={state.blocker} decisionID={blockerDecision} />
             )}
           </dd>
         </div>
@@ -235,6 +236,25 @@ function CurrentExecutionSummary({
         </div>
       </dl>
     </section>
+  )
+}
+
+function DecisionBlockerText({ blocker, decisionID }: { blocker: string; decisionID?: string }) {
+  if (!decisionID) return blocker
+  const [before, ...after] = blocker.split(decisionID)
+  return (
+    <>
+      {before}
+      <Link
+        to="/system-design"
+        hash={`decision-${decisionID.toLowerCase()}`}
+        className="text-primary hover:underline"
+        aria-label={`Open ${decisionID} in System Design`}
+      >
+        {decisionID}
+      </Link>
+      {after.join(decisionID)}
+    </>
   )
 }
 

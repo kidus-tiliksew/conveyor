@@ -304,7 +304,7 @@ func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (c
 		}
 	}
 	decision.Workspace, decision.Status = workspace, core.DecisionProposed
-	decision.ConfirmedBy, decision.ConfirmedAt, decision.SupersededBy = "", time.Time{}, ""
+	decision.ConfirmedBy, decision.ConfirmedAt, decision.DismissedBy, decision.DismissedAt, decision.SupersededBy = "", time.Time{}, "", time.Time{}, ""
 	if decision.CreatedAt.IsZero() {
 		decision.CreatedAt = time.Now().UTC()
 	}
@@ -312,6 +312,30 @@ func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (c
 	m.appendEventLocked(ctx, core.Event{Kind: "decision.proposed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "decision_id": decision.ID, "origin": decision.Origin,
 		"origin_session_id": decision.OriginSessionID, "origin_task_id": decision.OriginTaskID, "supersedes": decision.Supersedes,
+	})})
+	return decision, nil
+}
+
+func (m *memory) DismissDecision(ctx context.Context, id string) (core.Decision, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: id}
+	decision, ok := m.decisions[key]
+	if !ok {
+		return core.Decision{}, fmt.Errorf("%w: decision %s", ErrNotFound, id)
+	}
+	if decision.Status == core.DecisionDismissed {
+		return decision, nil
+	}
+	if decision.Status != core.DecisionProposed {
+		return core.Decision{}, fmt.Errorf("%w: decision %s is %s and cannot be dismissed", ErrDecisionSupersessionConflict, id, decision.Status)
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	decision.Status, decision.DismissedBy, decision.DismissedAt = core.DecisionDismissed, actor.ID, now
+	m.decisions[key] = decision
+	m.appendEventLocked(ctx, core.Event{Kind: "decision.dismissed", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "decision_id": id, "dismissed_by": actor.ID, "supersedes": decision.Supersedes,
 	})})
 	return decision, nil
 }

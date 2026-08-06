@@ -221,6 +221,7 @@ type Store interface {
 
 	ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error)
 	ConfirmDecision(ctx context.Context, id string) (core.Decision, error)
+	DismissDecision(ctx context.Context, id string) (core.Decision, error)
 	GetDecision(ctx context.Context, id string) (core.Decision, error)
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
 
