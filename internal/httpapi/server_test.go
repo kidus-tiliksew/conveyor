@@ -1965,10 +1965,11 @@ type taskOperationsResponse []struct {
 			} `json:"designs"`
 		} `json:"context"`
 	} `json:"task"`
-	NeedsAttention       bool             `json:"needs_attention"`
-	UnsatisfiableTaskIDs []string         `json:"unsatisfiable_task_ids"`
-	ChildRollup          *taskChildRollup `json:"child_rollup"`
-	Plan                 taskPlanStatus   `json:"plan"`
+	Stalled              *taskStalledSummary `json:"stalled"`
+	NeedsAttention       bool                `json:"needs_attention"`
+	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids"`
+	ChildRollup          *taskChildRollup    `json:"child_rollup"`
+	Plan                 taskPlanStatus      `json:"plan"`
 }
 
 func taskOperations(t *testing.T, st store.Store) taskOperationsResponse {
@@ -2212,5 +2213,52 @@ func TestTaskOperationsExposesNoBarredFields(t *testing.T) {
 		if _, present := task[barred]; present {
 			t.Fatalf("task carries barred field %q: %s", barred, response.Body.String())
 		}
+	}
+}
+
+// Staleness renders from the task-level surface (spec §21.58 change 7), so the
+// row carries the derived §21.34 reason a task cannot move — "needs operator"
+// alone does not say why. It travels as the list-scoped summary, never the work
+// order the detail surfaces render. A terminal task carries none: there is
+// nothing left to unstick.
+func TestTaskOperationsProjectsStalledStateAndDropsItOnTerminalTasks(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	const failure = "harness exited before completing work order"
+	for _, task := range []core.Task{
+		{ID: "stuck", Workspace: "demo", Title: "Stuck work", Repo: "conveyor", State: core.TaskQueued},
+		{ID: "shipped", Workspace: "demo", Title: "Shipped work", Repo: "conveyor", State: core.TaskMerged},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		jobID := task.ID + "-implement-1"
+		if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageImplement}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+			ID: jobID, TaskID: task.ID, JobID: jobID,
+			Stage: core.StageImplement, AutomaticRetryCount: 3, LastFailureMessage: failure,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items := taskOperations(t, st)
+	stuck := items[taskOperationsRow(t, items, "stuck")]
+	if stuck.Stalled == nil || !stuck.Stalled.Needed {
+		t.Fatalf("stalled row = %+v", stuck)
+	}
+	if stuck.Stalled.Reason != "dispatch is failing repeatedly" || stuck.Stalled.LastFailure != failure {
+		t.Fatalf("stalled reason = %q failure = %q", stuck.Stalled.Reason, stuck.Stalled.LastFailure)
+	}
+	// Stalled and needs-attention are independent facts: a task can hold at a
+	// gate and carry a stalled order at once, so the row states both.
+	if !stuck.NeedsAttention {
+		t.Fatalf("a stalled row must also read as needing an operator: %+v", stuck)
+	}
+	if shipped := items[taskOperationsRow(t, items, "shipped")]; shipped.Stalled != nil {
+		t.Fatalf("terminal row retained stalled state: %+v", shipped.Stalled)
 	}
 }

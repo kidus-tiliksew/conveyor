@@ -346,6 +346,60 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	}
 }
 
+// Staleness walks delivery edges at task level (spec §21.58 change 6).
+// Task-centric delivery attaches the requirement to the task itself (change 3),
+// so a merge on that task is the requirement's delivery — with no blueprint
+// anywhere in the walk, and none invented to stand in for one.
+func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-chain", Title: "Task-chain intent"}, core.RequirementVersion{
+		Content:    "Delivery follows the task that serves the requirement.",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Task-level service is delivery authority."}},
+		Origin:     core.RequirementOriginChat, OriginSessionID: "session-task-chain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "task-chain-delivery", Workspace: "demo", Title: "Task-chain delivery", Repo: "conveyor", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{
+		"id": requirement.ID, "version": proposed.Version,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	mergeAt := time.Now().UTC().Add(time.Minute)
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head", "task_title": task.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != task.Title ||
+		view.Staleness.LatestDeliveryAt == nil || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) {
+		t.Fatalf("task-chain staleness=%+v", view.Staleness)
+	}
+	if len(view.ServingBlueprints) != 0 {
+		t.Fatalf("task-centric delivery invented a blueprint record: %+v", view.ServingBlueprints)
+	}
+}
+
 func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

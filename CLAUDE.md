@@ -129,7 +129,21 @@ stage-typed order, versioned markdown exec plans with done-criteria,
 approval; `submit_plan` is the submission surface and the retired `submit_spec` name points callers to it); tasks carry attached
 context (`serves` at task level), planning finalize proposes
 document-revisions + task-set bundles; legacy blueprint/spec records remain a read-only historical lens, with migration 075 pinning the finite in-flight gate set; 8.4 Tasks view (list-first management — never priority,
-assignee, or declared phases). Nothing retires before 8.3.
+assignee, or declared phases) plus the simplification that follows it.
+Nothing retires before 8.3.
+
+**Operating surfaces after 8.4.** Tasks is the daily operating surface:
+one filterable list carrying each task's ordering, blocking and stalled
+state, attached context, and plan status, handing off to the task's own
+detail route. The board is retained as the pipeline lens over claimable
+work. The §21.49 Blueprints surface keeps its place and its rules —
+anchors stay off the stage-grouped feed, `/blueprints/$taskId` stays the
+anchor's home, and anchor detail still suppresses the affordances that
+are inert on it (checkout, assigned branch, hold) — but it now reads as
+history, because §21.58 change 2 retires the blueprint noun for new work
+while preserving the records. Requirement staleness walks delivery edges
+at task level (§21.58 change 6): `serves` straight onto the task, with
+the legacy blueprint chain retained so historical records read as before.
 
 **Phase 9 — deployment & multi-user (§21.54, resequenced §21.58)**
 follows Phase 8: embedded worker (may land earlier), identity/grants,

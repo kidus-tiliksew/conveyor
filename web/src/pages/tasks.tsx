@@ -174,6 +174,18 @@ function TaskRow({ item }: { item: TaskOperationsItem }) {
         <AttachedContext item={item} />
       </div>
 
+      {/* Staleness reads as the reason a row cannot move on its own, beside
+          the badge that says a human is wanted rather than instead of it: a
+          task can hold at a gate and carry a stalled order at once. The state
+          itself is the derived §21.34 projection the board and task detail
+          already render — the list neither stores nor re-derives one. */}
+      {item.stalled?.needed && (
+        <p className="mt-2 line-clamp-2 text-xs text-failure">
+          Stalled — {item.stalled.reason}
+          {item.stalled.last_failure ? `: ${item.stalled.last_failure}` : ''}
+        </p>
+      )}
+
       <p className="mt-2 text-[11px] text-faint">Updated {relativeTime(item.last_event_at || task.created_at)}</p>
     </div>
   )

@@ -324,6 +324,28 @@ test('a blueprint awaiting its spec gate stays in the review inbox', async ({ pa
   await expect(inbox.getByText('Awaiting review')).toBeVisible()
 })
 
+// Phase 8.4: the §21.49 planning-side surface keeps its place in the primary
+// navigation — only the label moved on, because §21.58 change 2 retires the
+// blueprint noun for new work while preserving the records. The surface says
+// plainly that it is history and where live delivery is managed instead.
+test('the blueprints surface reads as history and points live delivery at Tasks', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+
+  await page.goto('/')
+  const nav = page.getByRole('navigation', { name: 'Primary' })
+  const history = nav.getByRole('link', { name: 'Blueprint history' })
+  await expect(history).toBeVisible()
+  // The retired noun no longer names a place where work happens.
+  await expect(nav.getByRole('link', { name: 'Blueprints', exact: true })).toHaveCount(0)
+
+  await history.click()
+  await expect(page).toHaveURL(/\/blueprints$/)
+  await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
+  await page.getByRole('main').getByRole('link', { name: 'Tasks', exact: true }).click()
+  await expect(page).toHaveURL(/\/tasks$/)
+})
+
 // AC-1 (list half): the planning-side list speaks blueprint vocabulary, keeps
 // merged and closed apart, and points at the canonical detail route.
 test('the blueprints list reports delivery, governing version, and served requirements', async ({ page }) => {

@@ -936,13 +936,36 @@ type taskChildRollup struct {
 // assignee, or declared-phase field appears here, and none may be added
 // (AC-1.5).
 type taskOperationsItem struct {
-	Task                 core.Task        `json:"task"`
-	LatestStage          core.Stage       `json:"latest_stage,omitempty"`
-	LastEventAt          time.Time        `json:"last_event_at"`
-	NeedsAttention       bool             `json:"needs_attention"`
-	UnsatisfiableTaskIDs []string         `json:"unsatisfiable_task_ids,omitempty"`
-	ChildRollup          *taskChildRollup `json:"child_rollup,omitempty"`
-	Plan                 taskPlanStatus   `json:"plan"`
+	Task        core.Task  `json:"task"`
+	LatestStage core.Stage `json:"latest_stage,omitempty"`
+	LastEventAt time.Time  `json:"last_event_at"`
+	// Stalled says why a row cannot move on its own, so staleness is legible
+	// from the task-level surface (spec §21.58 change 7). The authority is the
+	// same derived §21.34 state the board and task detail read; only the fields
+	// a list row states travel with it.
+	Stalled              *taskStalledSummary `json:"stalled,omitempty"`
+	NeedsAttention       bool                `json:"needs_attention"`
+	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
+	ChildRollup          *taskChildRollup    `json:"child_rollup,omitempty"`
+	Plan                 taskPlanStatus      `json:"plan"`
+}
+
+// taskStalledSummary is the list-scoped view of store.StalledState. The detail
+// endpoints carry the whole state because they render the work order; a list
+// row renders a sentence, and store.StalledState embeds a core.WorkOrder whose
+// governance snapshot carries entire System Design documents — content that has
+// no business repeating once per row of a whole-workspace list.
+type taskStalledSummary struct {
+	Needed      bool   `json:"needed"`
+	Reason      string `json:"reason"`
+	LastFailure string `json:"last_failure,omitempty"`
+}
+
+func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
+	if stalled == nil {
+		return nil
+	}
+	return &taskStalledSummary{Needed: stalled.Needed, Reason: stalled.Reason, LastFailure: stalled.LastFailure}
 }
 
 // listTaskOperations serves the Phase 8.4 Tasks view (spec §21.58, REQ-1).
@@ -1007,6 +1030,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			Task:                 task,
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
+			Stalled:              taskStalledSummaryFor(marker.Stalled),
 			NeedsAttention:       needsAttention(task, marker),
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),

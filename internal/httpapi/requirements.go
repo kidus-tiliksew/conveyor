@@ -436,9 +436,12 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	return views, nil
 }
 
-// deliveryReachableTasks is the single staleness predicate. It follows only
-// confirmed requirement service into blueprint versions and their materialized
-// children; planning-session and dependency hops cannot import unrelated merges.
+// deliveryReachableTasks is the single staleness predicate. Staleness walks
+// delivery edges at task level (spec §21.58 change 6), so it follows `serves`
+// straight onto the task the requirement is attached to (change 3) as well as
+// the historical blueprint chain that predates it, which stays readable as
+// record. Planning-session and dependency hops remain excluded: they cannot
+// import unrelated merges.
 func deliveryReachableTasks(links []core.LineageLink, requirementID string) map[string]bool {
 	reachable := map[core.LineageNode]bool{{Type: core.LineageRequirement, ID: requirementID}: true}
 	tasks := map[string]bool{}
@@ -451,7 +454,8 @@ func deliveryReachableTasks(links []core.LineageLink, requirementID string) map[
 			if !reachable[src] {
 				continue
 			}
-			allowed := (link.Kind == "serves" && link.SrcType == core.LineageRequirement && link.DstType == core.LineageBlueprint) ||
+			allowed := (link.Kind == "serves" && link.SrcType == core.LineageRequirement &&
+				(link.DstType == core.LineageTask || link.DstType == core.LineageBlueprint)) ||
 				(link.Kind == "versions" && link.SrcType == core.LineageBlueprint && link.DstType == core.LineageBlueprintVersion) ||
 				(link.Kind == "materializes" && link.SrcType == core.LineageBlueprintVersion && link.DstType == core.LineageTask)
 			if !allowed || reachable[dst] {
