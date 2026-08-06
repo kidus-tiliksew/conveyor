@@ -930,8 +930,8 @@ function JobEntry({
           <span>{duration(job.started_at, job.ended_at)}</span>
           <ModelChip
             model={model}
-            tokensIn={job.tokens_in}
-            tokensOut={job.tokens_out}
+            tokensIn={providerUsage ? job.tokens_in : order ? order.tokens_in : job.tokens_in}
+            tokensOut={providerUsage ? job.tokens_out : order ? order.tokens_out : job.tokens_out}
             note={note || undefined}
             usageAvailable={
               providerUsage

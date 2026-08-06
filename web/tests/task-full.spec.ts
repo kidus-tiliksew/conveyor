@@ -2650,6 +2650,67 @@ test('in-process jobs retain provider usage when the matching work order has no 
   await expect(job.locator('time')).toBeVisible()
 })
 
+test('detailed operator jobs expose reported work-order usage when job counters are zero', async ({ page }) => {
+  await page.route('**/v1/tasks/work-order-usage/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'work-order-usage'
+    item.jobs = [
+      {
+        id: 'work-order-usage-implement',
+        task_id: 'work-order-usage',
+        stage: 'implement',
+        harness: 'codex',
+        model_tier: 'gpt-implement',
+        runner: 'worker',
+        confinement: 'none',
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        state: 'done',
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    item.work_orders = [
+      {
+        ...item.work_orders[1],
+        id: 'work-order-usage-implement',
+        task_id: 'work-order-usage',
+        job_id: 'work-order-usage-implement',
+        state: 'completed',
+        required_model: 'gpt-implement',
+        tokens_in: 1700,
+        tokens_out: 400,
+        usage_reported: true,
+        self_reported: true,
+      },
+    ]
+    item.events = [
+      {
+        id: 1,
+        task_id: 'work-order-usage',
+        job_id: 'work-order-usage-implement',
+        kind: 'job.summary',
+        actor_id: 'worker',
+        actor_role: 'runner',
+        payload: { summary: 'Operator-run implementation completed with reported usage.' },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/work-order-usage/full')
+  const job = page.locator('article').filter({ hasText: 'Operator-run implementation completed' })
+  const metadata = job.locator('[data-run-metadata="implement"]')
+  const model = metadata.getByText('gpt-implement', { exact: true })
+  const tooltip = metadata.getByRole('tooltip', { name: '1.7k in / 400 out · self-reported' })
+  await expect(tooltip).toContainText('1.7k in / 400 out · self-reported')
+  await expect(job).not.toContainText('0 in / 0 out')
+  await model.hover()
+  await expect(tooltip).toHaveCSS('opacity', '1')
+})
+
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
   await page.goto('/tasks/overflowing/full')
 
