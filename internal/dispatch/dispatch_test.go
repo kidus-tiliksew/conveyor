@@ -1067,6 +1067,41 @@ func TestConflictFixTerminalAttemptsPermitOneEpisodeLocalReplacement(t *testing.
 	}
 }
 
+func TestConflictFixTerminalAttemptBudgetExhaustsOneEpisode(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		order, err := d.DispatchConflictFix(ctx, task)
+		if err != nil || order.ID == "" {
+			t.Fatalf("dispatch %d order=%+v err=%v", attempt+1, order, err)
+		}
+		order.RetrySuppressed = true
+		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+		if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if replacement, err := d.DispatchConflictFix(ctx, task); err != nil || replacement.ID != "" {
+		t.Fatalf("exhausted replacement=%+v err=%v", replacement, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 3 {
+		t.Fatalf("orders=%+v err=%v, want three attempts", orders, err)
+	}
+	if exhausted, _ := st.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); exhausted != 1 {
+		t.Fatalf("exhaustion events=%d, want 1", exhausted)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil || store.LatestForgeFailure(events) == nil || store.LatestForgeFailure(events).Category != "conflict_dispatch_exhausted" {
+		t.Fatalf("needs-operator failure=%+v err=%v", store.LatestForgeFailure(events), err)
+	}
+}
+
 func TestConflictFixDispatchFailureIsAtomicAndEpisodeBackedOff(t *testing.T) {
 	ctx, base, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
 	if err := base.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {

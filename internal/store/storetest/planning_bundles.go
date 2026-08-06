@@ -165,6 +165,62 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	if _, err = st.UpdateTaskContext(ctx, taskID, store.TaskContextChange{Remove: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
 		t.Fatalf("pending attachment could not be removed: %v", err)
 	}
+
+	assertConfirmThenApproveBundle(t, st, ctx)
+}
+
+func assertConfirmThenApproveBundle(t *testing.T, st store.Store, ctx context.Context) {
+	t.Helper()
+	requirement, pending, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Confirm before approval"}, core.RequirementVersion{
+		Content: "Confirm first", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Activate context when confirmation precedes approval."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	design, designPending, err := st.CreateSystemDesign(ctx,
+		core.SystemDesign{ID: "design-" + core.NewTaskID(), Title: "Confirm-first design", Category: "Architecture"},
+		core.SystemDesignVersion{Content: designProposalContent("confirm first"), Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Goal: core.PlanningGoalBundle})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle-" + core.NewTaskID(), SessionID: session.ID, Title: "Confirm first", Documents: []core.PlanningBundleDocument{
+		{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: pending.Version},
+		{Kind: core.PlanningBundleSystemDesign, ID: design.ID, Version: designPending.Version},
+	}, Tasks: []core.PlanningBundleTask{{MemberID: "one", Title: "One", Body: "Body", Repo: "conveyor", Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}, DesignIDs: []string{design.ID}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, pending.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designPending.Version); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := st.ApprovePlanningBundle(ctx, bundle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := approved.Tasks[0].CreatedTaskID
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := map[string]bool{}
+	for _, event := range events {
+		if event.Kind == store.TaskContextRequirementActive || event.Kind == store.TaskContextDesignActive {
+			active[event.Kind] = true
+		}
+	}
+	if !active[store.TaskContextRequirementActive] || !active[store.TaskContextDesignActive] {
+		t.Fatalf("confirm-before-approve activation events missing: %+v", events)
+	}
+	assertTaskContextLink(t, st, ctx, core.LineageRequirement, requirement.ID, taskID, "serves")
+	assertTaskContextLink(t, st, ctx, core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(design.ID, designPending.Version), taskID, "governs")
 }
 
 func assertBundleEdges(t *testing.T, st store.Store, ctx context.Context, workspace, sessionID, bundleID, requirementID string, version int, designID string, designVersion int, taskID string) map[string]int64 {

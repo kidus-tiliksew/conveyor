@@ -118,6 +118,8 @@ type bundleContextVersions struct {
 	designs             map[string]int
 	pendingRequirements map[string]int
 	pendingDesigns      map[string]int
+	activeRequirements  map[string]int
+	activeDesigns       map[string]int
 }
 
 func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle core.PlanningBundle) (map[string]bundleContextVersions, error) {
@@ -132,10 +134,17 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle cor
 	}
 	result := map[string]bundleContextVersions{}
 	for _, member := range bundle.Tasks {
-		versions := bundleContextVersions{designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}}
+		versions := bundleContextVersions{designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}, activeRequirements: map[string]int{}, activeDesigns: map[string]int{}}
 		for _, id := range member.Context.RequirementIDs {
 			if version := pendingRequirements[id]; version > 0 {
 				versions.pendingRequirements[id] = version
+				var confirmed bool
+				if err := tx.QueryRow(ctx, `SELECT confirmed FROM requirement_versions WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, bundle.Workspace, id, version).Scan(&confirmed); err != nil {
+					return nil, notFound(err, "requirement %s version %d", id, version)
+				}
+				if confirmed {
+					versions.activeRequirements[id] = version
+				}
 				continue
 			}
 			if _, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{RequirementIDs: []string{id}}); err != nil {
@@ -145,6 +154,13 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle cor
 		for _, id := range member.Context.DesignIDs {
 			if version := pendingDesigns[id]; version > 0 {
 				versions.designs[id], versions.pendingDesigns[id] = version, version
+				var confirmed bool
+				if err := tx.QueryRow(ctx, `SELECT confirmed FROM system_design_versions WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, bundle.Workspace, id, version).Scan(&confirmed); err != nil {
+					return nil, notFound(err, "system design %s version %d", id, version)
+				}
+				if confirmed {
+					versions.activeDesigns[id] = version
+				}
 				continue
 			}
 			confirmed, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{DesignIDs: []string{id}})
@@ -265,6 +281,11 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 				if err = insertEvent(ctx, q, core.Event{TaskID: member.CreatedTaskID, Kind: store.TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(payload)}); err != nil {
 					return err
 				}
+				if version := contextVersions[member.MemberID].activeRequirements[reqID]; version > 0 {
+					if err = insertEvent(ctx, q, core.Event{TaskID: member.CreatedTaskID, Kind: store.TaskContextRequirementActive, At: now, Payload: core.JSONPayload(map[string]any{"id": reqID, "version": version})}); err != nil {
+						return err
+					}
+				}
 			}
 			for _, designID := range member.Context.DesignIDs {
 				payload := map[string]any{"id": designID, "version": contextVersions[member.MemberID].designs[designID]}
@@ -273,6 +294,11 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 				}
 				if err = insertEvent(ctx, q, core.Event{TaskID: member.CreatedTaskID, Kind: store.TaskContextDesignAdded, At: now, Payload: core.JSONPayload(payload)}); err != nil {
 					return err
+				}
+				if version := contextVersions[member.MemberID].activeDesigns[designID]; version > 0 {
+					if err = insertEvent(ctx, q, core.Event{TaskID: member.CreatedTaskID, Kind: store.TaskContextDesignActive, At: now, Payload: core.JSONPayload(map[string]any{"id": designID, "version": version})}); err != nil {
+						return err
+					}
 				}
 			}
 		}

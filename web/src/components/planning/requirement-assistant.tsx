@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 import { ArrowUpRight, GitBranch, MessageCircleQuestion, PenLine, Sparkles } from 'lucide-react'
 import { Button } from '../ui/button'
@@ -134,6 +135,16 @@ export function RequirementAssistant({
         <p className="shrink-0 border-b border-border px-4 py-2 text-xs text-failure">
           {errorMessage(startError, 'Could not start this planning session.')}
         </p>
+      )}
+      {session?.produced_bundle_id && (
+        <Link
+          to="/planning"
+          onClick={() => localStorage.setItem(`conveyor-planning-session:${workspace}`, session.id)}
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-primary/20 bg-primary-soft px-4 py-3 text-xs text-primary hover:underline"
+        >
+          <span>Delivery bundle ready. Review and approve it in Planning.</span>
+          <ArrowUpRight className="size-3.5 shrink-0" />
+        </Link>
       )}
 
       <div className="flex min-h-0 flex-1 flex-col">

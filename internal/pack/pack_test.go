@@ -239,6 +239,28 @@ func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 	}
 }
 
+func TestGovernanceContractBudgetsResolutionNotes(t *testing.T) {
+	t.Parallel()
+	contract := RenderGovernanceContract(core.StageReview, core.GovernanceSnapshot{
+		ResolutionNotes: []string{
+			"first retained note",
+			strings.Repeat("malformed proposal history ", MaxGovernanceContractBytes),
+			"last retained note",
+		},
+	})
+	if len(contract) > MaxGovernanceContractBytes {
+		t.Fatalf("contract bytes=%d cap=%d", len(contract), MaxGovernanceContractBytes)
+	}
+	for _, required := range []string{"first retained note", "last retained note", "Governance authority omitted by prompt budget", "governance resolution notes"} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("contract missing %q: %s", required, contract)
+		}
+	}
+	if strings.Contains(contract, "malformed proposal history malformed proposal history") {
+		t.Fatal("oversized governance resolution note was not omitted")
+	}
+}
+
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {

@@ -763,6 +763,7 @@ test('planning keeps partial text through malformed and error stream frames and 
   page,
 }) => {
   await initShell(page)
+  let bundleFetches = 0
   const session = {
     id: 'session-stream-error',
     title: 'Stream recovery',
@@ -776,6 +777,10 @@ test('planning keeps partial text through malformed and error stream frames and 
     if (shell) return await shell
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-bundles') {
+      bundleFetches++
+      return route.fulfill({ json: [] })
+    }
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session] })
     if (url.pathname === `/v1/planning-sessions/${session.id}`) return route.fulfill({ json: session })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
@@ -805,6 +810,7 @@ test('planning keeps partial text through malformed and error stream frames and 
   await expect(page.getByText('Planning request failed. Please retry.')).toBeVisible()
   await expect(page.getByLabel('read_requirement: failed')).toBeVisible()
   await expect(page.getByLabel('Planning message')).toBeEnabled()
+  await expect.poll(() => bundleFetches).toBeGreaterThanOrEqual(2)
 })
 
 test('planning explains run conflicts, uses a disabled default model fallback, and surfaces abandon failures', async ({
@@ -1717,6 +1723,13 @@ test('contextual Plan work starts a delivery bundle and never posts the retired 
   await assistant.getByRole('button', { name: 'Send' }).click()
   await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
   await expect(page).toHaveURL(/requirement=req-retries/)
+  const approvalLink = assistant.getByRole('link', { name: /Delivery bundle ready/ })
+  await expect(approvalLink).toBeVisible()
+  await approvalLink.click()
+  await expect(page).toHaveURL(/\/planning$/)
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('conveyor-planning-session:demo')))
+    .toBe('session-plan')
 })
 
 // AC-6: session lists carry human-readable goals with goal- or

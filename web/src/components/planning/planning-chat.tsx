@@ -103,8 +103,10 @@ export function PlanningChat({
       })
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
       void client.invalidateQueries({ queryKey: ['tasks', workspace] })
+      void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
     },
     onError: (error) => {
+      void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
       if (error instanceof DOMException && error.name === 'AbortError') return
       setStreamed((current) => failPendingMarkers(current, errorMessage(error)))
     },

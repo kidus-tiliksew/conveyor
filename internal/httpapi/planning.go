@@ -125,8 +125,6 @@ func (s *Server) getPlanningBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) approvePlanningBundle(w http.ResponseWriter, r *http.Request) {
-	s.planningBundleMu.Lock()
-	defer s.planningBundleMu.Unlock()
 	prior, err := s.Store.GetPlanningBundle(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writePlanningBundleError(w, err)
@@ -137,7 +135,21 @@ func (s *Server) approvePlanningBundle(w http.ResponseWriter, r *http.Request) {
 		writePlanningBundleError(w, err)
 		return
 	}
+	notify := false
 	if prior.Status == core.PlanningBundlePending && bundle.Status == core.PlanningBundleApproved && s.OnCreate != nil {
+		key := bundle.Workspace + "\x00" + bundle.ID
+		s.planningBundleMu.Lock()
+		if s.planningBundleDispatched == nil {
+			s.planningBundleDispatched = map[string]struct{}{}
+		}
+		_, alreadyDispatched := s.planningBundleDispatched[key]
+		if !alreadyDispatched {
+			s.planningBundleDispatched[key] = struct{}{}
+			notify = true
+		}
+		s.planningBundleMu.Unlock()
+	}
+	if notify {
 		for _, member := range bundle.Tasks {
 			s.OnCreate(r.Context(), member.CreatedTaskID)
 		}

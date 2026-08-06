@@ -30,6 +30,14 @@ after that they become explicitly `stale` and require
 `redispatch_work_order`. Phase 4.7 has no heartbeat tool; long work should
 claim again after expiry or choose a lease matching the expected operation.
 
+## Legacy task retries cannot add pinned intake context
+
+Tasks created before pinned requirement and governance context was recorded do
+not have an intake snapshot to preserve. Retrying one of those legacy tasks
+while supplying new context returns HTTP 409 instead of silently changing the
+authority of the existing task. Create a new task when new context is required;
+retries remain valid only with the task's original context.
+
 ## Task worktrees are local operator state
 
 Task intake stores a canonical branch name and selected base as metadata; it
