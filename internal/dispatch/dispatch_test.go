@@ -58,6 +58,16 @@ type concurrentSpecDispatchStore struct {
 
 type taskReadFailureStore struct{ store.Store }
 
+type failingConflictFixStore struct {
+	store.Store
+	calls int
+}
+
+func (s *failingConflictFixStore) CreateConflictFixCommand(context.Context, taskops.TaskLease, store.ConflictFixRequest) (store.ConflictFixResult, error) {
+	s.calls++
+	return store.ConflictFixResult{}, errors.New("forced conflict-fix order creation failure")
+}
+
 func (taskReadFailureStore) GetTask(context.Context, string) (core.Task, error) {
 	return core.Task{}, errors.New("task read unavailable")
 }
@@ -997,6 +1007,225 @@ func TestConflictFixDispatchIsIdempotentAndCarriesFrozenContract(t *testing.T) {
 	interventions, _ := st.ListInterventions(ctx, task.ID)
 	if len(orders) != 1 || len(interventions) != 1 || interventions[0].ActorRole != core.ActorSystem || interventions[0].ReasonCode != "merge-conflict" {
 		t.Fatalf("orders=%+v interventions=%+v", orders, interventions)
+	}
+}
+
+func TestConflictFixTerminalAttemptsPermitOneEpisodeLocalReplacement(t *testing.T) {
+	for _, terminalState := range []string{"submitted", "cancelled", "stale", "timed_out", "expired"} {
+		t.Run(terminalState, func(t *testing.T) {
+			ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+			if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+				t.Fatal(err)
+			}
+			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+			}
+			first, err := d.DispatchConflictFix(ctx, task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch terminalState {
+			case "submitted":
+				first, err = storetest.For(st).ClaimWorkOrder(ctx, first.ID, core.WorkOrderClaim{
+					SessionID: "conflict-terminal-session", ClientToken: "conflict-terminal-token",
+					Agent: "codex", Model: "operator", Lease: time.Minute, ExecutionTimeout: time.Hour,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				first.State = core.WorkOrderSubmitted
+				if err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdSubmitForReview); err != nil {
+					t.Fatal(err)
+				}
+			case "cancelled":
+				first.State = core.WorkOrderCancelled
+				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdCancel)
+			case "stale":
+				first.State = core.WorkOrderStale
+				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdMarkStale)
+			case "timed_out":
+				first.State = core.WorkOrderTimedOut
+				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdTimeout)
+			case "expired":
+				first.RetrySuppressed = true
+				first.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+				err = storetest.For(st).UpdateWorkOrder(ctx, first)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := d.DispatchConflictFix(ctx, task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+			interventions, _ := st.ListInterventions(ctx, task.ID)
+			if second.ID == "" || second.ID == first.ID || len(orders) != 2 || len(interventions) != 2 {
+				t.Fatalf("first=%+v second=%+v orders=%+v interventions=%+v", first, second, orders, interventions)
+			}
+		})
+	}
+}
+
+func TestConflictFixDispatchFailureIsAtomicAndEpisodeBackedOff(t *testing.T) {
+	ctx, base, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := base.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	d.Now = func() time.Time { return now }
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	failing := &failingConflictFixStore{Store: base}
+	d.Store = failing
+
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+		t.Fatalf("first dispatch error=%v", err)
+	}
+	current, _ := base.GetTask(ctx, task.ID)
+	orders, _ := base.ListTaskWorkOrders(ctx, task.ID)
+	interventions, _ := base.ListInterventions(ctx, task.ID)
+	if current.State != core.TaskApproved || len(orders) != 0 || len(interventions) != 0 {
+		t.Fatalf("partial conflict dispatch persisted: task=%+v orders=%+v interventions=%+v", current, orders, interventions)
+	}
+	if dispatched, _ := base.CountEvents(ctx, task.ID, "merge.conflict_fix_dispatched"); dispatched != 0 {
+		t.Fatalf("dispatch audit count=%d, want 0", dispatched)
+	}
+	if _, err := d.DispatchConflictFix(ctx, task); err != nil || failing.calls != 1 {
+		t.Fatalf("immediate retry err=%v calls=%d", err, failing.calls)
+	}
+	now = now.Add(time.Minute)
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 2 {
+		t.Fatalf("one-minute retry err=%v calls=%d", err, failing.calls)
+	}
+	now = now.Add(2 * time.Minute)
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 3 {
+		t.Fatalf("two-minute retry err=%v calls=%d", err, failing.calls)
+	}
+	now = now.Add(30 * time.Minute)
+	if _, err := d.DispatchConflictFix(ctx, task); err != nil || failing.calls != 3 {
+		t.Fatalf("exhausted retry err=%v calls=%d", err, failing.calls)
+	}
+	failed, _ := base.ListEvents(ctx, task.ID)
+	// The durable payloads expose the 1, 2, and 4 minute schedule even though
+	// the third failure suppresses automatic retries.
+	for i, want := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute} {
+		var payload struct {
+			FailureCount int       `json:"failure_count"`
+			NextRetryAt  time.Time `json:"next_retry_at"`
+		}
+		failureIndex := 0
+		for _, event := range failed {
+			if event.Kind != "merge.conflict_dispatch_failed" {
+				continue
+			}
+			if failureIndex == i {
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
+			failureIndex++
+		}
+		baseTime := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+		if i == 1 {
+			baseTime = baseTime.Add(time.Minute)
+		} else if i == 2 {
+			baseTime = baseTime.Add(3 * time.Minute)
+		}
+		if payload.FailureCount != i+1 || payload.NextRetryAt.Sub(baseTime) != want {
+			t.Fatalf("failure %d payload=%+v delay=%s want=%s", i+1, payload, payload.NextRetryAt.Sub(baseTime), want)
+		}
+	}
+	if exhausted, _ := base.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); exhausted != 1 {
+		t.Fatalf("exhausted events=%d, want 1", exhausted)
+	}
+}
+
+func TestConflictFixDispatchFailureBudgetResetsForChangedAndClearedEpisodes(t *testing.T) {
+	ctx, base, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := base.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	d.Now = func() time.Time { return now }
+	head, readiness := "conflicting-head", "CONFLICTING"
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: readiness, HeadSHA: head}, nil
+	}
+	failing := &failingConflictFixStore{Store: base}
+	d.Store = failing
+
+	for _, advance := range []time.Duration{0, time.Minute, 2 * time.Minute} {
+		now = now.Add(advance)
+		if _, err := d.DispatchConflictFix(ctx, task); err == nil {
+			t.Fatalf("dispatch %d unexpectedly succeeded", failing.calls+1)
+		}
+	}
+	if failing.calls != 3 {
+		t.Fatalf("exhausted calls=%d, want 3", failing.calls)
+	}
+
+	head = "changed-conflicting-head"
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 4 {
+		t.Fatalf("changed episode err=%v calls=%d", err, failing.calls)
+	}
+	readiness = "MERGEABLE"
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	readiness = "CONFLICTING"
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 5 {
+		t.Fatalf("cleared episode err=%v calls=%d", err, failing.calls)
+	}
+}
+
+func TestConflictFixInterruptedReviewRecoveryPrecedesHeldDispatch(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetTaskHold(ctx, task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired, CreatedAt: time.Now().UTC()}
+	if err := storetest.For(st).CreateWorkOrder(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	for range 3 {
+		if _, err := d.DispatchConflictFix(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	current, _ := st.GetTask(ctx, task.ID)
+	if len(orders) != 1 || len(interventions) != 0 || current.State != core.TaskApproved {
+		t.Fatalf("recovery precedence failed: task=%+v orders=%+v interventions=%+v", current, orders, interventions)
+	}
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.conflict_recovery_blocked"); blocked != 1 {
+		t.Fatalf("recovery-blocked events=%d, want 1", blocked)
+	}
+	interrupted.RetrySuppressed = false
+	interrupted.LastAttemptOutcome = ""
+	if err := storetest.For(st).UpdateWorkOrder(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.DispatchConflictFix(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	interventions, _ = st.ListInterventions(ctx, task.ID)
+	if len(orders) != 2 || len(interventions) != 1 || orders[1].ReasonCode != "merge-conflict" {
+		t.Fatalf("ordinary conflict dispatch did not resume: orders=%+v interventions=%+v", orders, interventions)
 	}
 }
 
