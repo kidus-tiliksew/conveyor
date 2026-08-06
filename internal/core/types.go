@@ -666,6 +666,29 @@ type WorkOrderRelease struct {
 	AutomaticRetryLimit int
 }
 
+// WorkOrderAttemptCheckpoint identifies one additive Git preservation commit
+// made for an implementation attempt. SessionID authorizes the caller's
+// current claim; AttemptID identifies the predecessor work being preserved.
+type WorkOrderAttemptCheckpoint struct {
+	SessionID         string `json:"session_id"`
+	AttemptID         string `json:"attempt_id"`
+	TerminationReason string `json:"termination_reason"`
+	CommitSHA         string `json:"commit_sha"`
+	PushResult        string `json:"push_result"`
+}
+
+// AuthorizesAttemptCheckpoint permits either the active attempt to preserve
+// its own work or its active successor to preserve the immediately recorded
+// predecessor. It never grants authority to an inactive or different task
+// session (spec §§21.48, 21.53).
+func (w WorkOrder) AuthorizesAttemptCheckpoint(workerID string, checkpoint WorkOrderAttemptCheckpoint, now time.Time) bool {
+	if w.Stage != StageImplement || w.State != WorkOrderClaimed || w.WorkerID != workerID ||
+		w.SessionID == "" || w.SessionID != checkpoint.SessionID || !w.LeaseExpiresAt.After(now) {
+		return false
+	}
+	return checkpoint.AttemptID != "" && (checkpoint.AttemptID == w.AttemptID || checkpoint.AttemptID == w.LastAttemptID)
+}
+
 // HarnessModelFailure is retained evidence that one frozen harness/model pair
 // was rejected by its provider. It is advisory only and never changes routing.
 type HarnessModelFailure struct {

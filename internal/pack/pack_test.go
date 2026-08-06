@@ -157,7 +157,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	normalizedImplement := strings.Join(strings.Fields(implement), " ")
-	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop"} {
+	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop", "`wip(attempt-` checkpoint commit", "never validation evidence"} {
 		if !strings.Contains(normalizedImplement, required) {
 			t.Errorf("implement role is missing %q", required)
 		}

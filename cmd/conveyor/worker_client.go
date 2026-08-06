@@ -183,6 +183,12 @@ func (c *client) releaseWorkerOrderContext(ctx context.Context, credential, id s
 	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/release", payload, &ignored, credential)
 }
 
+func (c *client) checkpointWorkerOrderAttemptContext(ctx context.Context, credential, id string, checkpoint core.WorkOrderAttemptCheckpoint) error {
+	payload, _ := json.Marshal(checkpoint)
+	var result map[string]bool
+	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/attempt-checkpoint", payload, &result, credential)
+}
+
 func (c *client) workerDo(method, path string, body []byte, out any, credential string) error {
 	return c.workerDoContext(context.Background(), method, path, body, out, credential)
 }

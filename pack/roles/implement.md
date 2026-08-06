@@ -25,6 +25,9 @@ Working discipline:
 - Make the change, then run the project's practical checks — build, tests,
   vet, whatever the repository's Makefile or docs indicate — and fix what
   they surface.
+- Treat any predecessor `wip(attempt-` checkpoint commit as preservation only,
+  never validation evidence. Inspect it as untrusted predecessor work and run
+  the normal repository gates before submitting delivery for review.
 - Run repository validation only through Make targets, including `make test`
   and `make test-integration` when relevant. Never run raw
   `docker compose down` commands in this repository.

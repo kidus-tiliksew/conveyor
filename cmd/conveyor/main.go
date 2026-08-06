@@ -395,9 +395,20 @@ func checkoutCmd() *cobra.Command {
 				}
 				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
 			}
-			path, err := checkoutTask(cmd.Context(), branch, base, repo, repoURL, args[0], destination)
+			checkpoint := assignedPredecessorCheckpointFromEnvironment(args[0])
+			path, checkpointed, err := checkoutTaskWithCheckpoint(cmd.Context(), branch, base, repo, repoURL, args[0], destination, checkpoint)
 			if err != nil {
 				return err
+			}
+			if checkpointed != nil {
+				client := newClient()
+				request := core.WorkOrderAttemptCheckpoint{
+					SessionID: os.Getenv("CONVEYOR_SESSION_ID"), AttemptID: checkpoint.AttemptID,
+					TerminationReason: checkpoint.TerminationReason, CommitSHA: checkpointed.CommitSHA, PushResult: "pushed",
+				}
+				if err = client.checkpointWorkerOrderAttemptContext(cmd.Context(), client.token, checkpoint.WorkOrderID, request); err != nil {
+					return fmt.Errorf("record predecessor attempt checkpoint %s: %w", checkpointed.CommitSHA, err)
+				}
 			}
 			fmt.Println(path)
 			return nil
@@ -405,6 +416,23 @@ func checkoutCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling conveyor-worktrees/<repo>-task-<id>)")
 	return cmd
+}
+
+func assignedPredecessorCheckpointFromEnvironment(taskID string) *attemptCheckpoint {
+	if strings.TrimSpace(os.Getenv("CONVEYOR_TASK_ID")) != taskID {
+		return nil
+	}
+	attemptID := strings.TrimSpace(os.Getenv("CONVEYOR_PREVIOUS_ATTEMPT_ID"))
+	currentAttemptID := strings.TrimSpace(os.Getenv("CONVEYOR_CURRENT_ATTEMPT_ID"))
+	workOrderID := strings.TrimSpace(os.Getenv("CONVEYOR_WORK_ORDER_ID"))
+	if attemptID == "" || currentAttemptID == "" || attemptID == currentAttemptID || workOrderID == "" || strings.TrimSpace(os.Getenv("CONVEYOR_SESSION_ID")) == "" {
+		return nil
+	}
+	reason := strings.TrimSpace(os.Getenv("CONVEYOR_PREVIOUS_ATTEMPT_REASON"))
+	if reason == "" {
+		reason = "successor adopted dirty predecessor work after worker loss"
+	}
+	return &attemptCheckpoint{AttemptID: attemptID, WorkOrderID: workOrderID, TerminationReason: reason}
 }
 
 // assignedCheckoutFromEnvironment resolves the branch assignment a worker

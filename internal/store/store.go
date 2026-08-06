@@ -181,6 +181,7 @@ type Store interface {
 	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
+	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 
 	// Feature methods remain only for migration and historical conformance.
 	// Live control-plane surfaces retired feature-tree mutation in §21.46.
@@ -1127,6 +1128,47 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
+}
+
+func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok || !order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC()) {
+		return false, ErrWorkOrderClaimLost
+	}
+	for _, event := range m.events[order.TaskID] {
+		if AttemptCheckpointEventMatches(event, order.ID, checkpoint.AttemptID, checkpoint.CommitSHA) {
+			return false, nil
+		}
+	}
+	m.appendEventLocked(ctx, core.Event{
+		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
+		ActorRole: core.ActorRunner, ActorID: workerID,
+		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
+	})
+	return true, nil
+}
+
+func AttemptCheckpointPayload(order core.WorkOrder, checkpoint core.WorkOrderAttemptCheckpoint) json.RawMessage {
+	return core.JSONPayload(map[string]any{
+		"task_id": order.TaskID, "work_order_id": order.ID, "attempt_id": checkpoint.AttemptID,
+		"termination_reason": checkpoint.TerminationReason, "commit_sha": checkpoint.CommitSHA,
+		"push_result": checkpoint.PushResult,
+	})
+}
+
+func AttemptCheckpointEventMatches(event core.Event, workOrderID, attemptID, commitSHA string) bool {
+	if event.Kind != "work_order.attempt_checkpointed" {
+		return false
+	}
+	var payload struct {
+		WorkOrderID string `json:"work_order_id"`
+		AttemptID   string `json:"attempt_id"`
+		CommitSHA   string `json:"commit_sha"`
+	}
+	return json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == workOrderID &&
+		payload.AttemptID == attemptID && payload.CommitSHA == commitSHA
 }
 
 func clearActiveAttempt(order *core.WorkOrder) {

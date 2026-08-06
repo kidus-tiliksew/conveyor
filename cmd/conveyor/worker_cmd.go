@@ -29,6 +29,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var workerAttemptCheckpointer = checkpointAssignedTaskWorktree
+
 func workerCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned Auto dispatcher"}
 	var ttl time.Duration
@@ -605,6 +607,39 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		defer cancel()
 		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus, FailureDetail: detail})
 	}
+	checkpointAttempt := func(reason string) error {
+		if item.Order.Stage != core.StageImplement {
+			return nil
+		}
+		// Rolling-upgrade and unit-test dispatch fixtures may predate the
+		// repository identity contract. They cannot safely identify a task
+		// worktree, so preservation remains unavailable rather than guessing.
+		if strings.TrimSpace(item.Task.Branch) == "" || strings.TrimSpace(item.Task.Repo) == "" || strings.TrimSpace(item.Repository.URL) == "" {
+			return nil
+		}
+		checkpointCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
+			AttemptID: claimed.AttemptID, WorkOrderID: item.Order.ID, TerminationReason: reason,
+		})
+		if checkpointErr != nil || result == nil {
+			return checkpointErr
+		}
+		return c.checkpointWorkerOrderAttemptContext(checkpointCtx, credential, item.Order.ID, core.WorkOrderAttemptCheckpoint{
+			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
+			CommitSHA: result.CommitSHA, PushResult: "pushed",
+		})
+	}
+	releaseAfterCheckpoint := func(outcome, reason string, exitStatus *int) error {
+		if checkpointErr := checkpointAttempt(reason); checkpointErr != nil {
+			if redactedStderr != nil {
+				_, _ = fmt.Fprintf(redactedStderr, "attempt checkpoint failed: %v\n", checkpointErr)
+			} else {
+				_, _ = fmt.Fprintf(stderr, "attempt checkpoint failed: %v\n", checkpointErr)
+			}
+		}
+		return release(outcome, reason, exitStatus)
+	}
 	if hook := workerPreStartTestHook; hook != nil {
 		hook(setupCtx)
 	}
@@ -660,11 +695,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		// checkout` resolves it locally; worker credentials are valid on the
 		// worker and MCP planes only, never on workspace REST reads, so a
 		// child cannot look the task up itself (spec §21.8).
-		"CONVEYOR_TASK_ID":          item.Task.ID,
-		"CONVEYOR_TASK_BRANCH":      item.Task.Branch,
-		"CONVEYOR_TASK_BASE_BRANCH": item.Task.BaseBranch,
-		"CONVEYOR_TASK_REPO":        item.Task.Repo,
-		"CONVEYOR_TASK_REPO_URL":    item.Repository.URL,
+		"CONVEYOR_TASK_ID":                 item.Task.ID,
+		"CONVEYOR_TASK_BRANCH":             item.Task.Branch,
+		"CONVEYOR_TASK_BASE_BRANCH":        item.Task.BaseBranch,
+		"CONVEYOR_TASK_REPO":               item.Task.Repo,
+		"CONVEYOR_TASK_REPO_URL":           item.Repository.URL,
+		"CONVEYOR_CURRENT_ATTEMPT_ID":      claimed.AttemptID,
+		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     claimed.LastAttemptID,
+		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": claimed.LastFailureMessage,
 	})
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
@@ -775,16 +813,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				exitStatus = &status
 			}
 		}
-		// Preserve the generic implementation failure path. Review children
-		// reconcile terminal state because a verdict can commit before a
-		// harness reports a later non-zero exit.
-		if item.Order.Stage != core.StageReview && waitErr != nil {
-			_ = release(core.WorkOrderOutcomeChildFailure, "harness exited: "+waitErr.Error(), exitStatus)
-			return waitErr
-		}
+		// Reconcile before checkpointing so a terminal handoff that committed
+		// just before child exit cannot receive a later WIP commit.
 		reconciled, reconcileErr := reconcileWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 		if reconcileErr != nil {
-			_ = release(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
+			_ = releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
 		}
 		renewed := reconciled.WorkOrder
@@ -793,10 +826,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, renewed, codexUsage)
 		if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
 			reason := "harness exited before completing work order"
+			if waitErr != nil {
+				reason = "harness exited: " + waitErr.Error()
+			}
 			if item.Order.Stage == core.StageReview {
 				reason = "harness exited without terminal verdict submission"
 			}
-			if releaseErr := release(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
+			if releaseErr := releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
 				return fmt.Errorf("%s: release claim: %w", reason, releaseErr)
 			}
 			if waitErr != nil {
@@ -809,6 +845,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		}
 		// A successful review verdict submission is authoritative even when
 		// the review child subsequently reports a non-zero exit.
+		if waitErr != nil && item.Order.Stage != core.StageReview {
+			return waitErr
+		}
 		return nil
 	}
 	for {
@@ -855,7 +894,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
-				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
 				return renewErr
 			}
 			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
@@ -866,6 +905,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
+				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -889,7 +929,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				status := exitErr.ExitCode()
 				exitStatus = &status
 			}
-			if releaseErr := release(core.WorkOrderOutcomeChildFailure, workerFirstActivityTimeoutReason, exitStatus); releaseErr != nil {
+			if releaseErr := releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, workerFirstActivityTimeoutReason, exitStatus); releaseErr != nil {
 				return fmt.Errorf("%s: release claim: %w", workerFirstActivityTimeoutReason, releaseErr)
 			}
 			return errors.New(workerFirstActivityTimeoutReason)
@@ -925,7 +965,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
-				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
 				return renewErr
 			}
 			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
@@ -935,6 +975,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
+				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -967,7 +1008,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				status := exitErr.ExitCode()
 				exitStatus = &status
 			}
-			if releaseErr := release(core.WorkOrderOutcomeStalled, workerStallTimeoutReason, exitStatus); releaseErr != nil {
+			if releaseErr := releaseAfterCheckpoint(core.WorkOrderOutcomeStalled, workerStallTimeoutReason, exitStatus); releaseErr != nil {
 				return fmt.Errorf("%s: release claim: %w", workerStallTimeoutReason, releaseErr)
 			}
 			return errors.New(workerStallTimeoutReason)
@@ -981,7 +1022,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
-				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
+				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
 				reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, _ = c.reconcileWorkerOrderReadOnlyContext(reconcileCtx, credential, item.Order.ID, sessionID)
 				cancel()
@@ -993,6 +1034,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
+				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
 				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
