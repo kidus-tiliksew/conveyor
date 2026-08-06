@@ -12,6 +12,7 @@ import type {
   RequirementView,
   RequirementVersion,
   PlanningSession,
+  PlanningBundle,
   PlanningSessionGoal,
   RequirementDerivation,
   PlanningMessage,
@@ -114,6 +115,17 @@ export async function confirmRequirementVersion(
 }
 export function fetchPlanningSessions() {
   return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions'))
+}
+export function fetchPlanningBundles() {
+  return getJSON<PlanningBundle[]>(workspaceURL('/v1/planning-bundles'))
+}
+export async function decidePlanningBundle(token: string, id: string, decision: 'approve' | 'reject') {
+  const response = await fetch(workspaceURL(`/v1/planning-bundles/${encodeURIComponent(id)}/${decision}`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<PlanningBundle>
 }
 export function fetchPlanningSession(sessionId: string) {
   return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`))

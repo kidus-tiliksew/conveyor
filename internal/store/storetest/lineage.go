@@ -557,7 +557,7 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 
 func assertCanonicalVocabulary(t *testing.T) {
 	t.Helper()
-	want := []string{"consulted", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "produced_blueprint", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
+	want := []string{"consulted", "creates", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "produced_blueprint", "produced_bundle", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "proposes", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
 	got := store.CanonicalLineageKinds()
 	if len(got) != len(want) {
 		t.Fatalf("canonical lineage vocabulary=%v, want %v", got, want)

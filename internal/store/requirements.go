@@ -26,6 +26,7 @@ type PlanningFinalizeRequest struct {
 	RequirementID        string
 	TaskID               string
 	SystemDesignID       string
+	BundleID             string
 	TranscriptArtifactID string
 	// Title is the produced artifact's title, which replaces the session's
 	// goal-derived provisional title (spec §21.57 change 3). An empty title
@@ -63,16 +64,16 @@ func NormalizeRequirementVersionDocument(version *core.RequirementVersion) error
 // produced nothing is abandoned, not finalized.
 func (r PlanningFinalizeRequest) Validate() error {
 	produced := 0
-	for _, id := range []string{r.RequirementID, r.TaskID, r.SystemDesignID} {
+	for _, id := range []string{r.RequirementID, r.TaskID, r.SystemDesignID, r.BundleID} {
 		if id != "" {
 			produced++
 		}
 	}
 	if produced > 1 {
-		return fmt.Errorf("planning session produces a requirement, a system design, or a blueprint task, never more than one")
+		return fmt.Errorf("planning session produces a requirement, a system design, a blueprint task, or a bundle, never more than one")
 	}
 	if produced == 0 {
-		return fmt.Errorf("planning session finalize requires a produced requirement, system design, or blueprint task")
+		return fmt.Errorf("planning session finalize requires a produced requirement, system design, blueprint task, or bundle")
 	}
 	return nil
 }
@@ -636,6 +637,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		if session.ProducedRequirementID == request.RequirementID &&
 			session.ProducedTaskID == request.TaskID &&
 			session.ProducedSystemDesignID == request.SystemDesignID &&
+			session.ProducedBundleID == request.BundleID &&
 			session.TranscriptArtifactID == request.TranscriptArtifactID {
 			return clonePlanningSession(session), nil
 		}
@@ -668,6 +670,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 			return core.PlanningSession{}, fmt.Errorf("system design %s not found", request.SystemDesignID)
 		}
 	}
+	if request.BundleID != "" {
+		if _, exists := m.planningBundles[memoryScopedKey{workspace: workspace, id: request.BundleID}]; !exists {
+			return core.PlanningSession{}, fmt.Errorf("planning bundle %s not found", request.BundleID)
+		}
+	}
 	if request.TranscriptArtifactID != "" {
 		if _, exists := m.artifacts[memoryArtifactKey{workspace: workspace, id: request.TranscriptArtifactID}]; !exists {
 			return core.PlanningSession{}, fmt.Errorf("artifact %s not found", request.TranscriptArtifactID)
@@ -694,6 +701,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	session.ProducedRequirementID = request.RequirementID
 	session.ProducedTaskID = request.TaskID
 	session.ProducedSystemDesignID = request.SystemDesignID
+	session.ProducedBundleID = request.BundleID
 	session.TranscriptArtifactID = request.TranscriptArtifactID
 	if title := strings.TrimSpace(request.Title); title != "" {
 		session.Title = title
@@ -706,6 +714,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		"produced_requirement_id":   session.ProducedRequirementID,
 		"produced_task_id":          session.ProducedTaskID,
 		"produced_system_design_id": session.ProducedSystemDesignID,
+		"produced_bundle_id":        session.ProducedBundleID,
 		"transcript_artifact_id":    session.TranscriptArtifactID,
 	})})
 	if session.RequirementContextID != "" && session.ProducedTaskID != "" {

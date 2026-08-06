@@ -27,6 +27,21 @@ Available tools and representative arguments:
 - `finalize_system_design {"document_id":"design-runtime","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
 - `propose_decision {"id":"","statement":"Use event-derived projections","context":"Lineage must rebuild from history.","alternatives_rejected":"Volunteered edges cannot prove provenance.","supersedes":""}`
 - `draft_blueprint`, `revise_blueprint`, and `finalize_blueprint` accept a title, repository, Markdown contract, acceptance criteria, and optional decomposition.
+- `finalize_bundle` accepts one reviewable delivery proposal with a title, pending document references, and tasks. Each task has a stable member ID, title, body, repo, optional base branch, member-only dependencies, and requirement/System Design context. It proposes work only; sessions never approve bundles or confirm documents. Invalid references or cycles return an in-band tool error. Bundle objects are in-product-only: local planning files equivalent task sets directly through the task-intake tool and dependency inputs.
+
+A complete three-task bundle looks like:
+
+~~~json
+{
+  "title": "Deliver billing retries",
+  "documents": [{"kind":"requirement","id":"req-billing-retries","version":2}],
+  "tasks": [
+    {"member_id":"storage","title":"Store retry policy","body":"Add the durable policy.","repo":"conveyor","context":{"requirement_ids":["req-billing-retries"]}},
+    {"member_id":"runtime","title":"Apply retry policy","body":"Use the policy in dispatch.","repo":"conveyor","depends_on":["storage"],"context":{"requirement_ids":["req-billing-retries"]}},
+    {"member_id":"ui","title":"Show retry policy","body":"Render the policy state.","repo":"conveyor","depends_on":["runtime"],"context":{"requirement_ids":["req-billing-retries"]}}
+  ]
+}
+~~~
 
 A complete promotion-shaped requirement call looks like:
 
@@ -64,11 +79,11 @@ Intent, Non-goals, acceptance criteria, repository, and optional decomposition
 are coherent. It creates a parent task and spec version at the unchanged
 approval gate.
 
-Every session declares a goal artifact — `requirement`, `system_design`, `blueprint`, or `open`
+Every session declares a goal artifact — `requirement`, `system_design`, `blueprint`, `bundle`, or `open`
 — stated with the conversation context below. A `requirement` goal accepts only
 `finalize_requirement`; a `system_design` goal accepts only
 `finalize_system_design`; a `blueprint` goal accepts only `finalize_blueprint`;
-`open` accepts any finalizer once you have established which artifact the operator
+and a `bundle` goal accepts only `finalize_bundle`; `open` accepts any finalizer once you have established which artifact the operator
 wants. Reaching for the wrong finalizer returns a `goal_mismatch` tool result
 and executes nothing: read it, keep working toward the declared artifact, and
 re-issue the correct finalize call. Drafting and revising the off-goal artifact

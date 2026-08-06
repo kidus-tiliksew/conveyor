@@ -1357,7 +1357,9 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 		title string
 	}{
 		{core.PlanningGoalRequirement, "Drafting requirement…"},
+		{core.PlanningGoalSystemDesign, "Designing system…"},
 		{core.PlanningGoalBlueprint, "Planning work…"},
+		{core.PlanningGoalBundle, "Planning delivery…"},
 		{core.PlanningGoalOpen, "Exploring…"},
 		{"", "Exploring…"},
 	} {
@@ -1381,12 +1383,12 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	// An unknown goal is refused before anything is persisted.
 	if _, err := service.CreateSession(ctx, CreateSessionInput{
 		Goal: core.PlanningSessionGoal("epic"),
-	}); err == nil || !strings.Contains(err.Error(), "want requirement, blueprint, or open") {
+	}); err == nil || !strings.Contains(err.Error(), "want requirement, system_design, blueprint, bundle, or open") {
 		t.Fatalf("unknown goal error=%v", err)
 	}
 	listed, err := st.ListPlanningSessions(ctx)
-	if err != nil || len(listed) != 4 {
-		t.Fatalf("listed=%d err=%v, want the four accepted sessions", len(listed), err)
+	if err != nil || len(listed) != 6 {
+		t.Fatalf("listed=%d err=%v, want the six accepted sessions", len(listed), err)
 	}
 }
 
@@ -2047,6 +2049,41 @@ func goalPlanningFixture(
 		t.Fatal(err)
 	}
 	return ctx, st, session
+}
+
+func TestServiceFinalizesBundleAfterInBandCycleCorrection(t *testing.T) {
+	ctx, st, session := goalPlanningFixture(t, "session-finalize-bundle", core.PlanningGoalBundle)
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-bundle", Title: "Bundle"}, core.RequirementVersion{Content: "Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered bundle."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := bundleArgs{Title: "Bundle delivery", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: pending.Version}}, Tasks: []core.PlanningBundleTask{{MemberID: "one", Title: "One", Body: "One", Repo: "conveyor", Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}}, {MemberID: "two", Title: "Two", Body: "Two", Repo: "conveyor", DependsOn: []string{"one"}, Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}}}}
+	invalid := valid
+	invalid.Tasks = append([]core.PlanningBundleTask(nil), valid.Tasks...)
+	invalid.Tasks[0].DependsOn = []string{"two"}
+	agent := &scriptedAgent{outputs: []string{
+		decisionJSON(t, "I found a cyclic draft.", []toolCall{{ID: "bad-bundle", Name: "finalize_bundle", ArgumentsJSON: jsonString(t, invalid)}}),
+		decisionJSON(t, "I corrected the dependency order.", []toolCall{{ID: "good-bundle", Name: "finalize_bundle", ArgumentsJSON: jsonString(t, valid)}}),
+	}}
+	service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
+	if err = service.Run(ctx, session.ID, UserMessage{Content: "Finalize the bundle."}, func(map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	finalized, err := st.GetPlanningSession(ctx, session.ID)
+	if err != nil || finalized.Status != core.PlanningSessionFinalized || finalized.ProducedBundleID == "" {
+		t.Fatalf("finalized=%+v err=%v", finalized, err)
+	}
+	bundle, err := st.GetPlanningBundle(ctx, finalized.ProducedBundleID)
+	if err != nil || bundle.Status != core.PlanningBundlePending || len(bundle.Tasks) != 2 {
+		t.Fatalf("bundle=%+v err=%v", bundle, err)
+	}
 }
 
 func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.T) {

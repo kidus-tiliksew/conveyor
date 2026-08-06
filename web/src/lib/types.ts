@@ -699,7 +699,35 @@ export interface RequirementDerivation {
 }
 
 /** The artifact a session declares it is working toward (spec §21.57). */
-export type PlanningSessionGoal = 'requirement' | 'system_design' | 'blueprint' | 'open'
+export type PlanningSessionGoal = 'requirement' | 'system_design' | 'blueprint' | 'bundle' | 'open'
+
+export interface PlanningBundle {
+  id: string
+  session_id: string
+  title: string
+  documents: Array<{
+    kind: 'requirement' | 'system_design' | 'decision'
+    id: string
+    version?: number
+    title?: string
+    status?: string
+  }>
+  tasks: Array<{
+    member_id: string
+    created_task_id: string
+    title: string
+    body: string
+    repo: string
+    base_branch?: string
+    depends_on?: string[]
+    context?: { requirement_ids?: string[]; system_design_ids?: string[] }
+  }>
+  status: 'pending' | 'approved' | 'rejected'
+  workspace: string
+  decided_by?: string
+  created_at: string
+  decided_at?: string
+}
 
 export interface PlanningSession {
   id: string
@@ -709,6 +737,7 @@ export interface PlanningSession {
   goal?: PlanningSessionGoal
   system_design_context_id?: string
   produced_system_design_id?: string
+  produced_bundle_id?: string
   requirement_context_id?: string
   promotion?: RequirementDerivation
   produced_requirement_id?: string

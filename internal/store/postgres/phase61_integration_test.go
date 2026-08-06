@@ -730,6 +730,99 @@ func TestConcurrentReciprocalDependencyEdgesCannotBothCommitIntegration(t *testi
 	}
 }
 
+func TestPlanningBundleApprovalTransactionIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle-" + core.NewTaskID(), Title: "Bundle"}, core.RequirementVersion{Content: "Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create bundled tasks."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create dependency-ordered bundled tasks."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Goal: core.PlanningGoalBundle})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle-" + core.NewTaskID(), SessionID: session.ID, Title: "Bundle", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: pending.Version}}, Tasks: []core.PlanningBundleTask{
+		{MemberID: "one", Title: "One", Body: "One", Repo: "conveyor", Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}},
+		{MemberID: "two", Title: "Two", Body: "Two", Repo: "conveyor", DependsOn: []string{"one"}, Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}},
+		{MemberID: "three", Title: "Three", Body: "Three", Repo: "conveyor", DependsOn: []string{"two"}, Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := st.ApprovePlanningBundle(ctx, bundle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ApprovePlanningBundle(ctx, bundle.ID); err != nil {
+		t.Fatal(err)
+	}
+	var tasks, edges, contexts int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE workspace_id=$1 AND id=ANY($2)`, workspace, []string{approved.Tasks[0].CreatedTaskID, approved.Tasks[1].CreatedTaskID, approved.Tasks[2].CreatedTaskID}).Scan(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies WHERE workspace_id=$1 AND task_id=ANY($2)`, workspace, []string{approved.Tasks[0].CreatedTaskID, approved.Tasks[1].CreatedTaskID, approved.Tasks[2].CreatedTaskID}).Scan(&edges); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=ANY($2) AND kind=$3`, workspace, []string{approved.Tasks[0].CreatedTaskID, approved.Tasks[1].CreatedTaskID, approved.Tasks[2].CreatedTaskID}, store.TaskContextRequirementAdded).Scan(&contexts); err != nil {
+		t.Fatal(err)
+	}
+	if tasks != 3 || edges != 2 || contexts != 3 {
+		t.Fatalf("tasks=%d edges=%d contexts=%d", tasks, edges, contexts)
+	}
+	version, err := st.GetRequirementVersion(ctx, requirement.ID, pending.Version)
+	if err != nil || version.Confirmed {
+		t.Fatalf("pending=%+v err=%v", version, err)
+	}
+	if _, err = st.RebuildLineage(ctx, core.LineageRebuildRequest{RequestID: "bundle-rebuild-" + core.NewTaskID(), Reason: "bundle integration proof"}); err != nil {
+		t.Fatal(err)
+	}
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proposedLinks, taskLinks int
+	for _, link := range links {
+		if link.SrcType == core.LineagePlanningBundle && link.SrcID == bundle.ID {
+			if link.Kind == "proposes" {
+				proposedLinks++
+			}
+			if link.Kind == "creates" {
+				taskLinks++
+			}
+		}
+	}
+	if proposedLinks != 1 || taskLinks != 3 {
+		t.Fatalf("rebuilt bundle lineage proposed=%d tasks=%d", proposedLinks, taskLinks)
+	}
+
+	existing := phase61Task(workspace, "collision-"+core.NewTaskID(), core.TaskQueued, "")
+	if err = st.CreateTask(ctx, existing); err != nil {
+		t.Fatal(err)
+	}
+	failureSession, _ := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-failure-" + core.NewTaskID(), Goal: core.PlanningGoalBundle})
+	failing, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle-failure-" + core.NewTaskID(), SessionID: failureSession.ID, Title: "Failure", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: pending.Version}}, Tasks: []core.PlanningBundleTask{{MemberID: "one", CreatedTaskID: existing.ID, Title: "Collision", Body: "Collision", Repo: "conveyor"}, {MemberID: "two", Title: "Must roll back", Body: "Must roll back", Repo: "conveyor", DependsOn: []string{"one"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ApprovePlanningBundle(ctx, failing.ID); err == nil {
+		t.Fatal("colliding approval unexpectedly succeeded")
+	}
+	stored, err := st.GetPlanningBundle(ctx, failing.ID)
+	if err != nil || stored.Status != core.PlanningBundlePending {
+		t.Fatalf("failed bundle=%+v err=%v", stored, err)
+	}
+	if _, err = st.GetTask(ctx, failing.Tasks[1].CreatedTaskID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("partial task persisted: %v", err)
+	}
+}
+
 func newPhase61IntegrationStore(t *testing.T) (*Store, context.Context, string) {
 	t.Helper()
 	st, err := Open(t.Context(), integrationDatabaseURL(t))

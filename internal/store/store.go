@@ -64,6 +64,11 @@ type Store interface {
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
+	CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error)
+	GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
+	ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error)
+	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
+	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
@@ -759,6 +764,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		systemDesignVersions:        map[memoryScopedKey][]core.SystemDesignVersion{},
 		decisions:                   map[memoryScopedKey]core.Decision{},
 		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
+		planningBundles:             map[memoryScopedKey]core.PlanningBundle{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
 		pairings:                    map[string]core.WorkerPairing{},
@@ -822,6 +828,7 @@ type memory struct {
 	systemDesignVersions        map[memoryScopedKey][]core.SystemDesignVersion
 	decisions                   map[memoryScopedKey]core.Decision
 	planningSessions            map[memoryScopedKey]core.PlanningSession
+	planningBundles             map[memoryScopedKey]core.PlanningBundle
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
 	pairings                    map[string]core.WorkerPairing
