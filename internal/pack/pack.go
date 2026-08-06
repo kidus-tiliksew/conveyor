@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 )
 
 type Loader struct{ Dir string }
@@ -102,7 +103,7 @@ response must contain the verdict.
 
 End your answer with exactly one machine-owned block and nothing after it:
 
-` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing blueprint criterion AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]},"governance_assessment":{"design_applicable":false,"decision_citable":false,"cited_ids":[],"unknown_ids":[],"ungoverned_ids":[],"superseded_ids":[],"conflicts":[]}}
+` + "```conveyor:review\n" + `{"verdict":"approve|changes_requested","reason_code":"approved|scope-creep|hallucinated-API|style|flaky-env|other","summary":"concise assessment citing blueprint criterion AC-n status","feedback":"specific implementation guidance, empty only on approval","requirement_citations":{"applicable":true,"cited_ids":[],"unknown_ids":[],"unserved_ids":[],"conflicts":[]},"done_criteria_coverage":{"applicable":true,"summary":"reasoned coverage assessment","satisfied":[],"unsatisfied":[],"unverified":[],"conflicts":[]},"governance_assessment":{"design_applicable":false,"decision_citable":false,"cited_ids":[],"unknown_ids":[],"ungoverned_ids":[],"superseded_ids":[],"conflicts":[]}}
 ` + "```"
 }
 
@@ -221,7 +222,7 @@ only what the diff changes.
 
 Before ending, call Conveyor's ` + "`submit_review_verdict`" + ` MCP tool with
 your verdict, reason code, summary, feedback, requirement-citation assessment,
-and System Design/DEC governance assessment, then wait for and observe a
+done-criteria coverage assessment, and System Design/DEC governance assessment, then wait for and observe a
 successful tool response. Printing, returning, or describing verdict JSON is
 not completion and is never a substitute for the tool call. A missing or failed
 tool response is not terminal success: keep the review active and retry or
@@ -233,4 +234,24 @@ during a long review and immediately before ` + "`submit_review_verdict`" + `,
 using the cumulative ` + "`tokens_in`" + `, ` + "`tokens_out`" + `, and
 ` + "`cost_usd`" + ` for this work order. If those figures are unavailable,
 continue normally: missing usage must never block a review verdict (DEC-1).`
+}
+
+// DoneCriteriaContract renders the task's statement of done for implement and
+// review. A plan section is authoritative when present; otherwise the task
+// description remains the legal fallback (spec §21.58 change 4).
+func DoneCriteriaContract(stage core.Stage, planContent, taskDescription string, hasServedRequirements bool) string {
+	done, hasPlan := pipeline.PlanDoneCriteria(planContent)
+	if stage == core.StageImplement && hasPlan {
+		return "\n\n# Execution-plan done criteria\n\nUse these criteria as the implementation completion checklist:\n\n" + done + "\n"
+	}
+	if stage != core.StageReview {
+		return ""
+	}
+	if hasPlan {
+		return "\n\n# Execution-plan done criteria\n\nJudge these beside the pinned served-requirement acceptance criteria:\n\n" + done + "\n\nRecord done_criteria_coverage with applicable=true, a reasoned summary, and four disjoint observation lists: satisfied, unsatisfied, unverified, and conflicts. This is a reasoned assessment, not parsed checklist matching.\n"
+	}
+	if hasServedRequirements {
+		return "\n\n# Execution-plan done criteria\n\nNo execution plan is available; judge the pinned served-requirement acceptance criteria. Record done_criteria_coverage with applicable=false, a concise summary, and all four finding lists empty.\n"
+	}
+	return "\n\n# Statement of done\n\nNo execution plan is available. The task description is the statement of done:\n\n" + strings.TrimSpace(taskDescription) + "\n\nRecord done_criteria_coverage with applicable=false, a concise fallback summary, and all four finding lists empty.\n"
 }

@@ -30,6 +30,10 @@ Working discipline:
   `docker compose down` commands in this repository.
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
+- When an approved execution plan is present, treat its done criteria as the
+  completion checklist beside any served-requirement ACs. If scope proves
+  oversized, report it through `report_progress`; implementation never creates
+  child tasks or a decomposition.
 - If an approved criterion is an explicit operator checkpoint, stop ordinary
   implementation when the checkpoint is reached. Call `report_progress` with
   a completion-shaped report identifying the checkpoint and the operator act

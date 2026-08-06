@@ -29,6 +29,33 @@ func TestParseReviewNormalizesRequirementCitationLists(t *testing.T) {
 	}
 }
 
+func TestParsePlanValidatesShapeAndExtractsDoneCriteria(t *testing.T) {
+	t.Parallel()
+	valid := "## Approach\nUse the current lifecycle.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Validate.\n\n## Risks\n- Event drift.\n\n## Done criteria\n- Both tool names work.\n"
+	parsed, err := ParsePlan(valid, []DecompositionItem{})
+	if err != nil || parsed.Markdown != strings.TrimSpace(valid) || len(parsed.Acceptance) != 0 || len(parsed.Decomposition) != 0 {
+		t.Fatalf("plan=%+v err=%v", parsed, err)
+	}
+	done, ok := PlanDoneCriteria(parsed.Markdown)
+	if !ok || !strings.Contains(done, "Both tool names work") {
+		t.Fatalf("done=%q ok=%t", done, ok)
+	}
+	for name, input := range map[string]struct {
+		markdown string
+		decomp   []DecompositionItem
+	}{
+		"missing done criteria": {markdown: strings.Replace(valid, "## Done criteria", "## Results", 1)},
+		"machine fence":         {markdown: valid + "\n```conveyor:acceptance\n[]\n```"},
+		"decomposition":         {markdown: valid, decomp: []DecompositionItem{{ID: "SUB-1", Repo: "api", Summary: "fan out"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, parseErr := ParsePlan(input.markdown, input.decomp); parseErr == nil {
+				t.Fatal("invalid plan succeeded")
+			}
+		})
+	}
+}
+
 func TestParseTriageTakesRequirementIDAndRejectsRetiredFeatureID(t *testing.T) {
 	t.Parallel()
 	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")

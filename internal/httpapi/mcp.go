@@ -246,6 +246,18 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		})
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
+	case "submit_plan":
+		payload, marshalErr := json.Marshal(map[string]any{"markdown": args["markdown"], "decomposition": args["decomposition"]})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		var value pipeline.StructuredPlan
+		decoder := json.NewDecoder(strings.NewReader(string(payload)))
+		decoder.DisallowUnknownFields()
+		if decodeErr := decoder.Decode(&value); decodeErr != nil {
+			return nil, fmt.Errorf("invalid structured plan: %w", decodeErr)
+		}
+		return s.WorkOrders.SubmitPlan(ctx, stringArg("work_order_id"), session, value)
 	case "submit_spec":
 		payload, marshalErr := json.Marshal(map[string]any{"markdown": args["markdown"], "acceptance": args["acceptance"], "decomposition": args["decomposition"]})
 		if marshalErr != nil {
@@ -270,7 +282,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		payload, marshalErr := json.Marshal(map[string]any{
 			"verdict": args["verdict"], "reason_code": args["reason_code"], "summary": args["summary"],
 			"feedback": args["feedback"], "requirement_citations": args["requirement_citations"],
-			"governance_assessment": args["governance_assessment"],
+			"done_criteria_coverage": args["done_criteria_coverage"],
+			"governance_assessment":  args["governance_assessment"],
 		})
 		if marshalErr != nil {
 			return nil, marshalErr
@@ -415,6 +428,11 @@ func mcpTools() []map[string]any {
 		"cited_ids":  stringList, "unknown_ids": stringList,
 		"unserved_ids": stringList, "conflicts": stringList,
 	}, "applicable", "cited_ids", "unknown_ids", "unserved_ids", "conflicts")
+	doneCriteriaCoverage := object(map[string]any{
+		"applicable": map[string]string{"type": "boolean"},
+		"summary":    str, "satisfied": stringList, "unsatisfied": stringList,
+		"unverified": stringList, "conflicts": stringList,
+	}, "applicable", "summary", "satisfied", "unsatisfied", "unverified", "conflicts")
 	governanceAssessment := object(map[string]any{
 		"applicable":        map[string]any{"type": "boolean", "description": "Legacy compatibility alias for design_applicable; new callers should send the split fields."},
 		"design_applicable": map[string]any{"type": "boolean", "description": "Whether the pinned System Design versions govern the task repository."},
@@ -441,9 +459,10 @@ func mcpTools() []map[string]any {
 		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
 		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
-		{"name": "submit_spec", "description": "Validate and submit a structured specification for a claimed spec order. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": str, "acceptance": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "criterion": str, "verify": str, "ref": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"id", "criterion", "verify"}, "additionalProperties": false}}, "decomposition": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "acceptance", "decomposition")},
+		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan and submit_spec produce equivalent plan submissions."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
+		{"name": "submit_spec", "description": "Transitional alias for submit_plan when acceptance is empty; legacy §4.1 structured specification submission remains callable until the Phase 8.3 retirement slice. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": str, "acceptance": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "criterion": str, "verify": str, "ref": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"id", "criterion", "verify"}, "additionalProperties": false}}, "decomposition": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "acceptance", "decomposition")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
-		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "governance_assessment": governanceAssessment}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "governance_assessment")},
+		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
 	}
 }

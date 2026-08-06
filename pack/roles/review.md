@@ -9,6 +9,9 @@ Method:
 
 - Walk the spec's acceptance criteria (AC-n) one by one: verify each is
   satisfied by the diff, or note precisely which are not and how.
+- Judge the execution plan's done criteria beside pinned served-requirement
+  ACs, and submit a reasoned `done_criteria_coverage` assessment. When no plan
+  and no served ACs exist, use the task description as the statement of done.
 - Run repository validation only through Make targets, including `make test`
   and `make test-integration` when relevant. Never run raw
   `docker compose down` commands in this repository.

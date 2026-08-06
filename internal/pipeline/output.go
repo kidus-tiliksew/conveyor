@@ -37,6 +37,7 @@ type Review struct {
 	Summary              string                              `json:"summary"`
 	Feedback             string                              `json:"feedback"`
 	RequirementCitations *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
+	DoneCriteriaCoverage *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
 	GovernanceAssessment *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
 }
 
@@ -61,6 +62,14 @@ type StructuredSpec struct {
 	Markdown      string                `json:"markdown"`
 	Acceptance    []AcceptanceCriterion `json:"acceptance"`
 	Decomposition []DecompositionItem   `json:"decomposition"`
+}
+
+// StructuredPlan is the task-scoped execution plan submitted through the
+// re-contented spec-stage machinery. Decomposition stays in the wire shape so
+// an attempted fan-out receives a precise in-band validation error.
+type StructuredPlan struct {
+	Markdown      string              `json:"markdown"`
+	Decomposition []DecompositionItem `json:"decomposition"`
 }
 
 var (
@@ -115,12 +124,82 @@ func ParseReview(output string) (Review, error) {
 		value.RequirementCitations.UnservedIDs = nonNilStrings(value.RequirementCitations.UnservedIDs)
 		value.RequirementCitations.Conflicts = nonNilStrings(value.RequirementCitations.Conflicts)
 	}
+	if value.DoneCriteriaCoverage != nil {
+		value.DoneCriteriaCoverage.Satisfied = nonNilStrings(value.DoneCriteriaCoverage.Satisfied)
+		value.DoneCriteriaCoverage.Unsatisfied = nonNilStrings(value.DoneCriteriaCoverage.Unsatisfied)
+		value.DoneCriteriaCoverage.Unverified = nonNilStrings(value.DoneCriteriaCoverage.Unverified)
+		value.DoneCriteriaCoverage.Conflicts = nonNilStrings(value.DoneCriteriaCoverage.Conflicts)
+	}
 	if value.GovernanceAssessment != nil {
 		if err := core.NormalizeGovernanceAssessment(value.GovernanceAssessment); err != nil {
 			return value, err
 		}
 	}
 	return value, nil
+}
+
+var planHeadingPattern = regexp.MustCompile(`(?im)^#{1,6}[ \t]+([^\r\n#]+?)[ \t]*#*[ \t]*$`)
+
+// ParsePlan validates a Markdown execution plan without introducing a second
+// document lifecycle. Plans are stored as ordinary spec versions until the
+// later retirement slice renames the persistence model (spec §21.58 change 4).
+func ParsePlan(markdown string, decomposition []DecompositionItem) (Spec, error) {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return Spec{}, fmt.Errorf("plan markdown is required")
+	}
+	if len(decomposition) != 0 {
+		return Spec{}, fmt.Errorf("plans cannot contain a decomposition; report oversized scope through progress/check-in instead")
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") && strings.Contains(strings.ToLower(trimmed), "conveyor:") {
+			return Spec{}, fmt.Errorf("plans cannot contain conveyor: machine fences")
+		}
+	}
+	headings := map[string]bool{}
+	for _, match := range planHeadingPattern.FindAllStringSubmatch(markdown, -1) {
+		name := strings.ToLower(strings.TrimSpace(match[1]))
+		name = strings.ReplaceAll(name, "-", " ")
+		name = strings.Join(strings.Fields(name), " ")
+		switch name {
+		case "approach":
+			headings["approach"] = true
+		case "files touched", "files to touch":
+			headings["files"] = true
+		case "ordering":
+			headings["ordering"] = true
+		case "risks":
+			headings["risks"] = true
+		case "done criteria", "definition of done":
+			headings["done criteria"] = true
+		}
+	}
+	for _, required := range []string{"approach", "files", "ordering", "risks", "done criteria"} {
+		if !headings[required] {
+			return Spec{}, fmt.Errorf("plan requires a recognizable %s heading", required)
+		}
+	}
+	return Spec{Markdown: markdown, Acceptance: []AcceptanceCriterion{}, Decomposition: []DecompositionItem{}}, nil
+}
+
+// PlanDoneCriteria returns the done-criteria section, including its heading,
+// for review prompt rendering. The same heading rules as ParsePlan apply.
+func PlanDoneCriteria(markdown string) (string, bool) {
+	matches := planHeadingPattern.FindAllStringSubmatchIndex(markdown, -1)
+	for i, match := range matches {
+		name := strings.ToLower(strings.TrimSpace(markdown[match[2]:match[3]]))
+		name = strings.Join(strings.Fields(strings.ReplaceAll(name, "-", " ")), " ")
+		if name != "done criteria" && name != "definition of done" {
+			continue
+		}
+		end := len(markdown)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		return strings.TrimSpace(markdown[match[0]:end]), true
+	}
+	return "", false
 }
 
 func nonNilStrings(values []string) []string {

@@ -1388,6 +1388,75 @@ func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 	}
 }
 
+func TestPlanSubmissionPreservesSpecGateLifecycleSequences(t *testing.T) {
+	t.Parallel()
+	type eventProjection struct {
+		Kind    string
+		Payload string
+	}
+	for _, tc := range []struct {
+		name   string
+		gate   bool
+		action core.InterventionAction
+	}{
+		{name: "gate on", gate: true},
+		{name: "gate approval", gate: true, action: core.InterventionApprove},
+		{name: "gate redirect", gate: true, action: core.InterventionRedirect},
+		{name: "gate off direct to implement"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(plan bool) []eventProjection {
+				ctx := store.WithWorkspace(t.Context(), "demo")
+				st := store.NewMemory()
+				task := core.Task{ID: "lifecycle-equivalence", Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: tc.gate, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Unix(1, 0).UTC()}
+				if err := st.CreateTask(ctx, task); err != nil {
+					t.Fatal(err)
+				}
+				job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+				if err := st.CreateJob(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				d := New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api"}}}, nil)
+				var err error
+				if plan {
+					_, err = d.ApplyExternalPlan(ctx, task, job, pipeline.StructuredPlan{Markdown: "## Approach\nReuse lifecycle.\n\n## Files touched\n- internal/dispatch/dispatch.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- Events match.", Decomposition: []pipeline.DecompositionItem{}}, "codex", "gpt")
+				} else {
+					_, err = d.ApplyExternalSpec(ctx, task, job, pipeline.StructuredSpec{Markdown: "## Intent\nReuse lifecycle.\n\n## Non-goals\nNone.", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Events match", Verify: "test"}}, Decomposition: []pipeline.DecompositionItem{}}, "codex", "gpt")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.action != "" {
+					current, getErr := st.GetTask(ctx, task.ID)
+					if getErr != nil {
+						t.Fatal(getErr)
+					}
+					if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: tc.action, ReasonCode: "test", Comment: "test"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				events, listErr := st.ListEvents(ctx, task.ID)
+				if listErr != nil {
+					t.Fatal(listErr)
+				}
+				result := make([]eventProjection, 0, len(events))
+				for _, event := range events {
+					payload := string(event.Payload)
+					if event.Kind == "spec.version_created" {
+						payload = `{"version":1,"acceptance_count":"document-specific"}`
+					}
+					result = append(result, eventProjection{Kind: event.Kind, Payload: payload})
+				}
+				return result
+			}
+			specEvents, planEvents := run(false), run(true)
+			if !reflect.DeepEqual(specEvents, planEvents) {
+				t.Fatalf("spec events=%v plan events=%v", specEvents, planEvents)
+			}
+		})
+	}
+}
+
 func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
 	for _, command := range []core.TaskCommand{core.TaskGateMerge, core.TaskJobFail, core.TaskStageBounceLimit} {
 		for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
@@ -2440,6 +2509,35 @@ func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestValidateDoneCriteriaCoverageRequiresDisjointReasonedAssessment(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		hasPlan bool
+		value   *core.DoneCriteriaAssessment
+		want    string
+	}{
+		{name: "plan missing assessment", hasPlan: true, want: "assessment is required"},
+		{name: "applicability mismatch", hasPlan: true, value: &core.DoneCriteriaAssessment{Summary: "checked"}, want: "does not match"},
+		{name: "summary required", hasPlan: true, value: &core.DoneCriteriaAssessment{Applicable: true}, want: "summary is required"},
+		{name: "disjoint findings", hasPlan: true, value: &core.DoneCriteriaAssessment{Applicable: true, Summary: "checked", Satisfied: []string{"tests pass"}, Unverified: []string{"tests pass"}}, want: "finding lists are disjoint"},
+		{name: "fallback lists empty", value: &core.DoneCriteriaAssessment{Summary: "task body", Unsatisfied: []string{"missing"}}, want: "must be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := pipeline.Review{DoneCriteriaCoverage: tt.value}
+			err := validateDoneCriteriaCoverage(&result, tt.hasPlan)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v want=%q", err, tt.want)
+			}
+		})
+	}
+	result := pipeline.Review{DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "all criteria assessed", Satisfied: []string{"tests pass"}, Unverified: []string{"manual evidence"}}}
+	if err := validateDoneCriteriaCoverage(&result, true); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
