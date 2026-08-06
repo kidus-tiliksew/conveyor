@@ -89,6 +89,18 @@ type RequirementCitationAssessment struct {
 	Conflicts   []string `json:"conflicts"`
 }
 
+// DoneCriteriaAssessment is the reviewer's reasoned coverage assessment of
+// the approved execution plan. Its lists classify observations rather than
+// parsed identifiers and must remain disjoint (spec §21.58 change 4).
+type DoneCriteriaAssessment struct {
+	Applicable  bool     `json:"applicable"`
+	Summary     string   `json:"summary"`
+	Satisfied   []string `json:"satisfied"`
+	Unsatisfied []string `json:"unsatisfied"`
+	Unverified  []string `json:"unverified"`
+	Conflicts   []string `json:"conflicts"`
+}
+
 // Requirement is the document identity. Prose and statements live on versions;
 // the row records only which version is currently confirmed.
 type Requirement struct {

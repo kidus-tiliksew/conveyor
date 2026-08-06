@@ -762,6 +762,7 @@ type ReviewDecision struct {
 	ReviewedCommitSHA      string
 	EvidenceIDs            []string
 	RequirementCitations   *RequirementCitationAssessment
+	DoneCriteriaAssessment *DoneCriteriaAssessment
 	GovernanceAssessment   *GovernanceAssessment
 	Reviewer               string
 	ReviewerModel          string

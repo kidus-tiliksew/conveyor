@@ -88,6 +88,23 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	}
 }
 
+func TestDoneCriteriaContractRendersPlanAndTaskFallback(t *testing.T) {
+	t.Parallel()
+	plan := "## Approach\nShip.\n\n## Files touched\n- file.go\n\n## Ordering\n1. Edit.\n\n## Risks\n- None.\n\n## Done criteria\n- Tests pass."
+	review := DoneCriteriaContract(core.StageReview, plan, "fallback body", true)
+	for _, required := range []string{"Tests pass", "beside the pinned served-requirement acceptance criteria", "done_criteria_coverage", "four disjoint observation lists"} {
+		if !strings.Contains(review, required) {
+			t.Fatalf("review contract missing %q: %s", required, review)
+		}
+	}
+	fallback := DoneCriteriaContract(core.StageReview, "legacy spec", "Task body is done", false)
+	for _, required := range []string{"Task body is done", "applicable=false", "all four finding lists empty"} {
+		if !strings.Contains(fallback, required) {
+			t.Fatalf("fallback contract missing %q: %s", required, fallback)
+		}
+	}
+}
+
 func TestMCPRolePromptsRequireBestEffortCumulativeUsage(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join("..", "..", "pack")
@@ -95,7 +112,7 @@ func TestMCPRolePromptsRequireBestEffortCumulativeUsage(t *testing.T) {
 		stage    core.Stage
 		terminal string
 	}{
-		{stage: core.StageSpec, terminal: "submit_spec"},
+		{stage: core.StageSpec, terminal: "submit_plan"},
 		{stage: core.StageImplement, terminal: "submit_for_review"},
 	} {
 		role, err := (Loader{Dir: dir}).Role(tc.stage)

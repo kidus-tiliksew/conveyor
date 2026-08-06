@@ -671,6 +671,11 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		spec.MaterializedChildren = append([]core.TaskRelation(nil), parent.Children...)
 		result.ApprovedSpec = &spec
 	}
+	planContent := ""
+	if result.ApprovedSpec != nil {
+		planContent = result.ApprovedSpec.Content
+	}
+	result.RolePrompt += pack.DoneCriteriaContract(order.Stage, planContent, task.Body, len(servedRequirements) > 0)
 	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
@@ -1158,6 +1163,26 @@ func (s *Service) taskVerificationEvidence(ctx context.Context, taskID string) (
 // SubmitSpec completes a claimed spec order. Validation errors are returned
 // directly and leave the order claimed for in-session correction (spec §21.33).
 func (s *Service) SubmitSpec(ctx context.Context, id, session string, value pipeline.StructuredSpec) (map[string]any, error) {
+	// Transitional compatibility: submit_spec accepts the new plan shape when
+	// acceptance is empty, while legacy §4.1 structured specs remain legal
+	// until the retirement slice (spec §21.58 change 4).
+	if len(value.Acceptance) == 0 {
+		return s.SubmitPlan(ctx, id, session, pipeline.StructuredPlan{Markdown: value.Markdown, Decomposition: value.Decomposition})
+	}
+	return s.submitStageDocument(ctx, id, session, func(task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
+		return s.Dispatcher.ApplyExternalSpec(ctx, task, job, value, order.Agent, order.Model)
+	})
+}
+
+// SubmitPlan completes a claimed plan-stage order through the unchanged spec
+// work-order lifecycle. Validation errors remain in-band and retain the claim.
+func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipeline.StructuredPlan) (map[string]any, error) {
+	return s.submitStageDocument(ctx, id, session, func(task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
+		return s.Dispatcher.ApplyExternalPlan(ctx, task, job, value, order.Agent, order.Model)
+	})
+}
+
+func (s *Service) submitStageDocument(ctx context.Context, id, session string, apply func(core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
 		return nil, err
@@ -1187,7 +1212,7 @@ func (s *Service) SubmitSpec(ctx context.Context, id, session string, value pipe
 	if !found {
 		return nil, fmt.Errorf("spec job unavailable")
 	}
-	version, err := s.Dispatcher.ApplyExternalSpec(ctx, task, job, value, order.Agent, order.Model)
+	version, err := apply(task, job, order)
 	if err != nil {
 		return nil, err
 	}

@@ -607,6 +607,68 @@ func TestSubmitSpecReturnsValidationAndCompletesClaimedOrder(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanAndTransitionalSubmitSpecUseSameLifecycle(t *testing.T) {
+	plan := pipeline.StructuredPlan{Markdown: "## Approach\nReuse it.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The plan is gated.", Decomposition: []pipeline.DecompositionItem{}}
+	sequences := map[bool][]string{}
+	for _, alias := range []bool{false, true} {
+		t.Run(map[bool]string{false: "submit_plan", true: "submit_spec_alias"}[alias], func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: fmt.Sprintf("plan-%t", alias), Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "plan-session", ClientToken: "secret", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}}
+			invalid := pipeline.StructuredPlan{Markdown: strings.Replace(plan.Markdown, "## Done criteria", "## Results", 1), Decomposition: []pipeline.DecompositionItem{}}
+			var invalidErr error
+			if alias {
+				_, invalidErr = service.SubmitSpec(ctx, job.ID, "plan-session", pipeline.StructuredSpec{Markdown: invalid.Markdown, Acceptance: []pipeline.AcceptanceCriterion{}, Decomposition: invalid.Decomposition})
+			} else {
+				_, invalidErr = service.SubmitPlan(ctx, job.ID, "plan-session", invalid)
+			}
+			claimed, _ := st.GetWorkOrder(ctx, job.ID)
+			if invalidErr == nil || !strings.Contains(invalidErr.Error(), "done criteria heading") || claimed.State != core.WorkOrderClaimed {
+				t.Fatalf("invalid plan error=%v order=%+v", invalidErr, claimed)
+			}
+			var err error
+			if alias {
+				_, err = service.SubmitSpec(ctx, job.ID, "plan-session", pipeline.StructuredSpec{Markdown: plan.Markdown, Acceptance: []pipeline.AcceptanceCriterion{}, Decomposition: plan.Decomposition})
+			} else {
+				_, err = service.SubmitPlan(ctx, job.ID, "plan-session", plan)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, ok, getErr := st.GetLatestSpecVersion(ctx, task.ID)
+			current, _ := st.GetTask(ctx, task.ID)
+			order, _ := st.GetWorkOrder(ctx, job.ID)
+			if getErr != nil || !ok || version.Content != strings.TrimSpace(plan.Markdown) || current.State != core.TaskAwaiting || current.RecoveryStage != core.StageImplement || order.State != core.WorkOrderCompleted {
+				t.Fatalf("version=%+v ok=%t task=%+v order=%+v err=%v", version, ok, current, order, getErr)
+			}
+			events, listErr := st.ListEvents(ctx, task.ID)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			for _, event := range events {
+				sequences[alias] = append(sequences[alias], event.Kind)
+			}
+		})
+	}
+	if !reflect.DeepEqual(sequences[false], sequences[true]) {
+		t.Fatalf("submit_plan events=%v submit_spec alias events=%v", sequences[false], sequences[true])
+	}
+}
+
 func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()

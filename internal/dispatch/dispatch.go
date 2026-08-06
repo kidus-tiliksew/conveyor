@@ -576,7 +576,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nSpec approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
 	if stage == core.StageTriage {
 		requirements, _ := d.Store.ListRequirements(ctx)
 		prompt.WriteString("\n# Requirement corpus\n\nPropose only an ID from this list, or an empty requirement_id:\n")
@@ -605,6 +605,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 		if exists && spec.Approved {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
+			prompt.WriteString(pack.DoneCriteriaContract(stage, spec.Content, task.Body, len(servedRequirements) > 0))
+		} else {
+			prompt.WriteString(pack.DoneCriteriaContract(stage, "", task.Body, len(servedRequirements) > 0))
 		}
 	}
 	if stage == core.StageReview {
@@ -852,6 +855,17 @@ func (d *Dispatcher) ApplyExternalSpec(ctx context.Context, task core.Task, job 
 	return d.completeSpecVersion(ctx, task, result, agent, model)
 }
 
+// ApplyExternalPlan validates an MCP-authored execution plan and enters the
+// exact existing spec-version gate/auto-approval path. Stage identity and
+// lifecycle events intentionally remain unchanged (spec §21.58 change 4).
+func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
+	result, err := pipeline.ParsePlan(value.Markdown, value.Decomposition)
+	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	return d.completeSpecVersion(ctx, task, result, agent, model)
+}
+
 // CreatePlanningBlueprint materializes a planning-agent draft onto the same
 // task/spec contract used by every other blueprint. The planning session is an
 // intake surface, not an approval surface: completeSpecVersion leaves the new
@@ -989,6 +1003,24 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		return err
 	}
+	approved, hasApproved, planErr := d.Store.GetApprovedSpecVersion(ctx, task.ID)
+	if planErr != nil {
+		return planErr
+	}
+	hasPlan := false
+	if hasApproved {
+		_, hasPlan = pipeline.PlanDoneCriteria(approved.Content)
+		if hasPlan {
+			_, parseErr := pipeline.ParsePlan(approved.Content, nil)
+			hasPlan = parseErr == nil
+		}
+	}
+	if err := validateDoneCriteriaCoverage(&result, hasPlan); err != nil {
+		if invalid != nil {
+			return invalid(err)
+		}
+		return err
+	}
 	if governance == nil {
 		live, err := store.GovernanceForRepository(ctx, d.Store, task.Repo)
 		if err != nil {
@@ -1060,7 +1092,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
-		RequirementCitations: result.RequirementCitations, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
+		RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
 		ReviewKind: decisionReviewKind, ReviewScope: decisionReviewScope, BaselineSHA: decisionBaseline, HeadSHA: decisionHead,
@@ -1080,6 +1112,49 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
 		if err := d.MergeApprovedTask(ctx, current); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateDoneCriteriaCoverage(result *pipeline.Review, hasPlan bool) error {
+	assessment := result.DoneCriteriaCoverage
+	if assessment == nil {
+		if hasPlan {
+			return fmt.Errorf("review done_criteria_coverage assessment is required when an execution plan is present")
+		}
+		result.DoneCriteriaCoverage = &core.DoneCriteriaAssessment{Summary: "No execution plan is available", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}}
+		return nil
+	}
+	if assessment.Applicable != hasPlan {
+		return fmt.Errorf("review done_criteria_coverage applicable=%t does not match execution plan present=%t", assessment.Applicable, hasPlan)
+	}
+	if strings.TrimSpace(assessment.Summary) == "" {
+		return fmt.Errorf("review done_criteria_coverage summary is required")
+	}
+	lists := []struct {
+		name  string
+		items []string
+	}{{"satisfied", assessment.Satisfied}, {"unsatisfied", assessment.Unsatisfied}, {"unverified", assessment.Unverified}, {"conflicts", assessment.Conflicts}}
+	if !hasPlan {
+		for _, list := range lists {
+			if len(list.items) != 0 {
+				return fmt.Errorf("review done_criteria_coverage %s must be empty when no execution plan exists", list.name)
+			}
+		}
+		return nil
+	}
+	seen := map[string]string{}
+	for _, list := range lists {
+		for _, item := range list.items {
+			key := strings.TrimSpace(item)
+			if key == "" {
+				return fmt.Errorf("review done_criteria_coverage %s contains an empty finding", list.name)
+			}
+			if prior, exists := seen[key]; exists {
+				return fmt.Errorf("review done_criteria_coverage finding %q appears in both %s and %s; the finding lists are disjoint", key, prior, list.name)
+			}
+			seen[key] = list.name
 		}
 	}
 	return nil
