@@ -842,6 +842,9 @@ func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
 	if err != nil || len(peek.ServedRequirements) != 1 || !strings.Contains(peek.RolePrompt, "req-queued-peek v1") {
 		t.Fatalf("peek=%+v err=%v", peek.ServedRequirements, err)
 	}
+	if peek.AuthoritySource != "live" {
+		t.Fatalf("queued peek authority_source=%q, want live", peek.AuthoritySource)
+	}
 	reloaded, err := st.GetWorkOrder(ctx, job.ID)
 	if err != nil || reloaded.ServedRequirementSnapshot != nil || reloaded.GovernanceSnapshot != nil {
 		t.Fatalf("queued peek persisted snapshots requirements=%+v governance=%+v err=%v", reloaded.ServedRequirementSnapshot, reloaded.GovernanceSnapshot, err)
@@ -906,6 +909,9 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	context, err := service.Get(ctx, job.ID, "review-pin-session")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if context.AuthoritySource != "pinned" {
+		t.Fatalf("claimed review authority_source=%q, want pinned", context.AuthoritySource)
 	}
 	if !strings.Contains(context.RolePrompt, "req-claim-pin v1") || !strings.Contains(context.RolePrompt, "AC-1.1: Pinned criterion") || strings.Contains(context.RolePrompt, "req-claim-pin v2") {
 		t.Fatalf("review role did not render pinned authority: %s", context.RolePrompt)

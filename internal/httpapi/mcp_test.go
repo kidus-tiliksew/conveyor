@@ -549,6 +549,14 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 				t.Fatalf("create_task body does not publish structured GFM guidance: %s", data)
 			}
 		}
+		if tool["name"] == "get_work_order" {
+			description, _ := tool["description"].(string)
+			for _, requiredText := range []string{"authority_source", "live", "provisional", "pinned", "claim-time"} {
+				if !strings.Contains(description, requiredText) {
+					t.Fatalf("get_work_order description lacks %q: %s", requiredText, description)
+				}
+			}
+		}
 		if tool["name"] == "submit_review_verdict" {
 			description, _ := tool["description"].(string)
 			for _, requiredText := range []string{"REQ-n", "AC-n.m", "pinned"} {
