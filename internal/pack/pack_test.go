@@ -118,6 +118,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	normalizedSpec := strings.Join(strings.Fields(spec), " ")
 	for _, required := range []string{
 		"repository checkout, repository Make targets",
 		"Gate approval, repository-drift resolution",
@@ -129,7 +130,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"monitor-sourced `chore` tasks",
 		"check, not a keyword parser",
 	} {
-		if !strings.Contains(spec, required) {
+		if !strings.Contains(normalizedSpec, required) {
 			t.Errorf("spec role is missing %q", required)
 		}
 	}
@@ -138,8 +139,9 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	normalizedImplement := strings.Join(strings.Fields(implement), " ")
 	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop"} {
-		if !strings.Contains(implement, required) {
+		if !strings.Contains(normalizedImplement, required) {
 			t.Errorf("implement role is missing %q", required)
 		}
 	}
@@ -148,8 +150,9 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	normalizedReview := strings.Join(strings.Fields(review), " ")
 	for _, required := range []string{"blocking authority-boundary finding", "repository-drift resolution", "requirement/decision/", "task cancel/hold", "pause-and-report checkpoint", "reasoned reviewer check, not a text parser"} {
-		if !strings.Contains(review, required) {
+		if !strings.Contains(normalizedReview, required) {
 			t.Errorf("review role is missing %q", required)
 		}
 	}
