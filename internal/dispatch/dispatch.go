@@ -564,7 +564,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	}
 	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	if stage == core.StageImplement || stage == core.StageReview {
-		governance, governanceErr := store.GovernanceForRepository(ctx, d.Store, task.Repo)
+		governance, governanceErr := store.GovernanceForTask(ctx, d.Store, task.ID, task.Repo)
 		if governanceErr != nil {
 			return inprocess.Input{}, governanceErr
 		}
@@ -599,11 +599,11 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		break
 	}
 	if stage == core.StageImplement || stage == core.StageReview {
-		spec, exists, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
+		spec, exists, getErr := store.ApprovedExecutionDocument(ctx, d.Store, task)
 		if getErr != nil {
 			return inprocess.Input{}, getErr
 		}
-		if exists && spec.Approved {
+		if exists {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
 			prompt.WriteString(pack.DoneCriteriaContract(stage, spec.Content, task.Body, len(servedRequirements) > 0))
 		} else {
@@ -891,18 +891,16 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		return err
 	}
-	approved, hasApproved, planErr := d.Store.GetApprovedSpecVersion(ctx, task.ID)
+	// Done-criteria authority needs no separate review-order snapshot: approved
+	// spec versions are immutable, and legacy children pin their exact parent
+	// version on the task. Resolving through the same helper used by prompt
+	// construction therefore has migration-064/067 stability without another
+	// persisted copy (spec §21.58 change 4).
+	approved, hasApproved, planErr := store.ApprovedExecutionDocument(ctx, d.Store, task)
 	if planErr != nil {
 		return planErr
 	}
-	hasPlan := false
-	if hasApproved {
-		_, hasPlan = pipeline.PlanDoneCriteria(approved.Content)
-		if hasPlan {
-			_, parseErr := pipeline.ParsePlan(approved.Content, nil)
-			hasPlan = parseErr == nil
-		}
-	}
+	hasPlan := hasApproved && pack.HasExecutionPlan(approved.Content)
 	if err := validateDoneCriteriaCoverage(&result, hasPlan); err != nil {
 		if invalid != nil {
 			return invalid(err)
@@ -910,7 +908,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		return err
 	}
 	if governance == nil {
-		live, err := store.GovernanceForRepository(ctx, d.Store, task.Repo)
+		live, err := store.GovernanceForTask(ctx, d.Store, task.ID, task.Repo)
 		if err != nil {
 			return err
 		}

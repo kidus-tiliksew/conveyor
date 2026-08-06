@@ -222,6 +222,9 @@ type Store interface {
 	GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error)
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
+	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
+	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
+	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
 	RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error
@@ -261,6 +264,25 @@ type Store interface {
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// ApprovedExecutionDocument resolves the immutable approved document that
+// governs implementation and review. Legacy materialized children inherit the
+// exact parent blueprint version that created them; new task-centric work uses
+// the task's own approved plan (spec §21.58 change 4).
+func ApprovedExecutionDocument(ctx context.Context, st Store, task core.Task) (core.SpecVersion, bool, error) {
+	approved, ok, err := st.GetApprovedSpecVersion(ctx, task.ID)
+	if err != nil || ok || task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
+		return approved, ok, err
+	}
+	approved, ok, err = st.GetSpecVersion(ctx, task.ParentTaskID, task.OriginSpecVersion)
+	if err != nil {
+		return approved, false, err
+	}
+	if !ok || !approved.Approved {
+		return core.SpecVersion{}, false, fmt.Errorf("approved blueprint %s version %d not found for child task %s", task.ParentTaskID, task.OriginSpecVersion, task.ID)
+	}
+	return approved, true, nil
 }
 
 // LineageNodeRecord is the minimal entity projection needed to label a
@@ -2124,6 +2146,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
 			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
 			copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+			copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
 			order.GovernanceSnapshot = &copy
 		}
 		for _, candidate := range m.workOrders {

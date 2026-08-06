@@ -2578,6 +2578,121 @@ func TestValidateDoneCriteriaCoverageRequiresDisjointReasonedAssessment(t *testi
 	}
 }
 
+func TestLegacyDoneHeadingPromptAndValidatorAgreeNoExecutionPlan(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "legacy-done-heading", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "## Definition of done\n\n- Legacy checks pass.\n\n```conveyor:spec\n{\"acceptance\":[]}\n```"
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: legacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.Pack = bundle
+	d.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "", nil }
+	d.DisableMemoryQueueForTest()
+	input, err := d.buildStageInput(ctx, cfg, core.StageReview, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(input.Prompt, "No execution plan is available. The task description is the statement of done:") ||
+		!strings.Contains(input.Prompt, "Record done_criteria_coverage with applicable=false") ||
+		strings.Contains(input.Prompt, "Each list entry must be the verbatim-trimmed text of one criterion") {
+		t.Fatalf("legacy prompt applicability diverged: %s", input.Prompt)
+	}
+	designApplicable, decisionCitable := false, false
+	review := pipeline.Review{
+		Verdict: "approve", ReasonCode: "approved", Summary: "legacy contract accepted",
+		RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Summary: "No execution plan is available", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
+	}
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	design, attached, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-attached-inprocess", Title: "Attached authority", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Attached v1\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, attached.Version); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "inprocess-task-governance", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTaskWithDependenciesAndContext(ctx, task, nil, store.TaskContextInput{DesignIDs: []string{design.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Newer v2\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/v2/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, newer.Version, attached.Version); err != nil {
+		t.Fatal(err)
+	}
+	pending, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-inprocess", Title: "Pending authority", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Pending\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer", StartedAt: time.Now().UTC()}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.Pack = bundle
+	d.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "", nil }
+	d.DisableMemoryQueueForTest()
+	input, err := d.buildStageInput(ctx, cfg, core.StageReview, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.GovernanceSnapshot == nil || len(input.GovernanceSnapshot.Designs) != 1 || input.GovernanceSnapshot.Designs[0].Version != attached.Version || !input.GovernanceSnapshot.Designs[0].PinnedAtAttachment || len(input.GovernanceSnapshot.PendingDesignProposals) != 1 || input.GovernanceSnapshot.PendingDesignProposals[0].DocumentID != pending.ID {
+		t.Fatalf("task-scoped in-process governance=%+v", input.GovernanceSnapshot)
+	}
+	for _, required := range []string{"pinned_at_attachment=true", "older confirmed version is binding", "DESIGN-pending-inprocess"} {
+		if !strings.Contains(input.Prompt, required) {
+			t.Fatalf("in-process prompt missing %q: %s", required, input.Prompt)
+		}
+	}
+	designApplicable, decisionCitable := true, false
+	review := pipeline.Review{
+		Verdict: "changes_requested", ReasonCode: "other", Summary: "exercise live task authority", Feedback: "retry",
+		RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Summary: "task fallback", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{design.ID}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
+	}
+	if err = d.applyReview(ctx, cfg, task, job, review, "in-process", job.ID, "", job.ModelTier, nil, nil, nil); err != nil {
+		t.Fatalf("task-scoped live governance validation failed: %v", err)
+	}
+}
+
 func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()

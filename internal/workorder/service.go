@@ -643,32 +643,25 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		// Spec work has repository/base context but never receives a branch.
 		result.Task.Branch = ""
 	}
-	if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
+	if order.Stage == core.StageSpec {
+		if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
+			return Context{}, getErr
+		} else if ok {
+			spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
+			result.PriorSpec = &spec
+		}
+	} else if spec, ok, getErr := store.ApprovedExecutionDocument(ctx, s.Store, task); getErr != nil {
 		return Context{}, getErr
 	} else if ok {
-		spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
-		if order.Stage == core.StageSpec {
-			result.PriorSpec = &spec
-		} else if spec.Approved {
-			result.ApprovedSpec = &spec
+		if spec.TaskID == task.ParentTaskID && task.ParentTaskID != "" {
+			parent, parentErr := s.Store.GetTask(ctx, task.ParentTaskID)
+			if parentErr != nil {
+				return Context{}, parentErr
+			}
+			spec.MaterializedChildren = append([]core.TaskRelation(nil), parent.Children...)
+		} else {
+			spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
 		}
-	}
-	if order.Stage != core.StageSpec && result.ApprovedSpec == nil && task.ParentTaskID != "" && task.OriginSpecVersion > 0 {
-		// A materialized child skips its own spec stage. Its immutable contract is
-		// the exact parent blueprint version that created its SUB-n, not the
-		// parent's newest draft or the child's empty spec history (spec §4.1).
-		spec, ok, getErr := s.Store.GetSpecVersion(ctx, task.ParentTaskID, task.OriginSpecVersion)
-		if getErr != nil {
-			return Context{}, getErr
-		}
-		if !ok || !spec.Approved {
-			return Context{}, fmt.Errorf("approved blueprint %s version %d not found for child task %s", task.ParentTaskID, task.OriginSpecVersion, task.ID)
-		}
-		parent, getErr := s.Store.GetTask(ctx, task.ParentTaskID)
-		if getErr != nil {
-			return Context{}, getErr
-		}
-		spec.MaterializedChildren = append([]core.TaskRelation(nil), parent.Children...)
 		result.ApprovedSpec = &spec
 	}
 	planContent := ""

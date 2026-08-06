@@ -248,12 +248,13 @@ type Decision struct {
 // GovernanceDesignContext is the immutable portion of a confirmed System
 // Design version rendered to and validated for one review claim.
 type GovernanceDesignContext struct {
-	ID       string          `json:"id"`
-	Title    string          `json:"title"`
-	Category string          `json:"category"`
-	Version  int             `json:"version"`
-	Content  string          `json:"content"`
-	Governs  []GovernedScope `json:"governs"`
+	ID                 string          `json:"id"`
+	Title              string          `json:"title"`
+	Category           string          `json:"category"`
+	Version            int             `json:"version"`
+	Content            string          `json:"content"`
+	Governs            []GovernedScope `json:"governs"`
+	PinnedAtAttachment bool            `json:"pinned_at_attachment,omitempty"`
 }
 
 // PendingSystemDesignProposal is observable review/implementation context,
@@ -274,6 +275,7 @@ type GovernanceSnapshot struct {
 	Designs                []GovernanceDesignContext     `json:"designs"`
 	Decisions              []Decision                    `json:"decisions"`
 	PendingDesignProposals []PendingSystemDesignProposal `json:"pending_design_proposals"`
+	ResolutionNotes        []string                      `json:"resolution_notes,omitempty"`
 }
 
 var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)
