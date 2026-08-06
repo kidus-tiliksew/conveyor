@@ -618,13 +618,14 @@ type WorkOrderClaim struct {
 }
 
 const (
-	WorkOrderOutcomeChildFailure       = "child_failure"
-	WorkOrderOutcomeStalled            = "stalled"
-	WorkOrderOutcomeReleased           = "released"
-	WorkOrderOutcomeCancelled          = "cancelled"
-	WorkOrderOutcomeExpired            = "expired"
-	IdenticalFailureSuppressionReason  = "identical failure output on consecutive attempts"
-	WorkOrderFailureProviderUsageLimit = "provider_usage_limit"
+	WorkOrderOutcomeChildFailure                    = "child_failure"
+	WorkOrderOutcomeStalled                         = "stalled"
+	WorkOrderOutcomeReleased                        = "released"
+	WorkOrderOutcomeCancelled                       = "cancelled"
+	WorkOrderOutcomeExpired                         = "expired"
+	WorkOrderReleaseReasonOperatorCheckpointReached = "operator checkpoint reached"
+	IdenticalFailureSuppressionReason               = "identical failure output on consecutive attempts"
+	WorkOrderFailureProviderUsageLimit              = "provider_usage_limit"
 )
 
 func WorkOrderOutcomeConsumesRetry(outcome string) bool {

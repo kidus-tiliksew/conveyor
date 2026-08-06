@@ -30,6 +30,13 @@ Working discipline:
   `docker compose down` commands in this repository.
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
+- If an approved criterion is an explicit operator checkpoint, stop ordinary
+  implementation when the checkpoint is reached. Call `report_progress` with
+  a completion-shaped report identifying the checkpoint and the operator act
+  still required, then call `release_work_order` with the exact reason
+  `operator checkpoint reached`. The existing `released` outcome is the
+  successful agent handoff: do not report a child failure, stall, recovery
+  request, or task completion, and do not enter an automatic recovery loop.
 - Commit all work with clear, conventional messages. Never commit knowingly
   broken work: if you cannot complete the task, stop, leave the worktree in
   its best consistent state, and state plainly what is blocked and why — an

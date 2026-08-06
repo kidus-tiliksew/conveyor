@@ -110,6 +110,54 @@ func TestMCPRolePromptsRequireBestEffortCumulativeUsage(t *testing.T) {
 	}
 }
 
+func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
+	t.Parallel()
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+
+	spec, err := loader.Role(core.StageSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedSpec := strings.Join(strings.Fields(spec), " ")
+	for _, required := range []string{
+		"repository checkout, repository Make targets",
+		"Gate approval, repository-drift resolution",
+		"requirement/decision/System Design confirmation",
+		"task cancel/hold",
+		`"pause and report until the operator has done X."`,
+		"reaching and reporting the checkpoint satisfies the agent's obligation",
+		"operator checkpoint reached",
+		"monitor-sourced `chore` tasks",
+		"check, not a keyword parser",
+	} {
+		if !strings.Contains(normalizedSpec, required) {
+			t.Errorf("spec role is missing %q", required)
+		}
+	}
+
+	implement, err := loader.Role(core.StageImplement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedImplement := strings.Join(strings.Fields(implement), " ")
+	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop"} {
+		if !strings.Contains(normalizedImplement, required) {
+			t.Errorf("implement role is missing %q", required)
+		}
+	}
+
+	review, err := loader.Role(core.StageReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedReview := strings.Join(strings.Fields(review), " ")
+	for _, required := range []string{"blocking authority-boundary finding", "repository-drift resolution", "requirement/decision/", "task cancel/hold", "pause-and-report checkpoint", "reasoned reviewer check, not a text parser"} {
+		if !strings.Contains(normalizedReview, required) {
+			t.Errorf("review role is missing %q", required)
+		}
+	}
+}
+
 func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	t.Parallel()
 	requirements := []core.ServedRequirementContext{{ID: "req-runtime", Title: "Runtime", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-3", Statement: "Retries stop."}}}}

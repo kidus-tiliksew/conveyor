@@ -100,9 +100,28 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: "test exit", Outcome: core.WorkOrderOutcomeReleased})
+	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	if released.LastAttemptOutcome != core.WorkOrderOutcomeReleased || released.AutomaticRetryCount != 0 {
+		t.Fatalf("checkpoint release outcome=%q retries=%d", released.LastAttemptOutcome, released.AutomaticRetryCount)
+	}
+	events, err := st.ListEvents(workerCtx, claimed.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpointEvent core.Event
+	for _, event := range events {
+		if event.Kind == "work_order.released" && event.JobID == claimed.JobID {
+			checkpointEvent = event
+		}
+		if (event.Kind == "work_order.child_failed" || event.Kind == "work_order.stalled") && event.JobID == claimed.JobID {
+			t.Fatalf("checkpoint handoff emitted recovery-shaped event %q", event.Kind)
+		}
+	}
+	if checkpointEvent.Kind == "" || !strings.Contains(string(checkpointEvent.Payload), `"reason":"`+core.WorkOrderReleaseReasonOperatorCheckpointReached+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"outcome":"released"`) || !strings.Contains(string(checkpointEvent.Payload), `"retry_suppressed":true`) {
+		t.Fatalf("checkpoint release event=%+v", checkpointEvent)
 	}
 
 	createOrder("submitted-task", false)
