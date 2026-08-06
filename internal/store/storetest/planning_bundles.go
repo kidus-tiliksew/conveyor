@@ -52,6 +52,16 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	retryCandidate := base
+	store.PreparePlanningBundleRevision(created, &retryCandidate)
+	if err = store.ValidatePlanningBundleShape(&retryCandidate); err != nil {
+		t.Fatal(err)
+	}
+	if !store.PlanningBundleContentEqual(created, retryCandidate) {
+		left, _ := json.Marshal(created)
+		right, _ := json.Marshal(retryCandidate)
+		t.Fatalf("prepared identical retry differs: existing=%s retry=%s", left, right)
+	}
 	retried, err := st.CreatePlanningBundle(ctx, base)
 	if err != nil || retried.Tasks[0].CreatedTaskID != created.Tasks[0].CreatedTaskID {
 		t.Fatalf("idempotent retry=%+v err=%v", retried, err)
@@ -59,6 +69,7 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	revisedInput := base
 	revisedInput.Tasks = append([]core.PlanningBundleTask(nil), base.Tasks...)
 	revisedInput.Tasks[0].Body = "Revised body"
+	revisedInput.Tasks[0].CreatedTaskID = "task-caller-must-not-replace-preview-identity"
 	revised, err := st.CreatePlanningBundle(ctx, revisedInput)
 	if err != nil || revised.Tasks[0].CreatedTaskID != created.Tasks[0].CreatedTaskID || revised.Tasks[0].Body != "Revised body" {
 		t.Fatalf("revised=%+v err=%v", revised, err)
@@ -99,7 +110,7 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	if !marked {
 		t.Fatalf("pending task context marker missing: %+v", events)
 	}
-	assertBundleEdges(t, st, ctx, workspace, session.ID, revised.ID, requirement.ID, pending.Version, taskID)
+	beforeRebuild := assertBundleEdges(t, st, ctx, workspace, session.ID, revised.ID, requirement.ID, pending.Version, taskID)
 	rebuild, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "planning bundle conformance", RequestID: core.NewTaskID()})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +118,12 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	if rebuild.PreservedUnregenerable != 0 {
 		t.Fatalf("bundle rebuild preserved event-derived edges: %+v", rebuild)
 	}
-	assertBundleEdges(t, st, ctx, workspace, session.ID, revised.ID, requirement.ID, pending.Version, taskID)
+	afterRebuild := assertBundleEdges(t, st, ctx, workspace, session.ID, revised.ID, requirement.ID, pending.Version, taskID)
+	for key, eventID := range beforeRebuild {
+		if afterRebuild[key] != eventID {
+			t.Fatalf("bundle edge %q created_by_event changed across rebuild: before=%d after=%d", key, eventID, afterRebuild[key])
+		}
+	}
 
 	if _, err = st.UpdateTaskContext(ctx, taskID, store.TaskContextChange{Remove: store.TaskContextInput{RequirementIDs: []string{"req-missing"}}}); err == nil {
 		t.Fatal("unknown removal appended a phantom event")
@@ -117,12 +133,12 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	}
 }
 
-func assertBundleEdges(t *testing.T, st store.Store, ctx context.Context, workspace, sessionID, bundleID, requirementID string, version int, taskID string) {
+func assertBundleEdges(t *testing.T, st store.Store, ctx context.Context, workspace, sessionID, bundleID, requirementID string, version int, taskID string) map[string]int64 {
 	t.Helper()
-	want := map[string]bool{
-		string(core.LineagePlanningSession) + "\x00" + sessionID + "\x00" + string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00produced_bundle":                                            false,
-		string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00" + string(core.LineageRequirementVersion) + "\x00" + core.RequirementVersionLineageID(requirementID, version) + "\x00proposes": false,
-		string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00" + string(core.LineageTask) + "\x00" + taskID + "\x00creates":                                                                  false,
+	want := map[string]int64{
+		string(core.LineagePlanningSession) + "\x00" + sessionID + "\x00" + string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00produced_bundle":                                            0,
+		string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00" + string(core.LineageRequirementVersion) + "\x00" + core.RequirementVersionLineageID(requirementID, version) + "\x00proposes": 0,
+		string(core.LineagePlanningBundle) + "\x00" + bundleID + "\x00" + string(core.LineageTask) + "\x00" + taskID + "\x00creates":                                                                  0,
 	}
 	links, err := st.ListLineageLinks(ctx)
 	if err != nil {
@@ -131,12 +147,13 @@ func assertBundleEdges(t *testing.T, st store.Store, ctx context.Context, worksp
 	for _, link := range links {
 		key := string(link.SrcType) + "\x00" + link.SrcID + "\x00" + string(link.DstType) + "\x00" + link.DstID + "\x00" + link.Kind
 		if _, ok := want[key]; ok && link.Workspace == workspace && link.CreatedByEventID > 0 {
-			want[key] = true
+			want[key] = link.CreatedByEventID
 		}
 	}
-	for key, found := range want {
-		if !found {
+	for key, eventID := range want {
+		if eventID == 0 {
 			t.Fatalf("bundle edge %q missing full identity from %+v", key, links)
 		}
 	}
+	return want
 }

@@ -53,8 +53,11 @@ func PreparePlanningBundleRevision(existing core.PlanningBundle, incoming *core.
 		ids[member.MemberID] = member.CreatedTaskID
 	}
 	for i := range incoming.Tasks {
-		if incoming.Tasks[i].CreatedTaskID == "" {
-			incoming.Tasks[i].CreatedTaskID = ids[strings.TrimSpace(incoming.Tasks[i].MemberID)]
+		if id := ids[strings.TrimSpace(incoming.Tasks[i].MemberID)]; id != "" {
+			// A preview revision may change the task content or membership, but
+			// an existing member keeps the durable identity already presented to
+			// the operator. Never accept a caller-supplied replacement identity.
+			incoming.Tasks[i].CreatedTaskID = id
 		}
 	}
 }
