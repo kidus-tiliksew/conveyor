@@ -2519,7 +2519,7 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
       self_reported: index === 0,
       tokens_in: index === 0 ? 1200 : 0,
       tokens_out: index === 0 ? 300 : 0,
-      cost_usd: index === 0 ? 1.25 : 0,
+      cost_usd: 1.25,
     }))
     item.events = [
       {
@@ -2566,12 +2566,12 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
   const technical = page.getByText('Show technical activity').locator('..')
   await technical.getByText('Show technical activity').click()
   await expect(technical.getByRole('region', { name: 'Task usage telemetry' })).toContainText(
-    '1.2k in / 300 out · $1.25 across 2 reported work orders · 1 order unavailable',
+    '1.2k in / 300 out across 2 reported work orders · 1 order unavailable',
   )
-  await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText(
-    '0 in / 0 out · $0.00 · worker-reported',
-  )
+  await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('0 in / 0 out')
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('Usage unavailable')
+  await expect(technical.getByText(/\$\d/)).toHaveCount(0)
+  await expect(technical.getByText('worker-reported', { exact: false })).toHaveCount(0)
 })
 
 test('in-process jobs retain provider usage when the matching work order has no telemetry report', async ({ page }) => {
