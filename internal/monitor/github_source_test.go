@@ -33,7 +33,7 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 			case strings.Contains(path, "known-sha/pulls"):
 				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"known-head"}}]`), nil
 			case strings.Contains(path, "known-sha/check-runs"):
-				return []byte(`{"check_runs":[{"id":77,"html_url":"https://example/check/77","conclusion":"failure","run_attempt":2},{"id":78,"html_url":"https://example/check/78","conclusion":"success","run_attempt":1}]}`), nil
+				return []byte(`{"check_runs":[{"id":77,"name":"unit","html_url":"https://example/check/77","conclusion":"failure","run_attempt":2},{"id":78,"html_url":"https://example/check/78","conclusion":"success","run_attempt":1}]}`), nil
 			case strings.Contains(path, "pr-sha/pulls"), strings.Contains(path, "pr-sha-2/pulls"):
 				return []byte(`[{"number":2,"html_url":"https://example/pr/2","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"external","sha":"external-head"}}]`), nil
 			case strings.Contains(path, "masquerade-sha/pulls"):
@@ -61,16 +61,89 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 		got[observation.OccurrenceID] = observation.Kind
 	}
 	want := map[string]SignalKind{
-		"check:77:attempt:2": PostMergeFailure,
-		"push-sha":           DirectPush,
-		"pr:2":               ExternalPRMerge,
-		"pr:3":               ExternalPRMerge,
-		"revert-sha":         Revert,
+		"commit:known-sha:attempt:2": PostMergeFailure,
+		"push-sha":                   DirectPush,
+		"pr:2":                       ExternalPRMerge,
+		"pr:3":                       ExternalPRMerge,
+		"revert-sha":                 Revert,
 	}
 	for occurrence, kind := range want {
 		if got[occurrence] != kind {
 			t.Fatalf("occurrence %s kind=%s want=%s; all=%+v", occurrence, got[occurrence], kind, observations)
 		}
+	}
+	for _, observation := range observations {
+		if observation.Kind == PostMergeFailure && !strings.Contains(observation.Context["failed_check_runs"], "unit (check run 77)") {
+			t.Fatalf("failed check context=%+v", observation.Context)
+		}
+	}
+}
+
+func TestGitHubSourceSuppressesNonActionableCheckConclusions(t *testing.T) {
+	for _, conclusion := range []string{"cancelled", "skipped", "neutral", "stale", "action_required", "success"} {
+		t.Run(conclusion, func(t *testing.T) {
+			source := lineagedCheckSource(fmt.Sprintf(`{"check_runs":[{"id":77,"name":"ci","html_url":"https://example/check/77","conclusion":%q,"run_attempt":1}]}`, conclusion))
+			observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(observations) != 0 {
+				t.Fatalf("conclusion %q produced observations %+v", conclusion, observations)
+			}
+		})
+	}
+}
+
+func TestGitHubSourceAggregatesFailedChecksPerCommitAttempt(t *testing.T) {
+	source := lineagedCheckSource(`{"check_runs":[
+{"id":22,"name":"integration","html_url":"https://example/check/22","conclusion":"timed_out","run_attempt":0},
+{"id":11,"name":"unit","html_url":"https://example/check/11","conclusion":"failure","run_attempt":1},
+{"id":33,"name":"retry","html_url":"https://example/check/33","conclusion":"failure","run_attempt":2}
+]}`)
+
+	first, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	if first[0].OccurrenceID != "commit:known-sha:attempt:1" || second[0].OccurrenceID != first[0].OccurrenceID ||
+		first[1].OccurrenceID != "commit:known-sha:attempt:2" {
+		t.Fatalf("occurrences first=%+v second=%+v", first, second)
+	}
+	if first[0].CheckRunID != "11,22" || first[0].SourceURL != "https://example/check/11" {
+		t.Fatalf("aggregate=%+v", first[0])
+	}
+	detail := first[0].Context["failed_check_runs"]
+	if !strings.Contains(detail, "unit (check run 11)") || !strings.Contains(detail, "integration (check run 22)") {
+		t.Fatalf("failed check detail=%q", detail)
+	}
+}
+
+func lineagedCheckSource(checks string) GitHubSource {
+	return GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		KnownLineage: func(id string, number int, headSHA string) bool {
+			return id == "known" && number == 1 && headSHA == "known-head"
+		},
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			path := strings.Join(args, " ")
+			switch {
+			case strings.Contains(path, "/commits -f"):
+				return []byte(`[{"sha":"known-sha","html_url":"https://example/known","commit":{"message":"merge","committer":{"date":"2026-07-28T10:00:00Z"}}}]`), nil
+			case strings.Contains(path, "known-sha/pulls"):
+				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"known-head"}}]`), nil
+			case strings.Contains(path, "known-sha/check-runs"):
+				return []byte(checks), nil
+			default:
+				return nil, fmt.Errorf("unexpected args %v", args)
+			}
+		},
 	}
 }
 

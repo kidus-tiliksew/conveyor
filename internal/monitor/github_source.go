@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,10 +51,17 @@ type githubPull struct {
 type githubCheckRuns struct {
 	CheckRuns []struct {
 		ID         int64  `json:"id"`
+		Name       string `json:"name"`
 		HTMLURL    string `json:"html_url"`
 		Conclusion string `json:"conclusion"`
 		RunAttempt int    `json:"run_attempt"`
 	} `json:"check_runs"`
+}
+
+type failedCheckRun struct {
+	ID   int64
+	Name string
+	URL  string
 }
 
 // RecordedLineage verifies that a branch-shaped pull request is actually the
@@ -143,9 +151,9 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			if checkErr != nil {
 				return nil, checkErr
 			}
+			byAttempt := make(map[int][]failedCheckRun)
 			for _, check := range checks.CheckRuns {
-				if check.Conclusion != "failure" && check.Conclusion != "timed_out" &&
-					check.Conclusion != "cancelled" && check.Conclusion != "action_required" {
+				if check.Conclusion != "failure" && check.Conclusion != "timed_out" {
 					if s.OnSuppressed != nil {
 						_ = s.OnSuppressed(ctx, map[string]any{
 							"reason": "check_not_actionable", "repository": s.Repository,
@@ -159,13 +167,37 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				if attempt <= 0 {
 					attempt = 1
 				}
+				byAttempt[attempt] = append(byAttempt[attempt], failedCheckRun{
+					ID: check.ID, Name: strings.TrimSpace(check.Name), URL: check.HTMLURL,
+				})
+			}
+			attempts := make([]int, 0, len(byAttempt))
+			for attempt := range byAttempt {
+				attempts = append(attempts, attempt)
+			}
+			sort.Ints(attempts)
+			for _, attempt := range attempts {
+				failed := byAttempt[attempt]
+				sort.Slice(failed, func(i, j int) bool { return failed[i].ID < failed[j].ID })
+				checkIDs := make([]string, 0, len(failed))
+				checkDetails := make([]string, 0, len(failed))
+				for _, check := range failed {
+					id := strconv.FormatInt(check.ID, 10)
+					checkIDs = append(checkIDs, id)
+					name := check.Name
+					if name == "" {
+						name = "unnamed check"
+					}
+					checkDetails = append(checkDetails, fmt.Sprintf("- %s (check run %s): %s", name, id, check.URL))
+				}
 				appendObservation(Observation{
 					WorkspaceID: s.WorkspaceID, Repository: s.Repository,
 					Kind:         PostMergeFailure,
-					OccurrenceID: "check:" + strconv.FormatInt(check.ID, 10) + ":attempt:" + strconv.Itoa(attempt),
-					SourceURL:    check.HTMLURL, CommitSHA: commit.SHA,
-					CheckRunID: strconv.FormatInt(check.ID, 10),
+					OccurrenceID: "commit:" + commit.SHA + ":attempt:" + strconv.Itoa(attempt),
+					SourceURL:    failed[0].URL, CommitSHA: commit.SHA,
+					CheckRunID: strings.Join(checkIDs, ","),
 					ObservedAt: commit.Commit.Committer.Date, Hints: hints,
+					Context: map[string]string{"failed_check_runs": strings.Join(checkDetails, "\n")},
 				})
 			}
 			continue
