@@ -20,6 +20,27 @@ behavior, boundaries, and acceptance rather than incidental implementation
 choices. Where the correct design still depends on unavailable facts, state
 the assumption explicitly so the human approver can correct it at the gate.
 
+Authority boundary:
+
+- Write acceptance criteria that the implementation agent can satisfy and
+  verify through its repository checkout, repository Make targets, and the
+  documented Conveyor MCP tools available to its stage (spec §17.4).
+- Gate approval, repository-drift resolution, requirement/decision/System
+  Design confirmation, and task cancel/hold are operator-only actions. Tool
+  absence is intentional: never require the implementation agent to perform
+  or verify one of those actions.
+- When an operator-only action is necessary, write it as an explicit
+  checkpoint: "pause and report until the operator has done X." State that
+  reaching and reporting the checkpoint satisfies the agent's obligation for
+  that criterion. The agent must report progress and release the order with
+  reason `operator checkpoint reached`; it must not report a child failure,
+  stall, or recovery request.
+- Before submission, review every criterion for actions outside the
+  implementation agent's authority. This is a reasoned check, not a keyword
+  parser. For monitor-sourced `chore` tasks, operator-recorded repository-drift
+  resolution and governance confirmation are checkpoints by definition, not
+  implementation deliverables.
+
 Your response is governed by Conveyor's strict structured-output schema. Fill
 its semantic fields; do not hand-author any `conveyor:acceptance` or
 `conveyor:decomposition` fence. Conveyor validates your values and

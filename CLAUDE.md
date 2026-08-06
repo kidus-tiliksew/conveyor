@@ -36,6 +36,18 @@ silent edits.
   GitHub plan. Its PostgreSQL service uses the CI-only
   `make test-integration-ci` entrypoint.
 
+## Local planning & filing
+
+Planning documents (requirements, System Design, decisions, overviews)
+and task filing can be driven from an operator-side agent session — the
+headless twin of in-product planning (spec §21.5/§21.46). The canonical
+playbooks are [docs/playbooks/conveyor-planning.md](docs/playbooks/conveyor-planning.md)
+and [docs/playbooks/conveyor-task-filing.md](docs/playbooks/conveyor-task-filing.md);
+`.claude/skills/` wraps them for Claude Code, and `AGENTS.md` is a
+symlink to this file so Codex and other AGENTS.md-convention tools read
+the same guidance. Every push is a proposal — operators confirm; agents
+never perform operator-only acts.
+
 ## Phase discipline
 
 Phases 1–2 are complete and validated. The roadmap was re-phased for the
