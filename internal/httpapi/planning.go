@@ -125,10 +125,22 @@ func (s *Server) getPlanningBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) approvePlanningBundle(w http.ResponseWriter, r *http.Request) {
+	s.planningBundleMu.Lock()
+	defer s.planningBundleMu.Unlock()
+	prior, err := s.Store.GetPlanningBundle(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writePlanningBundleError(w, err)
+		return
+	}
 	bundle, err := s.Store.ApprovePlanningBundle(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writePlanningBundleError(w, err)
 		return
+	}
+	if prior.Status == core.PlanningBundlePending && bundle.Status == core.PlanningBundleApproved && s.OnCreate != nil {
+		for _, member := range bundle.Tasks {
+			s.OnCreate(r.Context(), member.CreatedTaskID)
+		}
 	}
 	writeJSON(w, http.StatusOK, bundle)
 }
@@ -136,10 +148,25 @@ func (s *Server) approvePlanningBundle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rejectPlanningBundle(w http.ResponseWriter, r *http.Request) {
 	bundle, err := s.Store.RejectPlanningBundle(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writePlanningBundleError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, bundle)
+}
+
+func writePlanningBundleError(w http.ResponseWriter, err error) {
+	var referenceErr *store.TaskContextReferenceError
+	var conflictErr *store.PlanningBundleConflictError
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "planning_bundle_not_found", "message": "planning bundle was not found"})
+	case errors.As(err, &referenceErr):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_bundle_context", "message": referenceErr.Error()})
+	case errors.As(err, &conflictErr):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "planning_bundle_conflict", "message": conflictErr.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "planning_bundle_failed", "message": "planning bundle operation failed"})
+	}
 }
 
 func (s *Server) listPlanningMessages(w http.ResponseWriter, r *http.Request) {

@@ -385,6 +385,8 @@ func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
+	var enqueued []string
+	server.OnCreate = func(_ context.Context, taskID string) { enqueued = append(enqueued, taskID) }
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-http-bundle", Title: "HTTP bundle"}, core.RequirementVersion{Content: "HTTP bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle."}}})
 	if err != nil {
@@ -415,9 +417,39 @@ func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
 	if approved.Code != http.StatusOK || !strings.Contains(approved.Body.String(), `"status":"approved"`) {
 		t.Fatalf("approve status=%d body=%s", approved.Code, approved.Body.String())
 	}
+	if len(enqueued) != 1 || enqueued[0] != bundle.Tasks[0].CreatedTaskID {
+		t.Fatalf("bundle enqueue callbacks=%v", enqueued)
+	}
+	repeated := httptest.NewRecorder()
+	server.Handler().ServeHTTP(repeated, approve.Clone(approve.Context()))
+	if repeated.Code != http.StatusOK || len(enqueued) != 1 {
+		t.Fatalf("repeat approve status=%d enqueue callbacks=%v", repeated.Code, enqueued)
+	}
 	version, err := st.GetRequirementVersion(ctx, requirement.ID, pending.Version)
 	if err != nil || version.Confirmed {
 		t.Fatalf("approval changed document confirmation: %+v err=%v", version, err)
+	}
+}
+
+func TestPlanningBundleErrorMapping(t *testing.T) {
+	for name, test := range map[string]struct {
+		err        error
+		status     int
+		code       string
+		notContain string
+	}{
+		"validation": {err: &store.TaskContextReferenceError{Kind: "requirement", ID: "missing", Reason: "was not found in this workspace"}, status: http.StatusBadRequest, code: "invalid_bundle_context"},
+		"missing":    {err: fmt.Errorf("lookup: %w", store.ErrNotFound), status: http.StatusNotFound, code: "planning_bundle_not_found"},
+		"conflict":   {err: &store.PlanningBundleConflictError{Message: "planning bundle bundle-1 is approved"}, status: http.StatusConflict, code: "planning_bundle_conflict"},
+		"internal":   {err: errors.New("secret pg detail"), status: http.StatusInternalServerError, code: "planning_bundle_failed", notContain: "secret pg detail"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			writePlanningBundleError(response, test.err)
+			if response.Code != test.status || !strings.Contains(response.Body.String(), test.code) || (test.notContain != "" && strings.Contains(response.Body.String(), test.notContain)) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

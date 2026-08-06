@@ -3511,13 +3511,25 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 		m.mu.Unlock()
 		return core.TaskContext{}, ErrTaskTerminal
 	}
+	activeRequirements, activeDesigns := ActiveTaskContextReferences(m.events[taskID])
 	versions, err := m.validateTaskContextLocked(task.Workspace, add)
 	if err != nil {
 		m.mu.Unlock()
 		return core.TaskContext{}, err
 	}
+	for _, id := range remove.RequirementIDs {
+		if !activeRequirements[id] {
+			m.mu.Unlock()
+			return core.TaskContext{}, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "is not attached to this task"}
+		}
+	}
+	for _, id := range remove.DesignIDs {
+		if activeDesigns[id] == 0 {
+			m.mu.Unlock()
+			return core.TaskContext{}, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "is not attached to this task"}
+		}
+	}
 	now := time.Now().UTC()
-	_, activeDesigns := ActiveTaskContextReferences(m.events[taskID])
 	for _, id := range add.RequirementIDs {
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
 	}
@@ -4465,6 +4477,8 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		for _, link := range projection.Suppresses {
 			key := lineageLinkKey(link)
 			delete(replayable, key)
+			delete(candidateEvent, key)
+			delete(ambiguous, key)
 			suppressed[key] = struct{}{}
 		}
 		for _, link := range links {

@@ -61,7 +61,10 @@ func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (i
 	// requirement_version -derived_from-> reference_document_version,
 	// system_design_version -governs-> repository_path,
 	// system_design_version -proposed_by-> task/planning_session, and
-	// planning_session -produced_design-> system_design.
+	// planning_session -produced_design-> system_design,
+	// planning_session -produced_bundle-> planning_bundle,
+	// planning_bundle -proposes-> requirement_version/system_design_version/decision,
+	// and planning_bundle -creates-> task.
 	tag, err := q.db.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
 		AND created_by_event_id IS NOT NULL AND kind = ANY(ARRAY[
 		'consulted','depends_on','derived_from','dispatches','materializes','merged_range','produced_blueprint',

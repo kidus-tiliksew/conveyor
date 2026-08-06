@@ -42,6 +42,10 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			return 0
 		}
 	}
+	boolean := func(key string) bool {
+		value, _ := payload[key].(bool)
+		return value
+	}
 	valid := func(items ...core.LineageLink) []core.LineageLink {
 		out := make([]core.LineageLink, 0, len(items))
 		for _, item := range items {
@@ -112,6 +116,32 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			}
 		}
 		return emit(links...)
+	case PlanningBundleRevised:
+		var payload struct {
+			BundleID          string                        `json:"bundle_id"`
+			PreviousDocuments []core.PlanningBundleDocument `json:"previous_documents"`
+			Documents         []core.PlanningBundleDocument `json:"documents"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return result
+		}
+		documentLinks := func(documents []core.PlanningBundleDocument) []core.LineageLink {
+			links := make([]core.LineageLink, 0, len(documents))
+			for _, document := range documents {
+				switch document.Kind {
+				case core.PlanningBundleRequirement:
+					links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageRequirementVersion, core.RequirementVersionLineageID(document.ID, document.Version), "proposes"))
+				case core.PlanningBundleSystemDesign:
+					links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(document.ID, document.Version), "proposes"))
+				case core.PlanningBundleDecision:
+					links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageDecision, document.ID, "proposes"))
+				}
+			}
+			return links
+		}
+		result.Suppresses = valid(documentLinks(payload.PreviousDocuments)...)
+		result.Links = valid(documentLinks(payload.Documents)...)
+		return result
 	case PlanningBundleApproved:
 		var payload struct {
 			BundleID       string   `json:"bundle_id"`
@@ -131,11 +161,21 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
 		return result
 	case TaskContextRequirementAdded:
+		if boolean("unconfirmed") {
+			return result
+		}
+		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
+	case TaskContextRequirementActive:
 		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 	case TaskContextRequirementRemoved:
 		result.Suppresses = valid(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 		return result
 	case TaskContextDesignAdded:
+		if boolean("unconfirmed") {
+			return result
+		}
+		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
+	case TaskContextDesignActive:
 		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
 	case TaskContextDesignRemoved:
 		result.Suppresses = valid(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
@@ -326,7 +366,10 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 // system_design_version -governs-> repository_path/task,
 // requirement -serves-> blueprint/task,
 // system_design_version -proposed_by-> task/planning_session, and
-// planning_session -produced_design-> system_design. Keep this mirror aligned
+// planning_session -produced_design-> system_design,
+// planning_session -produced_bundle-> planning_bundle,
+// planning_bundle -proposes-> requirement_version/system_design_version/decision,
+// and planning_bundle -creates-> task. Keep this mirror aligned
 // with the Postgres delete vocabularies below.
 
 func projectorOwnsLineageKind(kind string) bool { _, ok := projectorOwnedLineageKinds[kind]; return ok }
