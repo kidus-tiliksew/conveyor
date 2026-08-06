@@ -31,8 +31,9 @@ import (
 )
 
 type Server struct {
-	Store            store.Store
-	planningBundleMu sync.Mutex
+	Store                    store.Store
+	planningBundleMu         sync.Mutex
+	planningBundleDispatched map[string]struct{}
 	// Repos is the set of valid repo names; nil skips validation.
 	Repos []string
 	// OnCreate is invoked with each created task's ID (the dispatcher's

@@ -1563,13 +1563,14 @@ func sameConflictEpisode(payload json.RawMessage, episode mergeConflictEpisode) 
 	return json.Unmarshal(payload, &candidate) == nil && candidate == episode
 }
 
-func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, episode mergeConflictEpisode) (mergeConflictDispatchState, error) {
+func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, episode mergeConflictEpisode, orders []core.WorkOrder) (mergeConflictDispatchState, error) {
 	events, err := d.Store.ListEvents(ctx, taskID)
 	if err != nil {
 		return mergeConflictDispatchState{}, err
 	}
 	state := mergeConflictDispatchState{}
 	inside := false
+	dispatched := map[string]bool{}
 	for _, event := range events {
 		switch event.Kind {
 		case "merge.conflict_cleared":
@@ -1579,7 +1580,13 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 			state = mergeConflictDispatchState{}
 		case "merge.conflict_fix_dispatched":
 			if inside && sameConflictEpisode(event.Payload, episode) {
-				state.Failures, state.NextRetryAt, state.Exhausted = 0, time.Time{}, false
+				var payload struct {
+					WorkOrderID string `json:"work_order_id"`
+				}
+				if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID != "" {
+					dispatched[payload.WorkOrderID] = true
+				}
+				state.NextRetryAt = time.Time{}
 			}
 		case "merge.conflict_dispatch_failed":
 			if !inside || !sameConflictEpisode(event.Payload, episode) {
@@ -1590,7 +1597,8 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 				NextRetryAt  time.Time `json:"next_retry_at"`
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.Failures, state.NextRetryAt = payload.FailureCount, payload.NextRetryAt
+				state.Failures++
+				state.NextRetryAt = payload.NextRetryAt
 			}
 		case "merge.conflict_dispatch_exhausted":
 			if inside && sameConflictEpisode(event.Payload, episode) {
@@ -1602,7 +1610,23 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 			}
 		}
 	}
+	for _, order := range orders {
+		if dispatched[order.ID] && terminalConflictFixAttempt(order) {
+			state.Failures++
+		}
+	}
 	return state, nil
+}
+
+func terminalConflictFixAttempt(order core.WorkOrder) bool {
+	switch order.State {
+	case core.WorkOrderCancelled, core.WorkOrderStale, core.WorkOrderTimedOut:
+		return true
+	case core.WorkOrderQueued, core.WorkOrderCompleted:
+		return order.RetrySuppressed || order.LastAttemptOutcome != "" || order.LastFailureMessage != ""
+	default:
+		return false
+	}
 }
 
 func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead string) error {
@@ -1697,7 +1721,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	dispatchState, err := d.conflictDispatchState(ctx, current.ID, episode)
+	dispatchState, err := d.conflictDispatchState(ctx, current.ID, episode, orders)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -1710,6 +1734,13 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	now := time.Now().UTC()
 	if d.Now != nil {
 		now = d.Now().UTC()
+	}
+	if dispatchState.Failures >= 3 && !dispatchState.Exhausted {
+		payload := map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": episode.ApprovedHead, "new_head": episode.NewHead, "failure_count": dispatchState.Failures, "retry_suppressed": true, "error": "conflict-fix replacement budget exhausted"}
+		if err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.conflict_dispatch_exhausted", Payload: core.JSONPayload(payload)}); err != nil {
+			return core.WorkOrder{}, err
+		}
+		dispatchState.Exhausted = true
 	}
 	if dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt)) {
 		return core.WorkOrder{}, nil

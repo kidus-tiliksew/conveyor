@@ -192,9 +192,23 @@ func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot
 		out.WriteString("\n\n# Pinned System Design authority\n\nNo confirmed System Design governed this repository when this review authority was pinned.\n")
 	}
 	if len(snapshot.ResolutionNotes) > 0 {
-		out.WriteString("\n# Governance resolution notes\n\nThe resolver omitted malformed or incomplete non-authoritative proposal history; these notes are audit context and confer no authority:\n")
-		for _, note := range snapshot.ResolutionNotes {
-			fmt.Fprintf(&out, "- %s\n", note)
+		header := "\n# Governance resolution notes\n\nThe resolver omitted malformed or incomplete non-authoritative proposal history; these notes are audit context and confer no authority:\n"
+		if out.Len()+len(header) > detailBudget {
+			omitted = append(omitted, "governance resolution notes")
+		} else {
+			out.WriteString(header)
+			notesOmitted := false
+			for _, note := range snapshot.ResolutionNotes {
+				chunk := fmt.Sprintf("- %s\n", note)
+				if out.Len()+len(chunk) > detailBudget {
+					notesOmitted = true
+					continue
+				}
+				out.WriteString(chunk)
+			}
+			if notesOmitted {
+				omitted = append(omitted, "governance resolution notes")
+			}
 		}
 	}
 	if len(decisions) > 0 {
