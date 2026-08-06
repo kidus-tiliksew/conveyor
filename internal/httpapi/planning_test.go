@@ -382,6 +382,46 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 	}
 }
 
+func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-http-bundle", Title: "HTTP bundle"}, core.RequirementVersion{Content: "HTTP bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "HTTP bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle atomically."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-bundle", Goal: core.PlanningGoalBundle})
+	bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle-http", SessionID: session.ID, Title: "HTTP", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: pending.Version}}, Tasks: []core.PlanningBundleTask{{MemberID: "task", Title: "Task", Body: "Body", Repo: "conveyor", Context: core.PlanningBundleTaskContext{RequirementIDs: []string{requirement.ID}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preview := httptest.NewRecorder()
+	server.Handler().ServeHTTP(preview, httptest.NewRequest(http.MethodGet, "/v1/planning-bundles", nil))
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), bundle.ID) || !strings.Contains(preview.Body.String(), `"status":"pending"`) {
+		t.Fatalf("preview status=%d body=%s", preview.Code, preview.Body.String())
+	}
+	approve := httptest.NewRequest(http.MethodPost, "/v1/planning-bundles/"+bundle.ID+"/approve", nil)
+	approve.Header.Set("Authorization", "Bearer token")
+	approved := httptest.NewRecorder()
+	server.Handler().ServeHTTP(approved, approve)
+	if approved.Code != http.StatusOK || !strings.Contains(approved.Body.String(), `"status":"approved"`) {
+		t.Fatalf("approve status=%d body=%s", approved.Code, approved.Body.String())
+	}
+	version, err := st.GetRequirementVersion(ctx, requirement.ID, pending.Version)
+	if err != nil || version.Confirmed {
+		t.Fatalf("approval changed document confirmation: %+v err=%v", version, err)
+	}
+}
+
 func TestPlanningHTTPFallbackRejectsUncheckedPromotions(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)

@@ -6,7 +6,13 @@ import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/p
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
-import { createPlanningSession, fetchPlanningSessions, fetchWorkspaceConfig } from '../lib/api'
+import {
+  createPlanningSession,
+  decidePlanningBundle,
+  fetchPlanningBundles,
+  fetchPlanningSessions,
+  fetchWorkspaceConfig,
+} from '../lib/api'
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
@@ -15,7 +21,7 @@ import type { PlanningSessionGoal } from '../lib/types'
 // sessions" (spec §21.57 change 1) — requirement drafting moved beside the
 // document. Blueprint sessions still take a requirement context, just not from
 // this surface.
-const standaloneGoals: PlanningSessionGoal[] = ['open', 'blueprint']
+const standaloneGoals: PlanningSessionGoal[] = ['open', 'blueprint', 'bundle']
 
 export function PlanningPage() {
   const token = useOperatorToken()
@@ -37,6 +43,11 @@ export function PlanningPage() {
   } = useQuery({
     queryKey: ['planning-sessions', workspace],
     queryFn: fetchPlanningSessions,
+    enabled: Boolean(workspace),
+  })
+  const { data: bundles } = useQuery({
+    queryKey: ['planning-bundles', workspace],
+    queryFn: fetchPlanningBundles,
     enabled: Boolean(workspace),
   })
 
@@ -81,6 +92,14 @@ export function PlanningPage() {
     },
   })
   const selected = sessions?.find((session) => session.id === selectedId)
+  const selectedBundle = bundles?.find((bundle) => bundle.id === selected?.produced_bundle_id)
+  const decideBundle = useMutation({
+    mutationFn: (decision: 'approve' | 'reject') => decidePlanningBundle(token, selectedBundle!.id, decision),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
+      void client.invalidateQueries({ queryKey: ['tasks', workspace] })
+    },
+  })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -175,7 +194,94 @@ export function PlanningPage() {
         </aside>
         <main className="min-w-0 flex-1">
           {selected ? (
-            <PlanningChat key={`${workspace}:${selected.id}`} summary={selected} token={token} workspace={workspace} />
+            <div className="flex h-full min-h-0 flex-col">
+              <PlanningChat
+                key={`${workspace}:${selected.id}`}
+                summary={selected}
+                token={token}
+                workspace={workspace}
+              />
+              {selectedBundle && (
+                <section
+                  className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border bg-surface/40 px-6 py-4"
+                  aria-label="Planning bundle preview"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-faint">
+                        Delivery bundle · {selectedBundle.status}
+                      </p>
+                      <h2 className="mt-1 text-base font-semibold">{selectedBundle.title}</h2>
+                      <p className="mt-1 text-xs text-muted">
+                        Approving creates the task set. Document revisions remain pending their own confirmation.
+                      </p>
+                    </div>
+                    {selectedBundle.status === 'pending' && (
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          disabled={!token || decideBundle.isPending}
+                          onClick={() => decideBundle.mutate('reject')}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          disabled={!token || decideBundle.isPending}
+                          onClick={() => decideBundle.mutate('approve')}
+                        >
+                          Approve task set
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Pending documents</h3>
+                      <ul className="mt-2 space-y-2">
+                        {selectedBundle.documents.map((document) => (
+                          <li
+                            key={`${document.kind}:${document.id}:${document.version ?? 0}`}
+                            className="rounded-md border border-border bg-background p-3 text-sm"
+                          >
+                            <strong>{document.title || document.id}</strong>
+                            <p className="mt-1 font-mono text-xs text-faint">
+                              {document.kind} · {document.id}
+                              {document.version ? ` v${document.version}` : ''} · pending
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Task set</h3>
+                      <ol className="mt-2 space-y-2">
+                        {selectedBundle.tasks.map((task) => (
+                          <li
+                            key={task.member_id}
+                            className="rounded-md border border-border bg-background p-3 text-sm"
+                          >
+                            <strong>{task.title}</strong>
+                            <p className="mt-1 whitespace-pre-wrap text-xs text-muted">{task.body}</p>
+                            <p className="mt-2 font-mono text-[10px] text-faint">
+                              {task.repo} · depends on: {task.depends_on?.join(', ') || 'none'} · context:{' '}
+                              {[
+                                ...(task.context?.requirement_ids ?? []),
+                                ...(task.context?.system_design_ids ?? []),
+                              ].join(', ') || 'none'}
+                            </p>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  </div>
+                  {decideBundle.error && (
+                    <p className="mt-3 text-xs text-failure">
+                      {errorMessage(decideBundle.error, 'Could not resolve this bundle.')}
+                    </p>
+                  )}
+                </section>
+              )}
+            </div>
           ) : (
             <div className="grid h-full place-items-center">
               <p className="text-sm text-muted">Start or select a planning session.</p>

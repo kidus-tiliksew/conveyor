@@ -204,11 +204,12 @@ const (
 	PlanningGoalRequirement  PlanningSessionGoal = "requirement"
 	PlanningGoalBlueprint    PlanningSessionGoal = "blueprint"
 	PlanningGoalSystemDesign PlanningSessionGoal = "system_design"
+	PlanningGoalBundle       PlanningSessionGoal = "bundle"
 	PlanningGoalOpen         PlanningSessionGoal = "open"
 )
 
 func (g PlanningSessionGoal) Valid() bool {
-	return g == PlanningGoalRequirement || g == PlanningGoalBlueprint || g == PlanningGoalSystemDesign ||
+	return g == PlanningGoalRequirement || g == PlanningGoalBlueprint || g == PlanningGoalSystemDesign || g == PlanningGoalBundle ||
 		g == PlanningGoalOpen
 }
 
@@ -222,7 +223,7 @@ func NormalizePlanningSessionGoal(goal PlanningSessionGoal) (PlanningSessionGoal
 	}
 	if !goal.Valid() {
 		return "", fmt.Errorf(
-			"planning session goal %q is invalid; want requirement, blueprint, or open", goal)
+			"planning session goal %q is invalid; want requirement, system_design, blueprint, bundle, or open", goal)
 	}
 	return goal, nil
 }
@@ -238,6 +239,8 @@ func (g PlanningSessionGoal) ProvisionalTitle() string {
 		return "Planning work…"
 	case PlanningGoalSystemDesign:
 		return "Designing system…"
+	case PlanningGoalBundle:
+		return "Planning delivery…"
 	default:
 		return "Exploring…"
 	}
@@ -274,6 +277,7 @@ type PlanningSession struct {
 	ProducedRequirementID  string    `json:"produced_requirement_id,omitempty"`
 	ProducedTaskID         string    `json:"produced_task_id,omitempty"`
 	ProducedSystemDesignID string    `json:"produced_system_design_id,omitempty"`
+	ProducedBundleID       string    `json:"produced_bundle_id,omitempty"`
 	TranscriptArtifactID   string    `json:"transcript_artifact_id,omitempty"`
 	Workspace              string    `json:"workspace"`
 	CreatedAt              time.Time `json:"created_at"`

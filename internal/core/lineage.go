@@ -20,6 +20,7 @@ type LineageNodeType string
 
 const (
 	LineagePlanningSession          LineageNodeType = "planning_session"
+	LineagePlanningBundle           LineageNodeType = "planning_bundle"
 	LineageRequirement              LineageNodeType = "requirement"
 	LineageRequirementVersion       LineageNodeType = "requirement_version"
 	LineageReferenceDocument        LineageNodeType = "reference_document"
@@ -40,7 +41,7 @@ const (
 
 func (nodeType LineageNodeType) Valid() bool {
 	switch nodeType {
-	case LineagePlanningSession, LineageRequirement, LineageRequirementVersion, LineageReferenceDocument, LineageReferenceDocumentVersion,
+	case LineagePlanningSession, LineagePlanningBundle, LineageRequirement, LineageRequirementVersion, LineageReferenceDocument, LineageReferenceDocumentVersion,
 		LineageSystemDesign, LineageSystemDesignVersion, LineageDecision, LineageRepositoryPath,
 		LineageBlueprint, LineageBlueprintVersion, LineageTask, LineageWorkOrder,
 		LineagePullRequest, LineageCommitRange, LineageEvidence, LineageVerdict:

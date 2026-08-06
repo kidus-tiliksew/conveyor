@@ -99,6 +99,45 @@ func (s *Server) getPlanningSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
+func (s *Server) listPlanningBundles(w http.ResponseWriter, r *http.Request) {
+	bundles, err := s.Store.ListPlanningBundles(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if bundles == nil {
+		bundles = []core.PlanningBundle{}
+	}
+	writeJSON(w, http.StatusOK, bundles)
+}
+
+func (s *Server) getPlanningBundle(w http.ResponseWriter, r *http.Request) {
+	bundle, err := s.Store.GetPlanningBundle(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (s *Server) approvePlanningBundle(w http.ResponseWriter, r *http.Request) {
+	bundle, err := s.Store.ApprovePlanningBundle(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (s *Server) rejectPlanningBundle(w http.ResponseWriter, r *http.Request) {
+	bundle, err := s.Store.RejectPlanningBundle(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
 func (s *Server) listPlanningMessages(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.Store.GetPlanningSession(r.Context(), chi.URLParam(r, "id")); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)

@@ -1669,9 +1669,13 @@ test('session lists label goals and the requirements surface has no freehand edi
     page.getByRole('button', { name: /Exploring…/ }).getByText('Open exploration', { exact: true }),
   ).toBeVisible()
   // The standalone surface keeps only the goals with no document context.
-  await expect(page.getByLabel('Planning goal').locator('option')).toHaveText(['Open exploration', 'Blueprint'])
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveText([
+    'Open exploration',
+    'Blueprint',
+    'Delivery bundle',
+  ])
   // Requirement drafting moved beside the document, so it is not offered here.
-  await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(2)
+  await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(3)
 
   await page.goto('/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()

@@ -78,6 +78,7 @@ export const sessionGoalLabels: Record<PlanningSessionGoal, string> = {
   requirement: 'Requirement',
   system_design: 'System Design',
   blueprint: 'Blueprint',
+  bundle: 'Delivery bundle',
   open: 'Open exploration',
 }
 

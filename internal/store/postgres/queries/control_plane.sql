@@ -222,7 +222,7 @@ DELETE FROM links WHERE workspace_id = $1
   AND kind = ANY(ARRAY[
     'consulted','depends_on','derived_from','dispatches','materializes','merged_range','produced_blueprint',
     'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
-    'supersedes','supports','versions','governs','proposed_by','produced_design'
+    'supersedes','supports','versions','governs','proposed_by','produced_design','produced_bundle','proposes','creates'
   ]::text[]);
 
 -- name: ListWorkspaceEvents :many

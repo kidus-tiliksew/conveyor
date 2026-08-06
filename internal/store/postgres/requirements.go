@@ -725,6 +725,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			if existing.ProducedRequirementID == request.RequirementID &&
 				existing.ProducedTaskID == request.TaskID &&
 				existing.ProducedSystemDesignID == request.SystemDesignID &&
+				existing.ProducedBundleID == request.BundleID &&
 				existing.TranscriptArtifactID == request.TranscriptArtifactID {
 				session = existing
 				return nil
@@ -742,12 +743,12 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `UPDATE planning_sessions
 			SET status='finalized', produced_requirement_id=NULLIF($3,''),
-			    produced_task_id=NULLIF($4,''), produced_system_design_id=NULLIF($5,''), transcript_artifact_id=NULLIF($6,''),
+			    produced_task_id=NULLIF($4,''), produced_system_design_id=NULLIF($5,''), produced_bundle_id=NULLIF($9,''), transcript_artifact_id=NULLIF($6,''),
 			    title=COALESCE(NULLIF($8,''),title),
 			    finalized_at=$7, updated_at=$7
 			WHERE workspace_id=$1 AND id=$2`,
 			workspace(ctx), request.SessionID, request.RequirementID, request.TaskID, request.SystemDesignID,
-			request.TranscriptArtifactID, now, strings.TrimSpace(request.Title)); err != nil {
+			request.TranscriptArtifactID, now, strings.TrimSpace(request.Title), request.BundleID); err != nil {
 			return err
 		}
 		if session, err = scanPlanningSession(tx.QueryRow(ctx, planningSessionSelect+
@@ -765,6 +766,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			"produced_requirement_id":   session.ProducedRequirementID,
 			"produced_task_id":          session.ProducedTaskID,
 			"produced_system_design_id": session.ProducedSystemDesignID,
+			"produced_bundle_id":        session.ProducedBundleID,
 			"transcript_artifact_id":    session.TranscriptArtifactID,
 		}); err != nil {
 			return err
@@ -871,7 +873,7 @@ const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,sta
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
-	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),
+	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),COALESCE(produced_bundle_id,''),
 	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
 	exploration_tokens_used,primary_repo,pinned_revisions,promotion,created_at,updated_at,finalized_at
 	FROM planning_sessions`
@@ -948,7 +950,7 @@ func scanPlanningSessionRow(row pgx.Row) (core.PlanningSession, error) {
 	var pins []byte
 	var promotion []byte
 	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status, &goal,
-		&session.RequirementContextID, &session.SystemDesignContextID, &session.ProducedRequirementID, &session.ProducedTaskID, &session.ProducedSystemDesignID,
+		&session.RequirementContextID, &session.SystemDesignContextID, &session.ProducedRequirementID, &session.ProducedTaskID, &session.ProducedSystemDesignID, &session.ProducedBundleID,
 		&session.TranscriptArtifactID, &session.Model, &session.Effort,
 		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
 		&session.PrimaryRepo, &pins, &promotion, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {

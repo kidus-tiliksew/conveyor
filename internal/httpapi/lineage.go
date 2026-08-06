@@ -164,6 +164,9 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 	case core.LineagePlanningSession:
 		_, err := s.Store.GetPlanningSession(r.Context(), node.ID)
 		found = err == nil
+	case core.LineagePlanningBundle:
+		_, err := s.Store.GetPlanningBundle(r.Context(), node.ID)
+		found = err == nil
 	case core.LineageWorkOrder:
 		_, err := s.Store.GetWorkOrder(r.Context(), node.ID)
 		found = err == nil

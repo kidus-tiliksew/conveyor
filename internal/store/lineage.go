@@ -88,6 +88,42 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		if designID := text("produced_system_design_id"); designID != "" {
 			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineageSystemDesign, designID, "produced_design"))
 		}
+		if bundleID := text("produced_bundle_id"); bundleID != "" {
+			links = append(links, link(core.LineagePlanningSession, sessionID, core.LineagePlanningBundle, bundleID, "produced_bundle"))
+		}
+		return emit(links...)
+	case PlanningBundleFinalized:
+		var payload struct {
+			BundleID  string                        `json:"bundle_id"`
+			Documents []core.PlanningBundleDocument `json:"documents"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return result
+		}
+		var links []core.LineageLink
+		for _, document := range payload.Documents {
+			switch document.Kind {
+			case core.PlanningBundleRequirement:
+				links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageRequirementVersion, core.RequirementVersionLineageID(document.ID, document.Version), "proposes"))
+			case core.PlanningBundleSystemDesign:
+				links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(document.ID, document.Version), "proposes"))
+			case core.PlanningBundleDecision:
+				links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageDecision, document.ID, "proposes"))
+			}
+		}
+		return emit(links...)
+	case PlanningBundleApproved:
+		var payload struct {
+			BundleID       string   `json:"bundle_id"`
+			CreatedTaskIDs []string `json:"created_task_ids"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return result
+		}
+		var links []core.LineageLink
+		for _, taskID := range payload.CreatedTaskIDs {
+			links = append(links, link(core.LineagePlanningBundle, payload.BundleID, core.LineageTask, taskID, "creates"))
+		}
 		return emit(links...)
 	case "requirement.serves_confirmed":
 		return emit(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
@@ -281,6 +317,7 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"merged_range": {}, "produced_verdict": {}, "supports": {}, "depends_on": {}, "materializes": {},
 	"consulted": {}, "derived_from": {},
 	"governs": {}, "proposed_by": {}, "produced_design": {},
+	"produced_bundle": {}, "proposes": {}, "creates": {},
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed

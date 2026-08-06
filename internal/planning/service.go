@@ -129,6 +129,7 @@ type produced struct {
 	RequirementID  string
 	TaskID         string
 	SystemDesignID string
+	BundleID       string
 	// Title is the produced artifact's own title. Finalizing adopts it as the
 	// session title, retiring the provisional one (spec §21.57 change 3).
 	Title string
@@ -1135,12 +1136,12 @@ func (s *Service) lineageContext(ctx context.Context, budget lineagecontext.Budg
 // goal is advisory here and enforced at finalize time (spec §21.57 change 3);
 // the context document is advisory here and defaulted in requirementTool.
 func goalStatement(session core.PlanningSession) string {
-	statement := "This session's goal is open: finalize_requirement, finalize_system_design, or finalize_blueprint is legal. " +
+	statement := "This session's goal is open: finalize_requirement, finalize_system_design, finalize_blueprint, or finalize_bundle is legal. " +
 		"Establish which artifact the operator wants before finalizing anything."
 	if expected := expectedFinalizeTool(session.Goal); expected != "" {
 		statement = "This session's goal is " + string(session.Goal) + ": " + expected +
-			" is the only finalize tool it accepts, and the other one will be rejected without executing. " +
-			"Draft and revise toward that artifact only — work spent on the other one is wasted."
+			" is the only finalize tool it accepts, and other finalizers will be rejected without executing. " +
+			"Draft and revise toward that artifact only."
 	}
 	if context := strings.TrimSpace(session.RequirementContextID); context != "" {
 		statement += " This session was opened from requirement " + context +
@@ -1391,6 +1392,7 @@ func toolNames() []string {
 		"draft_requirement", "revise_requirement", "finalize_requirement",
 		"list_system_designs", "read_system_design", "list_decisions", "draft_system_design", "revise_system_design", "finalize_system_design", "propose_decision",
 		"draft_blueprint", "revise_blueprint", "finalize_blueprint",
+		"finalize_bundle",
 	}
 }
 
@@ -1421,6 +1423,8 @@ func expectedFinalizeTool(goal core.PlanningSessionGoal) string {
 		return "finalize_blueprint"
 	case core.PlanningGoalSystemDesign:
 		return "finalize_system_design"
+	case core.PlanningGoalBundle:
+		return "finalize_bundle"
 	default:
 		return ""
 	}
@@ -1456,6 +1460,8 @@ func planningToolTarget(name string) (any, error) {
 		return &decisionArgs{}, nil
 	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
 		return &blueprintArgs{}, nil
+	case "finalize_bundle":
+		return &bundleArgs{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported planning tool %q", name)
 	}
@@ -1595,6 +1601,11 @@ func validatePlanningToolArguments(call toolCall, maxBytes int) error {
 		}
 		if strings.TrimSpace(args.Title) == "" || strings.TrimSpace(args.Repo) == "" {
 			return fmt.Errorf("blueprint title and repo are required")
+		}
+	case *bundleArgs:
+		bundle := core.PlanningBundle{ID: "schema-bundle", SessionID: "schema-session", Title: args.Title, Documents: args.Documents, Tasks: args.Tasks}
+		if err := store.ValidatePlanningBundleShape(&bundle); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1750,6 +1761,8 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		return s.decisionTool(ctx, session, call)
 	case "draft_blueprint", "revise_blueprint", "finalize_blueprint":
 		return s.blueprintTool(ctx, session, call, model)
+	case "finalize_bundle":
+		return s.bundleTool(ctx, session, call)
 	default:
 		return toolExecution{}, fmt.Errorf("unsupported planning tool %q", call.Name)
 	}
@@ -2577,6 +2590,12 @@ type blueprintArgs struct {
 	Decomposition []core.BlueprintDecompositionItem `json:"decomposition"`
 }
 
+type bundleArgs struct {
+	Title     string                        `json:"title"`
+	Documents []core.PlanningBundleDocument `json:"documents"`
+	Tasks     []core.PlanningBundleTask     `json:"tasks"`
+}
+
 func (args blueprintArgs) structured() pipeline.StructuredSpec {
 	return pipeline.StructuredSpec{
 		Markdown: args.Markdown, Acceptance: args.Acceptance, Decomposition: args.Decomposition,
@@ -2625,6 +2644,46 @@ func (s *Service) blueprintTool(ctx context.Context, session core.PlanningSessio
 	}, nil
 }
 
+func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, call toolCall) (toolExecution, error) {
+	var args bundleArgs
+	if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
+		return toolExecution{}, err
+	}
+	bundle := core.PlanningBundle{
+		ID: "bundle-" + session.ID, SessionID: session.ID, Title: strings.TrimSpace(args.Title),
+		Documents: args.Documents, Tasks: args.Tasks, Workspace: session.Workspace,
+	}
+	if s.ConfigProvider != nil {
+		cfg, err := s.ConfigProvider(ctx)
+		if err != nil {
+			return toolExecution{}, &planningInfrastructureError{err: err}
+		}
+		setup, ok := cfg.Setup("")
+		if !ok {
+			return toolExecution{}, fmt.Errorf("workspace default execution setup is unavailable")
+		}
+		for i := range bundle.Tasks {
+			repo, exists := cfg.Repo(bundle.Tasks[i].Repo)
+			if !exists {
+				return toolExecution{}, fmt.Errorf("bundle task %s names unknown repo %s", bundle.Tasks[i].MemberID, bundle.Tasks[i].Repo)
+			}
+			if bundle.Tasks[i].BaseBranch == "" {
+				bundle.Tasks[i].BaseBranch = repo.Base
+			}
+			bundle.Tasks[i].SetupName, bundle.Tasks[i].SetupContract = setup.Name, setup
+			bundle.Tasks[i].SpecApproval, bundle.Tasks[i].MergeApproval = cfg.Execution.SpecApproval, cfg.Execution.MergeApproval
+		}
+	}
+	created, err := s.Store.CreatePlanningBundle(ctx, bundle)
+	if err != nil {
+		return toolExecution{}, err
+	}
+	return toolExecution{Output: map[string]any{
+		"bundle": created, "approval_required": true,
+		"local_surface": "Local planning files task sets directly with create_task and depends_on; bundle objects are in-product-only.",
+	}, Produced: &produced{BundleID: created.ID, Title: created.Title}}, nil
+}
+
 func (s *Service) archiveAndFinalize(ctx context.Context, session core.PlanningSession, value produced) error {
 	messages, err := s.Store.ListPlanningMessages(ctx, session.ID)
 	if err != nil {
@@ -2638,6 +2697,7 @@ func (s *Service) archiveAndFinalize(ctx context.Context, session core.PlanningS
 	archived.ProducedRequirementID = value.RequirementID
 	archived.ProducedTaskID = value.TaskID
 	archived.ProducedSystemDesignID = value.SystemDesignID
+	archived.ProducedBundleID = value.BundleID
 	if title := strings.TrimSpace(value.Title); title != "" {
 		archived.Title = title
 	}
@@ -2659,6 +2719,7 @@ func (s *Service) archiveAndFinalize(ctx context.Context, session core.PlanningS
 		SessionID: session.ID, RequirementID: value.RequirementID,
 		TaskID: value.TaskID, TranscriptArtifactID: artifact.ID,
 		SystemDesignID: value.SystemDesignID,
+		BundleID:       value.BundleID,
 		Title:          value.Title,
 	})
 	return err
