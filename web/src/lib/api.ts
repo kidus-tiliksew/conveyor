@@ -465,6 +465,8 @@ export interface CreateTaskInput {
   merge_approval?: boolean
   setup?: string
   depends_on?: string[]
+  requirement_ids?: string[]
+  system_design_ids?: string[]
 }
 
 export class TaskIntakeError extends Error {

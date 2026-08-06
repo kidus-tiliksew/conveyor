@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -59,6 +60,11 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	for index := range req.DependsOn {
 		req.DependsOn[index] = strings.TrimSpace(req.DependsOn[index])
 	}
+	attached, err := store.NormalizeTaskContextInput(store.TaskContextInput{RequirementIDs: req.RequirementIDs, DesignIDs: req.SystemDesignIDs})
+	if err != nil {
+		return taskCreateResult{}, taskContextCreateError(err)
+	}
+	req.RequirementIDs, req.SystemDesignIDs = attached.RequirementIDs, attached.DesignIDs
 	intakeKey = strings.TrimSpace(intakeKey)
 	if strings.TrimSpace(req.Body) == "" {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "body is required"}
@@ -85,6 +91,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
 			return taskCreateResult{}, err
 		} else if found {
+			existing.Context, _ = store.TaskContextForTask(ctx, s.Store, existing.ID)
 			if !sameIntakeRequest(existing, originalReq) {
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
@@ -166,16 +173,21 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		NextStage:     core.StageTriage,
 		CreatedAt:     time.Now().UTC(),
 	}
-	if err := s.Store.CreateTaskWithDependencies(ctx, task, req.DependsOn); err != nil {
+	if err := s.Store.CreateTaskWithDependenciesAndContext(ctx, task, req.DependsOn, attached); err != nil {
 		// A concurrent retry may win the unique intake-key race between the
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {
 			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr == nil && found {
+				existing.Context, _ = store.TaskContextForTask(ctx, s.Store, existing.ID)
 				if sameIntakeRequest(existing, originalReq) {
 					return taskCreateResult{Task: existing}, nil
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
+		}
+		var referenceErr *store.TaskContextReferenceError
+		if errors.As(err, &referenceErr) {
+			return taskCreateResult{}, taskContextCreateError(referenceErr)
 		}
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}
@@ -186,6 +198,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if initialState == core.TaskQueued && s.OnCreate != nil {
 		s.OnCreate(ctx, id)
 	}
+	task.Context, _ = store.TaskContextForTask(ctx, s.Store, task.ID)
 	return taskCreateResult{Task: task, Created: true}, nil
 }
 
@@ -232,6 +245,19 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 	if !reflect.DeepEqual(actual, expected) {
 		return false
 	}
+	actualRequirements := make([]string, 0, len(task.Context.Requirements))
+	for _, item := range task.Context.Requirements {
+		actualRequirements = append(actualRequirements, item.ID)
+	}
+	actualDesigns := make([]string, 0, len(task.Context.Designs))
+	for _, item := range task.Context.Designs {
+		actualDesigns = append(actualDesigns, item.ID)
+	}
+	sort.Strings(actualRequirements)
+	sort.Strings(actualDesigns)
+	if !reflect.DeepEqual(actualRequirements, req.RequirementIDs) || !reflect.DeepEqual(actualDesigns, req.SystemDesignIDs) {
+		return false
+	}
 	if (req.Hold || req.Mode == core.TaskModeManual) && !task.Hold {
 		return false
 	}
@@ -254,4 +280,8 @@ func sameIntakeRequest(task core.Task, req createTaskReq) bool {
 		}
 	}
 	return true
+}
+
+func taskContextCreateError(err error) *taskCreateError {
+	return &taskCreateError{Status: http.StatusBadRequest, Code: "invalid_context_reference", Message: err.Error()}
 }

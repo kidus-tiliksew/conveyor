@@ -62,6 +62,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertReferenceDocumentLineage(t, st, ctx)
 	assertSystemDesignEventIsolation(t, st, ctx, fixture.ForeignContext, fixture.Workspace)
 	assertSystemDesignAndDecisionLineage(t, st, ctx, parent.ID)
+	assertTaskContextLineage(t, st, ctx, fixture.Workspace)
 	for _, event := range []core.Event{
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
@@ -111,6 +112,69 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	for key, eventID := range before {
 		if after[key] != eventID {
 			t.Fatalf("edge %s provenance before=%d after=%d", key, eventID, after[key])
+		}
+	}
+}
+
+func assertTaskContextLineage(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	requirementIDs := []string{"req-" + core.NewTaskID(), "req-" + core.NewTaskID()}
+	for _, id := range requirementIDs {
+		document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: "Task intent " + id}, core.RequirementVersion{
+			Content: "Task intent", Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver the attached intent."}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, document.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	designIDs := []string{"design-" + core.NewTaskID(), "design-" + core.NewTaskID()}
+	for _, id := range designIDs {
+		document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: "Task design " + id, Category: "Architecture"}, core.SystemDesignVersion{
+			Content: "# Task design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/task/**\n```", Origin: core.SystemDesignOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Title: "Contextual task", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTaskWithDependenciesAndContext(ctx, task, nil, store.TaskContextInput{RequirementIDs: requirementIDs, DesignIDs: designIDs}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Remove: store.TaskContextInput{RequirementIDs: requirementIDs[1:], DesignIDs: designIDs[1:]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active.Requirements) != 1 || active.Requirements[0].ID != requirementIDs[0] || len(active.Designs) != 1 || active.Designs[0].ID != designIDs[0] || active.Designs[0].Version != 1 {
+		t.Fatalf("active task context=%+v", active)
+	}
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range requirementIDs {
+		found := false
+		for _, link := range links {
+			found = found || (link.SrcType == core.LineageRequirement && link.SrcID == id && link.DstType == core.LineageTask && link.DstID == task.ID && link.Kind == "serves" && link.CreatedByEventID > 0)
+		}
+		if !found {
+			t.Fatalf("missing historical task serves edge for %s", id)
+		}
+	}
+	for _, id := range designIDs {
+		found := false
+		for _, link := range links {
+			found = found || (link.SrcType == core.LineageSystemDesignVersion && link.SrcID == core.SystemDesignVersionLineageID(id, 1) && link.DstType == core.LineageTask && link.DstID == task.ID && link.Kind == "governs" && link.CreatedByEventID > 0)
+		}
+		if !found {
+			t.Fatalf("missing historical task governs edge for %s", id)
 		}
 	}
 }

@@ -73,6 +73,39 @@ async function mockTaskCreateAPIs(
       })
       return
     }
+    if (url.pathname === '/v1/requirements') {
+      expect(route.request().headers().authorization).toBe('Bearer operator-token')
+      await route.fulfill({
+        json: [
+          {
+            requirement: { id: 'req-context', title: 'Confirmed product outcome', current_version: 1 },
+            current_version: { requirement_id: 'req-context', version: 1, confirmed: true },
+            pending_versions: [],
+            serving_blueprints: [],
+            planning_sessions: [],
+            artifacts: [],
+            lineage: [],
+          },
+        ],
+      })
+      return
+    }
+    if (url.pathname === '/v1/system-designs') {
+      expect(route.request().headers().authorization).toBe('Bearer operator-token')
+      await route.fulfill({
+        json: [
+          {
+            document: { id: 'design-context', title: 'Confirmed technical guidance', current_version: 2 },
+            current_version: { document_id: 'design-context', version: 2, confirmed: true },
+            pending_versions: [],
+            versions: [],
+            lineage: [],
+            drift: [],
+          },
+        ],
+      })
+      return
+    }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
       submitted = route.request().postData() ?? ''
       if (options.createDependencyError) {
@@ -167,6 +200,17 @@ test('new task removes title input and submits description for AI title generati
   // §21.31: no execution-mode selector; hold defaults off and is omitted.
   expect(submitted()).not.toContain('"mode"')
   expect(submitted()).not.toContain('"hold"')
+})
+
+test('intake attaches confirmed product and design context with authenticated reads', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+  await page.locator('textarea').fill('Implement the attached desired state')
+  await page.getByRole('checkbox', { name: /Confirmed product outcome/ }).check()
+  await page.getByRole('checkbox', { name: /Confirmed technical guidance/ }).check()
+  await page.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('"requirement_ids":["req-context"]')
+  await expect.poll(submitted).toContain('"system_design_ids":["design-context"]')
 })
 
 test('intake offers a hold toggle and advisory worker warning instead of modes', async ({ page }) => {

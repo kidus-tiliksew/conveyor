@@ -94,6 +94,16 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case "requirement.serves_dismissed":
 		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
 		return result
+	case TaskContextRequirementAdded:
+		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
+	case TaskContextRequirementRemoved:
+		// The active attachment read model is suppressed by the removal event,
+		// while the historical event-derived lineage edge remains auditable.
+		return result
+	case TaskContextDesignAdded:
+		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
+	case TaskContextDesignRemoved:
+		return result
 	case "requirement.version_confirmed":
 		var links []core.LineageLink
 		if documentID, documentVersion := text("derived_document_id"), number("derived_document_version"); documentID != "" && documentVersion > 0 {
@@ -276,7 +286,8 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 // Direction is part of the vocabulary contract even though ownership is keyed
 // only by kind: planning_session -consulted-> reference_document_version and
 // requirement_version -derived_from-> reference_document_version,
-// system_design_version -governs-> repository_path,
+// system_design_version -governs-> repository_path/task,
+// requirement -serves-> blueprint/task,
 // system_design_version -proposed_by-> task/planning_session, and
 // planning_session -produced_design-> system_design. Keep this mirror aligned
 // with the Postgres delete vocabularies below.

@@ -457,8 +457,17 @@ func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
 }
 
 func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, dependencyIDs []string) error {
+	return s.CreateTaskWithDependenciesAndContext(ctx, task, dependencyIDs, store.TaskContextInput{})
+}
+
+func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task core.Task, dependencyIDs []string, attached store.TaskContextInput) error {
 	if task.Workspace != workspace(ctx) {
 		return fmt.Errorf("task workspace %q does not match store workspace %q", task.Workspace, workspace(ctx))
+	}
+	var err error
+	attached, err = store.NormalizeTaskContextInput(attached)
+	if err != nil {
+		return err
 	}
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
@@ -491,10 +500,14 @@ func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, 
 				return fmt.Errorf("dependency task %s is not open", dependencyID)
 			}
 		}
+		designVersions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)
+		if err != nil {
+			return err
+		}
 		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 			return err
 		}
-		_, err := insertEventWithID(ctx, q, core.Event{
+		_, err = insertEventWithID(ctx, q, core.Event{
 			TaskID:  task.ID,
 			Kind:    "task.created",
 			Payload: core.JSONPayload(task),
@@ -510,6 +523,18 @@ func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, 
 			}
 			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: task.CreatedAt,
 				Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})}); err != nil {
+				return err
+			}
+		}
+		for _, id := range attached.RequirementIDs {
+			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: task.CreatedAt,
+				Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
+				return err
+			}
+		}
+		for _, id := range attached.DesignIDs {
+			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextDesignAdded, At: task.CreatedAt,
+				Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})}); err != nil {
 				return err
 			}
 		}
