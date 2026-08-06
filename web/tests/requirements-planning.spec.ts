@@ -221,6 +221,11 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work']) {
     await expect(assistant.getByRole('button', { name: action })).toBeVisible()
   }
+  await expect(assistant.getByRole('button', { name: 'Plan work' })).toHaveAttribute(
+    'title',
+    'Propose a reviewable delivery bundle for this requirement',
+  )
+  await expect(page.locator('option[value="blueprint"]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/requirements/)
 })
 
@@ -269,6 +274,120 @@ test('planning starts with an allowlisted model and sends that choice', async ({
       goal: 'bundle',
       model: 'gpt-plan-fast',
     })
+})
+
+test('finalize immediately reveals a complete bundle preview, approval, and created tasks', async ({ page }) => {
+  await initShell(page)
+  let finalized = false
+  let approved = false
+  let bundleReads = 0
+  const session = () => ({
+    id: 'session-bundle',
+    title: finalized ? 'Ship safe retries' : 'Planning delivery…',
+    status: finalized ? ('finalized' as const) : ('active' as const),
+    goal: 'bundle' as const,
+    produced_bundle_id: finalized ? 'bundle-1' : undefined,
+    workspace: 'demo',
+    created_at: '2026-08-06T10:00:00Z',
+    updated_at: '2026-08-06T10:05:00Z',
+  })
+  const bundle = () => ({
+    id: 'bundle-1',
+    session_id: 'session-bundle',
+    title: 'Ship safe retries',
+    status: approved ? ('approved' as const) : ('pending' as const),
+    documents: [{ kind: 'requirement', id: 'req-retries', version: 2, title: 'Retry behavior' }],
+    tasks: [
+      {
+        member_id: 'task-a',
+        created_task_id: approved ? 'task-created' : '',
+        title: 'Implement bounded retries',
+        body: 'Keep retries finite and visible.',
+        repo: 'conveyor',
+        depends_on: ['task-prerequisite'],
+        context: { requirement_ids: ['req-retries'], system_design_ids: ['design-runtime'] },
+      },
+    ],
+    workspace: 'demo',
+    created_at: '2026-08-06T10:05:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const url = new URL(route.request().url())
+    expect(url.searchParams.get('workspace_id') ?? 'demo').toBe('demo')
+    if (url.pathname !== '/v1/workspaces') expect(route.request().headers().authorization).toBe('Bearer test-token')
+    if (url.pathname === '/v1/workspaces')
+      return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
+    if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
+    if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (url.pathname === '/v1/requirements' || url.pathname === '/v1/blueprints') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
+    if (url.pathname === '/v1/planning-sessions/session-bundle') return route.fulfill({ json: session() })
+    if (url.pathname === '/v1/planning-sessions/session-bundle/messages' && route.request().method() === 'GET')
+      return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/planning-sessions/session-bundle/messages') {
+      finalized = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_bundle"}\n\n',
+      })
+    }
+    if (url.pathname === '/v1/planning-bundles') {
+      bundleReads++
+      return route.fulfill({ json: finalized ? [bundle()] : [] })
+    }
+    if (url.pathname === '/v1/planning-bundles/bundle-1/approve') {
+      approved = true
+      return route.fulfill({ json: bundle() })
+    }
+    if (url.pathname === '/v1/activity')
+      return route.fulfill({
+        json: approved
+          ? [
+              {
+                task: {
+                  id: 'task-created',
+                  workspace: 'demo',
+                  source: 'planning:session-bundle',
+                  title: 'Implement bounded retries',
+                  body: 'Keep retries finite and visible.',
+                  class: 'feature',
+                  repo: 'conveyor',
+                  base_branch: 'main',
+                  branch: 'conveyor/task-created',
+                  state: 'queued',
+                  next_stage: 'triage',
+                  spec_approval: true,
+                  merge_approval: false,
+                  policy_version: 1,
+                  setup: 'default',
+                  setup_contract: {},
+                  created_at: '2026-08-06T10:06:00Z',
+                },
+                latest_stage: 'triage',
+                last_event_at: '2026-08-06T10:06:00Z',
+                needs_attention: false,
+              },
+            ]
+          : [],
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/planning')
+  await page.getByLabel('Planning message').fill('Finalize this delivery bundle.')
+  await page.getByRole('button', { name: 'Send' }).click()
+  const preview = page.getByRole('region', { name: 'Planning bundle preview' })
+  await expect(preview).toBeVisible()
+  await expect(preview.getByText('Retry behavior')).toBeVisible()
+  await expect(preview.getByText('Implement bounded retries')).toBeVisible()
+  await expect(preview.getByText(/depends on: task-prerequisite/)).toBeVisible()
+  await expect(preview.getByText(/req-retries, design-runtime/)).toBeVisible()
+  expect(bundleReads).toBeGreaterThan(1)
+  await preview.getByRole('button', { name: 'Approve task set' }).click()
+  await expect.poll(() => approved).toBe(true)
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Board' }).click()
+  await expect(page.getByText('Implement bounded retries')).toBeVisible()
 })
 
 test('planning restores durable messages, tool markers, and streams a new turn', async ({ page }) => {
@@ -996,7 +1115,7 @@ test('guided actions start goal-declared sidebar sessions without leaving requir
   const expected = [
     { action: 'Revise', goal: 'requirement', context: 'req-retries' },
     { action: 'Q&A', goal: 'open', context: 'req-retries' },
-    { action: 'Plan work', goal: 'blueprint', context: 'req-retries' },
+    { action: 'Plan work', goal: 'bundle', context: 'req-retries' },
     { action: 'Draft', goal: 'requirement', context: undefined },
   ]
   for (const [index, step] of expected.entries()) {
@@ -1540,14 +1659,13 @@ test('a produced requirement that never reaches the corpus releases the adoption
   await expect(page.getByText(/The new requirement req-missing did not appear in the corpus/)).toBeVisible()
 })
 
-// AC-5 (blueprint half): contextual Plan work refreshes the visible proposed
-// serves link on the requirement it serves.
-test('finalizing contextual plan work refreshes the proposed serves link', async ({ page }) => {
+test('contextual Plan work starts a delivery bundle and never posts the retired blueprint goal', async ({ page }) => {
   await initShell(page)
-  let served = false
+  let finalized = false
+  let createdGoal = ''
   const view = () => ({
     ...requirement,
-    serving_blueprints: served ? requirement.serving_blueprints : [],
+    serving_blueprints: [],
     planning_sessions: [],
   })
   await page.route('**/v1/**', async (route) => {
@@ -1560,26 +1678,28 @@ test('finalizing contextual plan work refreshes the proposed serves link', async
       return route.fulfill({ json: requirement.pending_versions })
     const planned = {
       id: 'session-plan',
-      title: served ? 'Ship bounded retries' : 'Planning work…',
-      status: served ? 'finalized' : 'active',
-      goal: 'blueprint',
+      title: finalized ? 'Ship bounded retries' : 'Planning work…',
+      status: finalized ? 'finalized' : 'active',
+      goal: 'bundle',
       requirement_context_id: 'req-retries',
-      produced_task_id: served ? 'blueprint-task' : undefined,
+      produced_bundle_id: finalized ? 'bundle-retries' : undefined,
       workspace: 'demo',
       created_at: '2026-07-30T10:00:00Z',
       updated_at: '2026-07-30T10:00:00Z',
     }
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
+    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
+      createdGoal = (JSON.parse(route.request().postData() ?? '{}') as { goal?: string }).goal ?? ''
       return route.fulfill({ json: planned })
+    }
     if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [planned] })
     if (url.pathname === '/v1/planning-sessions/session-plan') return route.fulfill({ json: planned })
     if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
     if (url.pathname.endsWith('/messages')) {
-      served = true
+      finalized = true
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_blueprint"}\n\n',
+        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_bundle"}\n\n',
       })
     }
     return route.fulfill({ json: [] })
@@ -1592,12 +1712,10 @@ test('finalizing contextual plan work refreshes the proposed serves link', async
     name: 'Planning assistant',
   })
   await assistant.getByRole('button', { name: 'Plan work' }).click()
+  await expect.poll(() => createdGoal).toBe('bundle')
   await assistant.getByLabel('Planning message').fill('Plan the delivery.')
   await assistant.getByRole('button', { name: 'Send' }).click()
-  await expect(canvas.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
-    'href',
-    '/blueprints/blueprint-task',
-  )
+  await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
   await expect(page).toHaveURL(/requirement=req-retries/)
 })
 

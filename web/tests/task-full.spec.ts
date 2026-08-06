@@ -2890,7 +2890,7 @@ test('output-validation rejections show job-specific errors with warning tone an
 
   // A stage that produced no narration of its own collapses to one line —
   // it carries no warning tone and never leaks the rejected payload.
-  const acceptedSpec = timeline.locator('li').filter({ hasText: 'Spec completed' })
+  const acceptedSpec = timeline.locator('li').filter({ hasText: 'Plan completed' })
   await expect(acceptedSpec).toHaveCount(1)
   await expect(acceptedSpec.locator('article')).toHaveCount(0)
   await expect(acceptedSpec.locator('.bg-attention-dot')).toHaveCount(0)
@@ -3176,7 +3176,7 @@ test('spec diagrams render best-effort and malformed Mermaid falls back to sourc
 
   await page.goto('/tasks/mermaid-invalid/full')
   await expect(page.locator('code.language-mermaid')).toContainText('this is deliberately malformed')
-  await expect(page.getByRole('heading', { name: 'Specification' }).first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Execution plan' }).first()).toBeVisible()
 })
 
 // The anchor lives at its own canonical route (§21.49), and the legacy task
