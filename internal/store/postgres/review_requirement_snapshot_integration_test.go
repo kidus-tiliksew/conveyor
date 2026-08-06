@@ -35,7 +35,7 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := []core.ServedRequirementContext{{ID: "req-runtime", Title: "Runtime", Version: 3, Statements: []core.RequirementStatement{{ID: "REQ-2", Statement: "Retry safely", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-2.1", Statement: "Retry once"}}}}}}
-	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 4, Content: "Pinned"}}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed, Statement: "Pin authority"}}, PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 5, ProposalEventID: 99, OriginTaskID: task.ID}}}
+	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Version: 4, Content: "Pinned", PinnedAtAttachment: true}}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed, Statement: "Pin authority"}}, PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 5, ProposalEventID: 99, OriginTaskID: task.ID}}, ResolutionNotes: []string{"malformed proposal omitted"}}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
 	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 	if len(reloaded.ServedRequirementSnapshot) != 1 || reloaded.ServedRequirementSnapshot[0].Version != 3 || reloaded.ServedRequirementSnapshot[0].Statements[0].AcceptanceCriteria[0].ID != "AC-2.1" {
 		t.Fatalf("reloaded snapshot=%+v", reloaded.ServedRequirementSnapshot)
 	}
-	if reloaded.GovernanceSnapshot == nil || len(reloaded.GovernanceSnapshot.Designs) != 1 || reloaded.GovernanceSnapshot.Designs[0].Version != 4 || len(reloaded.GovernanceSnapshot.Decisions) != 1 || len(reloaded.GovernanceSnapshot.PendingDesignProposals) != 1 || reloaded.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID != 99 {
+	if reloaded.GovernanceSnapshot == nil || len(reloaded.GovernanceSnapshot.Designs) != 1 || reloaded.GovernanceSnapshot.Designs[0].Version != 4 || !reloaded.GovernanceSnapshot.Designs[0].PinnedAtAttachment || len(reloaded.GovernanceSnapshot.Decisions) != 1 || len(reloaded.GovernanceSnapshot.PendingDesignProposals) != 1 || reloaded.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID != 99 || len(reloaded.GovernanceSnapshot.ResolutionNotes) != 1 {
 		t.Fatalf("reloaded governance snapshot=%+v", reloaded.GovernanceSnapshot)
 	}
 	emptyJob := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}

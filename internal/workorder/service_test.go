@@ -1081,6 +1081,98 @@ func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.
 	}
 }
 
+func TestSubmitVerdictUsesParentPlanAndPendingProposalIsTerminalSafe(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	parent := core.Task{ID: "legacy-blueprint-plan", Workspace: "test", Repo: "app", State: core.TaskAwaiting, CreatedAt: now}
+	if err := st.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	plan := "## Approach\nShip the child.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Verify.\n\n## Risks\n- None.\n\n## Done criteria\n- Pending design proposal is present."
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: parent.ID, Content: plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, parent.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	child := core.Task{ID: "legacy-blueprint-child-review", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, ParentTaskID: parent.ID, OriginSpecVersion: spec.Version, OriginSubID: "SUB-1", CreatedAt: now}
+	if err = st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	document, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-terminal", Title: "Pending terminal", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Initial\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	pendingDocument, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-terminal-proposal", Title: "Pending terminal proposal", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Proposed\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: child.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: child.ID + "-review-1", TaskID: child.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: child.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Pack: bundle, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	const session = "parent-plan-review-session"
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret", Agent: "codex", Model: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	context, err := service.Get(ctx, job.ID, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.ApprovedSpec == nil || context.ApprovedSpec.TaskID != parent.ID || !strings.Contains(context.RolePrompt, "applicable=true") || !strings.Contains(context.RolePrompt, "Pending design proposal is present") {
+		t.Fatalf("parent plan review context=%+v role=%s", context.ApprovedSpec, context.RolePrompt)
+	}
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 {
+		t.Fatalf("pending proposal was not pinned: %+v", claimed.GovernanceSnapshot)
+	}
+	designApplicable, decisionCitable := true, false
+	base := pipeline.Review{
+		Verdict: "approve", ReasonCode: "approved", Summary: "parent plan satisfied",
+		RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "proposal criterion satisfied", Satisfied: []string{"Pending design proposal is present."}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
+	}
+	invalid := base
+	invalid.GovernanceAssessment = &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{pendingDocument.ID}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}
+	if _, err = service.SubmitVerdict(ctx, job.ID, session, invalid); err == nil || !strings.Contains(err.Error(), "not confirmed governing authority") {
+		t.Fatalf("pending proposal citation error=%v", err)
+	}
+	if retained, getErr := st.GetWorkOrder(ctx, job.ID); getErr != nil || retained.State != core.WorkOrderClaimed {
+		t.Fatalf("rejected citation changed review order=%+v err=%v", retained, getErr)
+	}
+	if _, err = service.SubmitVerdict(ctx, job.ID, session, base); err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := st.GetTask(ctx, child.ID)
+	if err != nil || advanced.State == core.TaskRunning {
+		t.Fatalf("approved review did not advance task=%+v err=%v", advanced, err)
+	}
+	if bounces, countErr := st.CountEvents(ctx, child.ID, "pipeline.bounced"); countErr != nil || bounces != 0 {
+		t.Fatalf("approval bounced task: count=%d err=%v", bounces, countErr)
+	}
+}
+
 func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

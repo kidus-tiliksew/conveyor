@@ -418,10 +418,14 @@ func mcpTools() []map[string]any {
 		"cited_ids":  stringList, "unknown_ids": stringList,
 		"unserved_ids": stringList, "conflicts": stringList,
 	}, "applicable", "cited_ids", "unknown_ids", "unserved_ids", "conflicts")
+	criteriaList := map[string]any{"type": "array", "items": str, "description": "Verbatim-trimmed criterion text from the approved execution plan. Do not paraphrase, split, combine, duplicate, or include non-criteria; each criterion belongs in at most one coverage list."}
 	doneCriteriaCoverage := object(map[string]any{
-		"applicable": map[string]string{"type": "boolean"},
-		"summary":    str, "satisfied": stringList, "unsatisfied": stringList,
-		"unverified": stringList, "conflicts": stringList,
+		"applicable":  map[string]any{"type": "boolean", "description": "True exactly when the approved task document is a valid execution plan."},
+		"summary":     str,
+		"satisfied":   map[string]any{"type": "array", "items": str, "description": "Evidence-backed completed criteria, as verbatim-trimmed criterion text."},
+		"unsatisfied": criteriaList,
+		"unverified":  map[string]any{"type": "array", "items": str, "description": "Criteria whose completion cannot be established from available evidence, as verbatim-trimmed criterion text."},
+		"conflicts":   map[string]any{"type": "array", "items": str, "description": "Criteria contradicted by governing authority, as verbatim-trimmed criterion text."},
 	}, "applicable", "summary", "satisfied", "unsatisfied", "unverified", "conflicts")
 	governanceAssessment := object(map[string]any{
 		"applicable":        map[string]any{"type": "boolean", "description": "Legacy compatibility alias for design_applicable; new callers should send the split fields."},

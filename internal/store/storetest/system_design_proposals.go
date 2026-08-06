@@ -90,6 +90,14 @@ func RunSystemDesignProposalConformance(t *testing.T, st store.Store, ctx contex
 	if different.Deduplicated || different.Version != first.Version+1 {
 		t.Fatalf("different=%+v first=%+v", different, first)
 	}
+	taskVersions, err := st.ListPendingSystemDesignVersionsForTask(ctx, "proposal-task")
+	if err != nil || len(taskVersions) != 2 || taskVersions[0].Version != first.Version || taskVersions[1].Version != different.Version {
+		t.Fatalf("task-scoped pending versions=%+v err=%v", taskVersions, err)
+	}
+	taskEvents, err := st.ListSystemDesignProposalEventsForTask(ctx, "proposal-task")
+	if err != nil || len(taskEvents) != 2 {
+		t.Fatalf("task-scoped proposal events=%+v err=%v", taskEvents, err)
+	}
 }
 
 type proposalConformanceError struct {

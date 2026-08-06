@@ -2578,6 +2578,55 @@ func TestValidateDoneCriteriaCoverageRequiresDisjointReasonedAssessment(t *testi
 	}
 }
 
+func TestLegacyDoneHeadingPromptAndValidatorAgreeNoExecutionPlan(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "legacy-done-heading", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "## Definition of done\n\n- Legacy checks pass.\n\n```conveyor:spec\n{\"acceptance\":[]}\n```"
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: legacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.Pack = bundle
+	d.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "", nil }
+	d.DisableMemoryQueueForTest()
+	input, err := d.buildStageInput(ctx, cfg, core.StageReview, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(input.Prompt, "No execution plan is available. The task description is the statement of done:") ||
+		!strings.Contains(input.Prompt, "Record done_criteria_coverage with applicable=false") ||
+		strings.Contains(input.Prompt, "Each list entry must be the verbatim-trimmed text of one criterion") {
+		t.Fatalf("legacy prompt applicability diverged: %s", input.Prompt)
+	}
+	designApplicable, decisionCitable := false, false
+	review := pipeline.Review{
+		Verdict: "approve", ReasonCode: "approved", Summary: "legacy contract accepted",
+		RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Summary: "No execution plan is available", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
+	}
+	if err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()

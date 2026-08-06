@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +12,7 @@ import (
 
 func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
-	st := NewMemory()
+	st := NewMemory().(*memory)
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task", Title: "Task delivery"}, core.RequirementVersion{
 		Content: "Task delivery", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver task context."}},
@@ -53,6 +55,53 @@ func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
 	governance, err = GovernanceForTask(ctx, st, task.ID, task.Repo)
 	if err != nil || governance.Designs[0].Version != 1 {
 		t.Fatalf("pinned governance=%+v err=%v", governance, err)
+	}
+}
+
+func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory().(*memory)
+	design, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-pin", Title: "Pinned mechanism", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# V1\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "governance-malformed", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTaskWithDependenciesAndContext(ctx, task, nil, TaskContextInput{DesignIDs: []string{design.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# V2\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/v2/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Pending\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - cmd/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	for index := range st.events[""] {
+		if st.events[""][index].Kind == "system_design.version_proposed" && strings.Contains(string(st.events[""][index].Payload), `"version":`+strconv.Itoa(pending.Version)) {
+			st.events[""][index].Payload = core.JSONPayload(map[string]any{"workspace_id": "demo", "origin_task_id": task.ID, "document_id": design.ID, "version": "bad"})
+		}
+	}
+	st.mu.Unlock()
+
+	governance, err := GovernanceForTask(ctx, st, task.ID, task.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(governance.Designs) != 1 || governance.Designs[0].Version != first.Version || !governance.Designs[0].PinnedAtAttachment {
+		t.Fatalf("attachment downgrade provenance=%+v", governance.Designs)
+	}
+	if len(governance.PendingDesignProposals) != 0 || len(governance.ResolutionNotes) == 0 || !strings.Contains(strings.Join(governance.ResolutionNotes, " "), "omitted") {
+		t.Fatalf("malformed proposal handling=%+v", governance)
 	}
 }
 
