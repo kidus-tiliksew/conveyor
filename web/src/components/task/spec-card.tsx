@@ -123,12 +123,12 @@ export function SpecCard({
             className="flex items-center gap-2 text-left"
           >
             <ChevronRight className={cn('size-3.5 text-faint transition-transform', expanded && 'rotate-90')} />
-            <CardTitle>Specification</CardTitle>
+            <CardTitle>Execution plan</CardTitle>
             <Badge variant="mono">v{spec.version}</Badge>
           </button>
         ) : (
           <div className="flex items-center gap-2">
-            <CardTitle>Specification</CardTitle>
+            <CardTitle>Execution plan</CardTitle>
             <Badge variant="mono">v{spec.version}</Badge>
           </div>
         )}

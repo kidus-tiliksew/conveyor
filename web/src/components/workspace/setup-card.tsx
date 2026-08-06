@@ -288,7 +288,7 @@ export function SetupCard({
           </div>
 
           <div className="border-b border-border px-4 py-4">
-            <GroupTitle title="Specification" note="runs on your worker over MCP without git changes" />
+            <GroupTitle title="Plan" note="produces the execution plan over MCP without git changes" />
             <div className="grid gap-3 md:grid-cols-5">
               <Field label="Harness">
                 <Select

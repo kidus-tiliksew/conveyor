@@ -15,6 +15,36 @@ FROM legacy_spec_gate_versions
 ORDER BY workspace_id, task_id, spec_version;
 ```
 
+The applied backfill selected each task's latest job with `ORDER BY
+j.started_at DESC`. PostgreSQL sorts NULL values first for a descending order,
+so a never-started job could have hidden the actual spec-stage job. Migration
+075 is immutable history; future migrations that reuse this lookup must order
+with `j.started_at DESC NULLS LAST, j.id DESC`.
+
+Audit an applied database for awaiting tasks whose captured status may differ
+from the NULL-safe latest-job lookup:
+
+```sql
+SELECT t.workspace_id,
+       t.id AS task_id,
+       latest_job.stage AS null_safe_latest_stage,
+       legacy.spec_version AS captured_spec_version
+FROM tasks t
+LEFT JOIN LATERAL (
+  SELECT j.stage
+  FROM jobs j
+  WHERE j.task_id = t.id
+  ORDER BY j.started_at DESC NULLS LAST, j.id DESC
+  LIMIT 1
+) latest_job ON true
+LEFT JOIN legacy_spec_gate_versions legacy
+  ON legacy.workspace_id = t.workspace_id
+ AND legacy.task_id = t.id
+WHERE t.state = 'awaiting_human'
+  AND (latest_job.stage = 'spec') IS DISTINCT FROM (legacy.task_id IS NOT NULL)
+ORDER BY t.workspace_id, t.id;
+```
+
 Before landing, the worker-visible MCP census for workspace `demo` contained
 no active spec-stage work order. The durable migration query above remains the
 required source for the exact gate-resident set because awaiting human gates

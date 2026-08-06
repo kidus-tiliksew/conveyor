@@ -333,7 +333,7 @@ export function TaskCreateSheet() {
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Spec approval gate">
+          <Field label="Plan approval gate">
             <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
               <option value="default">Workspace default</option>
               <option value="on">Human approval on</option>
