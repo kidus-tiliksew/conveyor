@@ -1220,6 +1220,7 @@ func TestValidateGovernanceAssessmentUsesPinnedSplitAuthority(t *testing.T) {
 			{ID: "DEC-1", Status: core.DecisionConfirmed},
 			{ID: "DEC-2", Status: core.DecisionSuperseded},
 		},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-pending", Version: 3, ProposalEventID: 42, OriginTaskID: "task-a"}},
 	}
 	tests := []struct {
 		name       string
@@ -1230,6 +1231,7 @@ func TestValidateGovernanceAssessmentUsesPinnedSplitAuthority(t *testing.T) {
 		{name: "known design unknown", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UnknownIDs: []string{"DESIGN-runtime"}}, wantError: `unknown_ids entry "DESIGN-runtime" is present in the pinned governing authority and belongs in cited_ids`},
 		{name: "known decision ungoverned", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), UngovernedIDs: []string{"DEC-1"}}, wantError: `ungoverned_ids entry "DEC-1" is present in the pinned governing authority and belongs in cited_ids`},
 		{name: "superseded accepted only as finding", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DEC-2"}}, wantError: `cited id "DEC-2" is not confirmed governing authority in the pinned snapshot`},
+		{name: "pending proposal is not citable authority", assessment: core.GovernanceAssessment{DesignApplicable: boolRef(true), DecisionCitable: boolRef(true), CitedIDs: []string{"DESIGN-pending"}}, wantError: `cited id "DESIGN-pending" is not confirmed governing authority in the pinned snapshot`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

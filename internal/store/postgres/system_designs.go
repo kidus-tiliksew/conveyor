@@ -106,6 +106,30 @@ func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.Sys
 		if err := tx.QueryRow(ctx, `SELECT 1 FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), version.DocumentID).Scan(new(int)); err != nil {
 			return notFound(err, "system design %s", version.DocumentID)
 		}
+		if version.Origin == core.SystemDesignOriginImplementation {
+			rows, queryErr := tx.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND origin=$3 AND origin_task_id=$4 AND NOT confirmed AND NOT dismissed ORDER BY version`, workspace(ctx), version.DocumentID, string(version.Origin), version.OriginTaskID)
+			if queryErr != nil {
+				return queryErr
+			}
+			for rows.Next() {
+				existing, scanErr := scanSystemDesignVersion(rows, version.DocumentID, 0)
+				if scanErr != nil {
+					rows.Close()
+					return scanErr
+				}
+				if core.NormalizeSystemDesignContent(existing.Content) == version.Content {
+					rows.Close()
+					existing.Deduplicated = true
+					version = existing
+					return nil
+				}
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return rowsErr
+			}
+			rows.Close()
+		}
 		if err := tx.QueryRow(ctx, `SELECT coalesce(max(version),0) FROM system_design_versions WHERE workspace_id=$1 AND document_id=$2`, workspace(ctx), version.DocumentID).Scan(&latest); err != nil {
 			return err
 		}

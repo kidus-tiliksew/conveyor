@@ -63,6 +63,10 @@ type SystemDesignVersion struct {
 	DismissedAt     time.Time          `json:"dismissed_at,omitempty"`
 	Workspace       string             `json:"workspace"`
 	CreatedAt       time.Time          `json:"created_at"`
+	// Deduplicated is response metadata: proposal calls set it when an
+	// equivalent pending implementation proposal already existed. It is not
+	// persisted as part of the immutable version.
+	Deduplicated bool `json:"deduplicated"`
 }
 
 var systemDesignIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -153,12 +157,22 @@ func NormalizeSystemDesignVersion(version *SystemDesignVersion) error {
 			return fmt.Errorf("operator system design origin cannot name a session or task")
 		}
 	}
+	version.Content = NormalizeSystemDesignContent(version.Content)
 	scopes, err := ParseGovernedScopes(version.Content)
 	if err != nil {
 		return err
 	}
 	version.Governs = scopes
 	return nil
+}
+
+// NormalizeSystemDesignContent defines proposal identity without changing
+// interior Markdown: line endings become LF and only document-edge whitespace
+// is removed.
+func NormalizeSystemDesignContent(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.TrimSpace(content)
 }
 
 // MatchGovernedPath implements repository-relative doublestar matching without
@@ -242,12 +256,24 @@ type GovernanceDesignContext struct {
 	Governs  []GovernedScope `json:"governs"`
 }
 
-// GovernanceSnapshot pins both repository-scoped design authority and the
-// workspace-wide decision authority used by a review contract. Non-nil empty
-// slices distinguish a current empty snapshot from a legacy missing pin.
+// PendingSystemDesignProposal is observable review/implementation context,
+// never governance authority. ProposalEventID identifies the append-only event
+// that created the immutable pending version.
+type PendingSystemDesignProposal struct {
+	DocumentID      string `json:"document_id"`
+	Version         int    `json:"version"`
+	ProposalEventID int64  `json:"proposal_event_id"`
+	OriginTaskID    string `json:"origin_task_id"`
+}
+
+// GovernanceSnapshot pins repository-scoped design authority, workspace-wide
+// decision authority, and a separately non-authoritative task-origin proposal
+// observation used by a review contract. Non-nil empty slices distinguish a
+// current empty snapshot from a legacy missing pin.
 type GovernanceSnapshot struct {
-	Designs   []GovernanceDesignContext `json:"designs"`
-	Decisions []Decision                `json:"decisions"`
+	Designs                []GovernanceDesignContext     `json:"designs"`
+	Decisions              []Decision                    `json:"decisions"`
+	PendingDesignProposals []PendingSystemDesignProposal `json:"pending_design_proposals"`
 }
 
 var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)

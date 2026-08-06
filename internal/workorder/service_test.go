@@ -1055,6 +1055,89 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 }
 
+func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending", Title: "Pending", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Initial\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Pending one\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```",
+		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Other task\n\n```conveyor:governs\n- repo: app\n  paths:\n    - cmd/**\n```",
+		Origin: core.SystemDesignOriginImplementation, OriginTaskID: "another-task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+	}}}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	implementJob := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, implementJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	implementContext, err := service.Get(ctx, implementJob.ID, "implement-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if implementContext.GovernanceSnapshot == nil || len(implementContext.GovernanceSnapshot.PendingDesignProposals) != 1 ||
+		implementContext.GovernanceSnapshot.PendingDesignProposals[0].Version != first.Version ||
+		!strings.Contains(implementContext.RolePrompt, "report an existing identical proposal identifier") {
+		t.Fatalf("implement pending context=%+v role=%s", implementContext.GovernanceSnapshot, implementContext.RolePrompt)
+	}
+
+	reviewJob := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, reviewJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
+		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
+		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reviewContext, err := service.Get(ctx, reviewJob.ID, "review-session-pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewContext.GovernanceSnapshot.PendingDesignProposals) != 1 || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
+		t.Fatalf("review pending context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
+	}
+}
+
 func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
