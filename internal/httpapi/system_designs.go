@@ -273,6 +273,14 @@ func (s *Server) confirmDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, item)
 }
+func (s *Server) dismissDecision(w http.ResponseWriter, r *http.Request) {
+	item, err := s.Store.DismissDecision(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("dismiss decision: %v", err), systemDesignMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
 
 func systemDesignMutationStatus(err error) int {
 	switch {

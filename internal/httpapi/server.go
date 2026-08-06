@@ -133,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/decisions", s.proposeDecision)
 			r.Get("/decisions/{id}", s.getDecision)
 			r.With(s.requireMutationAuth).Post("/decisions/{id}/confirm", s.confirmDecision)
+			r.With(s.requireMutationAuth).Post("/decisions/{id}/dismiss", s.dismissDecision)
 			r.Get("/planning-sessions", s.listPlanningSessions)
 			r.With(s.requireMutationAuth).Post("/planning-sessions", s.createPlanningSession)
 			r.Get("/planning-sessions/{id}", s.getPlanningSession)

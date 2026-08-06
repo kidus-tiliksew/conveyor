@@ -171,6 +171,8 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		if predecessor := text("supersedes"); predecessor != "" {
 			return emit(link(core.LineageDecision, text("decision_id"), core.LineageDecision, predecessor, "supersedes"))
 		}
+	case "decision.dismissed":
+		return result
 	case "spec.version_created":
 		if version := number("version"); version > 0 {
 			links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageBlueprintVersion, core.BlueprintVersionLineageID(event.TaskID, version), "versions")}

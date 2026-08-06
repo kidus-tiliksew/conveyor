@@ -849,9 +849,13 @@ export interface Decision {
   statement: string
   context: string
   alternatives_rejected: string
-  status: 'proposed' | 'confirmed' | 'superseded'
+  status: 'proposed' | 'confirmed' | 'dismissed' | 'superseded'
   origin: 'planning_session' | 'implementation_deliberation' | 'operator'
   supersedes?: string
+  confirmed_by?: string
+  confirmed_at?: string
+  dismissed_by?: string
+  dismissed_at?: string
   superseded_by?: string
   workspace: string
   created_at: string

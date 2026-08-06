@@ -244,3 +244,82 @@ test('stale System Design confirmation refreshes the list and explains the retry
   await expect(page.getByText(/latest versions are loading; review them and try again/i)).toBeVisible()
   await expect.poll(() => designReads).toBeGreaterThanOrEqual(2)
 })
+
+test('operators confirm and dismiss proposed decisions with conflict-safe refresh and attribution', async ({
+  page,
+}) => {
+  await initialize(page)
+  let decisionReads = 0
+  let decisions = [
+    {
+      id: 'DEC-1',
+      statement: 'Keep events append-only.',
+      context: 'Audit history must remain durable.',
+      alternatives_rejected: 'Mutable lifecycle rows alone.',
+      status: 'proposed',
+      origin: 'operator',
+      workspace: 'demo',
+      created_at: '2026-08-05T08:00:00Z',
+    },
+    {
+      id: 'DEC-2',
+      statement: 'Use stable decision anchors.',
+      context: 'Operators need direct blocker links.',
+      alternatives_rejected: 'Search the page manually.',
+      status: 'proposed',
+      origin: 'operator',
+      workspace: 'demo',
+      created_at: '2026-08-05T09:00:00Z',
+    },
+  ]
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/decisions') {
+      decisionReads++
+      return route.fulfill({ json: decisions })
+    }
+    if (url.pathname === '/v1/decisions/DEC-1/confirm') {
+      expect(request.method()).toBe('POST')
+      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers()['x-conveyor-actor']).toBe('dashboard-operator')
+      decisions = decisions.map((item) =>
+        item.id === 'DEC-1'
+          ? {
+              ...item,
+              status: 'confirmed',
+              confirmed_by: 'dashboard-operator',
+              confirmed_at: '2026-08-06T08:00:00Z',
+            }
+          : item,
+      )
+      return route.fulfill({ json: decisions[0] })
+    }
+    if (url.pathname === '/v1/decisions/DEC-2/dismiss') {
+      expect(request.headers().authorization).toBe('Bearer test-token')
+      decisions = decisions.map((item) =>
+        item.id === 'DEC-2'
+          ? {
+              ...item,
+              status: 'dismissed',
+              dismissed_by: 'second-operator',
+              dismissed_at: '2026-08-06T08:01:00Z',
+            }
+          : item,
+      )
+      return route.fulfill({ status: 409, body: 'decision was already dismissed' })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design#decision-dec-2')
+  await expect(page.locator('#decision-dec-2')).toBeVisible()
+  await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
+  await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by dashboard-operator')
+  await page.locator('#decision-dec-2').getByRole('button', { name: 'Dismiss' }).click()
+  await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
+  await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
+})

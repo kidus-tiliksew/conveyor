@@ -299,6 +299,19 @@ export class SystemDesignConflictError extends Error {}
 export function fetchDecisions() {
   return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions'))
 }
+export async function resolveDecision(token: string, id: string, action: 'confirm' | 'dismiss') {
+  const response = await fetch(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}/${action}`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) {
+    const message = (await response.text()).trim() || response.statusText
+    if (response.status === 409) throw new DecisionConflictError(message)
+    throw new Error(message)
+  }
+  return response.json() as Promise<import('./types').Decision>
+}
+export class DecisionConflictError extends Error {}
 export function fetchReferenceDocumentVersions(id: string) {
   return getJSON<import('./types').ReferenceDocumentVersion[]>(
     workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`),
