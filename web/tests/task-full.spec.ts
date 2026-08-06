@@ -554,9 +554,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                             queue_deadline: '2026-07-16T12:00:00Z',
                             redispatch_count: 0,
                             cost_usd: 0,
-                            tokens_in: 0,
-                            tokens_out: 0,
-                            usage_reported: false,
+                            tokens_in: 1200,
+                            tokens_out: 300,
+                            usage_reported: true,
                             self_reported: true,
                             created_at: createdAt,
                             updated_at: '2026-07-15T12:01:00Z',
@@ -2628,10 +2628,94 @@ test('in-process jobs retain provider usage when the matching work order has no 
 
   await page.goto('/tasks/provider-usage/full')
   const job = page.locator('article').filter({ hasText: 'Provider usage remains attached' })
+  const metadata = job.locator('[data-run-metadata="spec"]')
+  const model = metadata.getByText('gpt-spec', { exact: true })
+  const tooltip = metadata.getByRole('tooltip', { name: '17 in / 3 out · provider-reported' })
   await expect(job).toContainText('gpt-spec')
-  await expect(job.getByRole('tooltip')).toContainText('17 in / 3 out · provider-reported')
+  await expect(tooltip).toContainText('17 in / 3 out · provider-reported')
+  await expect(tooltip).toHaveCSS('opacity', '0')
+  await expect(model).toHaveAttribute('title', 'gpt-spec')
+  await expect(model.locator('..').locator('svg')).toBeVisible()
+  await model.hover()
+  await expect(tooltip).toHaveCSS('opacity', '1')
+  await model.locator('..').focus()
+  await expect(tooltip).toHaveCSS('opacity', '1')
   await expect(job).not.toContainText('Usage unavailable')
   await expect(job).not.toContainText('$0.00')
+  await expect(metadata.locator(':scope > span')).toHaveCount(2)
+
+  const durationBox = await metadata.getByText('1m 00s', { exact: true }).boundingBox()
+  const modelBox = await model.boundingBox()
+  expect(durationBox).not.toBeNull()
+  expect(modelBox).not.toBeNull()
+  expect(modelBox?.x).toBeGreaterThan(durationBox?.x ?? 0)
+
+  await page.setViewportSize({ width: 420, height: 900 })
+  await expect(metadata.getByText('1m 00s', { exact: true })).toBeVisible()
+  await expect(model).toBeVisible()
+  await expect(job.getByText('Spec', { exact: true })).toBeVisible()
+  await expect(job.locator('time')).toBeVisible()
+})
+
+test('detailed operator jobs expose reported work-order usage when job counters are zero', async ({ page }) => {
+  await page.route('**/v1/tasks/work-order-usage/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'work-order-usage'
+    item.jobs = [
+      {
+        id: 'work-order-usage-implement',
+        task_id: 'work-order-usage',
+        stage: 'implement',
+        harness: 'codex',
+        model_tier: 'gpt-implement',
+        runner: 'worker',
+        confinement: 'none',
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        state: 'done',
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    item.work_orders = [
+      {
+        ...item.work_orders[1],
+        id: 'work-order-usage-implement',
+        task_id: 'work-order-usage',
+        job_id: 'work-order-usage-implement',
+        state: 'completed',
+        required_model: 'gpt-implement',
+        tokens_in: 1700,
+        tokens_out: 400,
+        usage_reported: true,
+        self_reported: true,
+      },
+    ]
+    item.events = [
+      {
+        id: 1,
+        task_id: 'work-order-usage',
+        job_id: 'work-order-usage-implement',
+        kind: 'job.summary',
+        actor_id: 'worker',
+        actor_role: 'runner',
+        payload: { summary: 'Operator-run implementation completed with reported usage.' },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/work-order-usage/full')
+  const job = page.locator('article').filter({ hasText: 'Operator-run implementation completed' })
+  const metadata = job.locator('[data-run-metadata="implement"]')
+  const model = metadata.getByText('gpt-implement', { exact: true })
+  const tooltip = metadata.getByRole('tooltip', { name: '1.7k in / 400 out · self-reported' })
+  await expect(tooltip).toContainText('1.7k in / 400 out · self-reported')
+  await expect(job).not.toContainText('0 in / 0 out')
+  await model.hover()
+  await expect(tooltip).toHaveCSS('opacity', '1')
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
@@ -2791,6 +2875,31 @@ test('review panel replaces duplicate review and bounce activity notes', async (
   await expect(panel.getByText('Changes', { exact: true })).toBeVisible()
   await expect(panel.getByText('pinned', { exact: true })).toHaveCount(2)
   await expect(panel.getByText('2 of 2 verdicts in')).toBeVisible()
+
+  // Seat usage is discoverable from the right-side model affordance instead
+  // of competing with verdict state as persistent row text.
+  const firstSeat = panel.locator('[data-review-seat="1"]')
+  const firstModel = firstSeat.getByText('gpt-review', { exact: true })
+  const firstUsage = firstSeat.getByRole('tooltip', {
+    name: '1.2k in / 300 out · self-reported · effort high',
+  })
+  await expect(firstUsage).toHaveText('1.2k in / 300 out · self-reported · effort high')
+  await expect(firstUsage).toHaveCSS('opacity', '0')
+  await firstModel.hover()
+  await expect(firstUsage).toHaveCSS('opacity', '1')
+
+  const secondSeat = panel.locator('[data-review-seat="2"]')
+  const secondModel = secondSeat.getByText('claude-review', { exact: true })
+  const unavailableUsage = secondSeat.getByRole('tooltip', { name: 'Usage unavailable' })
+  await secondModel.locator('..').focus()
+  await expect(unavailableUsage).toHaveCSS('opacity', '1')
+  await expect(unavailableUsage).toHaveText('Usage unavailable')
+
+  const seatLabelBox = await firstSeat.getByText('Seat 1', { exact: true }).boundingBox()
+  const seatModelBox = await firstModel.boundingBox()
+  expect(seatLabelBox).not.toBeNull()
+  expect(seatModelBox).not.toBeNull()
+  expect(seatModelBox?.x).toBeGreaterThan(seatLabelBox?.x ?? 0)
 
   // Feedback from every seat stays visible, attributed in the merged notes.
   await expect(panel.getByText('Approved guidance remains visible.')).toBeVisible()

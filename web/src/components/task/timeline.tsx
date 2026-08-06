@@ -637,11 +637,12 @@ function PanelEntry({
 
 function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
+    <div data-review-seat={seat.seat} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
         Seat {seat.seat}
       </span>
-      <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
+      <EnforcementChip enforcement={seat.order.model_enforcement} />
+      <span className="ml-auto inline-flex min-w-0 items-center gap-3 font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
           tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
@@ -650,10 +651,6 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
           usageAvailable={usageAvailable}
           usageProvenance={usageProvenance(seat.order)}
         />
-      </span>
-      <span className="font-mono text-[11px] tabular-nums text-faint">{usageText(seat.order, usageAvailable)}</span>
-      <EnforcementChip enforcement={seat.order.model_enforcement} />
-      <span className="ml-auto">
         <SeatState seat={seat} index={index} />
       </span>
       {seat.status === 'deliberating' && seat.order.progress && (
@@ -828,9 +825,9 @@ const placeholderSummaries = new Set([
   'Completed.',
 ])
 
-// The job footer keeps the operator-facing facts — duration, model, and
-// explicit work-order usage — while the model chip retains dispatch detail on
-// hover. Harness, auth mode, confinement, and actor plumbing stay in the API.
+// The job footer keeps the operator-facing duration and model compact. Usage
+// telemetry and dispatch detail remain available from the model chip; harness,
+// auth mode, confinement, and actor plumbing stay in the API.
 function JobEntry({
   job,
   summary,
@@ -882,11 +879,27 @@ function JobEntry({
             {duration(job.started_at, job.ended_at)}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
-          {order && !providerUsage && (
-            <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
-              {usageText(order, usageAvailable === true)}
-            </span>
-          )}
+          <span
+            data-run-metadata={job.stage}
+            className="basis-full flex justify-end font-mono text-[11px] tabular-nums text-muted"
+          >
+            <ModelChip
+              model={model}
+              tokensIn={providerUsage ? job.tokens_in : order ? order.tokens_in : job.tokens_in}
+              tokensOut={providerUsage ? job.tokens_out : order ? order.tokens_out : job.tokens_out}
+              note={note || undefined}
+              usageAvailable={
+                providerUsage
+                  ? job.tokens_in + job.tokens_out > 0
+                  : order
+                    ? usageAvailable
+                    : job.tokens_in + job.tokens_out > 0
+              }
+              usageProvenance={
+                providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'
+              }
+            />
+          </span>
         </div>
       </li>
     )
@@ -910,12 +923,15 @@ function JobEntry({
         >
           {summary}
         </MarkdownProse>
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+        <div
+          data-run-metadata={job.stage}
+          className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted"
+        >
           <span>{duration(job.started_at, job.ended_at)}</span>
           <ModelChip
             model={model}
-            tokensIn={job.tokens_in}
-            tokensOut={job.tokens_out}
+            tokensIn={providerUsage ? job.tokens_in : order ? order.tokens_in : job.tokens_in}
+            tokensOut={providerUsage ? job.tokens_out : order ? order.tokens_out : job.tokens_out}
             note={note || undefined}
             usageAvailable={
               providerUsage
@@ -926,7 +942,6 @@ function JobEntry({
             }
             usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
           />
-          {order && !providerUsage && <span>{usageText(order, usageAvailable === true)}</span>}
         </div>
       </article>
     </li>
@@ -960,6 +975,7 @@ function ModelChip({
   usageProvenance?: string
 }) {
   const logo = providerLogo(model)
+  const tooltipID = useId()
   const usage = [
     usageAvailable === false
       ? 'Usage unavailable'
@@ -972,7 +988,11 @@ function ModelChip({
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="group/model relative inline-flex max-w-full cursor-default items-center gap-1.5">
+    <span
+      className="group/model relative inline-flex max-w-full cursor-default items-center gap-1.5 focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      tabIndex={usage ? 0 : undefined}
+      aria-describedby={usage ? tooltipID : undefined}
+    >
       {logo ? (
         <span
           aria-hidden
@@ -987,8 +1007,9 @@ function ModelChip({
       </span>
       {usage && (
         <span
+          id={tooltipID}
           role="tooltip"
-          className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 font-mono text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:right-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/model:opacity-100"
+          className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 font-mono text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:right-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/model:opacity-100 group-focus-within/model:opacity-100"
         >
           {usage}
         </span>
