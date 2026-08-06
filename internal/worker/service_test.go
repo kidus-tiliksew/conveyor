@@ -138,6 +138,106 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "checkpoint-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
+	job := core.Job{ID: "checkpoint-task-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "checkpoint-worker", Workspace: "demo"}
+	service := &Service{Store: st}
+	first, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "session-first", ClientToken: "token-first", WorkerID: worker.ID,
+		Lease: time.Minute, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := core.WorkOrderAttemptCheckpoint{
+		SessionID: "session-first", AttemptID: first.AttemptID, TerminationReason: "harness exited",
+		CommitSHA: "1111111111111111111111111111111111111111", PushResult: "pushed",
+	}
+	created, err := service.CheckpointAttempt(ctx, worker, first.ID, checkpoint)
+	if err != nil || !created {
+		t.Fatalf("first checkpoint created=%v err=%v", created, err)
+	}
+	if created, err = service.CheckpointAttempt(ctx, worker, first.ID, checkpoint); err != nil || created {
+		t.Fatalf("duplicate checkpoint created=%v err=%v", created, err)
+	}
+	wrong := checkpoint
+	wrong.SessionID = "different-session"
+	if _, err = service.CheckpointAttempt(ctx, worker, first.ID, wrong); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session checkpoint err=%v", err)
+	}
+
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, first.ID, worker.ID, core.WorkOrderRelease{
+		SessionID: "session-first", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited",
+		InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	late := checkpoint
+	late.CommitSHA = "4444444444444444444444444444444444444444"
+	late.TerminationReason = "claim authority lost: server reports queued"
+	if created, err = service.CheckpointAttempt(ctx, worker, first.ID, late); err != nil || !created {
+		t.Fatalf("late authority-loss checkpoint created=%v err=%v", created, err)
+	}
+	late.SessionID = "different-session"
+	late.CommitSHA = "5555555555555555555555555555555555555555"
+	if _, err = service.CheckpointAttempt(ctx, worker, first.ID, late); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("unattributable late checkpoint err=%v", err)
+	}
+	time.Sleep(time.Millisecond)
+	second, err := storetest.For(st).ClaimWorkOrder(ctx, first.ID, core.WorkOrderClaim{
+		SessionID: "session-second", ClientToken: "token-second", WorkerID: worker.ID,
+		Lease: time.Minute, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor := core.WorkOrderAttemptCheckpoint{
+		SessionID: "session-second", AttemptID: first.AttemptID, TerminationReason: "successor adopted dirty predecessor work",
+		CommitSHA: "2222222222222222222222222222222222222222", PushResult: "pushed",
+	}
+	if created, err = service.CheckpointAttempt(ctx, worker, second.ID, predecessor); err != nil || !created {
+		t.Fatalf("predecessor checkpoint created=%v err=%v", created, err)
+	}
+	predecessor.AttemptID = "attempt-unrelated"
+	predecessor.CommitSHA = "3333333333333333333333333333333333333333"
+	if _, err = service.CheckpointAttempt(ctx, worker, second.ID, predecessor); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("unattributable checkpoint err=%v", err)
+	}
+
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoints int
+	for _, event := range events {
+		if event.Kind == "work_order.attempt_checkpointed" {
+			checkpoints++
+			if !strings.Contains(string(event.Payload), `"push_result":"pushed"`) || !strings.Contains(string(event.Payload), `"work_order_id":"`+job.ID+`"`) {
+				t.Fatalf("checkpoint payload=%s", event.Payload)
+			}
+		}
+	}
+	if checkpoints != 3 {
+		t.Fatalf("checkpoint events=%d, want 3", checkpoints)
+	}
+}
+
 func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")

@@ -324,6 +324,57 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	return order, nil
 }
 
+func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, store.ErrWorkOrderClaimLost
+	}
+	if err != nil {
+		return false, err
+	}
+	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
+	if !authorized {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.claimed'
+			AND payload_json->>'id'=$3 AND payload_json->>'stage'='implement'
+			AND payload_json->>'worker_id'=$4 AND payload_json->>'session_id'=$5
+			AND payload_json->>'attempt_id'=$6
+		)`, workspace(ctx), order.TaskID, order.ID, workerID, checkpoint.SessionID, checkpoint.AttemptID).Scan(&authorized); err != nil {
+			return false, err
+		}
+	}
+	if !authorized {
+		return false, store.ErrWorkOrderClaimLost
+	}
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.attempt_checkpointed'
+		AND payload_json->>'work_order_id'=$3 AND payload_json->>'attempt_id'=$4 AND payload_json->>'commit_sha'=$5
+	)`, workspace(ctx), order.TaskID, order.ID, checkpoint.AttemptID, checkpoint.CommitSHA).Scan(&exists); err != nil {
+		return false, err
+	}
+	if exists {
+		return false, tx.Commit(ctx)
+	}
+	q := s.queries.WithTx(tx)
+	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
+	if err = insertEvent(eventCtx, q, core.Event{
+		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
+		Payload: store.AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
+	}); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func postgresRetryDelay(release core.WorkOrderRelease, retry int) time.Duration {
 	initial := release.InitialRetryDelay
 	if initial <= 0 {

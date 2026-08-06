@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,27 @@ func TestAssignedCheckoutFromEnvironmentHonorsOnlyItsOwnTask(t *testing.T) {
 	t.Setenv("CONVEYOR_TASK_BRANCH", "")
 	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
 		t.Fatal("incomplete assignment must fall back to the authenticated lookup")
+	}
+}
+
+func TestAssignedPredecessorCheckpointRequiresDistinctRecordedAttempt(t *testing.T) {
+	t.Setenv("CONVEYOR_TASK_ID", "task-1")
+	t.Setenv("CONVEYOR_WORK_ORDER_ID", "task-1-implement-1")
+	t.Setenv("CONVEYOR_SESSION_ID", "session-current")
+	t.Setenv("CONVEYOR_CURRENT_ATTEMPT_ID", "attempt-current")
+	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-prior")
+	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_REASON", "harness exited")
+	checkpoint := assignedPredecessorCheckpointFromEnvironment("task-1")
+	if checkpoint == nil || checkpoint.AttemptID != "attempt-prior" || checkpoint.WorkOrderID != "task-1-implement-1" || checkpoint.TerminationReason != "harness exited" {
+		t.Fatalf("checkpoint=%+v", checkpoint)
+	}
+	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-current")
+	if checkpoint = assignedPredecessorCheckpointFromEnvironment("task-1"); checkpoint != nil {
+		t.Fatalf("current attempt accepted as predecessor: %+v", checkpoint)
+	}
+	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-prior")
+	if checkpoint = assignedPredecessorCheckpointFromEnvironment("other-task"); checkpoint != nil {
+		t.Fatalf("cross-task predecessor accepted: %+v", checkpoint)
 	}
 }
 
@@ -195,6 +217,127 @@ func TestCheckoutReusesRegisteredWorktreeAtFormerSiblingLocation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fixture.tmp, "conveyor-worktrees", "conveyor-task-legacy-location")); !os.IsNotExist(err) {
 		t.Fatalf("checkout relocated registered worktree: %v", err)
+	}
+}
+
+func TestCheckoutCheckpointsAttributedPredecessorWorkAndPushes(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-checkpoint"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(path, "predecessor.txt"), "preserve me\n")
+	checkpoint := &attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "checkpoint-implement-1", TerminationReason: "harness exited: signal: killed"}
+
+	got, result, err := checkoutTaskWithCheckpoint(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "", checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path || result == nil || !result.Pushed || result.CommitSHA == "" {
+		t.Fatalf("checkout=%q checkpoint=%+v", got, result)
+	}
+	if status := mustGitOutput(t, path, "status", "--porcelain"); status != "" {
+		t.Fatalf("checkpoint left dirty state: %s", status)
+	}
+	message := mustGitOutput(t, path, "show", "-s", "--format=%B", "HEAD")
+	for _, want := range []string{
+		"wip(attempt-prior): checkpoint at attempt death",
+		"Attempt-ID: attempt-prior", "Work-Order-ID: checkpoint-implement-1",
+		"Termination-Reason: harness exited: signal: killed",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("checkpoint message %q missing %q", message, want)
+		}
+	}
+	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, result.CommitSHA+"\t") {
+		t.Fatalf("remote branch = %q, want checkpoint %s", remote, result.CommitSHA)
+	}
+	assertPrimaryUntouched(t, fixture.primary, primaryHead)
+
+	// Retrying recovery recognizes the already-pushed attributed commit and
+	// does not manufacture a duplicate.
+	_, retry, err := checkoutTaskWithCheckpoint(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "", checkpoint)
+	if err != nil || retry == nil || retry.CommitSHA != result.CommitSHA {
+		t.Fatalf("retry checkpoint=%+v err=%v", retry, err)
+	}
+	if head := mustGitOutput(t, path, "rev-parse", "HEAD"); head != result.CommitSHA {
+		t.Fatalf("retry created duplicate commit %s after %s", head, result.CommitSHA)
+	}
+}
+
+func TestAttemptAuthorityLossPreservesDirtyWorkAndRequiresAuditReconciliation(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-authority-loss"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "authority-loss", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(path, "interrupted.txt"), "preserve me\n")
+	checkpoint := attemptCheckpoint{
+		AttemptID: "attempt-lost", WorkOrderID: "authority-loss-implement-1",
+		TerminationReason: "claim authority lost: server reports queued",
+	}
+	var preserved *attemptCheckpointResult
+	err = attemptAuthorityLoss(checkpoint.TerminationReason, func(string) error {
+		preserved, err = checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("checkpoint commit %s was pushed from %s, but its audit event is not durable; successor reconciliation required: claim lost", preserved.CommitSHA, preserved.Worktree)
+	})
+	if err == nil || !strings.Contains(err.Error(), "successor reconciliation required") {
+		t.Fatalf("authority-loss outcome=%v", err)
+	}
+	if preserved == nil || !preserved.Pushed || preserved.CommitSHA == "" {
+		t.Fatalf("dirty work was not preserved: %+v", preserved)
+	}
+	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, preserved.CommitSHA+"\t") {
+		t.Fatalf("remote branch = %q, want preserved commit %s", remote, preserved.CommitSHA)
+	}
+
+	// The next authorized attempt can identify the exact pushed checkpoint and
+	// publish its append-only event through the existing predecessor path.
+	reconciled, err := matchingAttemptCheckpointAtHEAD(context.Background(), path, checkpoint)
+	if err != nil || reconciled == nil || reconciled.CommitSHA != preserved.CommitSHA {
+		t.Fatalf("successor reconciliation=%+v err=%v", reconciled, err)
+	}
+}
+
+func TestMatchingAttemptCheckpointRejectsMismatchedTerminationReason(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-checkpoint-reason"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-reason", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(path, "predecessor.txt"), "preserve me\n")
+	checkpoint := attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "reason-implement-1", TerminationReason: "harness exited"}
+	if _, err = checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.TerminationReason = "claim authority lost"
+	if _, err = matchingAttemptCheckpointAtHEAD(context.Background(), path, checkpoint); err == nil || !strings.Contains(err.Error(), "not termination reason") {
+		t.Fatalf("mismatched reason was reused: %v", err)
+	}
+}
+
+func TestAttemptCheckpointCleanNoopAndUnattributableDirtyStateStillBlocks(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-checkpoint-guard"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-guard", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "guard-implement-1", TerminationReason: "worker lost"}
+	result, err := checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint)
+	if err != nil || result != nil {
+		t.Fatalf("clean checkpoint=%+v err=%v, want no-op", result, err)
+	}
+	writeFile(t, filepath.Join(path, "unknown.txt"), "unknown provenance\n")
+	if _, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-guard", ""); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("unattributable checkout err=%v", err)
 	}
 }
 

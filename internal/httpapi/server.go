@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/claim", s.claimWorkerOrder)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
@@ -1062,6 +1063,8 @@ func agentActivityLabel(event core.Event) string {
 		return "Work order claimed"
 	case "work_order.lease_renewed":
 		return "Claim lease renewed"
+	case "work_order.attempt_checkpointed":
+		return "Attempt worktree checkpointed"
 	case "work_order.progress_reported":
 		message, _ := payload["message"].(string)
 		message = strings.TrimSpace(message)

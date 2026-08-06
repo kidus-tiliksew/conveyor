@@ -69,9 +69,54 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
+	checkpoint := core.WorkOrderAttemptCheckpoint{
+		SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "harness exited",
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PushResult: "pushed",
+	}
+	var checkpointWrites sync.WaitGroup
+	checkpointResults := make(chan bool, 4)
+	checkpointErrors := make(chan error, 4)
+	for range 4 {
+		checkpointWrites.Add(1)
+		go func() {
+			defer checkpointWrites.Done()
+			created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, job.ID, worker.ID, checkpoint)
+			checkpointResults <- created
+			checkpointErrors <- checkpointErr
+		}()
+	}
+	checkpointWrites.Wait()
+	close(checkpointResults)
+	close(checkpointErrors)
+	for checkpointErr := range checkpointErrors {
+		if checkpointErr != nil {
+			t.Fatalf("concurrent attempt checkpoint: %v", checkpointErr)
+		}
+	}
+	createdCount := 0
+	for created := range checkpointResults {
+		if created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created attempt checkpoints=%d, want 1", createdCount)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.attempt_checkpointed"); countErr != nil || count != 1 {
+		t.Fatalf("attempt checkpoint events=%d err=%v", count, countErr)
+	}
 	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {
 		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	lateCheckpoint := checkpoint
+	lateCheckpoint.CommitSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	lateCheckpoint.TerminationReason = "claim authority lost: server reports queued"
+	if created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, job.ID, worker.ID, lateCheckpoint); checkpointErr != nil || !created {
+		t.Fatalf("late authority-loss checkpoint created=%v err=%v", created, checkpointErr)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.attempt_checkpointed"); countErr != nil || count != 2 {
+		t.Fatalf("attempt checkpoint events after authority loss=%d err=%v", count, countErr)
 	}
 	jobs, err := st.ListJobs(ctx, task.ID)
 	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {

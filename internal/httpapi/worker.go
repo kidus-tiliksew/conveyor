@@ -254,3 +254,18 @@ func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, order)
 }
+
+func (s *Server) checkpointWorkerOrderAttempt(w http.ResponseWriter, r *http.Request) {
+	worker, _ := workerFromContext(r.Context())
+	var request core.WorkOrderAttemptCheckpoint
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	created, err := s.Workers.CheckpointAttempt(r.Context(), worker, chi.URLParam(r, "id"), request)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"created": created})
+}

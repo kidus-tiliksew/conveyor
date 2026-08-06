@@ -1205,6 +1205,15 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
 	t.Setenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE", grandchildPIDFile)
 	releases := make(chan core.WorkOrderRelease, 2)
+	checkpoints := make(chan core.WorkOrderAttemptCheckpoint, 1)
+	previousCheckpointer := workerAttemptCheckpointer
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+		if checkpoint.AttemptID != "attempt-silent" || checkpoint.WorkOrderID != "silent-first-activity" || checkpoint.TerminationReason != workerFirstActivityTimeoutReason {
+			t.Fatalf("checkpoint metadata=%+v", checkpoint)
+		}
+		return &attemptCheckpointResult{Worktree: "/assigned/task", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
+	}
+	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
@@ -1213,7 +1222,15 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 		}
 		switch parts[4] {
 		case "claim", "renew":
-			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-silent", LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "attempt-checkpoint":
+			var checkpoint core.WorkOrderAttemptCheckpoint
+			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			checkpoints <- checkpoint
+			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
 		case "release":
 			var release core.WorkOrderRelease
 			if err := json.NewDecoder(r.Body).Decode(&release); err != nil {
@@ -1229,8 +1246,10 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 	defer server.Close()
 
 	item := workerservice.DispatchOrder{
-		Order:   core.WorkOrder{ID: "silent-first-activity", Stage: core.StageImplement},
-		Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
+		Order:      core.WorkOrder{ID: "silent-first-activity", Stage: core.StageImplement},
+		Task:       core.Task{ID: "silent-task", Branch: "conveyor/silent-task", Repo: "conveyor"},
+		Repository: config.Repo{Name: "conveyor", URL: "https://github.com/kidus-tiliksew/conveyor.git"},
+		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
 	}
 	var stdout, stderr bytes.Buffer
 	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 500*time.Millisecond, &stdout, &stderr)
@@ -1239,6 +1258,14 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("silent harness emitted output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	select {
+	case checkpoint := <-checkpoints:
+		if checkpoint.AttemptID != "attempt-silent" || checkpoint.TerminationReason != workerFirstActivityTimeoutReason || checkpoint.PushResult != "pushed" {
+			t.Fatalf("checkpoint request=%+v", checkpoint)
+		}
+	default:
+		t.Fatal("silent harness checkpoint was not recorded before release")
 	}
 	select {
 	case release := <-releases:

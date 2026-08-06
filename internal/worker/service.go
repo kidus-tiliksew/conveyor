@@ -940,6 +940,24 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
 }
 
+// CheckpointAttempt records a successful additive Git preservation commit.
+// Store implementations re-check active attempt authority atomically with the
+// idempotent append so a stale child cannot acknowledge a newer claim.
+func (s *Service) CheckpointAttempt(ctx context.Context, worker core.Worker, id string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
+	checkpoint.SessionID = strings.TrimSpace(checkpoint.SessionID)
+	checkpoint.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
+	checkpoint.TerminationReason = strings.TrimSpace(checkpoint.TerminationReason)
+	checkpoint.CommitSHA = strings.TrimSpace(checkpoint.CommitSHA)
+	checkpoint.PushResult = strings.TrimSpace(checkpoint.PushResult)
+	if checkpoint.SessionID == "" || checkpoint.AttemptID == "" || checkpoint.TerminationReason == "" || checkpoint.CommitSHA == "" {
+		return false, fmt.Errorf("session_id, attempt_id, termination_reason, and commit_sha are required")
+	}
+	if checkpoint.PushResult != "pushed" {
+		return false, fmt.Errorf("attempt checkpoint must have a confirmed pushed result")
+	}
+	return s.Store.RecordWorkOrderAttemptCheckpoint(ctx, id, worker.ID, checkpoint)
+}
+
 const FailureDetailLimit = 2 * 1024
 
 func boundedFailureDetail(detail string) string {
