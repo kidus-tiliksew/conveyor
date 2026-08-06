@@ -1938,3 +1938,279 @@ func TestEventStreamUsesIncrementalReads(t *testing.T) {
 		t.Fatalf("stream body = %s", response.Body.String())
 	}
 }
+
+// taskOperationsResponse decodes the Tasks-view projection for assertions that
+// walk REQ-1 and AC-1.1 through AC-1.5.
+type taskOperationsResponse []struct {
+	Task struct {
+		ID              string   `json:"id"`
+		Title           string   `json:"title"`
+		Repo            string   `json:"repo"`
+		State           string   `json:"state"`
+		BlockingTaskIDs []string `json:"blocking_task_ids"`
+		Dependencies    []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"dependencies"`
+		Context struct {
+			Requirements []struct {
+				ID      string `json:"id"`
+				Title   string `json:"title"`
+				Version int    `json:"version"`
+			} `json:"requirements"`
+			Designs []struct {
+				ID      string `json:"id"`
+				Title   string `json:"title"`
+				Version int    `json:"version"`
+			} `json:"designs"`
+		} `json:"context"`
+	} `json:"task"`
+	NeedsAttention       bool             `json:"needs_attention"`
+	UnsatisfiableTaskIDs []string         `json:"unsatisfiable_task_ids"`
+	ChildRollup          *taskChildRollup `json:"child_rollup"`
+	Plan                 taskPlanStatus   `json:"plan"`
+}
+
+func taskOperations(t *testing.T, st store.Store) taskOperationsResponse {
+	t.Helper()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var items taskOperationsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode %s: %v", response.Body.String(), err)
+	}
+	return items
+}
+
+func taskOperationsRow(t *testing.T, items taskOperationsResponse, id string) int {
+	t.Helper()
+	for index := range items {
+		if items[index].Task.ID == id {
+			return index
+		}
+	}
+	t.Fatalf("task %s missing from the operations list", id)
+	return -1
+}
+
+// AC-1.1 and AC-1.2: the projection is one flat, filterable list carrying the
+// state and repository every row filters on, plus the durable dependency and
+// blocking authority — never a second derivation of it (REQ-1).
+func TestTaskOperationsListsEveryTaskWithDependencyAndBlockingState(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, id := range []string{"dep-open", "dep-closed", "dep-merged"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", State: core.TaskRunning}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked := core.Task{ID: "blocked", Workspace: "demo", Title: "Blocked work", Repo: "web", State: core.TaskQueued}
+	if err := st.CreateTaskWithDependencies(ctx, blocked, []string{"dep-open", "dep-closed", "dep-merged"}); err != nil {
+		t.Fatal(err)
+	}
+	plane := taskops.New(st)
+	if _, err := plane.Perform(ctx, "dep-merged", taskops.Command{Kind: core.TaskMergeRecover}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plane.Perform(ctx, "dep-closed", taskops.Command{Kind: core.TaskCancel}); err != nil {
+		t.Fatal(err)
+	}
+
+	items := taskOperations(t, st)
+	if len(items) != 4 {
+		t.Fatalf("operations list carries %d rows, want every task", len(items))
+	}
+	row := items[taskOperationsRow(t, items, "blocked")]
+	if row.Task.Repo != "web" || row.Task.State != "queued" {
+		t.Fatalf("row filter fields = repo:%q state:%q", row.Task.Repo, row.Task.State)
+	}
+	if len(row.Task.Dependencies) != 3 {
+		t.Fatalf("dependencies = %+v", row.Task.Dependencies)
+	}
+	// A merged dependency is satisfied, so it is a dependency but not a
+	// blocker; a closed one blocks and can never be satisfied.
+	if !slices.Equal(row.Task.BlockingTaskIDs, []string{"dep-closed", "dep-open"}) {
+		t.Fatalf("blocking_task_ids = %v", row.Task.BlockingTaskIDs)
+	}
+	if !slices.Equal(row.UnsatisfiableTaskIDs, []string{"dep-closed"}) {
+		t.Fatalf("unsatisfiable_task_ids = %v", row.UnsatisfiableTaskIDs)
+	}
+	unblocked := items[taskOperationsRow(t, items, "dep-open")]
+	if len(unblocked.Task.BlockingTaskIDs) != 0 || len(unblocked.UnsatisfiableTaskIDs) != 0 {
+		t.Fatalf("independent task reports blockers: %+v", unblocked)
+	}
+}
+
+// AC-1.2: a rollup exists only where children exist, so a childless task
+// reports absence instead of a rollup of zeroes.
+func TestTaskOperationsRollsUpChildrenOnlyWhenChildrenExist(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, task := range []core.Task{
+		{ID: "anchor", Workspace: "demo", Title: "Historical anchor", Repo: "conveyor", State: core.TaskRunning},
+		{ID: "child-merged", Workspace: "demo", Title: "Merged child", Repo: "conveyor", State: core.TaskMerged, ParentTaskID: "anchor", OriginSpecVersion: 1, OriginSubID: "SUB-1"},
+		{ID: "child-closed", Workspace: "demo", Title: "Closed child", Repo: "conveyor", State: core.TaskClosed, ParentTaskID: "anchor", OriginSpecVersion: 1, OriginSubID: "SUB-2"},
+		{ID: "child-open", Workspace: "demo", Title: "Open child", Repo: "conveyor", State: core.TaskQueued, ParentTaskID: "anchor", OriginSpecVersion: 1, OriginSubID: "SUB-3"},
+		{ID: "solo", Workspace: "demo", Title: "Standalone task", Repo: "conveyor", State: core.TaskQueued},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items := taskOperations(t, st)
+	rollup := items[taskOperationsRow(t, items, "anchor")].ChildRollup
+	if rollup == nil || *rollup != (taskChildRollup{Total: 3, Merged: 1, Closed: 1, Open: 1}) {
+		t.Fatalf("anchor rollup = %+v", rollup)
+	}
+	if solo := items[taskOperationsRow(t, items, "solo")].ChildRollup; solo != nil {
+		t.Fatalf("childless task fabricated a rollup: %+v", solo)
+	}
+}
+
+// AC-1.3: each row carries the task's attached served requirements and
+// governing System Design documents by identity and version, and represents an
+// unattached task as unattached.
+func TestTaskOperationsLinksAttachedContextAndReportsItsAbsence(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-tasks-view", Title: "Task-centric operations view"}, core.RequirementVersion{
+		Content: "Task-centric operations view", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Operators shall manage delivery through a list-first Tasks view."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	design, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-lifecycle", Title: "Work-order lifecycle", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Work-order lifecycle\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	attached := core.Task{ID: "attached", Workspace: "demo", Title: "Attached task", Repo: "conveyor", State: core.TaskQueued}
+	if err = st.CreateTaskWithDependenciesAndContext(ctx, attached, nil, store.TaskContextInput{
+		RequirementIDs: []string{requirement.ID}, DesignIDs: []string{design.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateTask(ctx, core.Task{ID: "bare", Workspace: "demo", Title: "Unattached task", Repo: "conveyor", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+
+	items := taskOperations(t, st)
+	context := items[taskOperationsRow(t, items, "attached")].Task.Context
+	if len(context.Requirements) != 1 || context.Requirements[0].ID != requirement.ID ||
+		context.Requirements[0].Title != "Task-centric operations view" || context.Requirements[0].Version != 1 {
+		t.Fatalf("attached requirements = %+v", context.Requirements)
+	}
+	if len(context.Designs) != 1 || context.Designs[0].ID != design.ID ||
+		context.Designs[0].Title != "Work-order lifecycle" || context.Designs[0].Version != 1 {
+		t.Fatalf("attached designs = %+v", context.Designs)
+	}
+	bare := items[taskOperationsRow(t, items, "bare")].Task.Context
+	if len(bare.Requirements) != 0 || len(bare.Designs) != 0 {
+		t.Fatalf("unattached task fabricated context: %+v", bare)
+	}
+}
+
+// AC-1.4: every plan-status outcome is read off durable authority — the
+// persisted plan version and the audited gate command that parked or resumed
+// it (spec §13.1).
+func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	plane := taskops.New(st)
+	for _, id := range []string{"no-plan", "pending", "approved", "redirected"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", State: core.TaskRunning}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := func(taskID string) core.SpecVersion {
+		t.Helper()
+		version, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "## Approach\n\n## Done criteria\n"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	perform := func(taskID string, command core.TaskCommand) {
+		t.Helper()
+		if _, err := plane.Perform(ctx, taskID, taskops.Command{Kind: command}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan("pending")
+	perform("pending", core.TaskGateSpec)
+	approved := plan("approved")
+	if err := st.ApproveSpecVersion(ctx, "approved", approved.Version); err != nil {
+		t.Fatal(err)
+	}
+	plan("redirected")
+	perform("redirected", core.TaskGateSpec)
+	perform("redirected", core.TaskInterventionRedirect)
+
+	items := taskOperations(t, st)
+	for taskID, want := range map[string]taskPlanStatus{
+		"no-plan":    {State: taskPlanNone},
+		"pending":    {State: taskPlanPendingGate, Version: 1},
+		"approved":   {State: taskPlanApproved, Version: 1},
+		"redirected": {State: taskPlanRedirected, Version: 1},
+	} {
+		if got := items[taskOperationsRow(t, items, taskID)].Plan; got != want {
+			t.Fatalf("task %s plan = %+v, want %+v", taskID, got, want)
+		}
+	}
+}
+
+// AC-1.5: the projection exposes no priority, assignee, or declared-phase
+// field. This guards the wire contract itself, so no such field can be added
+// to support the view.
+func TestTaskOperationsExposesNoBarredFields(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "solo", Workspace: "demo", Title: "Standalone task", Repo: "conveyor", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	var task map[string]json.RawMessage
+	if err := json.Unmarshal(rows[0]["task"], &task); err != nil {
+		t.Fatal(err)
+	}
+	for _, barred := range []string{"priority", "assignee", "phase", "declared_phase"} {
+		if _, present := rows[0][barred]; present {
+			t.Fatalf("row carries barred field %q: %s", barred, response.Body.String())
+		}
+		if _, present := task[barred]; present {
+			t.Fatalf("task carries barred field %q: %s", barred, response.Body.String())
+		}
+	}
+}

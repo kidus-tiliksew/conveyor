@@ -10,6 +10,7 @@ import { RequirementsPage } from './pages/requirements'
 import { SystemDesignPage } from './pages/system-design'
 import { SettingsPage } from './pages/settings'
 import { TaskFullPage } from './pages/task-full'
+import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
 import { MonitorPage } from './pages/monitor'
 import { PlanningPage } from './pages/planning'
@@ -53,6 +54,10 @@ const taskFullRoute = createRoute({
   path: '/tasks/$taskId/full',
   component: TaskFullPage,
 })
+// The list-first Tasks view (spec §21.58). It is a sibling
+// of the task routes, not a layout over them: the list is the management
+// surface, and a row hands off to the task's own detail page.
+const tasksRoute = createRoute({ getParentRoute: () => rootRoute, path: '/tasks', component: TasksPage })
 // Legacy deep links from before the board became the home page.
 const activityRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -100,6 +105,7 @@ const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/moni
 const routeTree = rootRoute.addChildren([
   boardRoute.addChildren([boardIndexRoute, taskSheetRoute, newTaskRoute, createWorkspaceRoute]),
   taskFullRoute,
+  tasksRoute,
   activityRedirectRoute,
   workspaceRoute,
   requirementsRoute,
