@@ -28,7 +28,7 @@ import {
 import { defaultReasonCode, stageLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
-import { absoluteTime, cn, compactTokens, duration, usd } from '../../lib/utils'
+import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
@@ -264,13 +264,15 @@ function reportedUsageOrderIDs(item: ActivityItem): Set<string> {
   return new Set((item.work_orders ?? []).filter((order) => order.usage_reported).map((order) => order.id))
 }
 
-function usageProvenance(order: WorkOrder): string {
-  return order.self_reported ? 'self-reported' : 'worker-reported'
+function usageProvenance(order: WorkOrder): string | undefined {
+  return order.self_reported ? 'self-reported' : undefined
 }
 
 function usageText(order: WorkOrder, available: boolean): string {
   if (!available) return 'Usage unavailable'
-  return `${compactTokens(order.tokens_in)} in / ${compactTokens(order.tokens_out)} out · ${usd(order.cost_usd)} · ${usageProvenance(order)}`
+  return [`${compactTokens(order.tokens_in)} in / ${compactTokens(order.tokens_out)} out`, usageProvenance(order)]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 function TechnicalActivity({ item }: { item: ActivityItem }) {
@@ -282,9 +284,8 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
     (sum, order) => ({
       tokensIn: sum.tokensIn + order.tokens_in,
       tokensOut: sum.tokensOut + order.tokens_out,
-      costUSD: sum.costUSD + order.cost_usd,
     }),
-    { tokensIn: 0, tokensOut: 0, costUSD: 0 },
+    { tokensIn: 0, tokensOut: 0 },
   )
   return (
     <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
@@ -296,7 +297,7 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
           <p className="font-medium text-foreground">Task usage</p>
           <p className="mt-1 font-mono text-[11px] tabular-nums">
             {measured.length > 0
-              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out · ${usd(totals.costUSD)} across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
+              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
               : 'Usage unavailable for every work order'}
             {orders.length > measured.length
               ? ` · ${orders.length - measured.length} ${orders.length - measured.length === 1 ? 'order' : 'orders'} unavailable`
@@ -511,7 +512,6 @@ function PanelEntry({
   // Reviewer feedback surfaces as each verdict lands — not held until the
   // round settles — so nothing a reviewer wrote is ever invisible.
   const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
-  const spendUSD = seats.reduce((sum, seat) => sum + (displayedCostUSD(seat.job, seat.order.cost_usd) ?? 0), 0)
   const gradient = ringGradient(seats)
   const single = seats[0]
   return (
@@ -612,11 +612,9 @@ function PanelEntry({
                 : 'Approved'
               : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}
             <span className="text-xs font-normal opacity-80">
-              {resolution.verdict === 'approve'
-                ? spendUSD > 0
-                  ? `${usd(spendUSD)} across the panel`
-                  : ''
-                : `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`}
+              {resolution.verdict === 'changes_requested'
+                ? `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`
+                : ''}
             </span>
           </div>
         ) : (
@@ -630,7 +628,6 @@ function PanelEntry({
                 <span>any “changes requested” sends the task back</span>
               </>
             )}
-            {spendUSD > 0 && <span className="ml-auto">{usd(spendUSD)} so far</span>}
           </div>
         )}
       </article>
@@ -647,7 +644,6 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
-          costUSD={displayedCostUSD(seat.job, seat.order.cost_usd)}
           tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
           tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
           note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
@@ -918,7 +914,6 @@ function JobEntry({
           <span>{duration(job.started_at, job.ended_at)}</span>
           <ModelChip
             model={model}
-            costUSD={displayedCostUSD(job)}
             tokensIn={job.tokens_in}
             tokensOut={job.tokens_out}
             note={note || undefined}
@@ -949,14 +944,8 @@ function providerLogo(model: string): { svg: string; className?: string } | unde
   return undefined
 }
 
-function displayedCostUSD(job: Job | undefined, fallback?: number): number | undefined {
-  if (job?.runner === 'in-process') return undefined
-  return job?.cost_usd ?? fallback
-}
-
 function ModelChip({
   model,
-  costUSD,
   tokensIn,
   tokensOut,
   note,
@@ -964,7 +953,6 @@ function ModelChip({
   usageProvenance,
 }: {
   model: string
-  costUSD?: number | null
   tokensIn: number
   tokensOut: number
   note?: string
@@ -978,7 +966,6 @@ function ModelChip({
       : usageAvailable || tokensIn + tokensOut > 0
         ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out`
         : undefined,
-    usageAvailable && costUSD != null ? usd(costUSD) : costUSD != null && costUSD > 0 ? usd(costUSD) : undefined,
     usageAvailable ? usageProvenance : undefined,
     note,
   ]
