@@ -277,45 +277,6 @@ func ParseSpec(output string) (Spec, error) {
 	return Spec{Markdown: markdown, Acceptance: acceptance, Decomposition: decomposition}, nil
 }
 
-// StructuredSpecSchema is the strict Responses-compatible contract used only
-// for in-process specification generation. Optional decomposition is encoded
-// as an empty list; an optional acceptance ref is encoded as string or null.
-func StructuredSpecSchema() map[string]any {
-	return map[string]any{
-		"type": "object", "additionalProperties": false,
-		"properties": map[string]any{
-			"markdown": map[string]any{"type": "string", "minLength": 1},
-			"acceptance": map[string]any{
-				"type": "array", "minItems": 1,
-				"items": map[string]any{
-					"type": "object", "additionalProperties": false,
-					"properties": map[string]any{
-						"id":        map[string]any{"type": "string", "pattern": `^AC-[1-9][0-9]*$`},
-						"criterion": map[string]any{"type": "string", "minLength": 1},
-						"verify":    map[string]any{"type": "string", "enum": []string{"test", "playwright", "computer-use", "human"}},
-						"ref":       map[string]any{"type": []string{"string", "null"}},
-					},
-					"required": []string{"id", "criterion", "verify", "ref"},
-				},
-			},
-			"decomposition": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object", "additionalProperties": false,
-					"properties": map[string]any{
-						"id":         map[string]any{"type": "string", "pattern": `^SUB-[1-9][0-9]*$`},
-						"repo":       map[string]any{"type": "string", "minLength": 1},
-						"summary":    map[string]any{"type": "string", "minLength": 1},
-						"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "string", "pattern": `^SUB-[1-9][0-9]*$`}},
-					},
-					"required": []string{"id", "repo", "summary", "depends_on"},
-				},
-			},
-		},
-		"required": []string{"markdown", "acceptance", "decomposition"},
-	}
-}
-
 // RenderStructuredSpec validates typed model output, renders exact fenced YAML
 // blocks, and then re-parses the document through ParseSpec as the final
 // invariant. Model-authored machine fences are rejected rather than repaired.

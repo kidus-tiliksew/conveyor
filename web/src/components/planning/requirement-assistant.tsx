@@ -59,8 +59,8 @@ export const guidedActions: GuidedAction[] = [
   {
     id: 'plan',
     label: 'Plan work',
-    hint: 'Open a blueprint at the spec gate, serving this requirement',
-    goal: 'blueprint',
+    hint: 'Propose a reviewable delivery bundle for this requirement',
+    goal: 'bundle',
     icon: GitBranch,
     contextual: true,
   },

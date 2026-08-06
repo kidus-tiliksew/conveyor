@@ -148,7 +148,12 @@ export function PlanningChat({
   // for.
   const reported = useRef<string | null>(null)
   useEffect(() => {
-    const produced = session.produced_requirement_id || session.produced_task_id || ''
+    const produced =
+      session.produced_requirement_id ||
+      session.produced_system_design_id ||
+      session.produced_bundle_id ||
+      session.produced_task_id ||
+      ''
     if (reported.current === null) {
       reported.current = produced
       return
@@ -270,7 +275,7 @@ export function PlanningChat({
               <Bot className="mx-auto size-7 text-primary" />
               <h3 className="mt-3 text-sm font-semibold">State the intent</h3>
               <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-muted">
-                Planning can read the requirement corpus, approved specifications, artifacts, and task lineage before
+                Planning can read the requirement corpus, approved execution plans, artifacts, and task lineage before
                 drafting.
               </p>
             </div>

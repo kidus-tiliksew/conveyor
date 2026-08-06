@@ -15,7 +15,7 @@ import { Skeleton } from '../components/ui/skeleton'
 
 // The full task page keeps its route header fixed while the task content uses
 // one native scroll region. That region includes the task description so a
-// long description cannot push the specification and activity out of reach.
+// long description cannot push the execution plan and activity out of reach.
 export function TaskFullPage() {
   const { taskId } = useParams({ from: '/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
@@ -72,7 +72,7 @@ function FullBody({ item }: { item: ActivityItem }) {
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
         <section
-          aria-label="Specification"
+          aria-label="Execution plan"
           className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
         >
           <TaskContextCard context={item.task.context} />
@@ -80,7 +80,7 @@ function FullBody({ item }: { item: ActivityItem }) {
             <SpecCard spec={item.spec} collapsible={false} routeVariant="full" />
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">
-              No spec yet — the spec stage has not produced a version.
+              No execution plan yet — the planning stage has not produced a version.
             </p>
           )}
           {/* While a gate is open the evidence belongs with the decision, and
