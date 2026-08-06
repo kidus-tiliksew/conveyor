@@ -99,16 +99,21 @@ it is additive; this one retires machinery.*
    Versioned; gate approval, redirect-to-revision, auto-approval with
    the gate off, and gate-off direct-to-implement routing are all
    byte-compatible with today's spec-gate semantics. `submit_plan`
-   succeeds `submit_spec` (wire compatibility handled here). Plans
+   succeeds `submit_spec`; the retired MCP name now fails with guidance to
+   call `submit_plan`. Plans
    are task-scoped lineage artifacts.
 3. **Planning bundles**: finalize proposes document revisions + a
    task set with dependencies; operator bundle approval creates the
    work. Blueprint-goal sessions and decomposition materialization
    retire; the 6.1 dependency machinery is the substrate, unchanged.
-4. **Retirements**: §4.1 fence formats, blueprint-goal finalize,
-   materialization path. The stage itself is retained. Historical
-   blueprint tasks/events/nodes preserved read-only. Migration for
-   in-flight tasks defined before landing.
+4. **Retirements** *(landed via migration 075)*: §4.1 fence formats,
+   blueprint-goal finalize, and the active materialization path are removed.
+   The stage itself is retained. Historical blueprint tasks/events/nodes stay
+   read-only and lineage rebuild keeps their edges. Migration 075 snapshots
+   only unapproved legacy versions already at the gate; approval may finish
+   that exact version under the old materialization behavior, while redirect
+   terminates it and every subsequently dispatched order uses an execution
+   plan. No new row can enter the compatibility set.
 5. Review judges: cited requirement ACs + plan done-criteria + diff;
    citation contracts updated; a task citing nothing must carry
    done-criteria in its plan (validated).

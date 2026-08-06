@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 // Blueprint presentation surface (spec §21.49). The anchor is an intent
 // artifact: it never appears on the board, it lives at its own canonical route
@@ -331,7 +331,7 @@ test('the blueprints list reports delivery, governing version, and served requir
   await routeAPI(page)
 
   await page.goto('/blueprints')
-  await expect(page.getByRole('heading', { name: 'Blueprints' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Blueprint history' })).toBeVisible()
   const entry = page.getByRole('link', { name: /Deliver the planning flow/ })
   await expect(entry).toBeVisible()
   await expect(entry).toHaveAttribute('href', `/blueprints/${anchorId}`)
@@ -394,9 +394,9 @@ test('the blueprints list opens the canonical detail route with the spec first',
   await expect(page).toHaveURL(/\/blueprints$/)
 })
 
-// AC-3: Cancel is the only lifecycle control, the intake body is provenance
-// behind a disclosure rather than the headline, and every execution affordance
-// an anchor can never use is gone.
+// Historical blueprints are read-only, the intake body is provenance behind a
+// disclosure rather than the headline, and every execution affordance an
+// anchor can never use is gone.
 test('the canonical blueprint detail suppresses execution affordances and demotes the intake body', async ({
   page,
 }) => {
@@ -406,14 +406,14 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   await page.goto(`/blueprints/${anchorId}`)
   await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
 
-  // Inert affordances are suppressed; Cancel — which is lifecycle — remains.
+  // All mutation and execution affordances are suppressed.
   // These are the strings the task header actually renders, so their absence
   // means the affordance is gone rather than merely renamed.
   await expect(page.getByText('Work on this locally')).toHaveCount(0)
   await expect(page.getByText('conveyor/task-blueprint-anchor')).toHaveCount(0)
   await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Hold' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 
   // An anchor takes no work orders, so execution-recovery affordances are
   // inert too: no redispatch nudge, no worker-serviceability alarm.
@@ -512,7 +512,7 @@ test('a completed blueprint reads as completed, and a missing serves link is a n
   await entry.click()
   await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
   await expect(page.getByText('3 merged · 1 closed without merging').first()).toBeVisible()
-  await expect(page.getByText('No requirement linked yet')).toBeVisible()
+  await expect(page.getByText('No historical requirement link')).toBeVisible()
 })
 
 // A task that is not an anchor has no blueprint to show: say so and point at

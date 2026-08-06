@@ -634,7 +634,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 	}
 	if stage == core.StageSpec {
-		input.OutputSchema = &inprocess.OutputSchema{Name: "conveyor_spec", Schema: pipeline.StructuredSpecSchema()}
+		input.OutputSchema = &inprocess.OutputSchema{Name: "conveyor_plan", Schema: pipeline.StructuredPlanSchema()}
 		// A spec-gate redirect reopens this stage, so the regeneration must see
 		// the declined revision and the reviewer's comments — the same feedback
 		// the MCP work-order context already threads to implementing agents.
@@ -805,7 +805,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		}
 		return d.transition(ctx, task.ID, core.TaskStageAdvance, next, "")
 	case core.StageSpec:
-		result, err := pipeline.RenderStructuredSpec(output)
+		result, err := pipeline.RenderStructuredPlan(output)
 		if err != nil {
 			return invalid(err)
 		}
@@ -841,20 +841,6 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, nil)
 }
 
-// ApplyExternalSpec validates an MCP-authored structured specification and
-// enters the unchanged approval/auto-approval path (spec §21.33).
-func (d *Dispatcher) ApplyExternalSpec(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredSpec, agent, model string) (core.SpecVersion, error) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return core.SpecVersion{}, err
-	}
-	result, err := pipeline.RenderStructuredSpec(string(raw))
-	if err != nil {
-		return core.SpecVersion{}, err
-	}
-	return d.completeSpecVersion(ctx, task, result, agent, model)
-}
-
 // ApplyExternalPlan validates an MCP-authored execution plan and enters the
 // exact existing spec-version gate/auto-approval path. Stage identity and
 // lifecycle events intentionally remain unchanged (spec §21.58 change 4).
@@ -864,100 +850,6 @@ func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job 
 		return core.SpecVersion{}, err
 	}
 	return d.completeSpecVersion(ctx, task, result, agent, model)
-}
-
-// CreatePlanningBlueprint materializes a planning-agent draft onto the same
-// task/spec contract used by every other blueprint. The planning session is an
-// intake surface, not an approval surface: completeSpecVersion leaves the new
-// version at the unchanged spec gate when workspace policy requires it
-// (spec §§9, 13.1, 21.46).
-func (d *Dispatcher) CreatePlanningBlueprint(
-	ctx context.Context,
-	sessionID, taskID, title, repoName string,
-	value pipeline.StructuredSpec,
-	model string,
-) (core.Task, core.SpecVersion, error) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	result, err := pipeline.RenderStructuredSpec(string(raw))
-	if err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	cfg, err := d.currentConfig(ctx)
-	if err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	repo, ok := cfg.Repo(strings.TrimSpace(repoName))
-	if !ok {
-		return core.Task{}, core.SpecVersion{}, fmt.Errorf("repository %q is not configured", repoName)
-	}
-	title = strings.TrimSpace(title)
-	if title == "" || len(title) > 200 {
-		return core.Task{}, core.SpecVersion{}, fmt.Errorf("blueprint title must be between 1 and 200 characters")
-	}
-	if existing, getErr := d.Store.GetTask(ctx, taskID); getErr == nil {
-		if existing.Source != "planning:"+sessionID || existing.Title != title || existing.Repo != repo.Name {
-			return core.Task{}, core.SpecVersion{}, fmt.Errorf("planning blueprint task %s already exists with different input", taskID)
-		}
-		version, exists, specErr := d.Store.GetLatestSpecVersion(ctx, taskID)
-		if specErr != nil {
-			return core.Task{}, core.SpecVersion{}, specErr
-		}
-		if !exists {
-			version, specErr = d.completeSpecVersion(ctx, existing, result, "planning-agent", model)
-			return existing, version, specErr
-		}
-		if version.Content == result.Markdown {
-			return existing, version, nil
-		}
-		// A same-session deterministic orphan at the unchanged gate is owned by
-		// this planning session. A revised retry creates the ordinary §4.1 next
-		// version instead of wedging the session. If the first version was already
-		// approved in a gates-off workspace, delivery keeps using that approved
-		// version while this newer proposal remains unapproved.
-		version, specErr = d.Store.CreateSpecVersion(ctx, core.SpecVersion{
-			TaskID: existing.ID, Content: result.Markdown,
-			AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance),
-			Decomposition: core.JSONPayload(result.Decomposition), Agent: "planning-agent", Model: model,
-		})
-		return existing, version, specErr
-	}
-	setup, ok := cfg.Setup("")
-	if !ok {
-		return core.Task{}, core.SpecVersion{}, fmt.Errorf("workspace default setup is unavailable")
-	}
-	effective := cfg.WithSetup(setup)
-	workspace, _ := store.WorkspaceFromContext(ctx)
-	task := core.Task{
-		ID: taskID, Workspace: workspace, Source: "planning:" + sessionID,
-		Title: title, Body: result.Markdown, Class: "feature",
-		SpecApproval: effective.Execution.SpecApproval, MergeApproval: effective.Execution.MergeApproval,
-		PolicyVersion: 1, SetupName: setup.Name, SetupContract: setup,
-		Repo: repo.Name, BaseBranch: repo.Base, Branch: gitx.BranchName(taskID),
-		State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now().UTC(),
-	}
-	if err = d.Store.CreateTaskWithDependencies(ctx, task, nil); err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	version, err := d.completeSpecVersion(ctx, task, result, "planning-agent", model)
-	if err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	current, err := d.Store.GetTask(ctx, task.ID)
-	if err != nil {
-		return core.Task{}, core.SpecVersion{}, err
-	}
-	if session, sessionErr := d.Store.GetPlanningSession(ctx, sessionID); sessionErr == nil {
-		// Planning in a requirement's context proposes the same advisory,
-		// human-confirmed relation as triage. The event is the durable source;
-		// the generalized link is a projection (spec §4.2 item 1, §9).
-		if err = d.recordRequirementSuggestion(ctx, current, session.RequirementContextID, core.RequirementServesPlanning); err != nil {
-			return core.Task{}, core.SpecVersion{}, err
-		}
-	}
-	return current, version, nil
 }
 
 func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) error {
@@ -973,8 +865,7 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
 		return version, d.transition(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement)
 	}
-	children, err := d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, version.Version)
-	if err != nil {
+	if err := d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
 		return core.SpecVersion{}, err
 	}
 	if err = d.queueApprovedIssue(ctx, task, version); err != nil {
@@ -982,9 +873,6 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	}
 	if err = d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageImplement, ""); err != nil {
 		return core.SpecVersion{}, err
-	}
-	for _, child := range children {
-		d.Enqueue(ctx, child.ID)
 	}
 	return version, nil
 }
@@ -1378,9 +1266,14 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			return err
 		}
 		if specGate {
-			children, materializeErr := d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, spec.Version)
-			if materializeErr != nil {
-				return materializeErr
+			var children []core.Task
+			if spec.LegacyGate {
+				children, err = d.Store.ApproveSpecVersionAndMaterialize(ctx, task.ID, spec.Version)
+			} else {
+				err = d.Store.ApproveSpecVersion(ctx, task.ID, spec.Version)
+			}
+			if err != nil {
+				return err
 			}
 			if err = d.queueApprovedIssue(ctx, task, spec); err != nil {
 				return err

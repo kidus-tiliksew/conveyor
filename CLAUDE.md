@@ -98,7 +98,7 @@ protocol, adapter interface, or credential pool.
 **Phase 6 — planning & the knowledge graph is complete** (§21.46,
 closed by §21.59 with all exit criteria attested and the first live
 lineage rebuild reconciled at zero loss; historical breakdown in
-[docs/phase6-plan.md](docs/phase6-plan.md)). It delivered: 6.1 blueprint materialization (approved specs with a
+[docs/phase6-plan.md](docs/phase6-plan.md)). It delivered the now-historical 6.1 blueprint materialization (approved specs with a
 `decomposition` fan out into child tasks entering at `implement`) +
 dependency-gated claiming (blocked is a derived predicate in the same
 enforcement layer as hold — never a stored state, never a priority
@@ -122,13 +122,13 @@ requirements v2 (REQ→AC nested structure, user-story framing) +
 markdown-only product-overview uploads with promotion; 8.2 System
 Design corpus (factory-resident versioned markdown, propose→confirm,
 freshness-checked) + `DEC-n` decision records; 8.3 task-centric
-delivery — §4.1 fences and decomposition materialization retire; the
+delivery — §4.1 fences and decomposition materialization are retired for new work; the
 spec stage survives re-contented as the plan stage (dispatched
 stage-typed order, versioned markdown exec plans with done-criteria,
 §13.1 gate/redirect semantics byte-compatible with today's spec
-approval; `submit_plan` succeeds `submit_spec`); tasks carry attached
+approval; `submit_plan` is the submission surface and the retired `submit_spec` name points callers to it); tasks carry attached
 context (`serves` at task level), planning finalize proposes
-document-revisions + task-set bundles; 8.4 Tasks view (list-first management — never priority,
+document-revisions + task-set bundles; legacy blueprint/spec records remain a read-only historical lens, with migration 075 pinning the finite in-flight gate set; 8.4 Tasks view (list-first management — never priority,
 assignee, or declared phases). Nothing retires before 8.3.
 
 **Phase 9 — deployment & multi-user (§21.54, resequenced §21.58)**

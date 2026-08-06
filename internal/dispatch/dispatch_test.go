@@ -470,7 +470,7 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
-	if agent.input.OutputSchema == nil || agent.input.OutputSchema.Name != "conveyor_spec" || agent.input.OutputSchema.Schema == nil {
+	if agent.input.OutputSchema == nil || agent.input.OutputSchema.Name != "conveyor_plan" || agent.input.OutputSchema.Schema == nil {
 		t.Fatalf("spec output schema = %+v", agent.input.OutputSchema)
 	}
 	for _, expected := range []string{"# Prior specification revision v1", "Old intent.", "# Human gate feedback", "Target v1.28, not v1.27."} {
@@ -1388,6 +1388,40 @@ func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 	}
 }
 
+func TestCapturedLegacySpecGateCanCompleteMaterialization(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", Base: "main"}}})
+	task := core.Task{ID: "legacy-gate", Workspace: "demo", Repo: "api", State: core.TaskRunning, SpecApproval: true, PolicyVersion: 1, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: task.ID, Content: "## Intent\n\nLegacy.\n\n## Non-goals\n\nNone.", LegacyGate: true,
+		AcceptanceCount: 1, Acceptance: core.JSONPayload([]pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Legacy promise completes", Verify: "test"}}),
+		Decomposition: core.JSONPayload([]core.BlueprintDecompositionItem{{ID: "SUB-1", Repo: "api", Summary: "Finish the promised child"}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", Base: "main"}}}, nil)
+	if err = d.HandleIntervention(ctx, gate.Task, job, core.Intervention{Action: core.InterventionApprove, ReasonCode: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	approved, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
+	current, taskErr := st.GetTask(ctx, task.ID)
+	if err != nil || taskErr != nil || !ok || !approved.Approved || approved.Version != spec.Version || len(current.Children) != 1 {
+		t.Fatalf("approved=%+v ok=%t task=%+v err=%v taskErr=%v", approved, ok, current, err, taskErr)
+	}
+}
+
 func TestPlanSubmissionPreservesSpecGateLifecycleSequences(t *testing.T) {
 	t.Parallel()
 	type eventProjection struct {
@@ -1421,7 +1455,11 @@ func TestPlanSubmissionPreservesSpecGateLifecycleSequences(t *testing.T) {
 				if plan {
 					_, err = d.ApplyExternalPlan(ctx, task, job, pipeline.StructuredPlan{Markdown: "## Approach\nReuse lifecycle.\n\n## Files touched\n- internal/dispatch/dispatch.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- Events match.", Decomposition: []pipeline.DecompositionItem{}}, "codex", "gpt")
 				} else {
-					_, err = d.ApplyExternalSpec(ctx, task, job, pipeline.StructuredSpec{Markdown: "## Intent\nReuse lifecycle.\n\n## Non-goals\nNone.", Acceptance: []pipeline.AcceptanceCriterion{{ID: "AC-1", Criterion: "Events match", Verify: "test"}}, Decomposition: []pipeline.DecompositionItem{}}, "codex", "gpt")
+					legacy, parseErr := pipeline.RenderStructuredSpec(`{"markdown":"## Intent\nReuse lifecycle.\n\n## Non-goals\nNone.","acceptance":[{"id":"AC-1","criterion":"Events match","verify":"test"}],"decomposition":[]}`)
+					if parseErr != nil {
+						t.Fatal(parseErr)
+					}
+					_, err = d.completeSpecVersion(ctx, task, legacy, "codex", "gpt")
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -1779,8 +1817,7 @@ func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalid := structuredSpecOutput("# Retry\n\n## Intent\nShip it.\n\n## Non-goals\nNone.", "Ship it", "")
-	invalid = strings.Replace(invalid, `"verify":"test"`, `"verify":"tests"`, 1)
+	invalid := structuredSpecOutput("```conveyor:acceptance\n- id: AC-1\n```", "", "")
 	agent := &sequenceAgent{outputs: []string{invalid, structuredSpecOutput("# Retry\n\n## Intent\nShip it.\n\n## Non-goals\nNone.", "Ship it", "")}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 3, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}
 	dispatcher := New(st, cfg, agent)
@@ -1795,15 +1832,14 @@ func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
 	if err = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, current, cfg.Routing.Stages["spec"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "# Previous output rejected") || !strings.Contains(agent.inputs[1].Prompt, `invalid verify value "tests"`) {
+	if len(agent.inputs) != 2 || !strings.Contains(agent.inputs[1].Prompt, "# Previous output rejected") || !strings.Contains(agent.inputs[1].Prompt, `plans cannot contain conveyor: machine fences`) {
 		t.Fatalf("retry prompt did not preserve precise validation error:\n%s", agent.inputs[1].Prompt)
 	}
 }
 
 func structuredSpecOutput(markdown, criterion, ref string) string {
 	value := map[string]any{
-		"markdown":      markdown,
-		"acceptance":    []map[string]any{{"id": "AC-1", "criterion": criterion, "verify": "test", "ref": ref}},
+		"markdown":      "## Approach\n" + markdown + "\n\n## Files touched\n- internal/example.go\n\n## Ordering\n1. Implement safely.\n\n## Risks\n- Preserve lifecycle semantics.\n\n## Done criteria\n- Repository checks pass.",
 		"decomposition": []any{},
 	}
 	encoded, _ := json.Marshal(value)
@@ -1881,7 +1917,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 		t.Fatalf("after spec task=%+v err=%v", current, err)
 	}
 	spec, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
-	if err != nil || !ok || spec.AcceptanceCount != 1 || spec.Approved {
+	if err != nil || !ok || spec.AcceptanceCount != 0 || spec.Approved {
 		t.Fatalf("spec=%+v ok=%v err=%v", spec, ok, err)
 	}
 	latest, ok, err := st.GetLatestJob(ctx, task.ID)

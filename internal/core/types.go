@@ -919,8 +919,11 @@ type SpecVersion struct {
 	Agent                string          `json:"agent,omitempty"`
 	Model                string          `json:"model,omitempty"`
 	Approved             bool            `json:"approved"`
-	CreatedAt            time.Time       `json:"created_at"`
-	ApprovedAt           time.Time       `json:"approved_at,omitempty"`
+	// LegacyGate is true only for an unapproved pre-Phase-8.3 version captured
+	// by migration 075. It grants approval-time compatibility, never creation.
+	LegacyGate bool      `json:"legacy_gate,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	ApprovedAt time.Time `json:"approved_at,omitempty"`
 }
 
 // JSONPayload is the single fallback contract for JSON stored inside events.

@@ -503,7 +503,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_spec", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -511,6 +511,17 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if envelope.Result.Tools[i].Name != name {
 			t.Fatalf("tool[%d] = %q, want %q", i, envelope.Result.Tools[i].Name, name)
 		}
+	}
+}
+
+func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	_, err := server.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil), "submit_spec", map[string]any{"workspace_id": "demo"})
+	if err == nil || !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "submit_plan") {
+		t.Fatalf("retired submit_spec error=%v", err)
 	}
 }
 

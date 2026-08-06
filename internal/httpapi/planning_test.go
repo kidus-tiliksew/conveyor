@@ -356,9 +356,8 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 	// A caller-supplied title carries no weight: the session is named by its
 	// goal and then by the artifact it produces (spec §21.57 change 3).
 	code, planning := create(`{"goal":"blueprint","title":"Bound the retry loop"}`)
-	if code != http.StatusCreated || planning.Goal != core.PlanningGoalBlueprint ||
-		planning.Title != "Planning work…" {
-		t.Fatalf("blueprint-goal create status=%d session=%+v", code, planning)
+	if code != http.StatusBadRequest {
+		t.Fatalf("blueprint-goal create status=%d session=%+v, want 400", code, planning)
 	}
 	// Omitting the goal stays compatible and reads back as open.
 	code, compatible := create(`{}`)
@@ -372,8 +371,8 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	listed, err := st.ListPlanningSessions(ctx)
-	if err != nil || len(listed) != 3 {
-		t.Fatalf("listed=%d err=%v, want the three accepted sessions", len(listed), err)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("listed=%d err=%v, want the two accepted sessions", len(listed), err)
 	}
 	// The goal is declared once: there is no update route for it.
 	reread, err := st.GetPlanningSession(ctx, drafting.ID)

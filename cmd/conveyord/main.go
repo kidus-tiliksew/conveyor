@@ -164,7 +164,7 @@ func main() {
 	srv.WorkOrders = workOrders
 	srv.Planning = &planning.Service{
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
-		FinalizeBlueprint: d.CreatePlanningBlueprint, Prompt: planningRole,
+		Prompt: planningRole,
 	}
 	startDir, err := os.Getwd()
 	if err != nil {

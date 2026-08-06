@@ -1477,7 +1477,7 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id for the approved contract. Complete the standard review lifecycle by calling submit_review_verdict, waiting for its response, and observing that the tool call succeeded before exiting. Printing, returning, or describing verdict JSON is not completion, and a missing or failed tool response is not terminal success."
 	}
 	if order.Stage == core.StageSpec {
-		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the repository and artifacts without making edits or git changes, then complete the spec lifecycle by calling submit_spec and observing that the tool call succeeded before exiting."
+		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the repository and artifacts without making edits or git changes, then complete the plan lifecycle by calling submit_plan and observing that the tool call succeeded before exiting."
 	}
 	if order.Stage != core.StageImplement {
 		return fmt.Sprintf("%s Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", prompt, order.Stage)

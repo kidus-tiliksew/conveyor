@@ -2917,8 +2917,17 @@ func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
-	_, err := m.ApproveSpecVersionAndMaterialize(ctx, taskID, version)
-	return err
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	versions := m.specs[taskID]
+	if len(versions) == 0 || versions[len(versions)-1].Version != version {
+		return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
+	}
+	versions[len(versions)-1].Approved = true
+	versions[len(versions)-1].ApprovedAt = time.Now().UTC()
+	m.specs[taskID] = versions
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	return nil
 }
 
 func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {

@@ -174,7 +174,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		spec := createBlueprintSpec(t, ctx, st, parent.ID, []blueprintItem{{
 			ID: "SUB-1", Repo: "primary", Summary: "Created through ApproveSpecVersion",
 		}})
-		if err := st.ApproveSpecVersion(ctx, parent.ID, spec.Version); err != nil {
+		if _, err := st.ApproveSpecVersionAndMaterialize(ctx, parent.ID, spec.Version); err != nil {
 			t.Fatal(err)
 		}
 		assertTaskCount(t, ctx, st, 2)
