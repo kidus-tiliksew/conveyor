@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -11,8 +14,9 @@ import (
 // review claim or an unclaimed prompt preview.
 func GovernanceForRepository(ctx context.Context, st Store, repository string) (core.GovernanceSnapshot, error) {
 	snapshot := core.GovernanceSnapshot{
-		Designs:   make([]core.GovernanceDesignContext, 0),
-		Decisions: make([]core.Decision, 0),
+		Designs:                make([]core.GovernanceDesignContext, 0),
+		Decisions:              make([]core.Decision, 0),
+		PendingDesignProposals: make([]core.PendingSystemDesignProposal, 0),
 	}
 	designs, err := st.ListSystemDesigns(ctx)
 	if err != nil {
@@ -84,5 +88,58 @@ func GovernanceForTask(ctx context.Context, st Store, taskID, repository string)
 		snapshot.Designs = append(snapshot.Designs, design)
 	}
 	sort.Slice(snapshot.Designs, func(i, j int) bool { return snapshot.Designs[i].ID < snapshot.Designs[j].ID })
+	snapshot.PendingDesignProposals, err = pendingSystemDesignProposalsForTask(ctx, st, taskID)
+	if err != nil {
+		return snapshot, err
+	}
 	return snapshot, nil
+}
+
+func pendingSystemDesignProposalsForTask(ctx context.Context, st Store, taskID string) ([]core.PendingSystemDesignProposal, error) {
+	versionsByDocument, err := st.ListSystemDesignVersionsByDocument(ctx)
+	if err != nil {
+		return nil, err
+	}
+	eventsByDocument, err := st.ListSystemDesignEventsByDocument(ctx)
+	if err != nil {
+		return nil, err
+	}
+	proposalEvents := make(map[string]int64)
+	for documentID, events := range eventsByDocument {
+		for _, event := range events {
+			if event.Kind != "system_design.version_proposed" {
+				continue
+			}
+			var payload struct {
+				Version      int    `json:"version"`
+				OriginTaskID string `json:"origin_task_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.OriginTaskID == taskID {
+				proposalEvents[documentID+":"+strconv.Itoa(payload.Version)] = event.ID
+			}
+		}
+	}
+	out := make([]core.PendingSystemDesignProposal, 0)
+	for documentID, versions := range versionsByDocument {
+		for _, version := range versions {
+			if version.Origin != core.SystemDesignOriginImplementation || version.OriginTaskID != taskID || version.Confirmed || version.Dismissed {
+				continue
+			}
+			eventID := proposalEvents[documentID+":"+strconv.Itoa(version.Version)]
+			if eventID == 0 {
+				return nil, fmt.Errorf("pending system design %s v%d has no proposal event", documentID, version.Version)
+			}
+			out = append(out, core.PendingSystemDesignProposal{
+				DocumentID: documentID, Version: version.Version,
+				ProposalEventID: eventID, OriginTaskID: taskID,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DocumentID != out[j].DocumentID {
+			return out[i].DocumentID < out[j].DocumentID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out, nil
 }

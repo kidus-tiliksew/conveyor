@@ -102,6 +102,15 @@ func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.Sy
 		return core.SystemDesignVersion{}, err
 	}
 	versions := m.systemDesignVersions[key]
+	if version.Origin == core.SystemDesignOriginImplementation {
+		for _, existing := range versions {
+			if existing.Origin == version.Origin && existing.OriginTaskID == version.OriginTaskID &&
+				!existing.Confirmed && !existing.Dismissed && core.NormalizeSystemDesignContent(existing.Content) == version.Content {
+				existing.Deduplicated = true
+				return existing, nil
+			}
+		}
+	}
 	version.Workspace, version.Version, version.Confirmed = workspace, len(versions)+1, false
 	version.ConfirmedBy, version.ConfirmedAt = "", time.Time{}
 	version.Dismissed, version.DismissedBy, version.DismissedAt = false, "", time.Time{}

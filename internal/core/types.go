@@ -571,8 +571,9 @@ type WorkOrder struct {
 	// review order. A non-nil empty slice means the task had no served
 	// requirements; nil is reserved for pre-snapshot compatibility handling.
 	ServedRequirementSnapshot []ServedRequirementContext `json:"served_requirement_snapshot,omitempty"`
-	// GovernanceSnapshot is the exact design and decision authority rendered
-	// for this review claim. Nil is reserved for legacy compatibility handling.
+	// GovernanceSnapshot is the exact design and decision authority plus the
+	// separately non-authoritative task proposal observation rendered for this
+	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
 }
 

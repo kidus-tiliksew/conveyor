@@ -158,8 +158,15 @@ func WithGovernanceContract(role string, stage core.Stage, snapshot core.Governa
 func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot) string {
 	designs := append([]core.GovernanceDesignContext(nil), snapshot.Designs...)
 	decisions := append([]core.Decision(nil), snapshot.Decisions...)
+	pending := append([]core.PendingSystemDesignProposal(nil), snapshot.PendingDesignProposals...)
 	sort.Slice(designs, func(i, j int) bool { return designs[i].ID < designs[j].ID })
 	sort.Slice(decisions, func(i, j int) bool { return decisions[i].ID < decisions[j].ID })
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].DocumentID != pending[j].DocumentID {
+			return pending[i].DocumentID < pending[j].DocumentID
+		}
+		return pending[i].Version < pending[j].Version
+	})
 	var out strings.Builder
 	omitted := make([]string, 0)
 	const detailBudget = MaxGovernanceContractBytes - 4096
@@ -193,6 +200,24 @@ func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot
 		}
 	} else if stage == core.StageReview {
 		out.WriteString("\n# Pinned decision authority\n\nNo confirmed or superseded decisions existed when this review authority was pinned.\n")
+	}
+	if stage == core.StageReview {
+		out.WriteString("\n# Pending design proposals from this task\n\nThese proposals confer no authority and are never valid governance citations. A criterion requiring the task to propose a System Design revision is satisfied when the matching proposal below exists or its identifier is present in the implementation handoff. Operator confirmation is not a bounce condition and must never be requested as implementation feedback.\n")
+		if len(pending) == 0 {
+			out.WriteString("\nNo pending implementation-originated System Design proposals from this task were present when this review was claimed.\n")
+		}
+	} else if stage == core.StageImplement && len(pending) > 0 {
+		out.WriteString("\n# Pending design proposals from this task\n\nA resumed implementation session must report an existing identical proposal identifier instead of proposing it again. These proposals confer no authority.\n")
+	}
+	if stage == core.StageReview || stage == core.StageImplement {
+		for _, proposal := range pending {
+			chunk := fmt.Sprintf("\n- %s v%d (proposal event %d, origin task %s)\n", proposal.DocumentID, proposal.Version, proposal.ProposalEventID, proposal.OriginTaskID)
+			if out.Len()+len(chunk) > detailBudget {
+				omitted = append(omitted, fmt.Sprintf("pending proposal %s v%d", proposal.DocumentID, proposal.Version))
+				continue
+			}
+			out.WriteString(chunk)
+		}
 	}
 	if len(omitted) > 0 {
 		notice := "\n# Governance authority omitted by prompt budget\n\nThe 64 KiB governance injection limit omitted: " + strings.Join(omitted, ", ") + ". Treat omitted authority as unavailable in this prompt; do not infer its content.\n"

@@ -196,14 +196,15 @@ func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 	t.Parallel()
 	design := core.GovernanceDesignContext{ID: "DESIGN-runtime", Version: 3, Category: "Architecture", Content: strings.Repeat("mechanism ", MaxGovernanceContractBytes)}
 	snapshot := core.GovernanceSnapshot{
-		Designs:   []core.GovernanceDesignContext{design},
-		Decisions: []core.Decision{{ID: "DEC-2", Status: core.DecisionConfirmed, Statement: "Use pinned authority."}},
+		Designs:                []core.GovernanceDesignContext{design},
+		Decisions:              []core.Decision{{ID: "DEC-2", Status: core.DecisionConfirmed, Statement: "Use pinned authority."}},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}},
 	}
 	contract := RenderGovernanceContract(core.StageReview, snapshot)
 	if len(contract) > MaxGovernanceContractBytes {
 		t.Fatalf("contract bytes=%d cap=%d", len(contract), MaxGovernanceContractBytes)
 	}
-	for _, required := range []string{"Pinned System Design authority", "System Design DESIGN-runtime v3", "Governance authority omitted by prompt budget", "Pinned decision authority", "DEC-2 [confirmed]", "design_applicable", "decision_citable"} {
+	for _, required := range []string{"Pinned System Design authority", "System Design DESIGN-runtime v3", "Governance authority omitted by prompt budget", "Pinned decision authority", "DEC-2 [confirmed]", "Pending design proposals from this task", "DESIGN-runtime v4", "confer no authority", "Operator confirmation is not a bounce condition", "design_applicable", "decision_citable"} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("contract missing %q: %s", required, contract)
 		}

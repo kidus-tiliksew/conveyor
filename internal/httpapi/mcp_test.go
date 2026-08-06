@@ -117,8 +117,18 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision := result.(core.SystemDesignVersion)
-	if revision.Origin != core.SystemDesignOriginImplementation || revision.OriginTaskID != task.ID || revision.Confirmed {
+	if revision.Origin != core.SystemDesignOriginImplementation || revision.OriginTaskID != task.ID || revision.Confirmed || revision.Deduplicated {
 		t.Fatalf("revision=%+v", revision)
+	}
+	repeatedArgs := maps.Clone(revisionArgs)
+	repeatedArgs["content"] = " \r\n" + strings.ReplaceAll(revisionArgs["content"].(string), "\n", "\r\n") + "\r\n"
+	result, err = server.callMCPTool(request, "propose_system_design_revision", repeatedArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused := result.(core.SystemDesignVersion)
+	if !reused.Deduplicated || reused.Version != revision.Version {
+		t.Fatalf("reused revision=%+v original=%+v", reused, revision)
 	}
 	decisionArgs := maps.Clone(identity)
 	decisionArgs["statement"] = "Project governance from events."

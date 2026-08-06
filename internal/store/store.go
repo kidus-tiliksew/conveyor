@@ -2123,6 +2123,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			copy := *claim.Governance
 			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
 			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
+			copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
 			order.GovernanceSnapshot = &copy
 		}
 		for _, candidate := range m.workOrders {
