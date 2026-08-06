@@ -75,6 +75,15 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 			return err
 		}
 		now := time.Now().UTC()
+		rows, err := q.ListEvents(ctx, db.ListEventsParams{TaskID: pgtype.Text{String: taskID, Valid: true}, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return err
+		}
+		events := make([]core.Event, len(rows))
+		for i := range rows {
+			events[i] = eventFromDB(rows[i])
+		}
+		_, activeDesigns := store.ActiveTaskContextReferences(events)
 		appendEvent := func(kind string, payload map[string]any) error {
 			return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)})
 		}
@@ -92,9 +101,14 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 			if err := appendEvent(store.TaskContextDesignAdded, map[string]any{"id": id, "version": versions[id]}); err != nil {
 				return err
 			}
+			activeDesigns[id] = versions[id]
 		}
 		for _, id := range remove.DesignIDs {
-			if err := appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": id}); err != nil {
+			version := activeDesigns[id]
+			if version == 0 {
+				version = versions[id]
+			}
+			if err := appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": id, "version": version}); err != nil {
 				return err
 			}
 		}

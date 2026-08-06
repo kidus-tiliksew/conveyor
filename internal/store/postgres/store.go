@@ -4923,7 +4923,16 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 		return 0, err
 	}
 	event.ID, event.At = inserted.ID, inserted.At.Time
-	for _, link := range store.LineageLinksForEvent(inserted.WorkspaceID, event) {
+	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
+	for _, link := range projection.Suppresses {
+		if err = q.DeleteLineageLink(ctx, db.DeleteLineageLinkParams{
+			WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
+			DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	for _, link := range projection.Links {
 		if err = q.InsertLineageLink(ctx, db.InsertLineageLinkParams{
 			WorkspaceID: link.Workspace, SrcType: string(link.SrcType), SrcID: link.SrcID,
 			DstType: string(link.DstType), DstID: link.DstID, Kind: link.Kind,

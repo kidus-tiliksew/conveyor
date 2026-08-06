@@ -97,12 +97,12 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case TaskContextRequirementAdded:
 		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 	case TaskContextRequirementRemoved:
-		// The active attachment read model is suppressed by the removal event,
-		// while the historical event-derived lineage edge remains auditable.
+		result.Suppresses = valid(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 		return result
 	case TaskContextDesignAdded:
 		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
 	case TaskContextDesignRemoved:
+		result.Suppresses = valid(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
 		return result
 	case "requirement.version_confirmed":
 		var links []core.LineageLink

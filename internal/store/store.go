@@ -3356,6 +3356,7 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 		return core.TaskContext{}, err
 	}
 	now := time.Now().UTC()
+	_, activeDesigns := ActiveTaskContextReferences(m.events[taskID])
 	for _, id := range add.RequirementIDs {
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
 	}
@@ -3364,9 +3365,14 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 	}
 	for _, id := range add.DesignIDs {
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})})
+		activeDesigns[id] = versions[id]
 	}
 	for _, id := range remove.DesignIDs {
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
+		version := activeDesigns[id]
+		if version == 0 {
+			version = versions[id]
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": version})})
 	}
 	m.mu.Unlock()
 	return TaskContextForTask(ctx, m, taskID)
@@ -4157,7 +4163,11 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 			workspace = task.Workspace
 		}
 	}
-	for _, link := range lineageLinksForEvent(workspace, event) {
+	projection := projectLineageEvent(workspace, event)
+	for _, link := range projection.Suppresses {
+		delete(m.lineage, lineageLinkKey(link))
+	}
+	for _, link := range projection.Links {
 		key := lineageLinkKey(link)
 		if _, exists := m.lineage[key]; !exists {
 			m.lineage[key] = link

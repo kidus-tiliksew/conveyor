@@ -75,6 +75,31 @@ func TaskContextForTask(ctx context.Context, st Store, taskID string) (core.Task
 }
 
 func TaskContextFromEvents(ctx context.Context, st Store, events []core.Event) (core.TaskContext, error) {
+	requirements, designs := ActiveTaskContextReferences(events)
+	result := core.TaskContext{Requirements: []core.TaskRequirementContext{}, Designs: []core.TaskDesignContext{}}
+	for id := range requirements {
+		document, getErr := st.GetRequirement(ctx, id)
+		if getErr != nil || document.CurrentVersion <= 0 {
+			continue
+		}
+		result.Requirements = append(result.Requirements, core.TaskRequirementContext{ID: id, Title: document.Title, Version: document.CurrentVersion})
+	}
+	for id, version := range designs {
+		document, getErr := st.GetSystemDesign(ctx, id)
+		if getErr != nil {
+			continue
+		}
+		result.Designs = append(result.Designs, core.TaskDesignContext{ID: id, Title: document.Title, Version: version})
+	}
+	sort.Slice(result.Requirements, func(i, j int) bool { return result.Requirements[i].ID < result.Requirements[j].ID })
+	sort.Slice(result.Designs, func(i, j int) bool { return result.Designs[i].ID < result.Designs[j].ID })
+	return result, nil
+}
+
+// ActiveTaskContextReferences folds task context events without store reads so
+// transactional writers can carry a design attachment's pinned version onto
+// its removal event.
+func ActiveTaskContextReferences(events []core.Event) (map[string]bool, map[string]int) {
 	requirements := map[string]bool{}
 	designs := map[string]int{}
 	for _, event := range events {
@@ -96,22 +121,5 @@ func TaskContextFromEvents(ctx context.Context, st Store, events []core.Event) (
 			delete(designs, payload.ID)
 		}
 	}
-	result := core.TaskContext{Requirements: []core.TaskRequirementContext{}, Designs: []core.TaskDesignContext{}}
-	for id := range requirements {
-		document, getErr := st.GetRequirement(ctx, id)
-		if getErr != nil || document.CurrentVersion <= 0 {
-			continue
-		}
-		result.Requirements = append(result.Requirements, core.TaskRequirementContext{ID: id, Title: document.Title, Version: document.CurrentVersion})
-	}
-	for id, version := range designs {
-		document, getErr := st.GetSystemDesign(ctx, id)
-		if getErr != nil {
-			continue
-		}
-		result.Designs = append(result.Designs, core.TaskDesignContext{ID: id, Title: document.Title, Version: version})
-	}
-	sort.Slice(result.Requirements, func(i, j int) bool { return result.Requirements[i].ID < result.Requirements[j].ID })
-	sort.Slice(result.Designs, func(i, j int) bool { return result.Designs[i].ID < result.Designs[j].ID })
-	return result, nil
+	return requirements, designs
 }
