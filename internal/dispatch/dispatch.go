@@ -564,7 +564,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	}
 	role = pack.WithRequirementCitationContract(role, stage, servedRequirements)
 	if stage == core.StageImplement || stage == core.StageReview {
-		governance, governanceErr := store.GovernanceForRepository(ctx, d.Store, task.Repo)
+		governance, governanceErr := store.GovernanceForTask(ctx, d.Store, task.ID, task.Repo)
 		if governanceErr != nil {
 			return inprocess.Input{}, governanceErr
 		}
@@ -908,7 +908,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		return err
 	}
 	if governance == nil {
-		live, err := store.GovernanceForRepository(ctx, d.Store, task.Repo)
+		live, err := store.GovernanceForTask(ctx, d.Store, task.ID, task.Repo)
 		if err != nil {
 			return err
 		}
