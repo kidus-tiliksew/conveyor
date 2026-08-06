@@ -42,6 +42,10 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			return 0
 		}
 	}
+	boolean := func(key string) bool {
+		value, _ := payload[key].(bool)
+		return value
+	}
 	valid := func(items ...core.LineageLink) []core.LineageLink {
 		out := make([]core.LineageLink, 0, len(items))
 		for _, item := range items {
@@ -157,11 +161,21 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
 		return result
 	case TaskContextRequirementAdded:
+		if boolean("unconfirmed") {
+			return result
+		}
+		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
+	case TaskContextRequirementActive:
 		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 	case TaskContextRequirementRemoved:
 		result.Suppresses = valid(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
 		return result
 	case TaskContextDesignAdded:
+		if boolean("unconfirmed") {
+			return result
+		}
+		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
+	case TaskContextDesignActive:
 		return emit(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))
 	case TaskContextDesignRemoved:
 		result.Suppresses = valid(link(core.LineageSystemDesignVersion, core.SystemDesignVersionLineageID(text("id"), number("version")), core.LineageTask, event.TaskID, "governs"))

@@ -299,7 +299,10 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		if stored.DerivedFrom != nil {
 			payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = stored.DerivedFrom.DocumentID, stored.DerivedFrom.Version, stored.DerivedFrom.SectionAnchor, stored.DerivedFrom.TargetID
 		}
-		return insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload)
+		if err = insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload); err != nil {
+			return err
+		}
+		return activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), requirementID, version, false)
 	})
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err

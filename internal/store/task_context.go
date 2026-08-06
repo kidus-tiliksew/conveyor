@@ -12,8 +12,10 @@ import (
 
 const (
 	TaskContextRequirementAdded   = "task.context_requirement_added"
+	TaskContextRequirementActive  = "task.context_requirement_activated"
 	TaskContextRequirementRemoved = "task.context_requirement_removed"
 	TaskContextDesignAdded        = "task.context_design_added"
+	TaskContextDesignActive       = "task.context_design_activated"
 	TaskContextDesignRemoved      = "task.context_design_removed"
 )
 
@@ -122,4 +124,59 @@ func ActiveTaskContextReferences(events []core.Event) (map[string]bool, map[stri
 		}
 	}
 	return requirements, designs
+}
+
+// PendingTaskContextAttachment reports whether the latest add/remove state for
+// one document is an unconfirmed attachment to the exact proposed version.
+// Confirmation uses this fold before emitting the activation event that owns
+// the eventual serves/governs edge.
+func PendingTaskContextAttachment(events []core.Event, id string, version int, design bool) bool {
+	active, pendingVersion, unconfirmed := false, 0, false
+	for _, event := range events {
+		var payload struct {
+			ID             string `json:"id"`
+			Version        int    `json:"version"`
+			PendingVersion int    `json:"pending_version"`
+			Unconfirmed    bool   `json:"unconfirmed"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.ID != id {
+			continue
+		}
+		if design {
+			switch event.Kind {
+			case TaskContextDesignAdded:
+				active, pendingVersion, unconfirmed = true, payload.Version, payload.Unconfirmed
+			case TaskContextDesignRemoved:
+				active, pendingVersion, unconfirmed = false, 0, false
+			}
+			continue
+		}
+		switch event.Kind {
+		case TaskContextRequirementAdded:
+			active, pendingVersion, unconfirmed = true, payload.PendingVersion, payload.Unconfirmed
+		case TaskContextRequirementRemoved:
+			active, pendingVersion, unconfirmed = false, 0, false
+		}
+	}
+	return active && unconfirmed && pendingVersion == version
+}
+
+func (m *memory) activatePendingRequirementContextLocked(ctx context.Context, workspace, requirementID string, version int) {
+	for taskID, task := range m.tasks {
+		if task.Workspace != workspace || !PendingTaskContextAttachment(m.events[taskID], requirementID, version, false) {
+			continue
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementActive,
+			Payload: core.JSONPayload(map[string]any{"id": requirementID, "version": version})})
+	}
+}
+
+func (m *memory) activatePendingDesignContextLocked(ctx context.Context, workspace, documentID string, version int) {
+	for taskID, task := range m.tasks {
+		if task.Workspace != workspace || !PendingTaskContextAttachment(m.events[taskID], documentID, version, true) {
+			continue
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignActive,
+			Payload: core.JSONPayload(map[string]any{"id": documentID, "version": version})})
+	}
 }

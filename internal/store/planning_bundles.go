@@ -243,10 +243,10 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 	}
 	m.planningBundles[key] = bundle
 	kind, at := PlanningBundleFinalized, bundle.CreatedAt
-	payload := map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents}
+	payload := map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents, "tasks": bundle.Tasks}
 	if exists {
 		kind, at = PlanningBundleRevised, time.Now().UTC()
-		payload["previous_documents"] = existing.Documents
+		payload["previous_documents"], payload["previous_tasks"] = existing.Documents, existing.Tasks
 	}
 	m.appendEventLocked(ctx, core.Event{Kind: kind, At: at, Payload: core.JSONPayload(payload)})
 	return bundle, nil

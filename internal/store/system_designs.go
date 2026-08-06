@@ -189,6 +189,7 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		"confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID,
 		"origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs,
 	})})
+	m.activatePendingDesignContextLocked(ctx, workspace, documentID, version)
 	return document, confirmed, nil
 }
 

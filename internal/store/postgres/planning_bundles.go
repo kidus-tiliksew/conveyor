@@ -92,13 +92,13 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 			return marshalErr
 		}
 		kind, at := store.PlanningBundleFinalized, bundle.CreatedAt
-		payload := map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents}
+		payload := map[string]any{"workspace_id": bundle.Workspace, "bundle_id": bundle.ID, "session_id": bundle.SessionID, "documents": bundle.Documents, "tasks": bundle.Tasks}
 		if exists {
 			if _, updateErr := tx.Exec(ctx, `UPDATE planning_bundles SET session_id=$3,title=$4,documents=$5,tasks=$6 WHERE workspace_id=$1 AND id=$2`, bundle.Workspace, bundle.ID, bundle.SessionID, bundle.Title, documents, tasks); updateErr != nil {
 				return updateErr
 			}
 			kind, at = store.PlanningBundleRevised, time.Now().UTC()
-			payload["previous_documents"] = existing.Documents
+			payload["previous_documents"], payload["previous_tasks"] = existing.Documents, existing.Tasks
 		} else if _, insertErr := tx.Exec(ctx, `INSERT INTO planning_bundles (workspace_id,id,session_id,title,documents,tasks,status,created_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9)`, bundle.Workspace, bundle.ID, bundle.SessionID, bundle.Title, documents, tasks, string(bundle.Status), bundle.CreatedBy, bundle.CreatedAt); insertErr != nil {
 			return insertErr
 		}
