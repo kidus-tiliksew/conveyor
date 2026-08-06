@@ -674,7 +674,7 @@ export interface RequirementVersion {
   version: number
   content: string
   statements: RequirementStatement[]
-  origin: 'chat' | 'drift_amendment' | 'feature_migration'
+  origin: 'chat' | 'drift_amendment' | 'feature_migration' | 'operator'
   origin_session_id?: string
   origin_drift_id?: string
   derived_from?: RequirementDerivation

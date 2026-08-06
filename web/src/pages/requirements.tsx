@@ -38,6 +38,7 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Planning conversation',
   drift_amendment: 'Delivery drift',
   feature_migration: 'Migrated feature',
+  operator: 'Operator proposal',
 }
 
 /**

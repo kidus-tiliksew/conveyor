@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,123 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	_, source, err := st.CreateReferenceDocument(ctx,
+		core.ReferenceDocument{ID: "ref-api", Name: "API.md"},
+		core.ReferenceDocumentVersion{Filename: "API.md", ContentType: "text/markdown", Content: "# API contract\n\nPinned source."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("X-Conveyor-Actor", "headless-planner")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	content := "Operator-authored intent.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: The API remains authenticated.\n  user_story:\n    as_a: operator\n    i_want: to propose intent headlessly\n    so_that: confirmation stays explicit\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: The proposal remains pending.\n```"
+	body, _ := json.Marshal(map[string]any{
+		"id": "req-api", "title": "Requirement proposal API", "content": content,
+		"derived_from": map[string]any{"document_id": "ref-api", "version": source.Version, "section_anchor": "api-contract", "target_id": "AC-2.1"},
+	})
+	created := call(http.MethodPost, "/v1/requirements", string(body))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var result struct {
+		Requirement core.Requirement        `json:"requirement"`
+		Version     core.RequirementVersion `json:"version"`
+	}
+	if err = json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Requirement.CurrentVersion != 0 || result.Version.Version != 1 || result.Version.Confirmed ||
+		result.Version.Origin != core.RequirementOriginOperator || result.Version.OriginSessionID != "" ||
+		result.Version.OriginDriftID != "" || result.Version.DerivedFrom == nil ||
+		result.Version.DerivedFrom.SectionAnchor != "#api-contract" || len(result.Version.Statements) != 1 ||
+		result.Version.Statements[0].UserStory == nil || len(result.Version.Statements[0].AcceptanceCriteria) != 1 {
+		t.Fatalf("created proposal=%+v", result)
+	}
+	assertNoLineage := func(want int) {
+		links, listErr := st.ListLineageLinks(ctx)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		got := 0
+		for _, link := range links {
+			if link.Kind == "derived_from" && link.SrcID == core.RequirementVersionLineageID("req-api", 1) {
+				got++
+			}
+		}
+		if got != want {
+			t.Fatalf("derived_from links=%d want=%d", got, want)
+		}
+	}
+	assertNoLineage(0)
+	list := call(http.MethodGet, "/v1/requirements", "")
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"pending_versions":[{`) {
+		t.Fatalf("pending list status=%d body=%s", list.Code, list.Body.String())
+	}
+	confirmed := call(http.MethodPost, "/v1/requirements/req-api/versions/1/confirm", "")
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	assertNoLineage(1)
+
+	revisionJSON, _ := json.Marshal(map[string]string{"content": "Revised intent.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: Revisions preserve high-water discipline.\n```"})
+	revision := string(revisionJSON)
+	revised := call(http.MethodPost, "/v1/requirements/req-api/versions", revision)
+	if revised.Code != http.StatusCreated || !strings.Contains(revised.Body.String(), `"version":2`) || !strings.Contains(revised.Body.String(), `"origin":"operator"`) {
+		t.Fatalf("revision status=%d body=%s", revised.Code, revised.Body.String())
+	}
+	recycledJSON, _ := json.Marshal(map[string]string{"content": "Bad reuse.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Recycled identity.\n```"})
+	recycled := call(http.MethodPost, "/v1/requirements/req-api/versions", string(recycledJSON))
+	if recycled.Code != http.StatusBadRequest || !strings.Contains(recycled.Body.String(), "reuses a retired identifier") {
+		t.Fatalf("recycled status=%d body=%s", recycled.Code, recycled.Body.String())
+	}
+	invalidFence := call(http.MethodPost, "/v1/requirements/req-api/versions", `{"content":"Missing machine block."}`)
+	if invalidFence.Code != http.StatusBadRequest || !strings.Contains(invalidFence.Body.String(), "requires one conveyor:requirements block") {
+		t.Fatalf("invalid fence status=%d body=%s", invalidFence.Code, invalidFence.Body.String())
+	}
+	multipleJSON, _ := json.Marshal(map[string]string{"content": content + "\n\n" + content})
+	multipleFences := call(http.MethodPost, "/v1/requirements/req-api/versions", string(multipleJSON))
+	if multipleFences.Code != http.StatusBadRequest || !strings.Contains(multipleFences.Body.String(), "exactly one conveyor:requirements block; found 2") {
+		t.Fatalf("multiple fences status=%d body=%s", multipleFences.Code, multipleFences.Body.String())
+	}
+	spoofJSON, _ := json.Marshal(map[string]string{"content": "Spoof.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: No spoofing.\n```", "origin": "chat", "origin_session_id": "forged"})
+	spoof := call(http.MethodPost, "/v1/requirements/req-api/versions", string(spoofJSON))
+	if spoof.Code != http.StatusBadRequest || !strings.Contains(spoof.Body.String(), "only operator origin") {
+		t.Fatalf("spoof status=%d body=%s", spoof.Code, spoof.Body.String())
+	}
+	taskSpoofJSON, _ := json.Marshal(map[string]string{"content": "Task spoof.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: No task spoofing.\n```", "origin": "operator", "origin_task_id": "forged-task"})
+	taskSpoof := call(http.MethodPost, "/v1/requirements/req-api/versions", string(taskSpoofJSON))
+	if taskSpoof.Code != http.StatusBadRequest || !strings.Contains(taskSpoof.Body.String(), "session, task, or drift") {
+		t.Fatalf("task spoof status=%d body=%s", taskSpoof.Code, taskSpoof.Body.String())
+	}
+	badDerivation, _ := json.Marshal(map[string]any{
+		"id": "req-bad-derivation", "title": "Bad derivation", "content": content,
+		"derived_from": map[string]any{"document_id": "ref-api", "version": source.Version, "section_anchor": "api-contract", "target_id": "AC-9.9"},
+	})
+	invalidDerivation := call(http.MethodPost, "/v1/requirements", string(badDerivation))
+	if invalidDerivation.Code != http.StatusBadRequest || !strings.Contains(invalidDerivation.Body.String(), "is not present in the proposed requirement version") {
+		t.Fatalf("invalid derivation status=%d body=%s", invalidDerivation.Code, invalidDerivation.Body.String())
+	}
+	if _, getErr := st.GetRequirement(ctx, "req-bad-derivation"); !errors.Is(getErr, store.ErrNotFound) {
+		t.Fatalf("invalid derivation persisted document: %v", getErr)
+	}
+	missing := call(http.MethodPost, "/v1/requirements/missing/versions", revision)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+}
 
 func TestDeliveryReachabilityDoesNotCrossPlanningSessionBridge(t *testing.T) {
 	links := []core.LineageLink{

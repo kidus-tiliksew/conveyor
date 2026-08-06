@@ -267,6 +267,20 @@ func TestValidateRequirementOriginRequiresExactlyOneProvenance(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "operator with neither",
+			version: RequirementVersion{Origin: RequirementOriginOperator},
+		},
+		{
+			name:    "operator with a session id",
+			version: RequirementVersion{Origin: RequirementOriginOperator, OriginSessionID: "session-1"},
+			wantErr: true,
+		},
+		{
+			name:    "operator with a drift id",
+			version: RequirementVersion{Origin: RequirementOriginOperator, OriginDriftID: "drift-1"},
+			wantErr: true,
+		},
+		{
 			name:    "unknown origin",
 			version: RequirementVersion{Origin: RequirementOrigin("operator_edit"), OriginSessionID: "session-1"},
 			wantErr: true,

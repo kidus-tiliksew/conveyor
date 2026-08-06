@@ -2433,6 +2433,12 @@ func (s *Service) ValidatePromotionSource(ctx context.Context, derivation *core.
 	return s.validatePromotionSource(ctx, derivation)
 }
 
+// ValidateRequirementDerivation applies the same pinned-source and proposed-
+// target contract used by planning promotion before any proposal is persisted.
+func (s *Service) ValidateRequirementDerivation(ctx context.Context, derivation *core.RequirementDerivation, statements []core.RequirementStatement) error {
+	return s.validateRequirementDerivation(ctx, derivation, statements)
+}
+
 func (s *Service) validatePromotionSource(ctx context.Context, derivation *core.RequirementDerivation) error {
 	if s == nil || s.Store == nil {
 		return &planningInfrastructureError{err: fmt.Errorf("planning store is unavailable")}
