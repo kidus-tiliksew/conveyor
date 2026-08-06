@@ -45,7 +45,7 @@ func testService(t *testing.T) (*monitor.Service, store.Store, context.Context) 
 func TestSignalOccurrenceDeduplicatesButDistinctOccurrenceCreatesTask(t *testing.T) {
 	service, st, ctx := testService(t)
 	observation := monitor.Observation{
-		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "check:77:attempt:1",
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1",
 		SourceURL: "https://github.example/check/77", CommitSHA: "abc",
 	}
 	first, err := service.Process(ctx, observation)
@@ -59,7 +59,7 @@ func TestSignalOccurrenceDeduplicatesButDistinctOccurrenceCreatesTask(t *testing
 	if first.TaskID == "" || second.TaskID != first.TaskID || second.DeduplicatedCount != 1 {
 		t.Fatalf("first=%+v second=%+v", first, second)
 	}
-	observation.OccurrenceID = "check:77:attempt:2"
+	observation.OccurrenceID = "commit:abc:attempt:2"
 	third, err := service.Process(ctx, observation)
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +70,26 @@ func TestSignalOccurrenceDeduplicatesButDistinctOccurrenceCreatesTask(t *testing
 	tasks, _ := st.ListTasks(ctx)
 	if len(tasks) != 2 || tasks[0].NextStage != core.StageTriage || tasks[1].NextStage != core.StageTriage {
 		t.Fatalf("normal intake tasks=%+v", tasks)
+	}
+}
+
+func TestPostMergeFailureTaskNamesAllFailedChecks(t *testing.T) {
+	service, st, ctx := testService(t)
+	record, err := service.Process(ctx, monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure,
+		OccurrenceID: "commit:abc:attempt:1", SourceURL: "https://github.example/check/11", CommitSHA: "abc",
+		Context: map[string]string{"failed_check_runs": "- unit (check run 11): https://github.example/check/11\n- integration (check run 22): https://github.example/check/22"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := st.GetTaskByIntakeKey(ctx, "monitor:post_merge_failure:conveyor:commit:abc:attempt:1")
+	if err != nil || !found || task.ID != record.TaskID {
+		t.Fatalf("task=%+v found=%t record=%+v err=%v", task, found, record, err)
+	}
+	if !strings.Contains(task.Body, "Commit: abc") || !strings.Contains(task.Body, "unit (check run 11)") ||
+		!strings.Contains(task.Body, "integration (check run 22)") {
+		t.Fatalf("task body=%q", task.Body)
 	}
 }
 

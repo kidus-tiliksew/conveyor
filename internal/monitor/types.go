@@ -486,6 +486,9 @@ func taskBody(o Observation) string {
 	}
 	body := fmt.Sprintf("Monitor signal: %s\nRepository: %s\nOccurrence: %s\nSource: %s\nCommit: %s\n\n%s",
 		o.Kind, o.Repository, o.OccurrenceID, o.SourceURL, o.CommitSHA, purpose)
+	if failedChecks := strings.TrimSpace(o.Context["failed_check_runs"]); failedChecks != "" {
+		body += "\n\nFailed checks:\n" + failedChecks
+	}
 	if o.Hints != nil {
 		body += "\n\n" + o.Hints.AdvisoryText()
 	}
