@@ -48,11 +48,14 @@ const (
 	// feature-tree node. Seeds carry the node's accumulated text verbatim and
 	// stay pending until an operator confirms them (spec §21.46 change 2).
 	RequirementOriginFeatureMigration RequirementOrigin = "feature_migration"
+	// RequirementOriginOperator is a headless operator proposal. It carries no
+	// planning-session or drift provenance and never confirms itself.
+	RequirementOriginOperator RequirementOrigin = "operator"
 )
 
 func (o RequirementOrigin) Valid() bool {
 	return o == RequirementOriginChat || o == RequirementOriginDriftAmendment ||
-		o == RequirementOriginFeatureMigration
+		o == RequirementOriginFeatureMigration || o == RequirementOriginOperator
 }
 
 // RequirementStatement is one enumerable statement carrying a stable ID that
@@ -454,8 +457,8 @@ func ValidateRequirementOrigin(version RequirementVersion) error {
 		if session != "" {
 			return fmt.Errorf("requirement origin %s must not carry a planning session id", version.Origin)
 		}
-	case RequirementOriginFeatureMigration:
-		// A seed is produced by migration 046, not by a session or a drift.
+	case RequirementOriginFeatureMigration, RequirementOriginOperator:
+		// Migration seeds and headless operator proposals have no session or drift.
 		if session != "" || drift != "" {
 			return fmt.Errorf("requirement origin %s carries no session or drift id", version.Origin)
 		}

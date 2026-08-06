@@ -13,6 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -91,6 +93,112 @@ func (s *Server) listRequirementVersions(w http.ResponseWriter, r *http.Request)
 		versions = []core.RequirementVersion{}
 	}
 	writeJSON(w, http.StatusOK, versions)
+}
+
+type requirementMutation struct {
+	ID              string                      `json:"id"`
+	Title           string                      `json:"title"`
+	Content         string                      `json:"content"`
+	DerivedFrom     *core.RequirementDerivation `json:"derived_from,omitempty"`
+	Origin          core.RequirementOrigin      `json:"origin"`
+	OriginSessionID string                      `json:"origin_session_id"`
+	OriginTaskID    string                      `json:"origin_task_id"`
+	OriginDriftID   string                      `json:"origin_drift_id"`
+}
+
+func validateOperatorRequirementMutation(input requirementMutation) error {
+	if input.Origin != "" && input.Origin != core.RequirementOriginOperator {
+		return fmt.Errorf("REST requirement proposals support only operator origin")
+	}
+	if strings.TrimSpace(input.OriginSessionID) != "" || strings.TrimSpace(input.OriginTaskID) != "" || strings.TrimSpace(input.OriginDriftID) != "" {
+		return fmt.Errorf("REST requirement proposals cannot name an origin session, task, or drift")
+	}
+	return nil
+}
+
+func (s *Server) operatorRequirementVersion(r *http.Request, id string, input requirementMutation) (core.RequirementVersion, error) {
+	if err := validateOperatorRequirementMutation(input); err != nil {
+		return core.RequirementVersion{}, err
+	}
+	document, err := pipeline.ParseRequirementDocument(input.Content)
+	if err != nil {
+		return core.RequirementVersion{}, err
+	}
+	version := core.RequirementVersion{
+		RequirementID: id, Content: document.Markdown, Statements: document.Statements,
+		Origin: core.RequirementOriginOperator, DerivedFrom: input.DerivedFrom,
+	}
+	if input.DerivedFrom != nil {
+		validator := s.Planning
+		if validator == nil {
+			validator = &planning.Service{Store: s.Store}
+		}
+		if err = validator.ValidateRequirementDerivation(r.Context(), input.DerivedFrom, document.Statements); err != nil {
+			return core.RequirementVersion{}, err
+		}
+	}
+	return version, nil
+}
+
+func (s *Server) createRequirement(w http.ResponseWriter, r *http.Request) {
+	var input requirementMutation
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	id, title := strings.TrimSpace(input.ID), strings.TrimSpace(input.Title)
+	if id == "" || title == "" {
+		http.Error(w, "requirement id and title are required", http.StatusBadRequest)
+		return
+	}
+	version, err := s.operatorRequirementVersion(r, id, input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	requirement, version, err := s.Store.CreateRequirement(r.Context(), core.Requirement{ID: id, Title: title}, version)
+	if err != nil {
+		http.Error(w, err.Error(), requirementMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"requirement": requirement, "version": version})
+}
+
+func (s *Server) proposeRequirementVersion(w http.ResponseWriter, r *http.Request) {
+	var input requirementMutation
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if _, err := s.Store.GetRequirement(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	version, err := s.operatorRequirementVersion(r, id, input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	version, err = s.Store.ProposeRequirementVersion(r.Context(), version)
+	if err != nil {
+		// The store owns content coherence, high-water, and additive AC rules;
+		// violations are safe, specific client errors rather than SQL details.
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusCreated, version)
+}
+
+func requirementMutationStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, store.ErrRequirementSlugConflict), strings.Contains(err.Error(), "already exists"):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Request) {

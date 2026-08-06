@@ -522,6 +522,8 @@ test('requirements deep-link exact versions, render statements, diff pending int
   const pending2 = {
     ...requirement.pending_versions[0],
     version: 2,
+    origin: 'operator',
+    origin_session_id: undefined,
     content:
       'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
   }
@@ -564,6 +566,7 @@ test('requirements deep-link exact versions, render statements, diff pending int
   await expect(page).toHaveURL(/requirement=req-retries/)
   await expect(page.getByRole('button', { name: /Version 2/ })).toBeVisible()
   await page.getByRole('button', { name: /Version 2/ }).click()
+  await expect(page.getByText('Operator proposal').first()).toBeVisible()
   await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
   await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
   await expect(

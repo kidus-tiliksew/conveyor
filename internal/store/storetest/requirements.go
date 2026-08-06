@@ -110,6 +110,37 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("operator proposals use the common pending confirmation and high-water contract", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		requirement, first, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Operator REST parity"},
+			core.RequirementVersion{Content: "First operator proposal.", Origin: core.RequirementOriginOperator,
+				Statements: []core.RequirementStatement{requirementStatement("REQ-2", "Initial operator intent.")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if requirement.CurrentVersion != 0 || first.Confirmed {
+			t.Fatalf("new operator proposal requirement=%+v version=%+v", requirement, first)
+		}
+		confirmed, confirmedVersion, err := st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version)
+		if err != nil || confirmed.CurrentVersion != first.Version || !confirmedVersion.Confirmed {
+			t.Fatalf("confirm operator proposal requirement=%+v version=%+v err=%v", confirmed, confirmedVersion, err)
+		}
+		second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID, Content: "Second operator proposal.", Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{requirementStatement("REQ-3", "Later operator intent.")},
+		})
+		if err != nil || second.Version != 2 || second.Confirmed {
+			t.Fatalf("second operator proposal=%+v err=%v", second, err)
+		}
+		if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID, Content: "Recycled operator proposal.", Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{requirementStatement("REQ-1", "Recycled operator intent.")},
+		}); err == nil || !strings.Contains(err.Error(), "reuses a retired identifier") {
+			t.Fatalf("recycled operator proposal error=%v", err)
+		}
+	})
+
 	t.Run("monitor requirement references are validated before persistence", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		monitorStore, ok := st.(monitor.Store)
@@ -365,6 +396,17 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			seedVersion.OriginSessionID != "" || seedVersion.OriginDriftID != "" || seedVersion.Confirmed {
 			t.Fatalf("migration seed version=%+v", seedVersion)
 		}
+		operator, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: seed.ID, Content: "Operator proposal.", Statements: statements,
+			Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if operator.Origin != core.RequirementOriginOperator || operator.OriginSessionID != "" || operator.OriginDriftID != "" || operator.Confirmed {
+			t.Fatalf("operator version=%+v", operator)
+		}
+		assertRequirementVersionRoundTrip(t, ctx, st, operator)
 
 		// The monitor's requirements_amended outcome proposes a *pending*
 		// version carrying its drift record (spec §4.2 item 2, AC-1).
@@ -376,7 +418,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if amended.Version != 2 || amended.Confirmed || amended.OriginDriftID != driftID ||
+		if amended.Version != 3 || amended.Confirmed || amended.OriginDriftID != driftID ||
 			amended.OriginSessionID != "" {
 			t.Fatalf("drift amendment version=%+v", amended)
 		}
@@ -393,6 +435,8 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			"drift amendment carrying a session":   {Origin: core.RequirementOriginDriftAmendment, OriginDriftID: "drift-x", OriginSessionID: "session-x"},
 			"feature migration carrying a session": {Origin: core.RequirementOriginFeatureMigration, OriginSessionID: "session-x"},
 			"feature migration carrying a drift":   {Origin: core.RequirementOriginFeatureMigration, OriginDriftID: "drift-x"},
+			"operator carrying a session":          {Origin: core.RequirementOriginOperator, OriginSessionID: "session-x"},
+			"operator carrying a drift":            {Origin: core.RequirementOriginOperator, OriginDriftID: "drift-x"},
 			"unrecognised origin":                  {Origin: "operator_hunch", OriginSessionID: "session-x"},
 		} {
 			candidate.Content = "Must not commit."
@@ -411,8 +455,8 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if next.Version != 3 {
-			t.Fatalf("version after rejected proposals=%d, want 3", next.Version)
+		if next.Version != 4 {
+			t.Fatalf("version after rejected proposals=%d, want 4", next.Version)
 		}
 		assertRequirementCount(t, ctx, st, 1)
 	})
