@@ -4,6 +4,7 @@ import type {
   BlueprintView,
   InterventionAction,
   Task,
+  TaskOperationsItem,
   VersionedWorkspaceConfig,
   WorkspaceConfigDocument,
   WorkspaceConfigReceipt,
@@ -242,6 +243,11 @@ export function fetchMonitorStatus() {
 }
 export function fetchTasks() {
   return getJSON<Task[]>(workspaceURL('/v1/tasks'))
+}
+// The Tasks view's read-only projection (spec §21.58): task state, relations,
+// attached context, and plan status from one durable source.
+export function fetchTaskOperations() {
+  return getJSON<TaskOperationsItem[]>(workspaceURL('/v1/task-operations'))
 }
 export async function fetchArtifacts(token: string) {
   const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } })

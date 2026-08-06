@@ -57,5 +57,10 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   await expect(page.getByText('direct_push', { exact: true })).toBeVisible()
   await expect(page.getByText('2 duplicates', { exact: true })).toBeVisible()
   await expect(page.getByText('created', { exact: true })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Task' }).first()).toHaveAttribute('href', '/tasks/drift-task')
+  // Scoped to the page body: the shell's own Tasks nav entry also matches a
+  // substring search for "Task".
+  await expect(page.getByRole('main').getByRole('link', { name: 'Task' }).first()).toHaveAttribute(
+    'href',
+    '/tasks/drift-task',
+  )
 })

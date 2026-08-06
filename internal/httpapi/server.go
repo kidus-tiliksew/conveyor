@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext)
 			r.Get("/activity", s.listActivity)
 			r.Get("/tasks", s.listTasks)
+			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)
@@ -877,7 +878,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 		}
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || marker.ForgeFailure != nil || marker.ReviewRecovery != nil || marker.InterruptedReviewRecovery != nil || marker.Stalled != nil,
+			NeedsAttention:            needsAttention(task, marker),
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
@@ -886,6 +887,223 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// needsAttention is the one derivation the stage-grouped board and the
+// list-first Tasks view share, so the two surfaces cannot disagree about which
+// work is waiting on a human (spec §13.3).
+func needsAttention(task core.Task, marker store.ActivityMarker) bool {
+	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
+		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
+		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil
+}
+
+// Plan status is the four durable outcomes AC-1.4 names. Each is read off the
+// persisted plan version and the audited task-state command that parked or
+// resumed it; none is inferred when that authority is absent.
+const (
+	taskPlanNone        = "none"
+	taskPlanPendingGate = "pending_gate"
+	taskPlanApproved    = "approved"
+	taskPlanRedirected  = "redirected"
+)
+
+// taskPlanStatus renders a task's execution-plan state for the Tasks view. A
+// task with no plan version carries state "none" and no version, so absence is
+// represented rather than filled in (AC-1.4).
+type taskPlanStatus struct {
+	State   string `json:"state"`
+	Version int    `json:"version,omitempty"`
+	// Legacy marks an unapproved pre-Phase-8.3 spec version captured by
+	// migration 075, so the row reads as the historical record it is
+	// (spec §21.58 change 3).
+	Legacy bool `json:"legacy,omitempty"`
+}
+
+// taskChildRollup summarizes a task's materialized children. It exists only
+// when children exist, so a childless task renders as having none rather than
+// as a rollup of zeroes (AC-1.2).
+type taskChildRollup struct {
+	Total  int `json:"total"`
+	Merged int `json:"merged"`
+	Closed int `json:"closed"`
+	Open   int `json:"open"`
+}
+
+// taskOperationsItem is the list-first Tasks view's row (spec §21.58, REQ-1).
+// Every field projects durable task, relationship, context, or plan authority;
+// the view stores nothing and re-derives nothing of its own. No priority,
+// assignee, or declared-phase field appears here, and none may be added
+// (AC-1.5).
+type taskOperationsItem struct {
+	Task                 core.Task        `json:"task"`
+	LatestStage          core.Stage       `json:"latest_stage,omitempty"`
+	LastEventAt          time.Time        `json:"last_event_at"`
+	NeedsAttention       bool             `json:"needs_attention"`
+	UnsatisfiableTaskIDs []string         `json:"unsatisfiable_task_ids,omitempty"`
+	ChildRollup          *taskChildRollup `json:"child_rollup,omitempty"`
+	Plan                 taskPlanStatus   `json:"plan"`
+}
+
+// listTaskOperations serves the Phase 8.4 Tasks view (spec §21.58, REQ-1).
+// Dependencies, blocking edges, and children come from the same task hydration
+// the board and task detail already read; attached context is the existing
+// append-only attachment fold; plan status is the persisted plan version plus
+// the audited gate command. Per-task reads follow the blueprint-list
+// precedent — the projection has no batch authority of its own to invent.
+func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tasks, err := s.Store.ListTasks(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	markers, err := s.Store.ListActivityMarkers(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	markerByTask := make(map[string]store.ActivityMarker, len(markers))
+	for _, marker := range markers {
+		markerByTask[marker.TaskID] = marker
+	}
+	taskIDs := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	// Blocked stays a derived predicate owned by the dependency substrate
+	// (spec §21.47); the view reads it, and reads the unsatisfiable edges the
+	// task record itself does not carry.
+	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Attached documents repeat across rows; memoizing only the document reads
+	// keeps the authoritative fold in store.TaskContextFromEvents.
+	documents := &taskContextDocumentCache{Store: s.Store, requirements: map[string]core.Requirement{}, designs: map[string]core.SystemDesign{}}
+	items := make([]taskOperationsItem, 0, len(tasks))
+	for _, task := range tasks {
+		events, eventsErr := s.Store.ListEvents(ctx, task.ID)
+		if eventsErr != nil {
+			http.Error(w, eventsErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		task.Context, err = store.TaskContextFromEvents(ctx, documents, events)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		latest, hasPlan, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
+		if specErr != nil {
+			http.Error(w, specErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		marker := markerByTask[task.ID]
+		if core.TaskTerminal(task.State) {
+			marker.Stalled = nil
+		}
+		items = append(items, taskOperationsItem{
+			Task:                 task,
+			LatestStage:          marker.LatestStage,
+			LastEventAt:          marker.LastEventAt,
+			NeedsAttention:       needsAttention(task, marker),
+			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
+			ChildRollup:          taskChildRollupFor(task.Children),
+			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// taskContextDocumentCache memoizes the requirement and design reads that
+// resolve attached-context titles and versions across one list pass. Only
+// those two lookups are cached: every other call reaches the real store, so
+// the fold itself stays store.TaskContextFromEvents.
+type taskContextDocumentCache struct {
+	store.Store
+	requirements map[string]core.Requirement
+	designs      map[string]core.SystemDesign
+}
+
+func (c *taskContextDocumentCache) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
+	if cached, ok := c.requirements[id]; ok {
+		return cached, nil
+	}
+	document, err := c.Store.GetRequirement(ctx, id)
+	if err != nil {
+		return document, err
+	}
+	c.requirements[id] = document
+	return document, nil
+}
+
+func (c *taskContextDocumentCache) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
+	if cached, ok := c.designs[id]; ok {
+		return cached, nil
+	}
+	document, err := c.Store.GetSystemDesign(ctx, id)
+	if err != nil {
+		return document, err
+	}
+	c.designs[id] = document
+	return document, nil
+}
+
+func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
+	if len(children) == 0 {
+		return nil
+	}
+	rollup := taskChildRollup{Total: len(children)}
+	for _, child := range children {
+		switch child.State {
+		case core.TaskMerged:
+			rollup.Merged++
+		case core.TaskClosed:
+			rollup.Closed++
+		default:
+			rollup.Open++
+		}
+	}
+	return &rollup
+}
+
+// taskPlanStatusFor derives plan status from durable authority alone. Approval
+// only ever lands on the newest version, so an unapproved latest version is
+// still inside the gate loop; the audited task.state_changed command then
+// separates a plan waiting at its gate from one the operator redirected, the
+// same recognition the dispatcher's own spec-gate check performs
+// (spec §13.1, AC-1.4).
+func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
+	if !hasPlan {
+		return taskPlanStatus{State: taskPlanNone}
+	}
+	status := taskPlanStatus{State: taskPlanApproved, Version: latest.Version, Legacy: latest.LegacyGate}
+	if latest.Approved {
+		return status
+	}
+	// A plan version is created at its gate, so pending is the state it
+	// entered; a later redirect is the only audited command that moves it.
+	status.State = taskPlanPendingGate
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if json.Unmarshal(events[i].Payload, &transition) != nil {
+			continue
+		}
+		switch transition.Command {
+		case core.TaskGateSpec:
+			return status
+		case core.TaskInterventionRedirect:
+			status.State = taskPlanRedirected
+			return status
+		}
+	}
+	return status
 }
 
 func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {

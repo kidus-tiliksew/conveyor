@@ -216,6 +216,36 @@ export interface ActivitySummary {
   stalled?: StalledState
 }
 
+// The four durable plan outcomes the Tasks view renders (AC-1.4). "none" is a
+// task with no persisted plan version; the version is absent with it.
+export type TaskPlanState = 'none' | 'pending_gate' | 'approved' | 'redirected'
+
+export interface TaskPlanStatus {
+  state: TaskPlanState
+  version?: number
+  legacy?: boolean
+}
+
+export interface TaskChildRollup {
+  total: number
+  merged: number
+  closed: number
+  open: number
+}
+
+// TaskOperationsItem is the list-first Tasks view's row (spec §21.58, REQ-1).
+// It carries no priority, assignee, or declared-phase field, and none may be
+// added to support the view (AC-1.5).
+export interface TaskOperationsItem {
+  task: Task
+  latest_stage?: Stage
+  last_event_at: string
+  needs_attention: boolean
+  unsatisfiable_task_ids?: string[]
+  child_rollup?: TaskChildRollup
+  plan: TaskPlanStatus
+}
+
 export interface StalledState {
   needed: boolean
   reason: string

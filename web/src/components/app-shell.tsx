@@ -6,6 +6,7 @@ import {
   Blocks,
   FolderGit2,
   Kanban,
+  ListChecks,
   MessageSquare,
   Plus,
   Settings,
@@ -213,6 +214,9 @@ function NavSidebar() {
         <NavItem to="/" icon={Kanban} label="Board">
           {attention > 0 && <Badge variant="attention">{attention}</Badge>}
         </NavItem>
+        {/* The list-first delivery surface (spec §21.58). It matches exactly:
+            a task's own detail route belongs to the Board it opens over. */}
+        <NavItem to="/tasks" icon={ListChecks} label="Tasks" exact />
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
@@ -250,23 +254,32 @@ function NavItem({
   to,
   icon: Icon,
   label,
+  exact,
   children,
 }: {
   to: string
   icon: LucideIcon
   label: string
+  exact?: boolean
   children?: ReactNode
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   // The board stays highlighted while any of its overlays (task sheet, full
-  // page, task intake, workspace modal) is open.
+  // page, task intake, workspace modal) is open. A trailing slash keeps the
+  // Tasks list itself out of that set — it is its own surface.
   const active =
     to === '/'
-      ? pathname === '/' || pathname.startsWith('/tasks') || pathname === '/new' || pathname === '/workspaces/new'
-      : pathname === to || pathname.startsWith(`${to}/`)
+      ? pathname === '/' || pathname.startsWith('/tasks/') || pathname === '/new' || pathname === '/workspaces/new'
+      : exact
+        ? pathname === to
+        : pathname === to || pathname.startsWith(`${to}/`)
   return (
     <Link
       to={to}
+      // The router's own aria-current must agree with the highlight above:
+      // without this, "/tasks/<id>" would announce the Tasks list as the
+      // current page while the Board is the surface actually showing.
+      activeOptions={exact ? { exact: true } : undefined}
       className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
         active ? 'bg-raised font-medium text-foreground' : 'text-muted hover:bg-raised/60 hover:text-foreground'
       }`}
