@@ -625,10 +625,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		if checkpointErr != nil || result == nil {
 			return checkpointErr
 		}
-		return c.checkpointWorkerOrderAttemptContext(checkpointCtx, credential, item.Order.ID, core.WorkOrderAttemptCheckpoint{
+		if err := c.checkpointWorkerOrderAttemptContext(checkpointCtx, credential, item.Order.ID, core.WorkOrderAttemptCheckpoint{
 			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
 			CommitSHA: result.CommitSHA, PushResult: "pushed",
-		})
+		}); err != nil {
+			return fmt.Errorf("checkpoint commit %s was pushed from %s, but its audit event is not durable; successor reconciliation required: %w", result.CommitSHA, result.Worktree, err)
+		}
+		return nil
 	}
 	releaseAfterCheckpoint := func(outcome, reason string, exitStatus *int) error {
 		if checkpointErr := checkpointAttempt(reason); checkpointErr != nil {
@@ -905,8 +908,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
-				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
-				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
 			// The authority check may have overlapped the first byte or exit.
@@ -975,8 +977,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
-				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
-				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
 			drainActivity(activityObserved)
@@ -1034,8 +1035,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = processGroup.terminate(nil)
-				_ = checkpointAttempt("claim authority lost: server reports " + string(renewed.State))
-				return fmt.Errorf("claim authority lost: server reports %s", renewed.State)
+				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
 		case <-ctx.Done():
@@ -1044,6 +1044,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			return ctx.Err()
 		}
 	}
+}
+
+func attemptAuthorityLoss(reason string, checkpoint func(string) error) error {
+	if checkpointErr := checkpoint(reason); checkpointErr != nil {
+		return fmt.Errorf("%s; %w", reason, checkpointErr)
+	}
+	return errors.New(reason)
 }
 
 var workerProcessGroupTerminationGrace = 2 * time.Second

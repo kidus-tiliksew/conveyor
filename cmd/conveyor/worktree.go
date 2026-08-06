@@ -341,7 +341,7 @@ func checkpointAssignedTaskWorktree(ctx context.Context, branch, repo, repoURL s
 }
 
 func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	if checkpoint.AttemptID == "" || checkpoint.WorkOrderID == "" {
+	if checkpoint.AttemptID == "" || checkpoint.WorkOrderID == "" || strings.TrimSpace(checkpoint.TerminationReason) == "" {
 		return nil, nil
 	}
 	message, err := gitOutput(ctx, path, "show", "-s", "--format=%B", "HEAD")
@@ -349,10 +349,14 @@ func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoin
 		return nil, err
 	}
 	subject := fmt.Sprintf("wip(%s): checkpoint at attempt death", checkpoint.AttemptID)
-	if !strings.HasPrefix(message, subject+"\n") ||
-		!strings.Contains(message, "Attempt-ID: "+checkpoint.AttemptID+"\n") ||
-		!strings.Contains(message, "Work-Order-ID: "+checkpoint.WorkOrderID+"\n") {
+	lines := strings.Split(strings.TrimSpace(message), "\n")
+	if len(lines) == 0 || lines[0] != subject ||
+		checkpointMessageField(lines, "Attempt-ID") != checkpoint.AttemptID ||
+		checkpointMessageField(lines, "Work-Order-ID") != checkpoint.WorkOrderID {
 		return nil, nil
+	}
+	if checkpointMessageField(lines, "Termination-Reason") != oneLine(checkpoint.TerminationReason) {
+		return nil, fmt.Errorf("checkpoint at HEAD matches attempt %s and work order %s but not termination reason %q; refusing ambiguous reuse", checkpoint.AttemptID, checkpoint.WorkOrderID, oneLine(checkpoint.TerminationReason))
 	}
 	commitSHA, err := gitOutput(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
@@ -375,6 +379,16 @@ func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoin
 		pushed = true
 	}
 	return &attemptCheckpointResult{Worktree: path, CommitSHA: commitSHA, Pushed: pushed}, nil
+}
+
+func checkpointMessageField(lines []string, name string) string {
+	prefix := name + ": "
+	for _, line := range lines[1:] {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
 
 func oneLine(value string) string {

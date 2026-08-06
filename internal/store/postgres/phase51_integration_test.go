@@ -109,6 +109,15 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
+	lateCheckpoint := checkpoint
+	lateCheckpoint.CommitSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	lateCheckpoint.TerminationReason = "claim authority lost: server reports queued"
+	if created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, job.ID, worker.ID, lateCheckpoint); checkpointErr != nil || !created {
+		t.Fatalf("late authority-loss checkpoint created=%v err=%v", created, checkpointErr)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.attempt_checkpointed"); countErr != nil || count != 2 {
+		t.Fatalf("attempt checkpoint events after authority loss=%d err=%v", count, countErr)
+	}
 	jobs, err := st.ListJobs(ctx, task.ID)
 	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {
 		t.Fatalf("released jobs=%+v err=%v", jobs, err)

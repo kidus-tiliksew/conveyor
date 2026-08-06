@@ -188,6 +188,17 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	late := checkpoint
+	late.CommitSHA = "4444444444444444444444444444444444444444"
+	late.TerminationReason = "claim authority lost: server reports queued"
+	if created, err = service.CheckpointAttempt(ctx, worker, first.ID, late); err != nil || !created {
+		t.Fatalf("late authority-loss checkpoint created=%v err=%v", created, err)
+	}
+	late.SessionID = "different-session"
+	late.CommitSHA = "5555555555555555555555555555555555555555"
+	if _, err = service.CheckpointAttempt(ctx, worker, first.ID, late); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("unattributable late checkpoint err=%v", err)
+	}
 	time.Sleep(time.Millisecond)
 	second, err := storetest.For(st).ClaimWorkOrder(ctx, first.ID, core.WorkOrderClaim{
 		SessionID: "session-second", ClientToken: "token-second", WorkerID: worker.ID,
@@ -222,8 +233,8 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 			}
 		}
 	}
-	if checkpoints != 2 {
-		t.Fatalf("checkpoint events=%d, want 2", checkpoints)
+	if checkpoints != 3 {
+		t.Fatalf("checkpoint events=%d, want 3", checkpoints)
 	}
 }
 

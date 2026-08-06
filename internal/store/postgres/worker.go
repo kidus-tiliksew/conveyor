@@ -331,11 +331,25 @@ func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderI
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	order, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return false, err
+	}
+	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
+	if !authorized {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.claimed'
+			AND payload_json->>'id'=$3 AND payload_json->>'stage'='implement'
+			AND payload_json->>'worker_id'=$4 AND payload_json->>'session_id'=$5
+			AND payload_json->>'attempt_id'=$6
+		)`, workspace(ctx), order.TaskID, order.ID, workerID, checkpoint.SessionID, checkpoint.AttemptID).Scan(&authorized); err != nil {
+			return false, err
+		}
+	}
+	if !authorized {
+		return false, store.ErrWorkOrderClaimLost
 	}
 	var exists bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (

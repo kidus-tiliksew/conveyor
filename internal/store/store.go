@@ -1188,7 +1188,19 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
-	if !ok || !order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC()) {
+	if !ok {
+		return false, ErrWorkOrderClaimLost
+	}
+	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
+	if !authorized {
+		for _, event := range m.events[order.TaskID] {
+			if AttemptCheckpointClaimEventMatches(event, order.ID, workerID, checkpoint) {
+				authorized = true
+				break
+			}
+		}
+	}
+	if !authorized {
 		return false, ErrWorkOrderClaimLost
 	}
 	for _, event := range m.events[order.TaskID] {
@@ -1202,6 +1214,21 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
 	})
 	return true, nil
+}
+
+// AttemptCheckpointClaimEventMatches authorizes late audit reconciliation
+// only from the immutable claim event for the exact worker, session, and
+// attempt that created the preservation commit. This lets an attempt record a
+// successful push after observing authority loss without restoring lifecycle
+// authority or admitting a different task attempt (spec §§21.48, 21.53).
+func AttemptCheckpointClaimEventMatches(event core.Event, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) bool {
+	if event.Kind != "work_order.claimed" {
+		return false
+	}
+	var claimed core.WorkOrder
+	return json.Unmarshal(event.Payload, &claimed) == nil && claimed.ID == workOrderID &&
+		claimed.Stage == core.StageImplement && claimed.WorkerID == workerID &&
+		claimed.SessionID == checkpoint.SessionID && claimed.AttemptID == checkpoint.AttemptID
 }
 
 func AttemptCheckpointPayload(order core.WorkOrder, checkpoint core.WorkOrderAttemptCheckpoint) json.RawMessage {
