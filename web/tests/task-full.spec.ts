@@ -1556,6 +1556,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             ]
           : undefined,
       created_at: createdAt,
+      context:
+        taskId === 'attached-context'
+          ? {
+              requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
+              designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
+            }
+          : undefined,
     },
     jobs: reviewActivity.jobs,
     events:
@@ -2753,6 +2760,21 @@ test('short full-screen task content does not create a nested vertical scrollbar
     scrollHeight: element.scrollHeight,
   }))
   expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight)
+})
+
+test('task detail links attached product and design context', async ({ page }) => {
+  await page.goto('/tasks/attached-context/full')
+  const context = page.getByRole('region', { name: 'Attached context' })
+  await expect(context.getByRole('link', { name: 'Confirmed product outcome' })).toHaveAttribute(
+    'href',
+    /requirements.*requirement=req-context/,
+  )
+  await expect(context.getByRole('link', { name: 'Confirmed technical guidance' })).toHaveAttribute(
+    'href',
+    /system-design.*document=design-context/,
+  )
+  await expect(context).toContainText('v3')
+  await expect(context).toContainText('v2')
 })
 
 test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {

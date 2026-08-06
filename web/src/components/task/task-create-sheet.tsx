@@ -2,7 +2,14 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
-import { createTask, fetchTasks, fetchWorkers, TaskIntakeError } from '../../lib/api'
+import {
+  createTask,
+  fetchRequirements,
+  fetchSystemDesigns,
+  fetchTasks,
+  fetchWorkers,
+  TaskIntakeError,
+} from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
 import { useOperatorToken, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
@@ -44,6 +51,16 @@ export function TaskCreateSheet() {
     queryFn: fetchTasks,
     enabled: advancedOpen && Boolean(workspace?.workspace),
   })
+  const requirements = useQuery({
+    queryKey: ['requirements', workspace?.workspace, 'task-intake'],
+    queryFn: fetchRequirements,
+    enabled: Boolean(token && workspace?.workspace),
+  })
+  const designs = useQuery({
+    queryKey: ['system-designs', workspace?.workspace, 'task-intake'],
+    queryFn: fetchSystemDesigns,
+    enabled: Boolean(token && workspace?.workspace),
+  })
 
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
@@ -53,6 +70,8 @@ export function TaskCreateSheet() {
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [dependsOn, setDependsOn] = useState<string[]>([])
+  const [requirementIds, setRequirementIds] = useState<string[]>([])
+  const [systemDesignIds, setSystemDesignIds] = useState<string[]>([])
   const [dependencySearch, setDependencySearch] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
@@ -77,6 +96,8 @@ export function TaskCreateSheet() {
           ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
           ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
           ...(dependsOn.length ? { depends_on: dependsOn } : {}),
+          ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
+          ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
         },
         files,
         intakeKey.current,
@@ -197,6 +218,29 @@ export function TaskCreateSheet() {
             </details>
           )}
         </Field>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <ContextPicker
+            label="Requirements this task serves"
+            hint="Optional — choose confirmed product outcomes this work should satisfy."
+            loading={requirements.isPending}
+            items={(requirements.data ?? [])
+              .filter((item) => item.current_version != null)
+              .map((item) => ({ id: item.requirement.id, title: item.requirement.title }))}
+            selected={requirementIds}
+            onChange={setRequirementIds}
+          />
+          <ContextPicker
+            label="Design guidance for this task"
+            hint="Optional — choose confirmed technical guidance that governs this work."
+            loading={designs.isPending}
+            items={(designs.data ?? [])
+              .filter((item) => item.current_version != null)
+              .map((item) => ({ id: item.document.id, title: item.document.title }))}
+            selected={systemDesignIds}
+            onChange={setSystemDesignIds}
+          />
+        </div>
 
         <details
           open={advancedOpen}
@@ -369,6 +413,49 @@ export function TaskCreateSheet() {
         </Button>
       </footer>
     </Sheet>
+  )
+}
+
+function ContextPicker({
+  label,
+  hint,
+  loading,
+  items,
+  selected,
+  onChange,
+}: {
+  label: string
+  hint: string
+  loading: boolean
+  items: Array<{ id: string; title: string }>
+  selected: string[]
+  onChange: (ids: string[]) => void
+}) {
+  return (
+    <Field label={label} hint={hint}>
+      <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+        {loading && <p className="px-1 text-xs text-faint">Loading…</p>}
+        {!loading && items.length === 0 && <p className="px-1 text-xs text-faint">No confirmed documents yet.</p>}
+        {items.map((item) => (
+          <label
+            key={item.id}
+            className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-xs hover:bg-surface"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(item.id)}
+              onChange={(event) =>
+                onChange(event.target.checked ? [...selected, item.id] : selected.filter((id) => id !== item.id))
+              }
+            />
+            <span className="min-w-0">
+              <span className="block truncate">{item.title}</span>
+              <span className="font-mono text-faint">{item.id}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </Field>
   )
 }
 

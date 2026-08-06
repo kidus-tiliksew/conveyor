@@ -63,6 +63,8 @@ type Store interface {
 	IsDurable() bool
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
+	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
+	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
@@ -3236,8 +3238,16 @@ func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
 }
 
 func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error {
+	return m.CreateTaskWithDependenciesAndContext(ctx, t, dependencyIDs, TaskContextInput{})
+}
+
+func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	attached, err := NormalizeTaskContextInput(attached)
+	if err != nil {
+		return err
+	}
 	if _, exists := m.tasks[t.ID]; exists {
 		return fmt.Errorf("task %s already exists", t.ID)
 	}
@@ -3264,6 +3274,10 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 			return fmt.Errorf("dependency task %s is not open", dependencyID)
 		}
 	}
+	designVersions, err := m.validateTaskContextLocked(t.Workspace, attached)
+	if err != nil {
+		return err
+	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
@@ -3282,7 +3296,86 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
 			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})
 	}
+	for _, id := range attached.RequirementIDs {
+		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: TaskContextRequirementAdded, At: t.CreatedAt,
+			Payload: core.JSONPayload(map[string]any{"id": id})})
+	}
+	for _, id := range attached.DesignIDs {
+		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: TaskContextDesignAdded, At: t.CreatedAt,
+			Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})})
+	}
 	return nil
+}
+
+func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (map[string]int, error) {
+	for _, id := range input.RequirementIDs {
+		document, ok := m.requirements[memoryScopedKey{workspace: workspace, id: id}]
+		if !ok {
+			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
+		}
+		if document.CurrentVersion <= 0 {
+			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
+		}
+	}
+	versions := map[string]int{}
+	for _, id := range input.DesignIDs {
+		document, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: id}]
+		if !ok {
+			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
+		}
+		if document.CurrentVersion <= 0 {
+			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
+		}
+		versions[id] = document.CurrentVersion
+	}
+	return versions, nil
+}
+
+func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error) {
+	add, err := NormalizeTaskContextInput(change.Add)
+	if err != nil {
+		return core.TaskContext{}, err
+	}
+	remove, err := NormalizeTaskContextInput(change.Remove)
+	if err != nil {
+		return core.TaskContext{}, err
+	}
+	m.mu.Lock()
+	task, ok := m.tasks[taskID]
+	if !ok || task.Workspace != workspaceOrDefault(ctx, "") {
+		m.mu.Unlock()
+		return core.TaskContext{}, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
+	}
+	if core.TaskTerminal(task.State) {
+		m.mu.Unlock()
+		return core.TaskContext{}, ErrTaskTerminal
+	}
+	versions, err := m.validateTaskContextLocked(task.Workspace, add)
+	if err != nil {
+		m.mu.Unlock()
+		return core.TaskContext{}, err
+	}
+	now := time.Now().UTC()
+	_, activeDesigns := ActiveTaskContextReferences(m.events[taskID])
+	for _, id := range add.RequirementIDs {
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
+	}
+	for _, id := range remove.RequirementIDs {
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
+	}
+	for _, id := range add.DesignIDs {
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})})
+		activeDesigns[id] = versions[id]
+	}
+	for _, id := range remove.DesignIDs {
+		version := activeDesigns[id]
+		if version == 0 {
+			version = versions[id]
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": version})})
+	}
+	m.mu.Unlock()
+	return TaskContextForTask(ctx, m, taskID)
 }
 
 func (m *memory) recordDependencyOutcomeLocked(ctx context.Context, dependencyID string, state core.TaskState, at time.Time) {
@@ -4070,7 +4163,11 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 			workspace = task.Workspace
 		}
 	}
-	for _, link := range lineageLinksForEvent(workspace, event) {
+	projection := projectLineageEvent(workspace, event)
+	for _, link := range projection.Suppresses {
+		delete(m.lineage, lineageLinkKey(link))
+	}
+	for _, link := range projection.Links {
 		key := lineageLinkKey(link)
 		if _, exists := m.lineage[key]; !exists {
 			m.lineage[key] = link
