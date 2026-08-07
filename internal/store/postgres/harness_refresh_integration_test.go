@@ -135,11 +135,12 @@ func TestClaimedReviewVerdictReDerivesRegressedTaskProjectionIntegration(t *test
 	defer st.Close()
 	workspace := "claim-verdict-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, MaxBounces: 2}); err != nil {
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, MaxBounces: 2, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", Level: core.L2, PolicyVersion: 1, MergeApproval: true, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +170,7 @@ func TestClaimedReviewVerdictReDerivesRegressedTaskProjectionIntegration(t *test
 
 	expiredTask := task
 	expiredTask.ID = core.NewTaskID()
+	expiredTask.Branch = "conveyor/task-" + expiredTask.ID
 	expiredTask.State = core.TaskRunning
 	if err = st.CreateTask(ctx, expiredTask); err != nil {
 		t.Fatal(err)
