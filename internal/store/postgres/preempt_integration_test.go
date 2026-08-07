@@ -26,7 +26,9 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
+	// PostgreSQL timestamps have microsecond precision, so normalize the
+	// fixture before asserting that preemption preserves its queue clocks.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Hold: true, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
