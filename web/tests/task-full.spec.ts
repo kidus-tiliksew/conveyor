@@ -1986,10 +1986,10 @@ test('task detail headers show the task name while routes and API lookup keep us
   const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
   await expect(fullHeader).toContainText('Short task')
   await expect(fullHeader).not.toContainText(fullTaskID)
-  await expect(page.getByRole('heading', { name: 'Lineage graph' })).toBeVisible()
-  await page.getByText('Trace planning to delivery evidence').click()
-  await expect(page.getByText('dispatches as', { exact: true })).toBeVisible()
-  await expect(page.getByText('implement work order for full-header-id')).toBeVisible()
+  // Relationships live in the explorer panel now, not in a card on the page
+  // (spec §21.61 change 2) — the detail surfaces carry the affordance only.
+  await expect(page.getByRole('button', { name: 'Related' })).toBeVisible()
+  await expect(page.getByText('Trace planning to delivery evidence')).toHaveCount(0)
   expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
 
   const sheetTaskID = 'sheet-header-id'

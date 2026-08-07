@@ -3,6 +3,8 @@ import type {
   ActivitySummary,
   BlueprintView,
   InterventionAction,
+  LineageGraph,
+  LineageNodeType,
   Task,
   TaskOperationsItem,
   TaskOperationsPage,
@@ -254,6 +256,13 @@ export async function streamPlanningMessage(
 }
 export function fetchLifecycleDiagram() {
   return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram'))
+}
+// The canonical bounded lineage walk (spec §16). It is the only source the
+// related-records panel reads (AC-3.2): the panel groups what this returns and
+// never derives a relationship of its own, so it inherits the server's
+// traversal budget and its truncation report unchanged.
+export function fetchLineage(type: LineageNodeType, id: string) {
+  return getJSON<LineageGraph>(workspaceURL(`/v1/lineage/${encodeURIComponent(type)}/${encodeURIComponent(id)}`))
 }
 export function fetchMonitorStatus() {
   return getJSON<MonitorStatus>(workspaceURL('/v1/monitor'))

@@ -119,6 +119,7 @@ export interface TaskEvent {
 
 export type LineageNodeType =
   | 'planning_session'
+  | 'planning_bundle'
   | 'requirement'
   | 'requirement_version'
   | 'reference_document'

@@ -10,7 +10,7 @@ import {
   DocumentTreeItem,
   DocumentTreeNote,
 } from '../components/documents/document-tree'
-import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
+import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -533,15 +533,20 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
 
   return (
     <div className="min-w-0">
-      <header className="mb-6">
-        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
-        <h2 className="mt-1.5 text-2xl font-semibold tracking-tight">{item.requirement.title}</h2>
-        {displayed && (
-          <p className="mt-1.5 text-xs text-muted">
-            Version {displayed.version} · {displayed.confirmed ? 'confirmed' : 'proposed'}{' '}
-            {formatDate(displayed.created_at)}
-          </p>
-        )}
+      <header className="mb-6 flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
+          <h2 className="mt-1.5 text-2xl font-semibold tracking-tight">{item.requirement.title}</h2>
+          {displayed && (
+            <p className="mt-1.5 text-xs text-muted">
+              Version {displayed.version} · {displayed.confirmed ? 'confirmed' : 'proposed'}{' '}
+              {formatDate(displayed.created_at)}
+            </p>
+          )}
+        </div>
+        {/* The document's corner affordance (REQ-3): what this intent reaches
+            in work, delivery, and evidence, on demand. */}
+        <LineageExplorer type="requirement" id={item.requirement.id} />
       </header>
 
       <AttentionSurface items={attention} />
@@ -766,7 +771,6 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
             </CardContent>
           </Card>
         </div>
-        {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} title="Intent to delivery" />}
       </div>
     </div>
   )

@@ -134,14 +134,22 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
               // The parent is an intent artifact, not work, so this reference
               // leaves the task routes for the blueprint's canonical home
               // (spec §21.49) — unlike dependencies below, which are tasks.
-              <Link
-                to="/blueprints/$taskId"
-                params={{ taskId: item.task.parent_task_id }}
-                className="text-primary hover:underline"
-              >
-                {parent?.title ?? item.task.parent_task_id}
-                {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
-              </Link>
+              <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <Link
+                  to="/blueprints/$taskId"
+                  params={{ taskId: item.task.parent_task_id }}
+                  className="text-primary hover:underline"
+                >
+                  {parent?.title ?? item.task.parent_task_id}
+                  {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
+                </Link>
+                {/* Blueprint history left the sidebar with the rest of the
+                    parked presentation (AC-4.1), so the records reach through
+                    the tasks that came from them instead. */}
+                <Link to="/blueprints" className="text-faint hover:text-primary hover:underline">
+                  Blueprint history
+                </Link>
+              </span>
             }
           />
         )}

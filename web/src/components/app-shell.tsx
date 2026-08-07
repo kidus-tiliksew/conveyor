@@ -4,10 +4,8 @@ import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-route
 import {
   Activity,
   FolderGit2,
-  History,
   Kanban,
   ListChecks,
-  MessageSquare,
   Plus,
   Settings,
   SunMoon,
@@ -225,11 +223,11 @@ function NavSidebar() {
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
-        {/* The §21.49 planning-side surface keeps its place; only the label
-            moved on, because §21.58 change 2 retires the blueprint noun for
-            new work while preserving the records as history. */}
-        <NavItem to="/blueprints" icon={History} label="Blueprint history" />
-        <NavItem to="/planning" icon={MessageSquare} label="Planning" />
+        {/* Exactly the operating surfaces §21.61 accepts, and no others
+            (REQ-4, AC-4.1). Planning and Blueprint history are parked, not
+            retired: their routes stay mounted for deep links, the §21.49
+            anchor redirect is untouched, and blueprint history reaches through
+            task detail — only these two entries left the sidebar. */}
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>

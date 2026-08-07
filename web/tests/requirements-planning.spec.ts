@@ -232,10 +232,10 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toBeVisible()
-  await page.getByText('Trace planning to delivery evidence').click()
-  await expect(page.getByText('serves', { exact: true })).toBeVisible()
-  await expect(page.getByText('Ship bounded retries', { exact: true }).last()).toBeVisible()
+  // The canvas offers the explorer rather than an inline graph card: one
+  // rendering of lineage, opened on demand (spec §21.61 change 2, REQ-3).
+  await expect(page.getByRole('button', { name: 'Related' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toHaveCount(0)
 
   await attention.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
@@ -1142,7 +1142,12 @@ test('planning restores the selected session independently in each workspace', a
   await page.goto('/planning')
   await expect(page.getByRole('button', { name: /Demo session/ })).toHaveAttribute('aria-current', 'true')
   await page.getByRole('button', { name: 'Switch to Beta' }).click()
-  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Planning' }).click()
+  // Planning left the sidebar while its presentation is parked (§21.61 change
+  // 3), so the route is reached directly — exactly as a deep link does. The
+  // reload re-runs the init script above, so the switched workspace is pinned
+  // for the new load rather than reset to the seeded one.
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'beta'))
+  await page.goto('/planning')
   await expect(page.getByRole('button', { name: /Beta session/ })).toHaveAttribute('aria-current', 'true')
   expect(await page.evaluate(() => localStorage.getItem('conveyor-planning-session:demo'))).toBe('session-demo')
   expect(await page.evaluate(() => localStorage.getItem('conveyor-planning-session:beta'))).toBe('session-beta')
