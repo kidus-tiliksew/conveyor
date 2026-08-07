@@ -22,7 +22,7 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	defer st.Close()
 	workspace := "preempt-" + core.NewTaskID()
 	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
-	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "operator", Timeout: time.Hour, Execution: config.ExecutionMCP}}}}
+	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "operator", Timeout: time.Hour, Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
