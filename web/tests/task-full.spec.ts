@@ -2198,6 +2198,56 @@ test('a claimed attempt disables the setup change control with the specific bloc
   await expect(page.getByLabel('Named execution setup')).toBeDisabled()
 })
 
+test('a claimed attempt exposes reasoned operator preemption with the renewal grace bound', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  let preemptBody = ''
+  let preemptKey = ''
+  await page.route('**/v1/work-orders/setup-claimed-implement-1/preempt*', async (route) => {
+    preemptBody = route.request().postData() ?? ''
+    preemptKey = route.request().headers()['x-idempotency-key'] ?? ''
+    await route.fulfill({
+      json: {
+        request_id: preemptKey,
+        work_order: { id: 'setup-claimed-implement-1', state: 'queued' },
+        revoked_attempt_id: 'attempt-1',
+        revoked_session_id: 'session-1',
+        revoked_worker_id: 'worker-1',
+        grace_bound: 'one renewal interval',
+      },
+    })
+  })
+  await page.goto('/tasks/setup-claimed/full')
+  await expect(page.getByText('Stop this claimed attempt')).toBeVisible()
+  await expect(page.getByText(/within one renewal interval/)).toBeVisible()
+  const action = page.getByRole('button', { name: 'Preempt attempt' })
+  await expect(action).toBeDisabled()
+  await page.getByLabel('Reason for preempting work order').fill('Switch to the repaired setup')
+  await expect(action).toBeEnabled()
+  await action.click()
+  await expect.poll(() => preemptBody).toContain('Switch to the repaired setup')
+  expect(JSON.parse(preemptBody).request_id).toBe(preemptKey)
+  expect(preemptKey).not.toBe('')
+  await expect(page.getByRole('button', { name: 'Preempted' })).toBeDisabled()
+})
+
+test('preemption is rendered as attributed activity rather than a failure', async ({ page }) => {
+  const item = activity('preempt-history', false)
+  item.events.push({
+    id: 999,
+    task_id: item.task.id,
+    job_id: 'preempt-history-implement-1',
+    kind: 'work_order.preempted',
+    actor_id: 'operator-kidus',
+    actor_role: 'human',
+    payload: { reason: 'Replace the setup contract', attempt_id: 'attempt-1', request_id: 'request-1' },
+    at: '2026-07-15T12:05:00Z',
+  })
+  await page.route('**/v1/tasks/preempt-history/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/preempt-history/full')
+  await expect(page.getByText('Work-order attempt preempted by operator')).toBeVisible()
+  await expect(page.getByText(/Replace the setup contract · stops within one renewal interval/)).toBeVisible()
+})
+
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
   await page.goto('/tasks/null-worker-status/full')
   await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
@@ -2925,10 +2975,11 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
   const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-  await expect(timelineRows).toHaveCount(3)
+  await expect(timelineRows).toHaveCount(4)
   await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
+  await expect(timelineRows.nth(3)).toContainText('Stop this claimed attempt')
 
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/tasks/diagnostics')

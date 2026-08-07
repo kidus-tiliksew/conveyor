@@ -11,7 +11,13 @@ export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
   return (item.work_orders ?? []).find((order) => order.state === 'claimed')
 }
 
-export function WorkOrderPreemptCard({ item, order = claimedWorkOrder(item) }: { item: ActivityItem; order?: WorkOrder }) {
+export function WorkOrderPreemptCard({
+  item,
+  order = claimedWorkOrder(item),
+}: {
+  item: ActivityItem
+  order?: WorkOrder
+}) {
   const token = useOperatorToken()
   const queryClient = useQueryClient()
   const [reason, setReason] = useState('')

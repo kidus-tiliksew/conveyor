@@ -521,6 +521,9 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if envelope.Result.Tools[i].Name != name {
 			t.Fatalf("tool[%d] = %q, want %q", i, envelope.Result.Tools[i].Name, name)
 		}
+		if strings.Contains(name, "preempt") {
+			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
+		}
 	}
 }
 

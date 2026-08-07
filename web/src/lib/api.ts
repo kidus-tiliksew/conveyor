@@ -645,7 +645,7 @@ export async function recoverWorkOrder(workOrderId: string, token: string, reque
 export async function preemptWorkOrder(workOrderId: string, token: string, reason: string, requestId: string) {
   const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/preempt`), {
     method: 'POST',
-    headers: mutationHeaders(token),
+    headers: { ...mutationHeaders(token), 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ reason, request_id: requestId }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)

@@ -108,7 +108,7 @@ export function Timeline({
             dot: 'bg-attention-dot',
             card: <WorkerStatusCard item={item} />,
           },
-          claimedWorkOrder(item) && {
+          Boolean(claimedWorkOrder(item)) && {
             key: 'work-order-preempt',
             dot: 'bg-attention-dot',
             card: <WorkOrderPreemptCard item={item} />,
