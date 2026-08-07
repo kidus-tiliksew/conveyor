@@ -243,7 +243,9 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
   })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/workspace?**', (route) =>
-    route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] } }),
+    route.fulfill({
+      json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
+    }),
   )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [] }))
@@ -253,7 +255,9 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/workspace?**', (route) =>
-    route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] } }),
+    route.fulfill({
+      json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
+    }),
   )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/task-operations?**', (route) =>
