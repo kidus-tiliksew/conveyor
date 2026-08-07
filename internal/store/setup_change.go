@@ -130,7 +130,7 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 	if !ok || task.Workspace != workspace {
 		return SetupChangeResult{}, fmt.Errorf("task %s not found", request.TaskID)
 	}
-	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if core.TaskTerminal(task.State) {
 		return SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", ErrSetupChangeConflict, request.TaskID)
 	}
 	now := time.Now().UTC()

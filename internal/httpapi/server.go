@@ -381,7 +381,7 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if core.TaskTerminal(task.State) {
 		http.Error(w, store.ErrTaskTerminal.Error(), http.StatusConflict)
 		return
 	}
@@ -1278,13 +1278,13 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	// Worker status is advisory serviceability (§21.31); held tasks are the
 	// operator's to claim, so no worker availability is reported for them.
-	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && task.State != core.TaskMerged && task.State != core.TaskClosed {
+	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && !core.TaskTerminal(task.State) {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
 			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 		}
 	}
 	stalled := store.StalledTask(workOrders)
-	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if core.TaskTerminal(task.State) {
 		stalled = nil
 	}
 	writeJSON(w, http.StatusOK, reviewItem{

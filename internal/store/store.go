@@ -4353,7 +4353,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	if !ok {
 		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
 	}
-	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if core.TaskTerminal(task.State) {
 		return core.Task{}, ErrTaskTerminal
 	}
 	if strings.TrimSpace(intervention.ReasonCode) == "" || intervention.Action != core.InterventionCancel {

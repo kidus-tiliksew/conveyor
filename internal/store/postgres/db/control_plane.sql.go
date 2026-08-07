@@ -1078,7 +1078,7 @@ SELECT count(*)::bigint
 FROM tasks t
 WHERE t.workspace_id = $1
   AND ($2::text = '' OR t.state = $2)
-  AND ($3::text = '' OR t.repo = $3)
+  AND ($3::text = '' OR t.repo_name = $3)
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1202,7 +1202,7 @@ SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_le
 FROM tasks t
 WHERE t.workspace_id = $1
   AND ($2::text = '' OR t.state = $2)
-  AND ($3::text = '' OR t.repo = $3)
+  AND ($3::text = '' OR t.repo_name = $3)
 ORDER BY t.created_at, t.id
 LIMIT NULLIF($5::int, 0)
 OFFSET $4::int

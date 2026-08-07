@@ -2057,6 +2057,31 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid filter status=%d body=%s", bad.Code, bad.Body.String())
 	}
+
+	// Pagination is additive: a caller that does not opt in still receives the
+	// whole workspace as a bare array, with no pagination metadata attached.
+	compat := httptest.NewRecorder()
+	server.Handler().ServeHTTP(compat, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	if compat.Code != http.StatusOK {
+		t.Fatalf("compatibility status=%d body=%s", compat.Code, compat.Body.String())
+	}
+	if compat.Header().Get("X-Conveyor-Total") != "" || compat.Header().Get("X-Conveyor-Limit") != "" || compat.Header().Get("X-Conveyor-Offset") != "" {
+		t.Fatalf("unpaginated response carried pagination headers: %+v", compat.Header())
+	}
+	var all taskOperationsResponse
+	if err := json.Unmarshal(compat.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].Task.ID != "first" || all[2].Task.ID != "third" {
+		t.Fatalf("unpaginated rows = %+v", all)
+	}
+
+	// offset without limit is a caller error rather than a silent full read.
+	orphan := httptest.NewRecorder()
+	server.Handler().ServeHTTP(orphan, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo&offset=1", nil))
+	if orphan.Code != http.StatusBadRequest {
+		t.Fatalf("offset without limit status=%d body=%s", orphan.Code, orphan.Body.String())
+	}
 }
 
 // AC-1.1 and AC-1.2: the projection is one flat, filterable list carrying the

@@ -2630,7 +2630,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if err != nil {
 		return core.Task{}, notFound(err, "task %s", intervention.TaskID)
 	}
-	if core.TaskState(priorState) == core.TaskMerged || core.TaskState(priorState) == core.TaskClosed {
+	if core.TaskTerminal(core.TaskState(priorState)) {
 		return core.Task{}, store.ErrTaskTerminal
 	}
 	taskState, transitionErr := core.TransitionTask(core.TaskState(priorState), core.TaskCancel)

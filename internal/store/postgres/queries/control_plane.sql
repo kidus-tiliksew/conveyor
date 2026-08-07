@@ -73,7 +73,7 @@ SELECT sqlc.embed(t),
 FROM tasks t
 WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
-  AND (sqlc.arg(repository)::text = '' OR t.repo = sqlc.arg(repository))
+  AND (sqlc.arg(repository)::text = '' OR t.repo_name = sqlc.arg(repository))
 ORDER BY t.created_at, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -83,7 +83,7 @@ SELECT count(*)::bigint
 FROM tasks t
 WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
-  AND (sqlc.arg(repository)::text = '' OR t.repo = sqlc.arg(repository));
+  AND (sqlc.arg(repository)::text = '' OR t.repo_name = sqlc.arg(repository));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

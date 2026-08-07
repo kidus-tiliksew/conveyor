@@ -85,7 +85,10 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: "ops-running-2", Content: "## Approach\n\n## Done criteria\n"}); err != nil {
+	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{
+		TaskID: "ops-running-2", Content: "## Approach\n\n## Done criteria\n",
+		Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{}),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.AppendEvent(ctx, core.Event{TaskID: "ops-running-2", Kind: store.TaskContextRequirementAdded,
