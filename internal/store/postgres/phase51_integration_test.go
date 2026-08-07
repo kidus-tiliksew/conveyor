@@ -240,6 +240,24 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || len(expiredJobs) != 1 || expiredJobs[0].State != core.JobPending || !expiredJobs[0].StartedAt.IsZero() {
 		t.Fatalf("expired jobs=%+v err=%v", expiredJobs, err)
 	}
+	if events, eventErr := st.ListEvents(ctx, expiredTask.ID); eventErr != nil {
+		t.Fatal(eventErr)
+	} else {
+		found := false
+		for _, event := range events {
+			if event.Kind == "work_order.expired" && event.JobID == expiredJob.ID {
+				var payload struct {
+					Cause string `json:"release_cause"`
+				}
+				if json.Unmarshal(event.Payload, &payload) == nil && payload.Cause == core.WorkOrderReleaseCauseLeaseLoss {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expiry event did not preserve lease-loss cause: %+v", events)
+		}
+	}
 
 	submittedTask := task
 	submittedTask.ID = core.NewTaskID()
