@@ -81,7 +81,7 @@ type Store interface {
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
-	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error
+	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
 	// head most recently submitted for review, so the next refresh round
 	// contracts the pushed fix rather than the head recorded when the
@@ -1229,7 +1229,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			kind = "work_order.stalled"
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
 }
 
@@ -2690,7 +2690,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 			job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
 			m.jobs[job.TaskID][index] = job
 		}
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": order.LastAttemptOutcome, "retry_suppressed": true}), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": order.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": true}), At: now})
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
@@ -3963,21 +3963,24 @@ func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error
 	return nil
 }
 
-func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error {
+func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s not found", id)
+		return false, fmt.Errorf("task %s not found", id)
 	}
 	if approvedHeadSHA == "" || newHeadSHA == "" || approvedHeadSHA == newHeadSHA {
-		return fmt.Errorf("distinct approved and new head SHAs are required")
+		return false, fmt.Errorf("distinct approved and new head SHAs are required")
+	}
+	if task.ApprovalStale && task.RefreshBaselineSHA == approvedHeadSHA && task.RefreshHeadSHA == newHeadSHA {
+		return false, nil
 	}
 	task.ApprovedHeadSHA, task.ApprovalStale = approvedHeadSHA, true
 	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = approvedHeadSHA, newHeadSHA, scope
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
-	return nil
+	return true, nil
 }
 
 func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {

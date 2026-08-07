@@ -74,11 +74,23 @@ func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
 	if err = restarted.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "new-head", config.RefreshReviewDelta, "head-changed"); err != nil {
+	if created, staleErr := restarted.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "new-head", config.RefreshReviewDelta, "head-changed"); staleErr != nil || !created {
+		t.Fatalf("first stale episode created=%v err=%v", created, staleErr)
+	}
+	if created, staleErr := restarted.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "new-head", config.RefreshReviewDelta, "head-changed"); staleErr != nil || created {
+		t.Fatalf("duplicate stale episode created=%v err=%v", created, staleErr)
+	}
+	if count, countErr := restarted.CountEvents(ctx, task.ID, "approval.stale"); countErr != nil || count != 1 {
+		t.Fatalf("approval.stale events=%d err=%v", count, countErr)
+	}
+	if _, err = restarted.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "newer-head", config.RefreshReviewDelta, "head-changed"); err != nil {
 		t.Fatal(err)
 	}
-	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || !persisted.ApprovalStale || persisted.RefreshBaselineSHA != "approved-head" || persisted.RefreshHeadSHA != "new-head" || persisted.RefreshReviewScope != config.RefreshReviewDelta {
+	if persisted, getErr := restarted.GetTask(ctx, task.ID); getErr != nil || !persisted.ApprovalStale || persisted.RefreshBaselineSHA != "approved-head" || persisted.RefreshHeadSHA != "newer-head" || persisted.RefreshReviewScope != config.RefreshReviewDelta {
 		t.Fatalf("stale approval=%+v err=%v", persisted, getErr)
+	}
+	if count, countErr := restarted.CountEvents(ctx, task.ID, "approval.stale"); countErr != nil || count != 2 {
+		t.Fatalf("new head did not create a new stale episode: events=%d err=%v", count, countErr)
 	}
 	if err = restarted.AdvanceTaskRefreshHead(ctx, task.ID, "fix-head"); err != nil {
 		t.Fatal(err)

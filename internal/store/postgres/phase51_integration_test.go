@@ -2,8 +2,8 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
@@ -105,9 +106,27 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.attempt_checkpointed"); countErr != nil || count != 1 {
 		t.Fatalf("attempt checkpoint events=%d err=%v", count, countErr)
 	}
-	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Outcome: core.WorkOrderOutcomeCancelled})
+	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeCancelled})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {
 		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	if events, eventErr := st.ListEvents(ctx, task.ID); eventErr != nil {
+		t.Fatal(eventErr)
+	} else {
+		found := false
+		for _, event := range events {
+			if event.Kind == "work_order.released" && event.JobID == job.ID {
+				var payload struct {
+					Cause string `json:"release_cause"`
+				}
+				if json.Unmarshal(event.Payload, &payload) == nil && payload.Cause == core.WorkOrderReleaseCauseOperatorAction {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("release event did not preserve structured cause: %+v", events)
+		}
 	}
 	lateCheckpoint := checkpoint
 	lateCheckpoint.CommitSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -220,6 +239,24 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	expiredJobs, err := st.ListJobs(ctx, expiredTask.ID)
 	if err != nil || len(expiredJobs) != 1 || expiredJobs[0].State != core.JobPending || !expiredJobs[0].StartedAt.IsZero() {
 		t.Fatalf("expired jobs=%+v err=%v", expiredJobs, err)
+	}
+	if events, eventErr := st.ListEvents(ctx, expiredTask.ID); eventErr != nil {
+		t.Fatal(eventErr)
+	} else {
+		found := false
+		for _, event := range events {
+			if event.Kind == "work_order.expired" && event.JobID == expiredJob.ID {
+				var payload struct {
+					Cause string `json:"release_cause"`
+				}
+				if json.Unmarshal(event.Payload, &payload) == nil && payload.Cause == core.WorkOrderReleaseCauseLeaseLoss {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expiry event did not preserve lease-loss cause: %+v", events)
+		}
 	}
 
 	submittedTask := task

@@ -901,6 +901,13 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}
 	release.Reason = strings.TrimSpace(release.Reason)
+	release.Cause = strings.TrimSpace(release.Cause)
+	if release.Cause == "" {
+		release.Cause = core.WorkOrderReleaseCauseSessionExit
+	}
+	if !core.ValidWorkOrderReleaseCause(release.Cause) {
+		return core.WorkOrder{}, fmt.Errorf("invalid work-order release cause %q", release.Cause)
+	}
 	release.FailureDetail = boundedFailureDetail(release.FailureDetail)
 	release.ModelRejection = providerModelRejection(release.FailureDetail)
 	if release.Outcome == "" {

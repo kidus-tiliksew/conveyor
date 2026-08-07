@@ -1423,13 +1423,17 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	// re-marked: every re-mark re-runs the recover transition, demoting a task
 	// whose refresh round may hold a claimed, deliberating seat — observed
 	// live as a once-per-poll demotion loop that no completed verdict could
-	// survive. A changed pair or an escalated scope (conflict forcing delta
-	// over none) re-engages normally.
+	// survive. The store repeats this guard atomically for concurrent observers;
+	// only a changed head pair or a rebound approval starts a new episode.
 	if task.ApprovalStale && task.RefreshBaselineSHA == baseline && task.RefreshHeadSHA == newHead && task.RefreshReviewScope == scope {
 		return nil
 	}
-	if err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason); err != nil {
+	created, err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason)
+	if err != nil {
 		return err
+	}
+	if !created {
+		return nil
 	}
 	if scope == config.RefreshReviewNone && !conflict {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")

@@ -2021,7 +2021,7 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "conflict-fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
+	if _, err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "conflict-fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
 		t.Fatal(err)
 	}
 	job := core.Job{ID: "stale-refresh-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
