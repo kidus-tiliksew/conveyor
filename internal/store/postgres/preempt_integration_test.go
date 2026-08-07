@@ -92,3 +92,50 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 		t.Fatalf("held task=%+v err=%v", persistedTask, err)
 	}
 }
+
+func TestWorkOrderPreemptionExpiresDeadClaimBeforeEligibility(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "preempt-expired-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
+	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "operator", Timeout: time.Hour, Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	service := &workorder.Service{Store: st}
+	if _, err = service.Preempt(ctx, job.ID, "worker is gone", "expired-preempt-request"); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
+		t.Fatalf("expired preempt err=%v", err)
+	}
+	expired, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || expired.State != core.WorkOrderQueued || expired.LastAttemptOutcome != core.WorkOrderOutcomeExpired || expired.LastAttemptID != claimed.AttemptID || !expired.RetrySuppressed {
+		t.Fatalf("expired order=%+v err=%v", expired, err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.preempted"); countErr != nil || count != 0 {
+		t.Fatalf("preempt events=%d err=%v", count, countErr)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.expired"); countErr != nil || count != 1 {
+		t.Fatalf("expiry events=%d err=%v", count, countErr)
+	}
+}

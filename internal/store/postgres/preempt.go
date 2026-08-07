@@ -55,13 +55,31 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if !lease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdPreempt)) {
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("work-order preempt requires a valid taskops lease")
 	}
+	now := time.Now().UTC()
+	if current.State == core.WorkOrderClaimed && !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
+		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {
+			return store.WorkOrderPreemptResult{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return store.WorkOrderPreemptResult{}, err
+		}
+		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, current.ID)
+	}
+	if current.State == core.WorkOrderClaimed && !current.LeaseExpiresAt.After(now) {
+		if _, err = s.expireWorkOrderClaimTx(ctx, tx, current, now); err != nil {
+			return store.WorkOrderPreemptResult{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return store.WorkOrderPreemptResult{}, err
+		}
+		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, current.ID)
+	}
 	if current.State != core.WorkOrderClaimed || current.SessionID == "" || current.AttemptID == "" {
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, current.ID)
 	}
 	if _, transitionErr := core.TransitionWorkOrder(current.State, core.WorkOrderCmdPreempt); transitionErr != nil {
 		return store.WorkOrderPreemptResult{}, transitionErr
 	}
-	now := time.Now().UTC()
 	result := store.WorkOrderPreemptResult{
 		RequestID: request.RequestID, RevokedAttemptID: current.AttemptID,
 		RevokedSessionID: current.SessionID, RevokedWorkerID: current.WorkerID,
