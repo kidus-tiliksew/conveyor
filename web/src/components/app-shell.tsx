@@ -45,12 +45,17 @@ export function useTokenState() {
   return useContext(TokenContext)
 }
 
-export function useActivity() {
+// The Board passes the shared filter family so the server returns what it will
+// show (AC-2.4). Callers that speak for the whole workspace — the attention
+// badge below, the sheet's prev/next order — pass nothing and keep reading the
+// unfiltered feed: an operator narrowing the board must not also narrow what is
+// waiting on them.
+export function useActivity(filter?: Record<string, string | undefined>, enabled = true) {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
-    queryKey: ['activity', workspace],
-    queryFn: fetchActivity,
-    enabled: !!workspace,
+    queryKey: ['activity', workspace, filter ?? null],
+    queryFn: () => fetchActivity(filter),
+    enabled: enabled && !!workspace,
     refetchInterval: 15_000,
   })
 }
@@ -268,11 +273,13 @@ function NavItem({
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   // The board stays highlighted while any of its overlays (task sheet, full
-  // page, task intake, workspace modal) is open. A trailing slash keeps the
-  // Tasks list itself out of that set — it is its own surface.
+  // page, workspace modal) is open. A trailing slash keeps the Tasks list
+  // itself out of that set — it is its own surface, and the sheets it now hosts
+  // (intake, the detail panel) are search params on `/tasks`, so they stay
+  // highlighted as the Tasks view they open over (AC-2.1, AC-2.2).
   const active =
     to === '/'
-      ? pathname === '/' || pathname.startsWith('/tasks/') || pathname === '/new' || pathname === '/workspaces/new'
+      ? pathname === '/' || pathname.startsWith('/tasks/') || pathname === '/workspaces/new'
       : exact
         ? pathname === to
         : pathname === to || pathname.startsWith(`${to}/`)

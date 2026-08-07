@@ -1,15 +1,21 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { Plus, Search } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { groupForSummary } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { stageGroups, type GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
+import {
+  boardDefaultTaskFilter,
+  TaskFilters,
+  taskFilterParams,
+  taskFilterRangeError,
+  useTaskFilters,
+} from '../task/task-filters'
 import { Button } from '../ui/button'
-import { Input } from '../ui/input'
 import { Skeleton } from '../ui/skeleton'
 import { BoardColumn } from './board-column'
 
@@ -17,14 +23,19 @@ import { BoardColumn } from './board-column'
 // stages is the factory's health made visible. Read-only on purpose — tasks
 // move between columns via the pipeline, never by hand.
 export function Board() {
-  const { data, isLoading, error } = useActivity()
+  // The board opens on the last month of activity and remembers whatever the
+  // operator changes it to, per workspace (AC-2.4).
+  const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
+  const params = taskFilterParams(filter)
+  // A range no task can satisfy is a half-typed date; the filter says so in
+  // place rather than emptying the board behind a request the server refuses.
+  const rangeError = taskFilterRangeError(filter)
+  const { data, isLoading, error } = useActivity(params, !rangeError)
   const { workspace } = useWorkspaceSelection()
-  const [query, setQuery] = useState('')
   // Highlight the card whose sheet is open (child route /tasks/$taskId).
   const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
 
   const grouped = useMemo(() => {
-    const needle = query.trim().toLowerCase()
     const byGroup = new Map<GroupKey, ActivitySummary[]>()
     for (const item of data ?? []) {
       // The board represents claimable, executable work. A blueprint anchor
@@ -33,14 +44,6 @@ export function Board() {
       // anchors; applying the same predicate here keeps the column counts
       // honest for any caller that hands the board a wider list.
       if (isBlueprintAnchor(item.task)) continue
-      if (
-        needle &&
-        !item.task.title.toLowerCase().includes(needle) &&
-        !item.task.id.includes(needle) &&
-        !item.task.source.toLowerCase().includes(needle)
-      ) {
-        continue
-      }
       const key = groupForSummary(item)
       byGroup.set(key, [...(byGroup.get(key) ?? []), item])
     }
@@ -52,33 +55,18 @@ export function Board() {
       )
     }
     return byGroup
-  }, [data, query])
+  }, [data])
 
   if (!workspace) return <Onboarding />
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border px-6 py-3.5">
+      {/* Task intake left this header for the Tasks view, which is where
+          operators manage delivery (AC-2.1). The board is the pipeline lens
+          over work that already exists. */}
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <div className="flex items-center gap-2">
-          <label className="relative" htmlFor="board-task-search">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
-            <Input
-              id="board-task-search"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search tasks"
-              className="h-8 w-56 pl-8 text-xs"
-            />
-          </label>
-          <Link to="/new">
-            <Button size="sm" tabIndex={-1}>
-              <Plus />
-              New task
-            </Button>
-          </Link>
-        </div>
+        <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
       </header>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">

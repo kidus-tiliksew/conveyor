@@ -2348,6 +2348,124 @@ func TestTaskOperationsExposesNoBarredFields(t *testing.T) {
 	}
 }
 
+// The shared Tasks/Board filter family reaches the store as query parameters on
+// the same authenticated route (AC-2.4). What each member means is asserted
+// once against both stores in storetest; what this covers is the edge: that the
+// route reads every member, that both surfaces read it from the same parser, and
+// that unusable input is refused rather than dropped — a silently ignored filter
+// renders a workspace holding the wrong rows.
+func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	get := func(t *testing.T, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		server := NewServer(st)
+		server.Workspace = "demo"
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		return response
+	}
+	for index, seed := range []struct {
+		id     string
+		title  string
+		repo   string
+		branch string
+		state  core.TaskState
+		serves string
+	}{
+		{"ledger-sweep", "Ledger sweep", "conveyor", "conveyor/task-ledger-sweep", core.TaskQueued, "req-ledger"},
+		{"rollout", "Rollout", "web", "web/hotfix-rollout", core.TaskRunning, ""},
+	} {
+		task := core.Task{
+			ID: seed.id, Workspace: "demo", Title: seed.title, Repo: seed.repo, Source: "operator",
+			Branch: seed.branch, State: seed.state,
+			CreatedAt: time.Date(2026, 8, 1, 10, index, 0, 0, time.UTC),
+		}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if seed.serves == "" {
+			continue
+		}
+		if err := st.AppendEvent(ctx, core.Event{
+			TaskID: seed.id, Kind: store.TaskContextRequirementAdded,
+			At:      time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC),
+			Payload: core.JSONPayload(map[string]any{"id": seed.serves, "version": 1}),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Each member narrows to exactly the seeded row that carries it. The
+	// updated-at bounds straddle the ledger task's last activity, which is the
+	// attachment event above rather than its creation.
+	for _, applied := range []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"free text", "q=LEDGER", "ledger-sweep"},
+		{"free text on the assigned branch", "q=hotfix", "rollout"},
+		{"served requirement", "serves_requirement=req-ledger", "ledger-sweep"},
+		{"updated from", "updated_from=2026-08-02T00:00:00Z", "ledger-sweep"},
+		{"updated to", "updated_to=2026-08-02T00:00:00Z", "rollout"},
+		{"state and repository", "state=running&repository=web", "rollout"},
+	} {
+		t.Run(applied.name, func(t *testing.T) {
+			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
+				response := get(t, surface+"?workspace_id=demo&"+applied.query)
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s status=%d body=%s", surface, response.Code, response.Body.String())
+				}
+				var rows []struct {
+					Task struct {
+						ID string `json:"id"`
+					} `json:"task"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+					t.Fatalf("%s decode %s: %v", surface, response.Body.String(), err)
+				}
+				if len(rows) != 1 || rows[0].Task.ID != applied.want {
+					t.Fatalf("%s rows = %s, want only %q", surface, response.Body.String(), applied.want)
+				}
+			}
+		})
+	}
+
+	// A governing-design filter no task carries is an empty result, not the
+	// unfiltered workspace: an unread parameter would look like the latter.
+	empty := get(t, "/v1/task-operations?workspace_id=demo&governing_design=design-nobody-attached")
+	if empty.Code != http.StatusOK || strings.Contains(empty.Body.String(), `"id":"rollout"`) {
+		t.Fatalf("unattached design filter status=%d body=%s", empty.Code, empty.Body.String())
+	}
+
+	for _, rejected := range []struct {
+		name  string
+		query string
+	}{
+		{"unparseable instant", "updated_from=last-tuesday"},
+		{"non-RFC-3339 date", "updated_to=2026-08-02"},
+		{"inverted range", "updated_from=2026-08-09T00:00:00Z&updated_to=2026-08-02T00:00:00Z"},
+	} {
+		t.Run("rejects "+rejected.name, func(t *testing.T) {
+			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
+				response := get(t, surface+"?workspace_id=demo&"+rejected.query)
+				if response.Code != http.StatusBadRequest {
+					t.Fatalf("%s status=%d body=%s", surface, response.Code, response.Body.String())
+				}
+			}
+		})
+	}
+
+	// The review inbox is the whole outstanding queue by construction: an
+	// operator narrowing a board must not also narrow what is waiting on them.
+	reviews := get(t, "/v1/reviews?workspace_id=demo&q=nothing-matches-this")
+	if reviews.Code != http.StatusOK {
+		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+}
+
 // Staleness renders from the task-level surface (spec §21.58 change 7), so the
 // row carries the derived §21.34 reason a task cannot move — "needs operator"
 // alone does not say why. It travels as the list-scoped summary, never the work

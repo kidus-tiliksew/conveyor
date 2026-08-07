@@ -242,7 +242,9 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   await expect(page.getByText('Already merged')).toHaveCount(0)
   await page.getByText('Finish persistence first').click()
   await page.getByText('Publish API contract').click()
-  await page.getByLabel('Repository').selectOption('api')
+  // Exact, because intake now opens over the Tasks list and that surface has a
+  // repository filter of its own behind the sheet.
+  await page.getByLabel('Repository', { exact: true }).selectOption('api')
   await expect(page.getByRole('button', { name: 'Remove dependency Finish persistence first' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Remove dependency Publish API contract' })).toBeVisible()
   await page.getByRole('button', { name: 'Remove dependency Finish persistence first' }).click()
