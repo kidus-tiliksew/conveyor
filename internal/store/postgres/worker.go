@@ -178,6 +178,16 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
+		var preempted bool
+		if preemptErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM work_order_preemptions
+			WHERE workspace_id=$1 AND work_order_id=$2 AND revoked_worker_id=$3 AND revoked_session_id=$4
+		)`, workspace(ctx), workOrderID, workerID, sessionID).Scan(&preempted); preemptErr != nil {
+			return core.WorkOrder{}, preemptErr
+		}
+		if preempted {
+			return core.WorkOrder{}, store.ErrWorkOrderPreempted
+		}
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {

@@ -86,6 +86,7 @@ const attemptEventKinds = new Set([
   'work_order.child_failed',
   'work_order.stalled',
   'work_order.released',
+  'work_order.preempted',
   'work_order.expired',
   'work_order.timed_out',
   'work_order.recovered',
@@ -745,6 +746,11 @@ function noteFor(
         title: 'Work-order claim released',
         detail: typeof payload.reason === 'string' ? payload.reason : undefined,
         alarm: payload.reason === 'harness exited without terminal verdict submission',
+      }
+    case 'work_order.preempted':
+      return {
+        title: 'Work-order attempt preempted by operator',
+        detail: typeof payload.reason === 'string' ? `${payload.reason} · stops within one renewal interval` : undefined,
       }
     case 'merge.requested':
       return {

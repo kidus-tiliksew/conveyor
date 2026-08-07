@@ -37,6 +37,7 @@ import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-
 import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
 import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
 import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
+import { WorkOrderPreemptCard, claimedWorkOrder } from './work-order-preempt-card'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -106,6 +107,11 @@ export function Timeline({
             key: 'worker-alert',
             dot: 'bg-attention-dot',
             card: <WorkerStatusCard item={item} />,
+          },
+          claimedWorkOrder(item) && {
+            key: 'work-order-preempt',
+            dot: 'bg-attention-dot',
+            card: <WorkOrderPreemptCard item={item} />,
           },
           hasInterruptedReviewRecovery(item) && {
             key: 'interrupted-review',

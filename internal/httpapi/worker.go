@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
@@ -217,6 +219,9 @@ func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	order, err := s.Workers.Renew(r.Context(), worker, chi.URLParam(r, "id"), request.SessionID)
 	if err != nil {
+		if errors.Is(err, store.ErrWorkOrderPreempted) {
+			w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

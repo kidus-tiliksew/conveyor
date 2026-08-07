@@ -89,6 +89,7 @@ const (
 	WorkOrderCmdMarkStale           WorkOrderCommand = "order.stale"
 	WorkOrderCmdRecover             WorkOrderCommand = "order.recover"
 	WorkOrderCmdRedispatch          WorkOrderCommand = "order.redispatch"
+	WorkOrderCmdPreempt             WorkOrderCommand = "claim.preempt"
 	WorkOrderCmdCancel              WorkOrderCommand = "order.cancel"
 )
 
@@ -106,7 +107,7 @@ var taskLifecycleTable = lifecycleTable{
 var workOrderLifecycleTable = lifecycleTable{
 	"":                         {string(WorkOrderCmdCreate): string(WorkOrderQueued)},
 	string(WorkOrderQueued):    {string(WorkOrderCmdClaim): string(WorkOrderClaimed), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
-	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdPreempt): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderSubmitted): {string(WorkOrderCmdReviewTerminal): string(WorkOrderCompleted), string(WorkOrderCmdReviewRevise): string(WorkOrderClaimed), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderTimedOut):  {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	// W14 is intentionally narrower than W13: its handler additionally guards

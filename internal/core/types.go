@@ -657,6 +657,7 @@ const (
 	WorkOrderOutcomeReleased                        = "released"
 	WorkOrderOutcomeCancelled                       = "cancelled"
 	WorkOrderOutcomeExpired                         = "expired"
+	WorkOrderOutcomePreempted                       = "preempted"
 	WorkOrderReleaseReasonOperatorCheckpointReached = "operator checkpoint reached"
 	IdenticalFailureSuppressionReason               = "identical failure output on consecutive attempts"
 	WorkOrderFailureProviderUsageLimit              = "provider_usage_limit"

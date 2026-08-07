@@ -20,6 +20,7 @@ type workerHTTPError struct {
 	StatusCode int
 	Status     string
 	Message    string
+	Code       string
 }
 
 func (e *workerHTTPError) Error() string {
@@ -214,7 +215,7 @@ func (c *client) workerDoContext(ctx context.Context, method, path string, body 
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(resp.Body)
-		return &workerHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Message: string(bytes.TrimSpace(message))}
+		return &workerHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Message: string(bytes.TrimSpace(message)), Code: resp.Header.Get("X-Conveyor-Error-Code")}
 	}
 	if resp.StatusCode == http.StatusNoContent || out == nil {
 		return nil
