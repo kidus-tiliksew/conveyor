@@ -3254,3 +3254,47 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 		})
 	}
 }
+
+// Regression for the live once-per-poll demotion loop (task 260807-0e2bc1,
+// 44 identical approval.stale events): a refresh already engaged for the
+// same head pair and scope must be a no-op on re-observation — re-marking
+// re-ran the recover transition every minute, demoting a task whose claimed
+// refresh seat was mid-deliberation, so no completed verdict could land.
+func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewDelta)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	current, _ := st.GetTask(ctx, task.ID)
+	if err := d.beginRefreshLocked(ctx, current, "new-head", "approval-stale", false); err != nil {
+		t.Fatal(err)
+	}
+	staleCount := func() int {
+		n, _ := st.CountEvents(ctx, task.ID, "approval.stale")
+		return n
+	}
+	if staleCount() != 1 {
+		t.Fatalf("first engagement should emit exactly one approval.stale, got %d", staleCount())
+	}
+	// Re-observation of the identical pair: silent no-op — no event, no
+	// transition, no additional round.
+	for i := 0; i < 3; i++ {
+		current, _ = st.GetTask(ctx, task.ID)
+		if err := d.beginRefreshLocked(ctx, current, "new-head", "approval-stale", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ = st.GetTask(ctx, task.ID)
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if staleCount() != 1 || len(orders) != 1 {
+		t.Fatalf("unchanged pair re-marked: stale=%d orders=%d", staleCount(), len(orders))
+	}
+	// A genuinely new head re-engages.
+	if err := d.beginRefreshLocked(ctx, current, "newer-head", "approval-stale", false); err != nil {
+		t.Fatal(err)
+	}
+	if staleCount() != 2 {
+		t.Fatalf("changed pair should re-engage, stale=%d", staleCount())
+	}
+}
