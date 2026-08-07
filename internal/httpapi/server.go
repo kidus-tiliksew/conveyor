@@ -1070,14 +1070,17 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 		return query, false, fmt.Errorf("limit must be supplied once")
 	}
 	limit, err := strconv.Atoi(limitValue[0])
-	if err != nil || limit < 1 || limit > 200 {
-		return query, false, fmt.Errorf("limit must be between 1 and 200")
+	if err != nil || limit < 1 || limit > store.MaxTaskOperationsLimit {
+		return query, false, fmt.Errorf("limit must be between 1 and %d", store.MaxTaskOperationsLimit)
 	}
 	offset := 0
 	if value := values.Get("offset"); value != "" {
+		// Bound the offset here, before it reaches a store: past
+		// store.MaxTaskOperationsOffset the two stores disagree, because
+		// Postgres narrows the bind parameter to int32 (spec §21.58).
 		offset, err = strconv.Atoi(value)
-		if err != nil || offset < 0 {
-			return query, false, fmt.Errorf("offset must be a non-negative integer")
+		if err != nil || offset < 0 || offset > store.MaxTaskOperationsOffset {
+			return query, false, fmt.Errorf("offset must be between 0 and %d", store.MaxTaskOperationsOffset)
 		}
 	}
 	query.Limit, query.Offset = limit, offset

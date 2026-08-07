@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2081,6 +2082,52 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	server.Handler().ServeHTTP(orphan, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo&offset=1", nil))
 	if orphan.Code != http.StatusBadRequest {
 		t.Fatalf("offset without limit status=%d body=%s", orphan.Code, orphan.Body.String())
+	}
+
+	// The largest representable offset is served — an empty page past the end,
+	// with the total still reported so a client can correct itself.
+	edge := httptest.NewRecorder()
+	server.Handler().ServeHTTP(edge, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=1&offset=%d", store.MaxTaskOperationsOffset), nil))
+	if edge.Code != http.StatusOK {
+		t.Fatalf("boundary offset status=%d body=%s", edge.Code, edge.Body.String())
+	}
+	if edge.Header().Get("X-Conveyor-Total") != "3" ||
+		edge.Header().Get("X-Conveyor-Offset") != strconv.Itoa(store.MaxTaskOperationsOffset) {
+		t.Fatalf("boundary pagination headers = %+v", edge.Header())
+	}
+	var beyond taskOperationsResponse
+	if err := json.Unmarshal(edge.Body.Bytes(), &beyond); err != nil {
+		t.Fatal(err)
+	}
+	if len(beyond) != 0 {
+		t.Fatalf("boundary offset rows = %+v", beyond)
+	}
+
+	// Anything past that bound is rejected at the edge. Passed through, it
+	// narrows to int32 in Postgres — 2^31 to a negative OFFSET Postgres
+	// rejects, 2^32+5 to a page starting at row 5 — while memory returned an
+	// empty page for both. The stores must agree, so neither sees it.
+	for _, offset := range []string{
+		strconv.FormatInt(int64(store.MaxTaskOperationsOffset)+1, 10),
+		"4294967301",
+		"9223372036854775808",
+		"-1",
+	} {
+		overflow := httptest.NewRecorder()
+		server.Handler().ServeHTTP(overflow, httptest.NewRequest(http.MethodGet,
+			"/v1/task-operations?workspace_id=demo&limit=1&offset="+offset, nil))
+		if overflow.Code != http.StatusBadRequest {
+			t.Fatalf("offset=%s status=%d body=%s", offset, overflow.Code, overflow.Body.String())
+		}
+	}
+
+	// The limit bound is the store's, not a second copy of it.
+	overLimit := httptest.NewRecorder()
+	server.Handler().ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=%d", store.MaxTaskOperationsLimit+1), nil))
+	if overLimit.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status=%d body=%s", overLimit.Code, overLimit.Body.String())
 	}
 }
 

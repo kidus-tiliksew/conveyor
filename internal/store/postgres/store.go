@@ -608,6 +608,9 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 }
 
 func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperationsQuery) (store.TaskOperationsPage, error) {
+	if err := query.Validate(); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
 	filter := db.CountTaskOperationsTasksParams{
 		WorkspaceID: workspace(ctx), TaskState: string(query.State), Repository: query.Repository,
 	}
@@ -2454,20 +2457,16 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		}
 		selected.Close()
 	}
-	orders, err := s.ListWorkOrders(ctx)
+	// Scope the order read to the requested tasks. The activity feed still
+	// wants the whole workspace, but a Tasks page must not pull every
+	// workspace order in only to discard most of it (spec §21.58).
+	orders, err := s.listWorkOrdersForTasks(ctx, taskIDs)
 	if err != nil {
 		return nil, err
 	}
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
-	wanted := make(map[string]bool, len(taskIDs))
-	for _, taskID := range taskIDs {
-		wanted[taskID] = true
-	}
 	for _, order := range orders {
-		if len(wanted) > 0 && !wanted[order.TaskID] {
-			continue
-		}
 		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
 			implementTaskIDs = append(implementTaskIDs, order.TaskID)
 			seenImplementTask[order.TaskID] = true
@@ -3572,6 +3571,29 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]core.WorkOrder, 0)
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
+	}
+	return orders, rows.Err()
+}
+
+// listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
+// workspace when the set is empty. It backs the activity-marker projection so a
+// page-scoped caller pays for its page only (spec §21.58).
+func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	if len(taskIDs) == 0 {
+		return s.ListWorkOrders(ctx)
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}

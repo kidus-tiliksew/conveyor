@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -457,6 +458,31 @@ type TaskOperationsQuery struct {
 	Offset     int
 	State      core.TaskState
 	Repository string
+}
+
+// MaxTaskOperationsLimit bounds a single page, and MaxTaskOperationsOffset is
+// the largest offset the projection can represent: the Postgres page query
+// binds LIMIT/OFFSET as int32, so a larger offset silently wraps — to a
+// negative bound Postgres rejects, or worse to a small positive one that pages
+// from an unrelated position — where the memory store returns an empty page.
+// Both stores reject the out-of-range query instead, so pagination stays
+// equivalent across them (spec §21.58).
+const (
+	MaxTaskOperationsLimit  = 200
+	MaxTaskOperationsOffset = math.MaxInt32
+)
+
+// Validate rejects pagination that the stores cannot represent identically. It
+// runs at the HTTP edge and again inside each store, so no caller can reach a
+// backend with an unrepresentable bound.
+func (q TaskOperationsQuery) Validate() error {
+	switch {
+	case q.Limit < 0 || q.Limit > MaxTaskOperationsLimit:
+		return fmt.Errorf("task operations limit must be between 1 and %d", MaxTaskOperationsLimit)
+	case q.Offset < 0 || q.Offset > MaxTaskOperationsOffset:
+		return fmt.Errorf("task operations offset must be between 0 and %d", MaxTaskOperationsOffset)
+	}
+	return nil
 }
 
 // TaskOperationsPage batches the task rows with only the event and plan data
@@ -3787,6 +3813,9 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 }
 
 func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error) {
+	if err := query.Validate(); err != nil {
+		return TaskOperationsPage{}, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace := workspaceOrDefault(ctx, "")

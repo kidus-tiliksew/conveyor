@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 type queryRecorder struct {
@@ -75,10 +76,13 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
+	// Task IDs are globally unique, so every fixture ID carries a run suffix.
+	suffix := core.NewTaskID()
+	wanted := "ops-running-2-" + suffix
 	for index, task := range []core.Task{
-		phase61Task(workspace, "ops-queued", core.TaskQueued, ""),
-		phase61Task(workspace, "ops-running-1", core.TaskRunning, ""),
-		phase61Task(workspace, "ops-running-2", core.TaskRunning, ""),
+		phase61Task(workspace, "ops-queued-"+suffix, core.TaskQueued, ""),
+		phase61Task(workspace, "ops-running-1-"+suffix, core.TaskRunning, ""),
+		phase61Task(workspace, wanted, core.TaskRunning, ""),
 	} {
 		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
 		if err := st.CreateTask(ctx, task); err != nil {
@@ -86,12 +90,12 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 		}
 	}
 	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{
-		TaskID: "ops-running-2", Content: "## Approach\n\n## Done criteria\n",
+		TaskID: wanted, Content: "## Approach\n\n## Done criteria\n",
 		Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{}),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AppendEvent(ctx, core.Event{TaskID: "ops-running-2", Kind: store.TaskContextRequirementAdded,
+	if err := st.AppendEvent(ctx, core.Event{TaskID: wanted, Kind: store.TaskContextRequirementAdded,
 		Payload: core.JSONPayload(map[string]any{"id": "req-ops", "version": 1})}); err != nil {
 		t.Fatal(err)
 	}
@@ -101,12 +105,106 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 2 || len(page.Tasks) != 1 || page.Tasks[0].ID != "ops-running-2" {
+	if page.Total != 2 || len(page.Tasks) != 1 || page.Tasks[0].ID != wanted {
 		t.Fatalf("page = total:%d tasks:%+v", page.Total, page.Tasks)
 	}
-	if page.Plans["ops-running-2"].Version != 1 || len(page.Events["ops-running-2"]) != 1 ||
-		page.Events["ops-running-2"][0].Kind != store.TaskContextRequirementAdded {
+	if page.Plans[wanted].Version != 1 || len(page.Events[wanted]) != 1 ||
+		page.Events[wanted][0].Kind != store.TaskContextRequirementAdded {
 		t.Fatalf("batched page data = plans:%+v events:%+v", page.Plans, page.Events)
+	}
+}
+
+func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	suffix := core.NewTaskID()
+	for index, id := range []string{"bounds-first-" + suffix, "bounds-second-" + suffix} {
+		task := phase61Task(workspace, id, core.TaskQueued, "")
+		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storetest.RunTaskOperationsPaginationConformance(t, storetest.TaskOperationsFixture{
+		Store: st, Context: ctx, WantTotal: 2,
+	})
+}
+
+// A Tasks page pays for its page. The activity-marker projection used to read
+// every work order in the workspace and discard the rest, which is exactly the
+// unbounded read the Tasks list was rewritten to avoid (spec §21.58).
+func TestActivityMarkersForTasksScopeEveryReadToThePageIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &queryRecorder{}
+	cfg.ConnConfig.Tracer = recorder
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = Migrate(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	st := &Store{pool: pool, queries: db.New(pool)}
+	workspace := "activity-scope-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
+		Workspace: workspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	suffix := core.NewTaskID()
+	paged := phase61Task(workspace, "scope-paged-"+suffix, core.TaskRunning, "")
+	offPage := phase61Task(workspace, "scope-off-page-"+suffix, core.TaskRunning, "")
+	for _, task := range []core.Task{paged, offPage} {
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-job", TaskID: task.ID, Stage: core.StageImplement, StartedAt: time.Now().UTC()}
+		if err = st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+			ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement,
+			State: core.WorkOrderQueued, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder.reset()
+	markers, err := st.ListActivityMarkersForTasks(ctx, []string{paged.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(markers) != 1 || markers[0].TaskID != paged.ID {
+		t.Fatalf("markers = %+v", markers)
+	}
+	for _, query := range recorder.snapshot() {
+		if !strings.Contains(query, "work_orders") || strings.Contains(query, "EXISTS (SELECT 1 FROM work_orders") {
+			continue
+		}
+		if !strings.Contains(query, "task_id=ANY") && !strings.Contains(query, "task_id=$") {
+			t.Fatalf("Tasks page scanned workspace-wide work-order data: %s", query)
+		}
+	}
+
+	// The unscoped activity feed keeps its workspace-wide read.
+	recorder.reset()
+	if _, err = st.ListActivityMarkers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	workspaceWide := false
+	for _, query := range recorder.snapshot() {
+		workspaceWide = workspaceWide || (strings.Contains(query, "FROM work_orders") && !strings.Contains(query, "task_id=ANY"))
+	}
+	if !workspaceWide {
+		t.Fatal("activity feed lost its workspace-wide work-order read")
 	}
 }
 
