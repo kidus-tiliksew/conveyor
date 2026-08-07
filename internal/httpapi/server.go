@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -838,16 +839,27 @@ type activityItem struct {
 	Stalled                   *store.StalledState                   `json:"stalled,omitempty"`
 }
 
+// The review inbox is the workspace's whole outstanding queue, so it reads the
+// unfiltered workspace: an operator narrowing the board must not also narrow
+// what is waiting on them.
 func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
-	s.listActivityFiltered(w, r, true)
+	s.listActivityFiltered(w, r, store.TaskFilter{}, true)
 }
 
+// The board applies the shared Tasks/Board filter family through the same store
+// predicate the Tasks list uses, so the two surfaces cannot narrow differently
+// (AC-2.4).
 func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
-	s.listActivityFiltered(w, r, false)
+	filter, err := parseTaskFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.listActivityFiltered(w, r, filter, false)
 }
 
-func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, reviewsOnly bool) {
-	tasks, err := s.Store.ListTasks(r.Context())
+func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, filter store.TaskFilter, reviewsOnly bool) {
+	tasks, err := s.Store.ListTasksFiltered(r.Context(), filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1043,23 +1055,64 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool, error) {
-	values := r.URL.Query()
+// parseTaskFilter reads the one filter family the Tasks list and the Board both
+// send (AC-2.4). Both routes parse it here, so a parameter cannot mean one
+// thing on one surface and another on the other. Unparseable input is rejected
+// rather than dropped: a silently ignored filter reads as a workspace that
+// contains the wrong rows.
+func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 	repository := strings.TrimSpace(values.Get("repository"))
 	if repository == "" {
 		repository = strings.TrimSpace(values.Get("repo"))
 	}
-	query := store.TaskOperationsQuery{Repository: repository}
+	filter := store.TaskFilter{
+		Repository:          repository,
+		Query:               strings.TrimSpace(values.Get("q")),
+		ServesRequirementID: strings.TrimSpace(values.Get("serves_requirement")),
+		GoverningDesignID:   strings.TrimSpace(values.Get("governing_design")),
+	}
 	if state := strings.TrimSpace(values.Get("state")); state != "" {
-		query.State = core.TaskState(state)
+		filter.State = core.TaskState(state)
 		valid := false
 		for _, candidate := range core.TaskStates() {
-			valid = valid || query.State == candidate
+			valid = valid || filter.State == candidate
 		}
 		if !valid {
-			return query, false, fmt.Errorf("invalid task state %q", state)
+			return filter, fmt.Errorf("invalid task state %q", state)
 		}
 	}
+	var err error
+	if filter.UpdatedFrom, err = parseTaskFilterInstant(values.Get("updated_from")); err != nil {
+		return filter, err
+	}
+	if filter.UpdatedTo, err = parseTaskFilterInstant(values.Get("updated_to")); err != nil {
+		return filter, err
+	}
+	return filter, filter.Validate()
+}
+
+// parseTaskFilterInstant takes an absolute RFC 3339 instant. The bound is
+// resolved in the browser, where the operator's own day boundaries live, so the
+// server never has to guess a timezone for "the last month".
+func parseTaskFilterInstant(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("updated bounds must be RFC 3339 instants: %w", err)
+	}
+	return value, nil
+}
+
+func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool, error) {
+	values := r.URL.Query()
+	filter, err := parseTaskFilter(values)
+	if err != nil {
+		return store.TaskOperationsQuery{}, false, err
+	}
+	query := store.TaskOperationsQuery{TaskFilter: filter}
 	limitValue, paginated := values["limit"]
 	if !paginated {
 		if values.Get("offset") != "" {

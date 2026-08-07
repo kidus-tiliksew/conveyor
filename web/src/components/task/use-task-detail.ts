@@ -22,9 +22,12 @@ export function useTaskDetail(taskId: string) {
 }
 
 // Prev/next follow the board's visual order: columns left to right, cards
-// by recency within each column.
-export function useTaskOrder(taskId: string) {
-  const { data: activity } = useActivity()
+// by recency within each column. A surface that already knows the order it is
+// showing passes `enabled: false` and supplies its own — the board feed is the
+// whole workspace, and the Tasks list exists so that is never loaded to page
+// through it (AC-2.3).
+export function useTaskOrder(taskId: string, enabled = true) {
+  const { data: activity } = useActivity(undefined, enabled)
   return useMemo(() => {
     const byGroup = new Map<string, Array<{ id: string; at: string }>>()
     for (const summary of activity ?? []) {

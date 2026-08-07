@@ -106,7 +106,50 @@ const operations = [
   },
 ]
 
-async function openTasks(page: Page) {
+// The confirmed corpora the shared filter family reads its requirement and
+// design options from (AC-2.4). Only a confirmed document can be attached to a
+// task, so only a confirmed document is offered.
+const requirementCorpus = [
+  { requirement: { id: 'req-tasks-view', title: 'Task-centric operations view' }, current_version: { version: 1 } },
+  { requirement: { id: 'req-draft', title: 'Unconfirmed idea' }, current_version: null },
+]
+const designCorpus = [
+  { document: { id: 'design-lifecycle', title: 'Work-order lifecycle' }, current_version: { version: 16 } },
+]
+
+// The mock stands in for the server-side predicate, so a surface that filtered
+// in the browser instead would return the whole fixture and fail (AC-2.3).
+function matchOperations(url: string) {
+  const params = new URL(url).searchParams
+  const state = params.get('state') ?? ''
+  const repository = params.get('repository') ?? ''
+  const needle = (params.get('q') ?? '').toLowerCase()
+  const from = params.get('updated_from') ?? ''
+  const to = params.get('updated_to') ?? ''
+  const requirement = params.get('serves_requirement') ?? ''
+  const design = params.get('governing_design') ?? ''
+  return operations.filter((item) => {
+    const updated = item.last_event_at || item.task.created_at
+    if (state && item.task.state !== state) return false
+    if (repository && item.task.repo !== repository) return false
+    if (
+      needle &&
+      ![item.task.title, item.task.id, item.task.source, item.task.branch]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(needle))
+    ) {
+      return false
+    }
+    if (from && updated < from) return false
+    // The upper bound is exclusive, exactly as the store evaluates it.
+    if (to && updated >= to) return false
+    if (requirement && !(item.task.context?.requirements ?? []).some((entry) => entry.id === requirement)) return false
+    if (design && !(item.task.context?.designs ?? []).some((entry) => entry.id === design)) return false
+    return true
+  })
+}
+
+async function routeTasksSurface(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     sessionStorage.setItem('conveyor-token', 'test-token')
@@ -125,17 +168,31 @@ async function openTasks(page: Page) {
       },
     }),
   )
+  await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
+  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
+  await page.route('**/v1/tasks/*/activity**', (route) => {
+    const taskId = /\/v1\/tasks\/([^/]+)\/activity/.exec(new URL(route.request().url()).pathname)?.[1] ?? ''
+    const match = operations.find((item) => item.task.id === taskId)
+    return route.fulfill({
+      json: {
+        task: match?.task ?? { id: taskId, workspace: 'demo', title: taskId, state: 'queued' },
+        jobs: [],
+        events: [],
+        interventions: [],
+        work_orders: [],
+        checkout_available: false,
+        checkout_guidance: '',
+        needs_attention: false,
+      },
+    })
+  })
   await page.route('**/v1/task-operations?**', (route) => {
     expect(route.request().headers().authorization).toBe('Bearer test-token')
-    // Mirror the server contract: state and repository narrow the set before
-    // paging, and the page bounds travel in the additive response headers.
+    // Mirror the server contract: every filter narrows the set before paging,
+    // and the page bounds travel in the additive response headers.
     const params = new URL(route.request().url()).searchParams
-    const state = params.get('state') ?? ''
-    const repository = params.get('repository') ?? ''
-    const matched = operations.filter(
-      (item) => (!state || item.task.state === state) && (!repository || item.task.repo === repository),
-    )
+    const matched = matchOperations(route.request().url())
     const offset = Number(params.get('offset') ?? '0')
     const limit = Number(params.get('limit') ?? String(matched.length))
     return route.fulfill({
@@ -148,6 +205,10 @@ async function openTasks(page: Page) {
       },
     })
   })
+}
+
+async function openTasks(page: Page) {
+  await routeTasksSurface(page)
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 }
@@ -214,10 +275,11 @@ test('tasks view links attached requirements and design documents', async ({ pag
     'href',
     '/system-design?document=design-lifecycle',
   )
-  // Each row hands off to the task's own detail route rather than restating it.
+  // Each row hands off to the task's own detail composition rather than
+  // restating it, and does so at an address that can be shared (AC-2.2).
   await expect(blocked.getByRole('link', { name: 'Wire the Tasks view' })).toHaveAttribute(
     'href',
-    '/tasks/task-blocked/full',
+    '/tasks?task=task-blocked',
   )
 
   await expect(rows(page).filter({ hasText: 'Shipped web change' }).getByText('No attached context')).toBeVisible()
@@ -294,4 +356,167 @@ test('tasks view exposes no priority, assignee, or declared-phase field', async 
   }
   await expect(page.getByLabel('Filter by priority')).toHaveCount(0)
   await expect(page.getByLabel('Filter by assignee')).toHaveCount(0)
+})
+
+// AC-2.1: intake lives on the surface where delivery is managed. The board's
+// old address survives as a redirect rather than as a second door.
+test('tasks view is where a task is created', async ({ page }) => {
+  await openTasks(page)
+  await page.getByRole('link', { name: 'New task' }).click()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/tasks')
+  // The list it files into stays behind the sheet rather than being replaced.
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
+
+  await routeTasksSurface(page)
+  await page.goto('/new')
+  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/tasks')
+
+  // The board no longer offers creation: the affordance moved rather than
+  // being duplicated onto a second surface.
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(0)
+})
+
+// AC-2.2: a row opens the task's own detail composition beside the list, at an
+// address that survives being shared, while the full route stays the deep link.
+test('selecting a row opens the task detail panel with a permalink', async ({ page }) => {
+  await openTasks(page)
+  await page.getByRole('link', { name: 'Shipped web change' }).click()
+  const panel = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(panel).toBeVisible()
+  expect(new URL(page.url()).search).toBe('?task=task-shipped')
+  // The list stays behind the panel — this is a panel on the Tasks view, not a
+  // navigation away from it.
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Copy link to this task' })).toBeVisible()
+  // Exactly the open row is announced as current — the rows all point at the
+  // same path, so the search value is what distinguishes them.
+  await expect(page.getByRole('list', { name: 'Tasks' }).locator('a[aria-current]')).toHaveCount(1)
+  await expect(panel.getByRole('link', { name: 'Open full task page' })).toHaveAttribute(
+    'href',
+    '/tasks/task-shipped/full',
+  )
+
+  // Stepping through neighbours moves the panel along the list that is showing.
+  await panel.getByRole('button', { name: 'Previous task' }).click()
+  await expect(page).toHaveURL(/\?task=task-anchor$/)
+
+  await panel.getByRole('button', { name: 'Close panel' }).click()
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toHaveCount(0)
+  expect(new URL(page.url()).search).toBe('')
+
+  // The panel's address is a permalink: opening it cold restores the panel.
+  await routeTasksSurface(page)
+  await page.goto('/tasks?task=task-bounced')
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+
+  // …and the full route remains reachable for the deep links that already
+  // point at it.
+  await page.goto('/tasks/task-bounced/full')
+  await expect(page.getByRole('link', { name: 'Back to board' })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/tasks/task-bounced/full')
+})
+
+// A blueprint anchor keeps its one canonical home (spec §21.49). The panel
+// hosts the task's own detail composition rather than a copy of it, so the rule
+// arrives with the composition instead of being restated on this surface.
+test('an anchor opened in the panel is sent to its canonical blueprint route', async ({ page }) => {
+  await routeTasksSurface(page)
+  await page.route('**/v1/tasks/task-anchor/activity**', (route) =>
+    route.fulfill({
+      json: {
+        task: {
+          id: 'task-anchor',
+          workspace: 'demo',
+          title: 'Historical anchor',
+          state: 'running',
+          children: [{ id: 'child-one', title: 'A child task', state: 'merged' }],
+        },
+        jobs: [],
+        events: [],
+        interventions: [],
+        work_orders: [],
+        checkout_available: false,
+        checkout_guidance: '',
+        needs_attention: false,
+      },
+    }),
+  )
+  await page.route('**/v1/blueprints**', (route) => route.fulfill({ json: [] }))
+  await page.goto('/tasks?task=task-anchor')
+  await expect(page).toHaveURL(/\/blueprints\/task-anchor$/)
+})
+
+// AC-2.3: the list pages through the server rather than loading the workspace.
+test('tasks view pages through server-side results', async ({ page }) => {
+  await openTasks(page)
+  const requests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/v1/task-operations')) requests.push(request.url())
+  })
+  // The fixture is smaller than a page, so pagination is exercised by asking
+  // the server for a page it must honour.
+  await page.route('**/v1/task-operations?**', (route) => {
+    const params = new URL(route.request().url()).searchParams
+    const matched = matchOperations(route.request().url())
+    const offset = Number(params.get('offset') ?? '0')
+    return route.fulfill({
+      body: JSON.stringify(matched.slice(offset, offset + 2)),
+      headers: {
+        'content-type': 'application/json',
+        'X-Conveyor-Total': String(matched.length),
+        'X-Conveyor-Limit': '2',
+        'X-Conveyor-Offset': String(offset),
+      },
+    })
+  })
+  await page.reload()
+  await expect(rows(page)).toHaveCount(2)
+  await expect(page.getByText('1–2 of 5')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Previous' })).toBeDisabled()
+
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('3–4 of 5')).toBeVisible()
+  await expect(rows(page).filter({ hasText: 'Shipped web change' })).toHaveCount(1)
+  // Every page came from the server with its own offset: nothing was sliced in
+  // the browser out of one whole-workspace read.
+  expect(requests.some((url) => url.includes('offset=2'))).toBe(true)
+})
+
+// AC-2.4: the shared filter family — updated-at range, served requirement, and
+// governing design — is applied by the server on the Tasks surface.
+test('tasks view filters by updated-at range, served requirement, and governing design', async ({ page }) => {
+  await openTasks(page)
+  await page.getByLabel('Filter by requirement served').selectOption('req-tasks-view')
+  await expect(rows(page)).toHaveCount(1)
+  await expect(page.getByRole('link', { name: 'Wire the Tasks view' })).toBeVisible()
+
+  await page.getByLabel('Filter by requirement served').selectOption('')
+  await page.getByLabel('Filter by design guidance').selectOption('design-lifecycle')
+  await expect(rows(page)).toHaveCount(1)
+
+  // An unconfirmed document is not an option: only confirmed documents can be
+  // attached to a task, so only confirmed documents can narrow the list.
+  await expect(page.getByLabel('Filter by requirement served')).not.toContainText('Unconfirmed idea')
+
+  await page.getByLabel('Filter by design guidance').selectOption('')
+  await page.getByLabel('Filter by last update').selectOption('custom')
+  // Fixed dates rather than a preset, so the assertion does not depend on when
+  // the suite runs. The end date is inclusive of its own day.
+  await page.getByLabel('Updated from').fill('2026-08-05')
+  await page.getByLabel('Updated to').fill('2026-08-05')
+  await expect(rows(page)).toHaveCount(1)
+  await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
+
+  await page.getByLabel('Updated to').fill('2026-08-04')
+  await expect(page.getByText('Choose an end date on or after the start date.')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Reset filters' }).click()
+  await expect(rows(page)).toHaveCount(5)
 })

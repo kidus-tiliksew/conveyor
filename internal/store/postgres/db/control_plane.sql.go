@@ -1079,16 +1079,55 @@ FROM tasks t
 WHERE t.workspace_id = $1
   AND ($2::text = '' OR t.state = $2)
   AND ($3::text = '' OR t.repo_name = $3)
+  AND ($4::text = '' OR
+       strpos(lower(t.title), lower($4)) > 0 OR
+       strpos(lower(t.id), lower($4)) > 0 OR
+       strpos(lower(t.source), lower($4)) > 0 OR
+       strpos(lower(t.branch), lower($4)) > 0)
+  AND ($5::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) >= $5)
+  AND ($6::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) < $6)
+  AND ($7::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+             AND e.payload_json ->> 'id' = $7
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_requirement_added')
+  AND ($8::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+             AND e.payload_json ->> 'id' = $8
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_design_added')
 `
 
 type CountTaskOperationsTasksParams struct {
-	WorkspaceID string `json:"workspace_id"`
-	TaskState   string `json:"task_state"`
-	Repository  string `json:"repository"`
+	WorkspaceID       string             `json:"workspace_id"`
+	TaskState         string             `json:"task_state"`
+	Repository        string             `json:"repository"`
+	Search            string             `json:"search"`
+	UpdatedFrom       pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo         pgtype.Timestamptz `json:"updated_to"`
+	ServesRequirement string             `json:"serves_requirement"`
+	GoverningDesign   string             `json:"governing_design"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countTaskOperationsTasks, arg.WorkspaceID, arg.TaskState, arg.Repository)
+	row := q.db.QueryRow(ctx, countTaskOperationsTasks,
+		arg.WorkspaceID,
+		arg.TaskState,
+		arg.Repository,
+		arg.Search,
+		arg.UpdatedFrom,
+		arg.UpdatedTo,
+		arg.ServesRequirement,
+		arg.GoverningDesign,
+	)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -1203,17 +1242,47 @@ FROM tasks t
 WHERE t.workspace_id = $1
   AND ($2::text = '' OR t.state = $2)
   AND ($3::text = '' OR t.repo_name = $3)
+  AND ($4::text = '' OR
+       strpos(lower(t.title), lower($4)) > 0 OR
+       strpos(lower(t.id), lower($4)) > 0 OR
+       strpos(lower(t.source), lower($4)) > 0 OR
+       strpos(lower(t.branch), lower($4)) > 0)
+  AND ($5::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) >= $5)
+  AND ($6::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) < $6)
+  AND ($7::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+             AND e.payload_json ->> 'id' = $7
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_requirement_added')
+  AND ($8::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+             AND e.payload_json ->> 'id' = $8
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_design_added')
 ORDER BY t.created_at, t.id
-LIMIT NULLIF($5::int, 0)
-OFFSET $4::int
+LIMIT NULLIF($10::int, 0)
+OFFSET $9::int
 `
 
 type ListTaskOperationsTasksParams struct {
-	WorkspaceID string `json:"workspace_id"`
-	TaskState   string `json:"task_state"`
-	Repository  string `json:"repository"`
-	PageOffset  int32  `json:"page_offset"`
-	PageLimit   int32  `json:"page_limit"`
+	WorkspaceID       string             `json:"workspace_id"`
+	TaskState         string             `json:"task_state"`
+	Repository        string             `json:"repository"`
+	Search            string             `json:"search"`
+	UpdatedFrom       pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo         pgtype.Timestamptz `json:"updated_to"`
+	ServesRequirement string             `json:"serves_requirement"`
+	GoverningDesign   string             `json:"governing_design"`
+	PageOffset        int32              `json:"page_offset"`
+	PageLimit         int32              `json:"page_limit"`
 }
 
 type ListTaskOperationsTasksRow struct {
@@ -1227,6 +1296,11 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.WorkspaceID,
 		arg.TaskState,
 		arg.Repository,
+		arg.Search,
+		arg.UpdatedFrom,
+		arg.UpdatedTo,
+		arg.ServesRequirement,
+		arg.GoverningDesign,
 		arg.PageOffset,
 		arg.PageLimit,
 	)

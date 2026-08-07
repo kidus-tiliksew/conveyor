@@ -44,8 +44,20 @@ async function getJSON<T>(url: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function fetchActivity() {
-  return getJSON<ActivitySummary[]>(workspaceURL('/v1/activity'))
+// The Board sends the shared Tasks/Board filter family to the same store
+// predicate the Tasks list uses (AC-2.4), so the two surfaces cannot narrow
+// differently and neither one narrows a fully-loaded workspace in the browser.
+export function fetchActivity(filter?: Record<string, string | undefined>) {
+  const query = filterQuery(filter)
+  return getJSON<ActivitySummary[]>(workspaceURL(`/v1/activity${query ? `?${query}` : ''}`))
+}
+
+function filterQuery(filter?: Record<string, string | undefined>) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(filter ?? {})) {
+    if (value) params.set(key, value)
+  }
+  return params.toString()
 }
 
 export function fetchTaskActivity(taskId: string) {
@@ -251,15 +263,18 @@ export function fetchTasks() {
 }
 // The Tasks view's read-only projection (spec §21.58): task state, relations,
 // attached context, and plan status from one durable source.
+// Every member of the shared filter family travels to the server (AC-2.3): the
+// browser asks for one page of what already matches rather than for the
+// workspace it then narrows.
 export async function fetchTaskOperations(input: {
   limit: number
   offset: number
-  state?: string
-  repository?: string
+  filter?: Record<string, string | undefined>
 }) {
   const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
-  if (input.state) query.set('state', input.state)
-  if (input.repository) query.set('repository', input.repository)
+  for (const [key, value] of Object.entries(input.filter ?? {})) {
+    if (value) query.set(key, value)
+  }
   const response = await fetch(workspaceURL(`/v1/task-operations?${query}`), { headers: authHeaders() })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   const items = (await response.json()) as TaskOperationsItem[]

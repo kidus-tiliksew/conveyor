@@ -1,11 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { FileCode2, ListChecks, Network, Search, Workflow } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { useWorkspace, useWorkspaceSelection } from '../components/app-shell'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { FileCode2, ListChecks, Network, Plus, Workflow } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useWorkspaceSelection } from '../components/app-shell'
+import { TaskCreateSheet } from '../components/task/task-create-sheet'
+import {
+  TaskFilters,
+  emptyTaskFilter,
+  taskFilterActive,
+  taskFilterParams,
+  taskFilterRangeError,
+  useTaskFilters,
+} from '../components/task/task-filters'
+import { TaskSheet } from '../components/task/task-sheet'
 import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
-import { Input, Select } from '../components/ui/input'
 import { Skeleton } from '../components/ui/skeleton'
 import { fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
@@ -13,49 +23,50 @@ import { errorMessage } from '../lib/errors'
 import { relativeTime } from '../lib/utils'
 import type { TaskOperationsItem, TaskPlanStatus, TaskRelation } from '../lib/types'
 
-// The list-first Tasks view (spec §21.58, REQ-1). It reads one projection and
-// renders only what that projection carries: state, repository, dependencies
-// and blockers, child rollups, attached context, and plan status. There is no
-// priority, assignee, or declared-phase control anywhere on this surface, and
-// none may be added to support it (AC-1.5).
+const PAGE_SIZE = 25
+
+// The list-first Tasks view (spec §21.58, REQ-1 and REQ-2). It reads one
+// paginated projection and renders only what that projection carries: state,
+// repository, dependencies and blockers, child rollups, attached context, and
+// plan status. There is no priority, assignee, or declared-phase control
+// anywhere on this surface, and none may be added to support it (AC-1.5).
+//
+// This is also where tasks are created and inspected (REQ-2): intake opens over
+// the list, and selecting a row opens the task's own detail composition in a
+// right panel without leaving it.
 export function TasksPage() {
   const { workspace } = useWorkspaceSelection()
-  const { data: workspaceInfo } = useWorkspace()
-  const [query, setQuery] = useState('')
-  const [state, setState] = useState('')
-  const [repo, setRepo] = useState('')
+  const navigate = useNavigate()
+  // The open panel lives in the address, so the view an operator is looking at
+  // is the one a colleague opens from the link they paste (AC-2.2).
+  const { task: selectedId, create } = useSearch({ strict: false }) as { task?: string; create?: boolean }
+  const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
-  const limit = 100
+  const params = taskFilterParams(filter)
+  // A range no task can satisfy is a half-typed date, not a question worth
+  // asking the server: the filter says so in place and the last good page stays.
+  const rangeError = taskFilterRangeError(filter)
+  // Every filter is applied by the server against the whole workspace, and the
+  // browser holds one page of what already matched (AC-2.3).
   const {
     data: page,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['task-operations', workspace, state, repo, offset],
-    queryFn: () => fetchTaskOperations({ limit, offset, state, repository: repo }),
-    enabled: Boolean(workspace),
+    queryKey: ['task-operations', workspace, params, offset],
+    queryFn: () => fetchTaskOperations({ limit: PAGE_SIZE, offset, filter: params }),
+    enabled: Boolean(workspace) && !rangeError,
     refetchInterval: 15_000,
   })
   const items = page?.items
+  const filtersActive = taskFilterActive(filter)
 
-  // State and repository are server-side filters now, so the returned page no
-  // longer contains the values the operator has filtered away. The option lists
-  // come from workspace-stable sources instead: the declared task states and
-  // the configured repositories.
-  const states = useMemo(() => Object.keys(taskStateLabels).sort(), [])
-  const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
-  // Free text stays a client-side narrowing of the fetched page; state and
-  // repository are already applied by the server.
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (!needle) return items ?? []
-    return (items ?? []).filter((item) =>
-      [item.task.title, item.task.id, item.task.source, item.task.branch]
-        .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(needle)),
-    )
-  }, [items, query])
-  const filtersActive = Boolean(query.trim() || state || repo)
+  // Narrowing the workspace changes what page one is, so paging restarts there
+  // rather than stranding the operator past the end of a shorter result.
+  const filterKey = JSON.stringify(params)
+  useEffect(() => {
+    setOffset(0)
+  }, [filterKey])
 
   return (
     <div className="h-full overflow-y-auto">
@@ -63,61 +74,24 @@ export function TasksPage() {
         <header>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
-            {/* The server total counts what the state/repository filters match;
-                a free-text needle narrows the fetched page, so it counts rows. */}
-            <Badge variant="mono">{query.trim() ? filtered.length : (page?.total ?? filtered.length)}</Badge>
+            {/* The server counts what the filters match, so the badge reports
+                the whole matching set rather than the page in hand. */}
+            <Badge variant="mono">{page?.total ?? 0}</Badge>
+            {/* Intake belongs to the surface where delivery is managed
+                (AC-2.1); it opens over this list, which stays behind it. */}
+            <Link to="/tasks" search={{ create: true }} className="ml-auto">
+              <Button size="sm" tabIndex={-1}>
+                <Plus />
+                New task
+              </Button>
+            </Link>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Every task in this workspace with its ordering, attached context, and plan status.
           </p>
         </header>
 
-        <div className="mt-6 flex flex-wrap items-center gap-2">
-          <label className="relative" htmlFor="task-search">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
-            <Input
-              id="task-search"
-              aria-label="Search tasks"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search tasks"
-              className="h-8 w-56 pl-8 text-xs"
-            />
-          </label>
-          <Select
-            aria-label="Filter by state"
-            value={state}
-            onChange={(event) => {
-              setState(event.target.value)
-              setOffset(0)
-            }}
-            className="h-8 w-44 text-xs"
-          >
-            <option value="">All states</option>
-            {states.map((value) => (
-              <option key={value} value={value}>
-                {taskStateLabels[value] ?? value}
-              </option>
-            ))}
-          </Select>
-          <Select
-            aria-label="Filter by repository"
-            value={repo}
-            onChange={(event) => {
-              setRepo(event.target.value)
-              setOffset(0)
-            }}
-            className="h-8 w-44 text-xs"
-          >
-            <option value="">All repositories</option>
-            {repos.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </Select>
-        </div>
+        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} className="mt-6" />
 
         {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
         {isLoading && workspace && (
@@ -129,30 +103,30 @@ export function TasksPage() {
         )}
         {error != null && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load tasks.')}</EmptyMessage>}
 
-        {items && filtered.length === 0 && (
+        {items && items.length === 0 && (
           <Card className="mt-8 border-dashed">
             <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
               <ListChecks className="size-7 text-primary" />
-              {/* The state and repository filters are applied by the server, so
-                  an empty page no longer means an empty workspace — whether any
-                  filter is active is what separates the two messages. */}
+              {/* Every filter is applied by the server, so an empty page no
+                  longer means an empty workspace — whether any filter is active
+                  is what separates the two messages. */}
               <h2 className="mt-4 text-base font-semibold">
                 {filtersActive ? 'No tasks match these filters' : 'No tasks yet'}
               </h2>
               <p className="mt-2 max-w-md text-sm leading-6 text-muted">
                 {filtersActive
-                  ? 'Clear the search, state, or repository filter to see the rest of the workspace.'
+                  ? 'Reset the filters to see the rest of the workspace.'
                   : 'Delivery work arrives here once planning files a task set.'}
               </p>
             </CardContent>
           </Card>
         )}
 
-        {filtered.length > 0 && (
+        {items && items.length > 0 && (
           <ul aria-label="Tasks" className="mt-7 space-y-3">
-            {filtered.map((item) => (
+            {items.map((item) => (
               <li key={item.task.id}>
-                <TaskRow item={item} />
+                <TaskRow item={item} selected={item.task.id === selectedId} />
               </li>
             ))}
           </ul>
@@ -182,33 +156,69 @@ export function TasksPage() {
           </nav>
         )}
       </div>
+
+      {/* Task intake, opened over the list it files into (AC-2.1). */}
+      {create && <TaskCreateSheet />}
+
+      {/* The task's own detail composition, mounted as this surface's panel
+          rather than reimplemented on it (AC-2.2). A blueprint anchor opened
+          here still redirects to its canonical route — that rule belongs to the
+          composition, so hosting it here inherits it (spec §21.49). */}
+      {!create && selectedId && (
+        <TaskSheet
+          taskId={selectedId}
+          panel={{
+            order: (items ?? []).map((item) => item.task.id),
+            permalink: taskPermalink(selectedId),
+            close: () => void navigate({ to: '/tasks', search: {} }),
+            select: (taskId) => void navigate({ to: '/tasks', search: { task: taskId } }),
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function TaskRow({ item }: { item: TaskOperationsItem }) {
+// The panel's address, absolute so it survives being pasted somewhere else.
+function taskPermalink(taskId: string) {
+  const path = `/tasks?task=${encodeURIComponent(taskId)}`
+  return typeof window === 'undefined' ? path : new URL(path, window.location.origin).toString()
+}
+
+function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boolean }) {
   const { task } = item
   const stage =
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className={`rounded-lg border bg-card p-4 transition-colors ${selected ? 'border-primary' : 'border-border'}`}>
+      {/* Title first, then how the task stands, then the quieter facts: the
+          row is read top-down, and its own name is the loudest thing on it. */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* The row reuses the existing task detail route rather than
-            re-rendering the task's own surface (spec §13.3). */}
+        {/* Selecting a row opens the task's detail beside the list rather than
+            navigating away from it (AC-2.2). It stays a link, so the row is
+            still openable in a new tab and the address is still shareable. */}
         <Link
-          to="/tasks/$taskId/full"
-          params={{ taskId: task.id }}
+          to="/tasks"
+          search={{ task: task.id }}
           className="truncate text-sm font-medium text-foreground hover:underline"
         >
           {task.title || task.id}
         </Link>
-        <Badge variant="mono">{task.id}</Badge>
         <Badge variant="outline">{taskStateLabels[task.state] ?? task.state}</Badge>
-        {task.repo && <Badge variant="mono">{task.repo}</Badge>}
         {stage && <Badge variant="accent">{stageLabels[stage] ?? stage}</Badge>}
         <PlanBadge plan={item.plan} />
         {item.needs_attention && <Badge variant="attention">Needs operator</Badge>}
         {task.hold && <Badge variant="attention">On hold</Badge>}
+        {/* Identity and repository are how a row is looked up, not how it is
+            read, so they sit last and name themselves on hover. */}
+        <Badge variant="mono" title="Task ID">
+          {task.id}
+        </Badge>
+        {task.repo && (
+          <Badge variant="mono" title="Repository">
+            {task.repo}
+          </Badge>
+        )}
       </div>
 
       {/* One wrapping line of facts, so a row with nothing blocking it and
@@ -231,7 +241,14 @@ function TaskRow({ item }: { item: TaskOperationsItem }) {
         </p>
       )}
 
-      <p className="mt-2 text-[11px] text-faint">Updated {relativeTime(item.last_event_at || task.created_at)}</p>
+      {/* The instant the updated-at filter keys on, so a row narrowed away by
+          that filter can be explained by the value the row itself shows. */}
+      <p
+        className="mt-2 text-[11px] text-faint"
+        title={new Date(item.last_event_at || task.created_at).toLocaleString()}
+      >
+        Updated {relativeTime(item.last_event_at || task.created_at)}
+      </p>
     </div>
   )
 }
@@ -303,7 +320,7 @@ function DependencyChip({
 }) {
   const suffix = unsatisfiable ? ' · unsatisfiable' : blocking ? ' · blocking' : ''
   return (
-    <Link to="/tasks/$taskId/full" params={{ taskId: dependency.id }}>
+    <Link to="/tasks" search={{ task: dependency.id }}>
       <Badge variant={unsatisfiable ? 'failure' : blocking ? 'attention' : 'outline'}>
         {dependency.title || dependency.id}
         {suffix}

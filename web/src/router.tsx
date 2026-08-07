@@ -1,7 +1,6 @@
 import { Outlet, createRootRoute, createRoute, createRouter, redirect, useParams } from '@tanstack/react-router'
 import { AppShell } from './components/app-shell'
 import { Board } from './components/board/board'
-import { TaskCreateSheet } from './components/task/task-create-sheet'
 import { TaskSheet } from './components/task/task-sheet'
 import { CreateWorkspaceDialog } from './components/workspace/create-workspace-dialog'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
@@ -43,7 +42,17 @@ const taskSheetRoute = createRoute({
   path: '/tasks/$taskId',
   component: TaskSheetRoute,
 })
-const newTaskRoute = createRoute({ getParentRoute: () => boardRoute, path: '/new', component: TaskCreateSheet })
+// Task intake moved to the Tasks view (AC-2.1). The board's old address stays
+// as a redirect so existing links and bookmarks land on the surface that now
+// owns creation instead of on a dead route.
+const newTaskRedirectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/new',
+  beforeLoad: () => {
+    throw redirect({ to: '/tasks', search: { create: true } })
+  },
+  component: () => null,
+})
 const createWorkspaceRoute = createRoute({
   getParentRoute: () => boardRoute,
   path: '/workspaces/new',
@@ -54,10 +63,23 @@ const taskFullRoute = createRoute({
   path: '/tasks/$taskId/full',
   component: TaskFullPage,
 })
-// The list-first Tasks view (spec §21.58). It is a sibling
-// of the task routes, not a layout over them: the list is the management
-// surface, and a row hands off to the task's own detail page.
-const tasksRoute = createRoute({ getParentRoute: () => rootRoute, path: '/tasks', component: TasksPage })
+// The list-first Tasks view (spec §21.58), which is also where tasks are
+// created and inspected (REQ-2). Both of the surfaces it hosts are search
+// params on this one route rather than child paths: the list stays mounted —
+// its page, its filters, its scroll — behind whichever sheet is open, and the
+// address of the surface stays `/tasks`, so intake and an open panel highlight
+// the Tasks view rather than announcing some other page.
+const tasksRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tasks',
+  // `task` is the open detail panel, which makes the panel's own address the
+  // permalink an operator can share (AC-2.2); `create` is task intake (AC-2.1).
+  validateSearch: (search: Record<string, unknown>): { task?: string; create?: boolean } => ({
+    task: typeof search.task === 'string' && search.task ? search.task : undefined,
+    create: search.create === true || search.create === 'true' ? true : undefined,
+  }),
+  component: TasksPage,
+})
 // Legacy deep links from before the board became the home page.
 const activityRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -103,9 +125,10 @@ const planningRoute = createRoute({ getParentRoute: () => rootRoute, path: '/pla
 const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitor', component: MonitorPage })
 
 const routeTree = rootRoute.addChildren([
-  boardRoute.addChildren([boardIndexRoute, taskSheetRoute, newTaskRoute, createWorkspaceRoute]),
+  boardRoute.addChildren([boardIndexRoute, taskSheetRoute, createWorkspaceRoute]),
   taskFullRoute,
   tasksRoute,
+  newTaskRedirectRoute,
   activityRedirectRoute,
   workspaceRoute,
   requirementsRoute,

@@ -2312,7 +2312,9 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await page.getByPlaceholder('Why is this task being cancelled?').fill('provider setup is obsolete')
   await page.getByRole('dialog', { name: 'Cancel task' }).getByRole('button', { name: 'Cancel task' }).click()
   await expect.poll(() => cancelBody).toContain('provider setup is obsolete')
-  await expect(page.getByText('Closed', { exact: true })).toBeVisible()
+  // Scoped to the sheet: the board's shared state filter behind it lists every
+  // task state as an option, including this one.
+  await expect(page.getByRole('dialog', { name: 'Task detail' }).getByText('Closed', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 })
 

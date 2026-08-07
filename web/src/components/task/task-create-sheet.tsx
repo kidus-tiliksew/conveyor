@@ -81,7 +81,9 @@ export function TaskCreateSheet() {
   const selectedSetup = setups.find((entry) => entry.name === setupName)
   const setupHealth = workerHealth.data?.setup_serviceability?.[setupName]
   const autoAvailable = setupHealth?.auto_available ?? workerHealth.data?.auto_available === true
-  const close = () => void navigate({ to: '/' })
+  // Intake belongs to the Tasks view now (AC-2.1), so closing it — and the task
+  // it just created — returns to that list rather than to the board.
+  const close = () => void navigate({ to: '/tasks', search: {} })
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -106,7 +108,10 @@ export function TaskCreateSheet() {
     },
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      void navigate({ to: '/tasks/$taskId', params: { taskId: task.id } })
+      void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
+      // The new task opens in the list's own panel, so intake ends where the
+      // operator can queue the next one (AC-2.1, AC-2.2).
+      void navigate({ to: '/tasks', search: { task: task.id } })
     },
     onError: (error) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)

@@ -100,7 +100,7 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 		t.Fatal(err)
 	}
 	page, err := st.ListTaskOperations(ctx, store.TaskOperationsQuery{
-		State: core.TaskRunning, Repository: "conveyor", Limit: 1, Offset: 1,
+		TaskFilter: store.TaskFilter{State: core.TaskRunning, Repository: "conveyor"}, Limit: 1, Offset: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +128,18 @@ func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing
 	storetest.RunTaskOperationsPaginationConformance(t, storetest.TaskOperationsFixture{
 		Store: st, Context: ctx, WantTotal: 2,
 	})
+}
+
+// The shared filter is SQL here and Go in the memory store, so both run the
+// same cases (AC-2.4).
+func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	fixture := storetest.TaskFilterFixture{
+		Store: st, Context: ctx, Workspace: workspace, Repo: "conveyor", Suffix: core.NewTaskID(),
+	}
+	storetest.SeedTaskFilterFixture(t, fixture)
+	storetest.RunTaskFilterConformance(t, fixture)
 }
 
 // A Tasks page pays for its page. The activity-marker projection used to read
