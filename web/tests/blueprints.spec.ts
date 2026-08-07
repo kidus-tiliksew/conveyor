@@ -324,22 +324,21 @@ test('a blueprint awaiting its spec gate stays in the review inbox', async ({ pa
   await expect(inbox.getByText('Awaiting review')).toBeVisible()
 })
 
-// Phase 8.4: the §21.49 planning-side surface keeps its place in the primary
-// navigation — only the label moved on, because §21.58 change 2 retires the
-// blueprint noun for new work while preserving the records. The surface says
-// plainly that it is history and where live delivery is managed instead.
-test('the blueprints surface reads as history and points live delivery at Tasks', async ({ page }) => {
+// The §21.58 change 2 history lens outlived its navigation entry: §21.61 change
+// 3 parks the Blueprint-history entry, so the surface is reached by deep link
+// instead of the sidebar (AC-4.1) while still saying plainly that it is history
+// and where live delivery is managed.
+test('the blueprints surface is parked out of navigation and reads as history', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)
 
   await page.goto('/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
-  const history = nav.getByRole('link', { name: 'Blueprint history' })
-  await expect(history).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'Blueprint history' })).toHaveCount(0)
   // The retired noun no longer names a place where work happens.
   await expect(nav.getByRole('link', { name: 'Blueprints', exact: true })).toHaveCount(0)
 
-  await history.click()
+  await page.goto('/blueprints')
   await expect(page).toHaveURL(/\/blueprints$/)
   await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
   await page.getByRole('main').getByRole('link', { name: 'Tasks', exact: true }).click()

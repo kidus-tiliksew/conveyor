@@ -2,7 +2,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ActivityItem } from '../lib/types'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
-import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
+import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
@@ -32,6 +32,9 @@ export function TaskFullPage() {
           </Button>
         </Link>
         <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        {/* The corner affordance REQ-3 asks for: what this task connects to is
+            one read away, and it costs nothing until it is opened. */}
+        <LineageExplorer type="task" id={taskId} />
         <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
       </header>
@@ -90,8 +93,10 @@ function FullBody({ item }: { item: ActivityItem }) {
           )}
           <AttachmentsCard attachments={item.attachments ?? []} />
         </section>
+        {/* The static relationship graph is gone: relationships are read in
+            the explorer panel, and one page does not carry two renderings of
+            the same lineage (spec §21.61 change 2). */}
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
-          {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} />}
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>

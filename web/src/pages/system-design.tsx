@@ -10,6 +10,7 @@ import {
   DocumentTreeItem,
   DocumentTreeNote,
 } from '../components/documents/document-tree'
+import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { MarkdownProse } from '../components/ui/markdown-prose'
@@ -263,16 +264,21 @@ function DesignCanvas({
 
   return (
     <article className="mx-auto max-w-4xl px-8 py-8">
-      <header className="mb-6">
-        <span title="The group this document belongs to">
-          <Badge>{item.document.category}</Badge>
-        </span>
-        <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
-        <p className="mt-1.5 text-xs text-muted">
-          {displayed
-            ? `Version ${displayed.version} · ${displayed.confirmed ? 'confirmed' : 'proposed'} ${formatDate(displayed.created_at)}`
-            : 'No version has been written yet.'}
-        </p>
+      <header className="mb-6 flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <span title="The group this document belongs to">
+            <Badge>{item.document.category}</Badge>
+          </span>
+          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
+          <p className="mt-1.5 text-xs text-muted">
+            {displayed
+              ? `Version ${displayed.version} · ${displayed.confirmed ? 'confirmed' : 'proposed'} ${formatDate(displayed.created_at)}`
+              : 'No version has been written yet.'}
+          </p>
+        </div>
+        {/* The document's corner affordance (REQ-3): the code, work, and
+            evidence this guide governs, on demand. */}
+        <LineageExplorer type="system_design" id={item.document.id} />
       </header>
 
       <AttentionSurface items={attention} />

@@ -8,9 +8,10 @@ import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
 // Historical Blueprints lens (spec §21.58 change 2): retained records remain
-// queryable, but this surface offers no creation path. Its navigation slot is
-// deliberately retained pending an amendment; the page says plainly where
-// live delivery is managed instead.
+// queryable, but this surface offers no creation path. Its navigation entry is
+// now parked (spec §21.61 change 3, AC-4.1) — the route stays mounted for deep
+// links and reaches from blueprint-era task detail, and the page says plainly
+// where live delivery is managed instead.
 export function BlueprintsPage() {
   const { workspace } = useWorkspaceSelection()
   const { data: blueprints, isLoading, error } = useBlueprints()

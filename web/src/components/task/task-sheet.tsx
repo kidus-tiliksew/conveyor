@@ -2,7 +2,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
 import type { ActivityItem } from '../../lib/types'
 import { useCanonicalBlueprintRedirect } from '../blueprint/use-blueprint-route'
-import { LineageGraphCard } from '../lineage/lineage-graph-card'
+import { LineageExplorer } from '../lineage/lineage-explorer'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Sheet } from '../ui/sheet'
@@ -50,6 +50,9 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
     <Sheet onClose={close} label="Task detail">
       <header className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
         <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        {/* The same corner affordance the full route carries (REQ-3): the
+            panel opens over this one without dismissing it. */}
+        <LineageExplorer type="task" id={taskId} />
         <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} panel={panel} />
         <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} panel={panel} />
         {/* The panel's own address is shareable, so it is offered as one
@@ -134,7 +137,8 @@ function SheetBody({ item }: { item: ActivityItem }) {
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
       )}
       <AttachmentsCard attachments={item.attachments ?? []} />
-      {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} />}
+      {/* Relationships are read in the explorer panel, not inline: the panel
+          is the one rendering of this task's lineage (spec §21.61 change 2). */}
       <Timeline item={item} routeVariant="sheet" />
     </div>
   )
