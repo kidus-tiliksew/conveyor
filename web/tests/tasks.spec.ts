@@ -112,11 +112,42 @@ async function openTasks(page: Page) {
     sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  // The repository filter reads the configured repositories, so this fixture
+  // carries the real config.Repo shape rather than bare names.
   await page.route('**/v1/workspace?**', (route) =>
-    route.fulfill({ json: { workspace: 'demo', repos: ['conveyor', 'web'] } }),
+    route.fulfill({
+      json: {
+        workspace: 'demo',
+        repos: [
+          { name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' },
+          { name: 'web', url: 'https://example.test/web', base: 'main' },
+        ],
+      },
+    }),
   )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
-  await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: operations }))
+  await page.route('**/v1/task-operations?**', (route) => {
+    expect(route.request().headers().authorization).toBe('Bearer test-token')
+    // Mirror the server contract: state and repository narrow the set before
+    // paging, and the page bounds travel in the additive response headers.
+    const params = new URL(route.request().url()).searchParams
+    const state = params.get('state') ?? ''
+    const repository = params.get('repository') ?? ''
+    const matched = operations.filter(
+      (item) => (!state || item.task.state === state) && (!repository || item.task.repo === repository),
+    )
+    const offset = Number(params.get('offset') ?? '0')
+    const limit = Number(params.get('limit') ?? String(matched.length))
+    return route.fulfill({
+      body: JSON.stringify(matched.slice(offset, offset + limit)),
+      headers: {
+        'content-type': 'application/json',
+        'X-Conveyor-Total': String(matched.length),
+        'X-Conveyor-Limit': String(limit),
+        'X-Conveyor-Offset': String(offset),
+      },
+    })
+  })
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 }
@@ -211,7 +242,11 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
     sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
+  await page.route('**/v1/workspace?**', (route) =>
+    route.fulfill({
+      json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
+    }),
+  )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [] }))
   await page.goto('/tasks')
@@ -219,7 +254,11 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
+  await page.route('**/v1/workspace?**', (route) =>
+    route.fulfill({
+      json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
+    }),
+  )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/task-operations?**', (route) =>
     route.fulfill({ status: 500, body: 'task operations unavailable' }),
