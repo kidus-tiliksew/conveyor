@@ -16,11 +16,32 @@ import (
 // the same durable intake path as REST and MCP, preserving setup freezing,
 // gates, title generation, idempotency, and triage enqueueing (spec §21.45).
 func (s *Server) CreateMonitorTask(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
-	result, err := s.createTaskRecord(ctx, createTaskReq{
-		Body: request.Body, Repo: request.Repository, Source: request.Source,
-	}, request.IntakeKey, request.Source)
-	if err != nil {
-		return monitor.IntakeResult{}, err
+	var result taskCreateResult
+	if request.ReuseExistingByKey {
+		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, request.IntakeKey); err != nil {
+			return monitor.IntakeResult{}, err
+		} else if found {
+			result.Task = existing
+		}
+	}
+	if result.Task.ID == "" {
+		var err error
+		result, err = s.createTaskRecord(ctx, createTaskReq{
+			Body: request.Body, Repo: request.Repository, Source: request.Source,
+		}, request.IntakeKey, request.Source)
+		if err != nil && request.ReuseExistingByKey {
+			// A different attempt may have won the unique intake-key race with a
+			// different task body. The first task remains the durable authority.
+			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, request.IntakeKey); getErr != nil {
+				return monitor.IntakeResult{}, getErr
+			} else if found {
+				result = taskCreateResult{Task: existing}
+				err = nil
+			}
+		}
+		if err != nil {
+			return monitor.IntakeResult{}, err
+		}
 	}
 	eventKind := "monitor.task_reused"
 	if result.Created {

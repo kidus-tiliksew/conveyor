@@ -42,7 +42,7 @@ func testService(t *testing.T) (*monitor.Service, store.Store, context.Context) 
 	return service, st, ctx
 }
 
-func TestSignalOccurrenceDeduplicatesButDistinctOccurrenceCreatesTask(t *testing.T) {
+func TestPostMergeAttemptsShareTaskAndKeepDistinctObservations(t *testing.T) {
 	service, st, ctx := testService(t)
 	observation := monitor.Observation{
 		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1",
@@ -64,12 +64,64 @@ func TestSignalOccurrenceDeduplicatesButDistinctOccurrenceCreatesTask(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.TaskID == first.TaskID {
-		t.Fatalf("distinct occurrence reused task %s", third.TaskID)
+	if third.TaskID != first.TaskID || third.TaskOutcome != "reused" {
+		t.Fatalf("distinct attempt did not reuse task: first=%+v third=%+v", first, third)
 	}
 	tasks, _ := st.ListTasks(ctx)
-	if len(tasks) != 2 || tasks[0].NextStage != core.StageTriage || tasks[1].NextStage != core.StageTriage {
+	if len(tasks) != 1 || tasks[0].NextStage != core.StageTriage {
 		t.Fatalf("normal intake tasks=%+v", tasks)
+	}
+	status, err := service.Status(ctx)
+	if err != nil || len(status.Observations) != 2 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	for _, record := range status.Observations {
+		if record.TaskID != first.TaskID {
+			t.Fatalf("observation not linked to shared task: %+v", record)
+		}
+	}
+}
+
+func TestObservationIntakeKeyGroupsOnlyPostMergeFailuresWithCommit(t *testing.T) {
+	tests := []struct {
+		name string
+		one  monitor.Observation
+		two  monitor.Observation
+		same bool
+	}{
+		{
+			name: "post merge attempts for one commit",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1", CommitSHA: "abc"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:2", CommitSHA: "abc"},
+			same: true,
+		},
+		{
+			name: "post merge failures without commit",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "run:1"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "run:2"},
+		},
+		{
+			name: "direct pushes",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "push:1", CommitSHA: "abc"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "push:2", CommitSHA: "abc"},
+		},
+		{
+			name: "external pull request merges",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:1", CommitSHA: "abc"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:2", CommitSHA: "abc"},
+		},
+		{
+			name: "reverts",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.Revert, OccurrenceID: "revert:1", CommitSHA: "abc"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.Revert, OccurrenceID: "revert:2", CommitSHA: "abc"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.one.IntakeKey() == test.two.IntakeKey(); got != test.same {
+				t.Fatalf("first=%q second=%q same=%t want=%t", test.one.IntakeKey(), test.two.IntakeKey(), got, test.same)
+			}
+		})
 	}
 }
 
@@ -83,7 +135,7 @@ func TestPostMergeFailureTaskNamesAllFailedChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, found, err := st.GetTaskByIntakeKey(ctx, "monitor:post_merge_failure:conveyor:commit:abc:attempt:1")
+	task, found, err := st.GetTaskByIntakeKey(ctx, "monitor:post_merge_failure:conveyor:commit:abc")
 	if err != nil || !found || task.ID != record.TaskID {
 		t.Fatalf("task=%+v found=%t record=%+v err=%v", task, found, record, err)
 	}
