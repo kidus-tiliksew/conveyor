@@ -66,7 +66,7 @@ function shell(route: Route) {
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
 
-test('System Design renders category, diff, readback, drift, decisions, and authenticated confirmation', async ({
+test('System Design renders a category tree, one attention surface, and authenticated confirmation', async ({
   page,
 }) => {
   await initialize(page)
@@ -140,78 +140,104 @@ test('System Design renders category, diff, readback, drift, decisions, and auth
 
   await page.goto('/system-design')
   await expect(page.getByRole('heading', { name: 'System Design' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Architecture' })).toBeVisible()
+  // AC-2.1: the tree groups documents by their operator-named category and the
+  // selected document is the canvas beside it.
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  await expect(tree.getByRole('heading', { name: 'Architecture' })).toBeVisible()
+  await expect(tree.getByRole('button', { name: /Dispatch ownership/ })).toHaveAttribute('aria-current', 'true')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
-  await expect(page.getByText('Design drift · 1')).toBeVisible()
-  await expect(page.getByText('internal/dispatch/dispatch.go')).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('From version 1')
-  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('To version 2')
-  await expect(page.getByText('Use event-derived lineage.')).toBeVisible()
+  await expect(page.getByText('The dispatcher owns durable stage transitions.').first()).toBeVisible()
+
+  // AC-1.1: drift and the pending version are listed in the one attention
+  // surface, each beside the affordance that resolves it.
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toContainText('Code changed in conveyor without a matching update here')
+  await expect(attention).toContainText('internal/dispatch/dispatch.go')
+  await expect(attention.getByRole('link', { name: 'Open the change' })).toHaveAttribute(
+    'href',
+    'https://example.test/pr/42',
+  )
+  await expect(attention).toContainText('Version 2 is waiting for you')
+  await expect(attention.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
+
+  // AC-1.2: the retired duplicate renderings of those same signals.
+  await expect(page.getByText('Design drift · 1')).toHaveCount(0)
+  await expect(page.getByText('Pending confirmation')).toHaveCount(0)
+  await expect(page.getByText('Pending revisions')).toHaveCount(0)
+  await expect(tree.getByText('pending')).toHaveCount(0)
+  // AC-2.2: the assistant column is withdrawn from this surface.
+  await expect(page.getByRole('complementary', { name: 'Design assistant' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Draft' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Revise' })).toHaveCount(0)
   await expect(page.locator('textarea')).toHaveCount(0)
 
-  await page.getByText('Prior versions').click()
+  // The diff and the version history stay, subordinated under the document.
+  await page.getByText('Compare version 1 with the proposed version 2').click()
+  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('From version 1')
+  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('To version 2')
+  await page.getByText('Version history').click()
   await page.getByText('Read version').first().click()
   await expect(
     page.getByRole('list').getByText('The dispatcher owns durable stage transitions.', { exact: true }),
   ).toBeVisible()
 
-  await page.getByRole('button', { name: 'Confirm version 2' }).click()
+  await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmed).toBe(true)
-  await page.getByRole('button', { name: 'Revise' }).click()
-  await expect
-    .poll(() => revisionInput)
-    .toMatchObject({
-      goal: 'system_design',
-      system_design_context_id: 'design-dispatch',
-    })
+  expect(revisionInput).toEqual({})
   await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
 })
 
-test('System Design Draft starts a second document without revising the selected corpus', async ({ page }) => {
+test('a System Design with nothing outstanding says so in one quiet line', async ({ page }) => {
   await initialize(page)
-  let creationInput: Record<string, unknown> = {}
+  const settled = {
+    ...design,
+    pending_versions: [],
+    versions: [first],
+    drift: [],
+  }
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
     if (handled) return await handled
-    const request = route.request()
-    const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [settled] })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
-    if (url.pathname === '/v1/planning-sessions' && request.method() === 'POST') {
-      creationInput = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>
-      return route.fulfill({
-        json: {
-          id: 'session-new-design',
-          title: 'Drafting System Design…',
-          goal: 'system_design',
-          status: 'active',
-          workspace: 'demo',
-          created_at: '2026-08-05T10:00:00Z',
-          updated_at: '2026-08-05T10:00:00Z',
-        },
-      })
-    }
-    if (url.pathname === '/v1/planning-sessions/session-new-design')
-      return route.fulfill({
-        json: {
-          id: 'session-new-design',
-          title: 'Drafting System Design…',
-          goal: 'system_design',
-          status: 'active',
-          workspace: 'demo',
-          created_at: '2026-08-05T10:00:00Z',
-          updated_at: '2026-08-05T10:00:00Z',
-        },
-      })
-    if (url.pathname.endsWith('/messages')) return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
 
   await page.goto('/system-design')
+  // AC-1.3: no alarm card for a document with nothing to act on.
+  const quiet = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(quiet).toContainText('Nothing needs your attention on this document.')
+  await expect(quiet.getByRole('button')).toHaveCount(0)
+  await expect(page.getByText('Version 1 · confirmed')).toBeVisible()
+})
+
+test('the System Design surface never starts a planning session on its own', async ({ page }) => {
+  await initialize(page)
+  let planningRequests = 0
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    if (url.pathname.startsWith('/v1/planning-sessions')) {
+      planningRequests++
+      return route.fulfill({ json: [] })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design')
+  await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
+  // AC-2.2 and spec §21.61 change 3: the assistant presentation and its
+  // guided-action entry points are withdrawn, so this surface neither renders
+  // a chat column nor reaches for the planning routes. The routes themselves
+  // are untouched.
   await expect(page.locator('textarea')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Draft' }).click()
-  await expect.poll(() => creationInput).toEqual({ goal: 'system_design' })
-  await expect(page.locator('textarea')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Draft' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Q&A' })).toHaveCount(0)
+  expect(planningRequests).toBe(0)
 })
 
 test('stale System Design confirmation refreshes the list and explains the retry', async ({ page }) => {
