@@ -1,300 +1,154 @@
 # Conveyor
 
-Conveyor is a durable software-development orchestrator. It owns the task
-pipeline, specifications, review gates, audit history, and requirements
-corpus; operator-owned coding agents perform implementation and code review
-through MCP.
+**A software factory: durable documents describe the desired state of a
+product, and the factory reconciles code toward them — through planned,
+reviewed, evidence-gated tasks, with every step on the record.**
 
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) v1.22.
-[docs/beta-plan.md](docs/beta-plan.md) records the completed Beta path;
-[docs/phase5-plan.md](docs/phase5-plan.md) is the active post-Beta breakdown.
+Most agent tooling treats each change as a conversation that evaporates
+when the terminal closes. Conveyor is built on the opposite bet: the
+compounding value of AI-driven development is **what survives between
+tasks** — confirmed intent, documented mechanism, recorded decisions,
+and a knowledge graph connecting every merged line of code back to the
+reason it exists. Task N should be cheaper than task 1, and the only
+way to get there is to own the planning, the paper trail, and the
+proof — not just the code generation.
 
-## Status
+Conveyor develops Conveyor. Since Beta (July 15, 2026), nearly every
+feature in this repository was planned as a document in the factory,
+delivered as a factory task through its own gates, reviewed by its own
+adversarial panel against its own citation contracts, and merged with
+its lineage recorded — including the machinery that retired the
+factory's original spec format, and the surfaces you'd use to watch it
+happen.
 
-Phase 4.7 is complete and Beta was achieved July 15, 2026. The code now
-provides:
+## The model
 
-- in-process triage and spec stages through the OpenAI Responses API, with
-  existing schema validators, redacted transcripts, observational usage
-  metering, and stage timeouts;
-- an authenticated MCP server with idempotent `create_task` intake plus
-  implementation/review work orders, including leases, self-review
-  prevention, progress/usage/transcript reporting, synchronous or MCP
-  review, and the in-session `await_review` loop;
-- content-addressed artifacts and a hierarchical requirements tree linking
-  features, tasks, approved specs, pull requests, and events;
-- the embedded activity/review UI, workspace creation/selection, requirements
-  UI, workspace-scoped config, and MCP connection guidance; and
-- Postgres projections plus River-backed durable dispatch.
+**Documents are truth; tasks are reconciliation.** Four durable tiers,
+each with its own maintenance loop:
 
-Phase 5.1 is active under spec §21.12–§21.14 and §§21.20–21.21: worker execution on operator
-hardware, Auto/Manual modes, independent spec/merge gates, workspace harness
-routing, enrollment, heartbeat health, and supervised Auto work-order claims.
+| Tier | Nature | IDs | Loop |
+|---|---|---|---|
+| Product overviews | Informative | — | Markdown uploads, versioned with diffs; enforceable claims **promote** into requirements with a section-anchored link |
+| Requirements | Normative intent | `REQ-n` / `AC-n.m` | Drafted by agents or operators, versioned, operator-confirmed; user stories + nested acceptance criteria |
+| System Design | Normative mechanism | — | Factory-resident markdown declaring the code it governs; merges that touch governed code without a design revision raise a **drift signal** |
+| Decisions | Settled arguments | `DEC-n` | Extracted from real deliberation with alternatives-rejected on record; append-only with supersession |
 
-The worker is an unconfined BYOA dispatcher on operator hardware. Workspace
-configuration owns the harness registry, implement/review harness routes,
-default mode, independent gates, and stage-aware capacity. Manual MCP claims
-remain first-class and are never forced through a configured harness.
+Stable IDs are citable in code comments. Implementing agents cite the
+requirements and decisions their code serves; reviewers validate those
+citations against authority **pinned at claim time** — so the contract
+an agent was shown is the contract it is judged by.
 
-The Workspace Implementation section can optionally request provider-neutral
-`low`, `medium`, or `high` reasoning effort. `Harness default` leaves the field
-unset and appends no effort arguments. Explicit values save only when the
-selected harness declares the matching `effort_args` mapping; Conveyor never
-infers effort from a model name. Dispatch snapshots the requested value and
-exact shell-free adapter argv, so later configuration reloads cannot change an
-in-flight implementation. See [conveyor.example.yaml](conveyor.example.yaml).
+## The loop
+
+1. **Plan** — in an operator-side agent session (the [planning
+   playbook](docs/playbooks/conveyor-planning.md)) or the in-product
+   planning agent. Output: requirement and design *proposals* plus a
+   dependency-ordered task set. Agents propose; **operators confirm** —
+   always, structurally.
+2. **Task** — the sole transition object. Tasks carry attached context
+   (the requirements they serve, the designs that govern them) and are
+   claimable in dependency order from one queue. No priority fields, no
+   assignees — blocked is a derived predicate, workers claim.
+3. **Plan gate** — when enabled, a stage-typed work order collects a
+   versioned markdown execution plan (approach, files, risks,
+   done-criteria) for operator approval or redirect before any
+   implementation dispatches.
+4. **Implement** — an operator-owned agent (Codex, Claude, or anything
+   speaking MCP) claims the work order, resolves a dedicated worktree,
+   and does every edit, test, and push there. Conveyor never runs your
+   code or holds your model credentials.
+5. **Review** — a fresh agent session (self-review is rejected at claim
+   time) judges the diff against cited acceptance criteria and plan
+   done-criteria, with structured verdicts the server validates.
+   Evidence-gated: no test output, no submission.
+6. **Merge & watch** — gated or automatic merge; the monitor watches
+   the default branch for out-of-pipeline changes and post-merge
+   failures, and files reconciliation tasks instead of letting history
+   drift silently.
+
+Every transition appends an event. Every relationship in the knowledge
+graph — session → document → task → work order → PR → evidence →
+verdict — is a projection of those events, rebuildable from history,
+never a free-standing claim. Agent token usage is telemetry on every
+work order.
+
+## Human authority
+
+Two gates (plan approval, merge approval), document confirmation,
+drift resolution, and task cancel/hold answer **only to human
+credentials — structurally**, not by configurable permission. Agents
+file tasks but cannot cancel them; they propose documents but cannot
+confirm them; a persuaded agent hits a credential wall, not a policy
+suggestion. The factory has paused mid-task to ask for a human
+decision and refused to fabricate evidence to satisfy its own gates;
+that behavior is the design, and it has survived live contact.
 
 ## Run locally
 
-Requirements: Go 1.24, Node/npm, PostgreSQL 15 or newer, Docker with Compose, and an authenticated
-`gh` CLI when GitHub issue intake or PR creation is enabled.
-
-Conveyor checks the connected PostgreSQL server version before applying
-migrations or starting normal service work. Servers older than PostgreSQL 15
-are rejected with an error that reports the required and detected versions.
+Requirements: Go 1.24, Node/npm, PostgreSQL 15+, Docker with Compose,
+and an authenticated `gh` CLI for GitHub-delivery repos.
 
 ```sh
 cp conveyor.example.yaml conveyor.yaml
-cp .env.example .env
+cp .env.example .env   # set CONVEYOR_API_KEY; regenerate the operator token: openssl rand -hex 32
+make dev               # health-checked Postgres on :5432 + build + conveyord on :8080
 ```
 
-Set `CONVEYOR_API_KEY` in `.env` and replace the example operator token with
-the output of `openssl rand -hex 32`. The file is ignored by Git. Then start
-the database and control plane together:
+Open `http://127.0.0.1:8080` — the Board and Tasks views are the
+operating surfaces. `http://127.0.0.1:8080/settings` has the MCP
+endpoint and a paste-ready client snippet.
+
+Start a worker on your hardware (it supervises your agents; it is not
+an execution sandbox):
 
 ```sh
-make dev
+bin/conveyor --workspace demo worker pair                      # prints a single-use pairing token
+bin/conveyor --workspace demo worker run --pairing-token <t>   # exchanges it for a revocable credential
 ```
 
-`make dev` starts the health-checked Compose Postgres service on
-`127.0.0.1:5432`, builds Conveyor, loads `.env`, and starts `conveyord`.
-Use `make db-up` or `make db-down` when only the database lifecycle is needed.
-The named `conveyor-postgres-data` volume survives `make db-down`.
-
-Postgres integration tests use a separate disposable Compose service and
-database so test workspaces never enter the development database:
+File work from anywhere:
 
 ```sh
-make test-integration
+bin/conveyor --workspace demo task new --repo api --message 'fix the typo in README'
 ```
 
-That target starts `postgres-test` on `127.0.0.1:5433`, runs the Postgres store
-and dispatch integration suites serially against the shared `conveyor_test`
-database, and removes the test container afterward. Its data directory is a
-tmpfs. Regular `make test` explicitly clears `CONVEYOR_TEST_DATABASE_URL`;
-integration tests also refuse database names that do not end in `_test`.
+or over MCP with `create_task` (idempotent; `body`, `repo`, and a
+caller-stable `idempotency_key` required; attach served requirements
+and governing designs at intake). Any MCP-speaking agent can claim
+work orders, submit plans, and file review verdicts using
+`CONVEYOR_API_TOKEN` — model credentials stay yours.
 
-`make test-integration` is the required database-backed lane for cancellation
-and migration coverage. Those tests require `CONVEYOR_TEST_DATABASE_URL` and
-skip when it is absent, so a passing `make test` does not exercise PostgreSQL
-constraints or task-cancellation persistence.
+`CONVEYOR_API_KEY` powers only the server-owned triage and planning
+stages. `.env` is auto-loaded by both binaries; process environment
+wins.
 
-To run an already-built daemon without rebuilding or changing the database:
+## Developing Conveyor
+
+The authoritative design is [conveyor-spec.md](conveyor-spec.md) —
+body §§1–20 normative, §21 the amendment record. **When code and spec
+disagree, the spec wins**; changes go by version-bumped amendment,
+never silent edits. Code cites the spec (`(spec §N)`) and confirmed
+documents (`REQ-n`, `AC-n.m`, `DEC-n`) as its traceability layer.
 
 ```sh
-make run
+make build            # binaries
+make test             # Go + web typecheck + Biome + Playwright
+make test-integration # disposable Postgres on :5433; the database-backed lane
+make vet fmt-check
 ```
 
-To rebuild and then run without changing the database:
+Planning and task filing from agent sessions follow the
+[planning](docs/playbooks/conveyor-planning.md) and
+[task-filing](docs/playbooks/conveyor-task-filing.md) playbooks
+(`.claude/skills/` wraps them for Claude Code; `AGENTS.md` is a symlink
+to the same guidance for Codex and friends). Every push is a proposal;
+operators confirm.
 
-```sh
-make build-run
-```
+## Status
 
-It expands to:
-
-```sh
-bin/conveyord -config conveyor.yaml -addr 127.0.0.1:8080 -poll-github 60s
-```
-
-Override `LISTEN_ADDR`, `POLL_GITHUB`, `ENV_FILE`, or `CONVEYOR_CONFIG` on any
-of the run targets when needed.
-
-Both `bin/conveyord` and `bin/conveyor` automatically load `.env` from their
-working directory, so direct CLI commands in another terminal use the same
-address, token, and workspace. Existing process environment variables win;
-set `CONVEYOR_ENV_FILE` to use a different file.
-
-In Zed, press `Cmd+Shift+R` and select **Conveyor: Run locally**. Project tasks
-for starting/stopping Postgres and running tests are also available; they use
-the same `.env` file, so new Zed terminals do not need repeated exports.
-
-`CONVEYOR_API_KEY` is used only by server-owned in-process stages. MCP clients
-authenticate to Conveyor with `CONVEYOR_API_TOKEN` and bring their own model
-credentials or subscriptions.
-
-Create and inspect work:
-
-```sh
-bin/conveyor --workspace demo task new --repo api --mode manual --message 'fix the typo in README'
-bin/conveyor --workspace demo task list
-bin/conveyor --workspace demo config export > workspace.yaml
-```
-
-MCP clients can submit newly discovered work through `create_task`. Pass
-`workspace_id` explicitly whenever more than one workspace exists. Required
-arguments are `body`, `repo`, and a caller-stable `idempotency_key`; title is
-not an intake field. Optional arguments include `source`, `base_branch`,
-execution mode, and approval-gate overrides. Conveyor uses its trusted
-control-plane AI integration to generate and persist a title from `body`
-before creation succeeds. The tool then enqueues the normal task, returns
-immediately, and reuses the original task when the same key and input are
-retried. Luna triage advances through the same audited pipeline used by UI,
-CLI, API, and GitHub intake.
-
-Open `http://127.0.0.1:8080/settings` for the MCP endpoint and client snippet.
-Each review must use a fresh agent session and client token; Conveyor rejects
-an implementer's attempt to claim the corresponding review work order.
-
-Enroll and start a worker from the operator machine:
-
-```sh
-# Operator-authenticated: prints one short-lived, single-use token.
-bin/conveyor --workspace demo worker pair
-
-# First run exchanges the token for a revocable workspace credential.
-bin/conveyor --workspace demo worker run --pairing-token <token>
-```
-
-`worker run` stores the exchanged credential with owner-only permissions,
-probes every registered harness, heartbeats on a 15-second liveness lease,
-prioritizes reserved review capacity, and claims Auto work only through the
-existing work-order lifecycle. `worker list` reports liveness and per-harness
-health; `worker revoke <worker-id>` revokes an enrollment. Explicit Auto intake
-fails while routed harness health is unavailable; workspace-default Auto
-instead persists Manual and records an audit event.
-
-The worker reconnects across bounded transient control-plane failures while
-reusing that saved credential; revoked credentials and invalid configuration
-remain terminal. After enrollment, `worker install` installs the existing
-foreground worker as a workspace-specific launchd agent or systemd user
-service; `worker status` separates local service-manager state from remote
-heartbeat and harness health; and idempotent `worker uninstall` removes the
-service while preserving enrollment. Service definitions contain no worker or
-API credentials. Exact commands, log paths, manual troubleshooting, optional
-macOS sleep prevention, reconnect expectations, and the required reboot/login
-exit demonstration are documented in
-[docs/worker-operations.md](docs/worker-operations.md).
-
-### Branch ownership
-
-Task intake records the canonical `conveyor/task-<id>` branch name and selected
-base, but it does not create a local or remote Git ref. After claiming and
-reading an implementation work order, the operator-owned agent runs
-`conveyor checkout <task-id>` to create or reuse a clean, task-dedicated
-worktree beneath the sibling `conveyor-worktrees` container. Before any fetch
-or ref inspection, the helper verifies that the current `origin` identifies
-the assigned configured repository. It safely creates or adopts the exact
-assigned branch, preserves existing task commits across redispatches and review
-bounces, and returns the resolved path for all edits, tests, commits, and
-pushes. The primary checkout is never switched, stashed, reset, or edited. The
-agent pushes before `submit_for_review`; Conveyor then opens or reuses the PR
-and never resets or pushes the agent's branch.
-
-After spec approval, Conveyor durably creates or reuses the task's GitHub issue
-and exposes that association in task/activity/requirements reads. At
-`submit_for_review`, the PR body is reconciled with `Closes #N`; review Check
-Runs and the factory comment retain round/seat verdicts and requested-change
-resolution history. Retry, source-issue, and §21.15 boundary details are in
-[docs/github-lifecycle.md](docs/github-lifecycle.md).
-
-The dashboard exposes the same checkout command before or after the first push.
-If the task branch does not exist locally or remotely, the helper creates it
-from a freshly fetched `origin/<base>`; existing local, remote, or registered
-worktree history is preserved, and dirty, in-progress, or divergent states fail
-closed. After the task merges or closes, `conveyor done <task-id>` removes only
-a clean task worktree and retains the task branch; background reconciliation
-performs the same cleanup automatically and prunes stale primary-checkout
-registrations.
-
-### Codex plugin
-
-The repository-owned plugin lives in `plugins/conveyor`, with repo-local
-marketplace metadata in `.agents/plugins/marketplace.json`. It connects to the
-local MCP endpoint using `CONVEYOR_API_TOKEN` from the Codex process environment
-and never stores the credential. Installation, update, resume, and validation
-instructions are in [plugins/conveyor/README.md](plugins/conveyor/README.md).
-
-## Configuration ownership
-
-`conveyor.yaml` bootstraps its named initial workspace on first Postgres start.
-Authenticated operators can create and select additional workspaces in the
-Workspace UI or through `POST /v1/workspaces`; creation atomically stores its
-configuration and `workspace.created` audit event. Each workspace's routes,
-bounce cap, work-order queue timeout, repositories, config version, task intake
-keys, River queues, and pipeline records remain independent and versioned in
-Postgres. They are editable through the UI/API or `conveyor config import`.
-The deployment file retains the database connection, prompt-pack path, and
-bare repository cache path.
-
-Phase 5.6 monitoring is enabled per workspace and explicit repository. The
-Monitor dashboard and `conveyor monitor status` show last success,
-categorized errors/backoff, task links, and unresolved drift count/age.
-`conveyor monitor resolve <drift-id> --outcome <outcome>` records the audited
-reconciliation outcome; it does not silently modify requirements.
-
-All workspace-scoped REST calls accept `workspace_id` or `X-Workspace-ID`.
-The CLI accepts `--workspace` (or `CONVEYOR_WORKSPACE`) and MCP tools accept
-`workspace_id`. Omission remains compatible only when exactly one workspace
-exists; zero-workspace and multi-workspace ambiguity fail closed.
-
-The Phase 4.7 document deliberately has no runner, image, credential pool,
-secret reference, vendor policy, or tool policy fields. Operator agents own
-their execution environment; repository CI is the mechanical verifier until
-managed execution is explicitly activated in Phase 8.
-
-Harnesses declare how their `{mcp_config}` argv element is represented. Use
-`mcp_transport: json_file` for CLIs such as Claude Code that accept a JSON MCP
-file. Use `mcp_transport: toml_override` with Codex's
-`--config {mcp_config}` form; Conveyor emits a TOML override that references
-the child-only `CONVEYOR_API_TOKEN` environment variable and never places the
-credential value in argv (spec §21.20). Existing documents without the field
-normalize to `json_file`.
-
-Use `mcp_transport: environment` for Grok Build and set the non-secret
-`mcp_attachment` to the intended Grok MCP server name. This transport requires
-one `{prompt}` and forbids `{mcp_config}`. Before either an implementation or
-review model turn, the worker verifies the effective `config.toml` entry and
-runs Grok's no-model-turn MCP doctor using the isolated child environment; a
-missing, stale, compatible-but-token-bearing, or unhealthy registration blocks
-launch. See [docs/grok-build.md](docs/grok-build.md) for setup and repair.
-
-Stage routes contain only model, timeout, and execution mode. Conveyor retains
-token and USD usage as audit telemetry, but it has no allocation, remaining
-balance, or usage-based execution gate (spec §21.6).
-
-`work_order_queue_timeout` defaults to `24h`. It bounds how long an unclaimed
-MCP work order remains claimable. The per-stage route timeout starts only on a
-successful claim, while `lease_expires_at` governs ownership and never extends
-that fixed execution deadline (spec §21.9).
-
-When upgrading from v1.5, remove `budget_usd` from the deployment bootstrap
-file before restart. Startup canonicalizes an existing Postgres workspace
-document, and migration 011 removes the obsolete job allocation column while
-preserving cost/token telemetry and append-only audit events.
-
-## Layout
-
-```text
-cmd/conveyor/             Cobra CLI: tasks, gates, config, checkout
-cmd/conveyord/            control plane, River worker, API, MCP, embedded UI
-internal/dispatch/        durable multi-stage orchestration
-internal/inprocess/       direct server-owned Responses API stages
-internal/workorder/       leased MCP lifecycle and protocol enforcement
-internal/store/           memory test store and pgx/sqlc Postgres store
-internal/httpapi/         REST, SSE, MCP, requirements/artifact APIs
-internal/gitx/            bare repository cache and checkout support
-internal/trigger/github/  issue intake, branch diff, and PR integration
-internal/redact/          transcript redaction
-pack/roles/               reviewable stage prompts
-web/                      embedded React operator interface
-```
-
-## Development
-
-```sh
-make build
-make test
-make vet
-make plugin-check
-```
+Beta July 15, 2026. Phases through 8 (the desired-state document
+model) are delivered and attested in the factory's own records; the
+current work — including the UI it's judged by — is planned and built
+through the loop above. [docs/phase8-plan.md](docs/phase8-plan.md) and
+the spec's §21 record carry the history, defects and all: the
+reviews, the incidents, and the amendments are part of the product.

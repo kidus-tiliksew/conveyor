@@ -162,9 +162,7 @@ function shellResponse(route: Route) {
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
 
-test('requirements renders living intent as the canvas, confirms a revision, and docks the assistant', async ({
-  page,
-}) => {
+test('requirements renders a document tree, one attention surface, and confirms from the canvas', async ({ page }) => {
   await initShell(page)
   let confirmed = false
   await page.route('**/v1/**', async (route) => {
@@ -189,10 +187,44 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   })
 
   await page.goto('/requirements')
-  await expect(page.getByRole('heading', { name: 'Requirements' })).toBeVisible()
-  await expect(page.getByText('Retry behavior', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('Needs confirmation')).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
+
+  // AC-2.1: the tree groups the corpus beside the canvas, and the selected
+  // document is the hero.
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  await expect(tree.getByRole('heading', { name: 'Product overviews' })).toBeVisible()
+  await expect(tree.getByRole('heading', { name: 'Requirements' })).toBeVisible()
+  await expect(tree.getByRole('button', { name: /Retry behavior/ })).toHaveAttribute('aria-current', 'true')
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
   await expect(page.getByText('Feature tree')).toHaveCount(0)
+
+  // AC-1.1: staleness names its causal delivery and the pending version
+  // carries the confirmation, both inside the one attention surface.
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toContainText('Code shipped past the confirmed intent')
+  await expect(attention.getByText('Latest delivery: blueprint-task.')).toHaveAttribute(
+    'title',
+    /blueprint-task delivered/,
+  )
+  await expect(attention.getByRole('link', { name: 'Open the delivery' })).toHaveAttribute(
+    'href',
+    '/tasks/blueprint-task',
+  )
+  await expect(attention).toContainText('Version 1 is waiting for you')
+
+  // AC-1.2: the badges and banners that used to repeat those signals.
+  await expect(page.getByText('Needs confirmation')).toHaveCount(0)
+  await expect(page.getByText('Revision pending')).toHaveCount(0)
+  await expect(page.getByText('Code ahead of intent')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Requirement alignment' })).toHaveCount(0)
+  await expect(tree.getByText('confirmation')).toHaveCount(0)
+  // AC-2.2: the assistant column is withdrawn from this surface.
+  await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
+  for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work', 'New requirement']) {
+    await expect(page.getByRole('button', { name: action })).toHaveCount(0)
+  }
+
   await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
     'href',
     '/blueprints/blueprint-task',
@@ -201,31 +233,12 @@ test('requirements renders living intent as the canvas, confirms a revision, and
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toBeVisible()
-  await expect(page.getByText('Latest delivery: blueprint-task.')).toHaveAttribute('title', /blueprint-task delivered/)
   await page.getByText('Trace planning to delivery evidence').click()
   await expect(page.getByText('serves', { exact: true })).toBeVisible()
-  await expect(page.getByText('Retry behavior', { exact: true }).last()).toBeVisible()
   await expect(page.getByText('Ship bounded retries', { exact: true }).last()).toBeVisible()
 
-  await page.getByRole('button', { name: 'Confirm version 1' }).click()
+  await attention.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
-
-  // The document is the canvas and the assistant is docked beside it, scoped
-  // to that document — no detached chat page (spec §21.57 change 1).
-  const canvas = page.getByRole('region', { name: 'Requirement document' })
-  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
-  const assistant = page.getByRole('complementary', {
-    name: 'Planning assistant',
-  })
-  await expect(assistant.getByText('Retry behavior')).toBeVisible()
-  for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work']) {
-    await expect(assistant.getByRole('button', { name: action })).toBeVisible()
-  }
-  await expect(assistant.getByRole('button', { name: 'Plan work' })).toHaveAttribute(
-    'title',
-    'Propose a reviewable delivery bundle for this requirement',
-  )
-  await expect(page.locator('option[value="blueprint"]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/requirements/)
 })
 
@@ -626,6 +639,74 @@ test('planning restores durable messages, tool markers, and streams a new turn',
     .toBe('Draft a requirement with stable statements.')
 })
 
+test('a requirement voices drift once and collapses to a quiet line when nothing is outstanding', async ({ page }) => {
+  await initShell(page)
+  const drifting = {
+    ...requirement,
+    current_version: { ...requirement.pending_versions[0], confirmed: true },
+    pending_versions: [],
+    staleness: {
+      delivery_after_intent: false,
+      active_drift: [
+        {
+          id: 'drift-9',
+          workspace_id: 'demo',
+          repository: 'conveyor',
+          kind: 'external_pr_merge',
+          source_url: 'https://example.test/pr/9',
+          task_id: '260807-example',
+          matching_paths: ['internal/dispatch/dispatch.go'],
+          detected_at: '2026-08-06T10:00:00Z',
+        },
+      ],
+    },
+  }
+  const settled = {
+    ...drifting,
+    requirement: { ...requirement.requirement, id: 'req-calm', slug: 'calm-intent', title: 'Calm intent' },
+    serving_blueprints: [],
+    planning_sessions: [],
+    lineage_graph: undefined,
+    staleness: { delivery_after_intent: false, active_drift: [] },
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: [drifting, settled] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: drifting })
+    if (path === '/v1/requirements/req-calm') return route.fulfill({ json: settled })
+    if (path.endsWith('/versions')) return route.fulfill({ json: [drifting.current_version] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  // AC-1.1: the unreconciled change is listed with the action that opens it.
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toContainText('Code changed in conveyor without reaching this document')
+  await expect(attention).toContainText('internal/dispatch/dispatch.go')
+  await expect(attention.getByRole('link', { name: 'Open the change' })).toHaveAttribute(
+    'href',
+    'https://example.test/pr/9',
+  )
+  // AC-1.2: exactly once — no drift chip in the tree and no second banner.
+  await expect(page.getByText('1 active drift')).toHaveCount(0)
+  await expect(page.getByText(/unreconciled repository change/)).toHaveCount(0)
+  await expect(page.getByText('internal/dispatch/dispatch.go')).toHaveCount(1)
+
+  // AC-2.1 and AC-1.3: the tree switches documents, and a document with
+  // nothing outstanding collapses to one quiet line.
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: /Calm intent/ })
+    .click()
+  await expect(
+    page.getByRole('region', { name: 'Requirement document' }).getByRole('heading', { name: 'Calm intent' }),
+  ).toBeVisible()
+  await expect(attention).toContainText('Nothing needs your attention on this document.')
+  await expect(attention.getByRole('button')).toHaveCount(0)
+})
+
 test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({
   page,
 }) => {
@@ -683,9 +764,11 @@ test('requirements deep-link exact versions, render statements, diff pending int
 
   await page.goto('/requirements?requirement=req-retries')
   await expect(page).toHaveURL(/requirement=req-retries/)
-  await expect(page.getByRole('button', { name: /Version 2/ })).toBeVisible()
-  await page.getByRole('button', { name: /Version 2/ }).click()
-  await expect(page.getByText('Operator proposal').first()).toBeVisible()
+  await page.getByText('Version history').click()
+  const history = page.getByRole('region', { name: 'Requirement versions' })
+  await expect(history.getByRole('button', { name: /Version 2/ })).toBeVisible()
+  await history.getByRole('button', { name: /Version 2/ }).click()
+  await expect(page.getByText('Written by an operator').first()).toBeVisible()
   await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
   await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
   await expect(
@@ -693,7 +776,11 @@ test('requirements deep-link exact versions, render statements, diff pending int
   ).toBeVisible()
   await expect(page.getByRole('region', { name: 'Requirement statements' }).getByText('REQ-1')).toBeVisible()
   await expect(page.getByText('conveyor:requirements')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Confirm version 2' }).click()
+  // AC-1.1: both proposed versions are listed once, each with its own
+  // confirmation, in the single attention surface.
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention.getByRole('button', { name: /^Confirm version/ })).toHaveCount(2)
+  await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmedVersion).toBe(2)
   expect(ifMatch).toBe('"1"')
 })
@@ -751,12 +838,19 @@ test('migrated seeds explain disabled confirmation and requirement switches open
     return route.fulfill({ json: [] })
   })
   await page.goto('/requirements?requirement=req-retries')
-  const disabled = page.getByRole('button', { name: 'Confirm version 1' })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  const disabled = attention.getByRole('button', { name: 'Confirm version 1' })
   await expect(disabled).toBeDisabled()
   await expect(disabled).toHaveAttribute('title', /Revise this migrated seed/)
-  await expect(page.getByText(/needs its first deliberate revision/)).toBeVisible()
-  await page.getByRole('button', { name: 'Second intent', exact: false }).click()
-  await expect(page.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(attention.getByText(/needs its first deliberate revision/)).toBeVisible()
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: 'Second intent', exact: false })
+    .click()
+  await page.getByText('Version history').click()
+  await expect(
+    page.getByRole('region', { name: 'Requirement versions' }).getByRole('button', { name: /Version 2/ }),
+  ).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('planning keeps partial text through malformed and error stream frames and resolves pending markers', async ({
@@ -1064,198 +1158,6 @@ test('a historical finalized blueprint session remains readable', async ({ page 
   await expect(page.getByRole('link', { name: 'Open spec gate' })).toHaveAttribute('href', '/tasks/blueprint-task')
 })
 
-// AC-4: every guided action starts a sidebar session with its declared goal,
-// and none of them leaves the Requirements view (spec §21.57 change 1).
-test('guided actions start goal-declared sidebar sessions without leaving requirements', async ({ page }) => {
-  await initShell(page)
-  const created: Record<string, unknown>[] = []
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
-      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
-      created.push(body)
-      return route.fulfill({
-        json: {
-          id: `session-${created.length}`,
-          title: 'Drafting requirement…',
-          status: 'active',
-          goal: body.goal,
-          requirement_context_id: body.requirement_context_id,
-          workspace: 'demo',
-          created_at: '2026-07-30T10:00:00Z',
-          updated_at: '2026-07-30T10:00:00Z',
-        },
-      })
-    }
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [requirement] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
-    if (url.pathname === '/v1/requirements/req-retries/versions')
-      return route.fulfill({ json: requirement.pending_versions })
-    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages'))
-      return route.fulfill({ json: [] })
-    if (url.pathname.startsWith('/v1/planning-sessions/')) {
-      const id = url.pathname.split('/')[3]
-      const body = created[Number(id.split('-')[1]) - 1] ?? {}
-      return route.fulfill({
-        json: {
-          id,
-          title: 'Drafting requirement…',
-          status: 'active',
-          goal: body.goal,
-          requirement_context_id: body.requirement_context_id,
-          workspace: 'demo',
-          created_at: '2026-07-30T10:00:00Z',
-          updated_at: '2026-07-30T10:00:00Z',
-        },
-      })
-    }
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements?requirement=req-retries')
-  const assistant = page.getByRole('complementary', {
-    name: 'Planning assistant',
-  })
-  const expected = [
-    { action: 'Revise', goal: 'requirement', context: 'req-retries' },
-    { action: 'Q&A', goal: 'open', context: 'req-retries' },
-    { action: 'Plan work', goal: 'bundle', context: 'req-retries' },
-    { action: 'Draft', goal: 'requirement', context: undefined },
-  ]
-  for (const [index, step] of expected.entries()) {
-    await assistant.getByRole('button', { name: step.action }).click()
-    await expect.poll(() => created.length).toBe(index + 1)
-    expect(created[index].goal).toBe(step.goal)
-    expect(created[index].requirement_context_id).toBe(step.context)
-    // The conversation opens in the sidebar; the canvas never navigates away.
-    await expect(assistant.getByRole('log', { name: 'Planning conversation' })).toBeVisible()
-    await expect(assistant.getByRole('heading', { name: 'Drafting requirement…' })).toBeVisible()
-    await expect(page).toHaveURL(/\/requirements\?/)
-    await expect(page).toHaveURL(/requirement=req-retries/)
-  }
-  // The sidebar session is deep-linkable, so a reload restores the assistant.
-  await expect(page).toHaveURL(/session=session-4/)
-})
-
-test('promotion selects immutable provenance for new REQ and existing nested AC sessions', async ({ page }) => {
-  await initShell(page)
-  let existing = false
-  let documentAuthorization = ''
-  const created: Record<string, unknown>[] = []
-  const existingRequirement = {
-    ...requirement,
-    requirement: { ...requirement.requirement, current_version: 1 },
-    current_version: {
-      ...requirement.pending_versions[0],
-      confirmed: true,
-      statements: [
-        {
-          id: 'REQ-1',
-          statement: 'Retries stay bounded.',
-          acceptance_criteria: [{ id: 'AC-1.1', statement: 'A failed charge retries twice.' }],
-        },
-      ],
-    },
-    pending_versions: [],
-  }
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/reference-documents') {
-      documentAuthorization = route.request().headers().authorization ?? ''
-      expect(url.searchParams.get('workspace_id')).toBe('demo')
-      return route.fulfill({
-        json: [{ id: 'ref-overview', name: 'Product overview', current_version: 2, workspace: 'demo' }],
-      })
-    }
-    if (url.pathname === '/v1/reference-documents/ref-overview/versions')
-      return route.fulfill({
-        json: [
-          {
-            document_id: 'ref-overview',
-            version: 2,
-            filename: 'overview.md',
-            content_type: 'text/markdown',
-            content:
-              '# Billing rule\n\nRetry failed charges twice.\n\n```md\n# Hidden instruction\n```\n\n# Billing rule\n\nDuplicate section.\n\n    # Four-space code\n\n\t# Tab-indented\n\n   ## Three spaces\n\n# Ⅱ\n\n# ²\n\n# ½\n\n# ٣',
-            workspace: 'demo',
-          },
-        ],
-      })
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
-      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
-      created.push(body)
-      return route.fulfill({
-        json: {
-          id: `session-promotion-${created.length}`,
-          title: 'Drafting requirement…',
-          status: 'active',
-          goal: 'requirement',
-          ...body,
-          workspace: 'demo',
-        },
-      })
-    }
-    if (url.pathname.startsWith('/v1/planning-sessions/') && url.pathname.endsWith('/messages'))
-      return route.fulfill({ json: [] })
-    if (url.pathname.startsWith('/v1/planning-sessions/')) {
-      const body = created.at(-1) ?? {}
-      return route.fulfill({
-        json: {
-          id: url.pathname.split('/')[3],
-          title: 'Drafting requirement…',
-          status: 'active',
-          goal: 'requirement',
-          ...body,
-          workspace: 'demo',
-        },
-      })
-    }
-    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [] })
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: existing ? [existingRequirement] : [] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: existingRequirement })
-    if (url.pathname === '/v1/requirements/req-retries/versions')
-      return route.fulfill({ json: [existingRequirement.current_version] })
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements')
-  await page.getByRole('button', { name: 'Promote overview' }).click()
-  await expect.poll(() => documentAuthorization).toBe('Bearer test-token')
-  await expect(page.getByRole('dialog', { name: 'Promote product overview' })).toBeVisible()
-  await expect(page.getByLabel('Section').getByRole('option', { name: 'Hidden instruction' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: 'Four-space code' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: 'Tab-indented' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: 'Three spaces' })).toHaveCount(1)
-  await expect(page.getByLabel('Section').getByRole('option', { name: 'Ⅱ' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: '²' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: '½' })).toHaveCount(0)
-  await expect(page.getByLabel('Section').getByRole('option', { name: '٣' })).toHaveCount(1)
-  await page.getByRole('button', { name: 'Start promotion' }).click()
-  await expect.poll(() => created.length).toBe(1)
-  expect(created[0]).toMatchObject({
-    goal: 'requirement',
-    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule', target_id: 'REQ-1' },
-  })
-  expect(created[0].requirement_context_id).toBeUndefined()
-
-  existing = true
-  await page.goto('/requirements?requirement=req-retries')
-  await page.getByRole('button', { name: 'Promote overview' }).click()
-  await page.getByLabel('Section').selectOption('#billing-rule-1')
-  await page.getByLabel('Promotion target').fill('AC-1.2')
-  await page.getByRole('button', { name: 'Start promotion' }).click()
-  await expect.poll(() => created.length).toBe(2)
-  expect(created[1]).toMatchObject({
-    goal: 'requirement',
-    requirement_context_id: 'req-retries',
-    promotion: { document_id: 'ref-overview', version: 2, section_anchor: '#billing-rule-1', target_id: 'AC-1.2' },
-  })
-})
-
 test('reference documents upload safely, load history on demand, compare both sides, and confirm deletion', async ({
   page,
 }) => {
@@ -1318,20 +1220,24 @@ test('reference documents upload safely, load history on demand, compare both si
   })
 
   await page.goto('/requirements')
-  const overviewSummary = page.locator('summary').filter({ hasText: 'Product overview' })
-  await expect(overviewSummary).toBeVisible()
+  // AC-2.1: product overviews are their own group in the tree, and opening one
+  // makes it the canvas — the version history it needs loads only then.
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  const overviewItem = tree.getByRole('button', { name: /Product overview/ })
+  await expect(overviewItem).toBeVisible()
   expect(listAuthorization).toBe('Bearer test-token')
   expect(versionRequests).toBe(0)
 
-  const addInput = page.locator('label').filter({ hasText: 'Add Markdown' }).locator('input[type=file]')
+  const addInput = tree.locator('label').filter({ hasText: 'Add Markdown' }).locator('input[type=file]')
   await addInput.setInputFiles({ name: 'new.md', mimeType: 'application/octet-stream', buffer: Buffer.from('# New') })
   await expect.poll(() => uploadRequests).toBe(1)
   await addInput.setInputFiles({ name: 'bad.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7') })
   await expect(page.getByText('reference document content is not Markdown')).toBeVisible()
 
-  await overviewSummary.click()
+  await overviewItem.click()
   await expect.poll(() => versionRequests).toBe(1)
   expect(versionAuthorization).toBe('Bearer test-token')
+  await expect(page.getByRole('heading', { level: 2, name: 'Product overview', exact: true })).toBeVisible()
   await page.getByLabel('Read version').selectOption('1')
   await expect(page.getByText('Removed section.')).toBeVisible()
   await page.getByLabel('Read version').selectOption('2')
@@ -1420,10 +1326,10 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
       buffer: Buffer.from(priorContent),
     })
   await expect.poll(() => createRequests).toBe(1)
-  const summary = page.locator('summary').filter({ hasText: 'overview' })
-  await expect(summary).toContainText('v1')
-  await summary.click()
-  await expect(page.getByText('Prior line 0')).toBeVisible()
+  const item = page.getByRole('navigation', { name: 'Document tree' }).getByRole('button', { name: /overview/ })
+  await expect(item).toContainText('v1')
+  await item.click()
+  await expect(page.getByText('Prior line 0').first()).toBeVisible()
 
   await page
     .locator('label')
@@ -1435,7 +1341,7 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
       buffer: Buffer.from(currentContent),
     })
   await expect.poll(() => supersedeRequests).toBe(1)
-  await expect(summary).toContainText('v2')
+  await expect(item).toContainText('v2')
   const comparison = page.locator('details').filter({ hasText: 'Compared with v1' })
   await comparison.getByText('Compared with v1').click()
   await expect(comparison.getByText('Diff too large; showing both versions without highlighting.')).toBeVisible()
@@ -1516,222 +1422,6 @@ test('pending derivation links to its pinned source and requirement anchors scro
   await expect(page.getByText('Retry twice.')).toBeVisible()
 })
 
-// AC-5: finalizing in the sidebar refreshes the canvas in place — a produced
-// requirement becomes the open document with its pending version and the
-// unchanged confirmation affordance; a produced blueprint refreshes the
-// proposed serves link on the document it serves.
-test('finalizing in the sidebar refreshes the canvas without leaving the view', async ({ page }) => {
-  await initShell(page)
-  const drafted = {
-    requirement: {
-      id: 'req-drafted',
-      slug: 'drafted-intent',
-      title: 'Drafted intent',
-      statement_high_water_mark: 1,
-      workspace: 'demo',
-      created_at: '2026-07-30T11:00:00Z',
-      updated_at: '2026-07-30T11:00:00Z',
-    },
-    pending_versions: [
-      {
-        requirement_id: 'req-drafted',
-        version: 1,
-        content:
-          'The drafted intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Drafted statements are stable.\n```',
-        statements: [{ id: 'REQ-1', statement: 'Drafted statements are stable.' }],
-        origin: 'chat',
-        origin_session_id: 'session-draft',
-        confirmed: false,
-        workspace: 'demo',
-        created_at: '2026-07-30T11:05:00Z',
-      },
-    ],
-    serving_blueprints: [],
-    planning_sessions: [],
-    artifacts: [],
-    lineage: [],
-    migrated_seed: false,
-    confirmation_eligible: true,
-  }
-  let finalized = false
-  const session = () => ({
-    id: 'session-draft',
-    title: finalized ? 'Drafted intent' : 'Drafting requirement…',
-    status: finalized ? 'finalized' : 'active',
-    goal: 'requirement',
-    produced_requirement_id: finalized ? 'req-drafted' : undefined,
-    workspace: 'demo',
-    created_at: '2026-07-30T11:00:00Z',
-    updated_at: '2026-07-30T11:05:00Z',
-  })
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: finalized ? [drafted] : [] })
-    if (url.pathname === '/v1/requirements/req-drafted') return route.fulfill({ json: drafted })
-    if (url.pathname === '/v1/requirements/req-drafted/versions')
-      return route.fulfill({ json: drafted.pending_versions })
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
-      return route.fulfill({ json: session() })
-    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
-    if (url.pathname === '/v1/planning-sessions/session-draft') return route.fulfill({ json: session() })
-    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
-    if (url.pathname.endsWith('/messages')) {
-      finalized = true
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: [
-          'data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
-          '',
-          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
-          '',
-          'data: {"type":"finish","finishReason":"tool-calls"}',
-          '',
-        ].join('\n'),
-      })
-    }
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements')
-  const assistant = page.getByRole('complementary', {
-    name: 'Planning assistant',
-  })
-  await assistant.getByRole('button', { name: 'Draft' }).click()
-  await assistant.getByLabel('Planning message').fill('Capture the drafted intent.')
-  await assistant.getByRole('button', { name: 'Send' }).click()
-
-  // The produced document arrives on the canvas, pending, with the ordinary
-  // confirmation affordance and no navigation away.
-  const canvas = page.getByRole('region', { name: 'Requirement document' })
-  await expect(canvas.getByRole('heading', { name: 'Drafted intent' })).toBeVisible()
-  await expect(canvas.getByText('A revision is pending operator confirmation.')).toBeVisible()
-  await expect(canvas.getByRole('button', { name: 'Confirm version 1' })).toBeEnabled()
-  await expect(page).toHaveURL(/requirement=req-drafted/)
-  await expect(page).toHaveURL(/\/requirements\?/)
-})
-
-test('a produced requirement that never reaches the corpus releases the adoption latch with an actionable error', async ({
-  page,
-}) => {
-  await initShell(page)
-  await page.clock.install()
-  let finalized = false
-  const session = () => ({
-    id: 'session-missing-draft',
-    title: finalized ? 'Missing drafted intent' : 'Drafting requirement…',
-    status: finalized ? 'finalized' : 'active',
-    goal: 'requirement',
-    produced_requirement_id: finalized ? 'req-missing' : undefined,
-    workspace: 'demo',
-    created_at: '2026-07-30T11:00:00Z',
-    updated_at: '2026-07-30T11:05:00Z',
-  })
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [] })
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
-      return route.fulfill({ json: session() })
-    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
-    if (url.pathname === '/v1/planning-sessions/session-missing-draft') return route.fulfill({ json: session() })
-    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
-    if (url.pathname.endsWith('/messages')) {
-      finalized = true
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: [
-          'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}',
-          '',
-          'data: {"type":"finish","finishReason":"tool-calls"}',
-          '',
-        ].join('\n'),
-      })
-    }
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements')
-  const assistant = page.getByRole('complementary', { name: 'Planning assistant' })
-  await assistant.getByRole('button', { name: 'Draft' }).click()
-  await assistant.getByLabel('Planning message').fill('Capture missing intent.')
-  await assistant.getByRole('button', { name: 'Send' }).click()
-  await expect(page).toHaveURL(/requirement=req-missing/)
-  await page.clock.fastForward(10_001)
-  await expect(page.getByText(/The new requirement req-missing did not appear in the corpus/)).toBeVisible()
-})
-
-test('contextual Plan work starts a delivery bundle and never posts the retired blueprint goal', async ({ page }) => {
-  await initShell(page)
-  let finalized = false
-  let createdGoal = ''
-  const view = () => ({
-    ...requirement,
-    serving_blueprints: [],
-    planning_sessions: [],
-  })
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
-    if (url.pathname === '/v1/requirements/req-retries/versions')
-      return route.fulfill({ json: requirement.pending_versions })
-    const planned = {
-      id: 'session-plan',
-      title: finalized ? 'Ship bounded retries' : 'Planning work…',
-      status: finalized ? 'finalized' : 'active',
-      goal: 'bundle',
-      requirement_context_id: 'req-retries',
-      produced_bundle_id: finalized ? 'bundle-retries' : undefined,
-      workspace: 'demo',
-      created_at: '2026-07-30T10:00:00Z',
-      updated_at: '2026-07-30T10:00:00Z',
-    }
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST') {
-      createdGoal = (JSON.parse(route.request().postData() ?? '{}') as { goal?: string }).goal ?? ''
-      return route.fulfill({ json: planned })
-    }
-    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [planned] })
-    if (url.pathname === '/v1/planning-sessions/session-plan') return route.fulfill({ json: planned })
-    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
-    if (url.pathname.endsWith('/messages')) {
-      finalized = true
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_bundle"}\n\n',
-      })
-    }
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements?requirement=req-retries')
-  const canvas = page.getByRole('region', { name: 'Requirement document' })
-  await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
-  const assistant = page.getByRole('complementary', {
-    name: 'Planning assistant',
-  })
-  await assistant.getByRole('button', { name: 'Plan work' }).click()
-  await expect.poll(() => createdGoal).toBe('bundle')
-  await assistant.getByLabel('Planning message').fill('Plan the delivery.')
-  await assistant.getByRole('button', { name: 'Send' }).click()
-  await expect(canvas.getByText('No blueprint has been planned in this requirement’s context yet.')).toBeVisible()
-  await expect(page).toHaveURL(/requirement=req-retries/)
-  const approvalLink = assistant.getByRole('link', { name: /Delivery bundle ready/ })
-  await expect(approvalLink).toBeVisible()
-  await approvalLink.click()
-  await expect(page).toHaveURL(/\/planning$/)
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem('conveyor-planning-session:demo')))
-    .toBe('session-plan')
-})
-
 // AC-6: session lists carry human-readable goals with goal- or
 // artifact-derived titles, and the requirements authoring surface offers no
 // freehand editor — the sidebar is the only authoring path (change 2).
@@ -1806,120 +1496,16 @@ test('session lists label goals and the requirements surface has no freehand edi
 
   await page.goto('/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()
-  // No contentEditable and no Markdown textarea: the only textarea on this
-  // surface is the assistant's message composer (spec §21.57 change 2).
+  // Freehand editing stays rejected (spec §21.57 change 2), and with the
+  // assistant column parked (§21.61 change 3) there is no composer either, so
+  // this surface carries no editable field at all.
   await expect(page.locator('[contenteditable]')).toHaveCount(0)
-  await expect(page.locator('textarea:not([aria-label="Planning message"])')).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Requirement document' }).locator('textarea')).toHaveCount(0)
-  // The assistant sidebar is that only authoring path.
-  await expect(
-    page.getByRole('complementary', { name: 'Planning assistant' }).getByRole('button', { name: 'Revise' }),
-  ).toBeVisible()
+  await expect(page.locator('textarea')).toHaveCount(0)
 })
 
-// AC-5 regression: with a non-empty corpus, the "fall back to the first
-// document" effect used to race the post-finalize navigation and strand the
-// operator on an unrelated document, and the canvas kept displaying the older
-// version because the newly proposed one was never selected.
-test('a sidebar revision opens its new version on the canvas over an existing corpus', async ({ page }) => {
-  await initShell(page)
-  const other = {
-    ...requirement,
-    requirement: {
-      ...requirement.requirement,
-      id: 'req-other',
-      slug: 'other-intent',
-      title: 'Other intent',
-    },
-    serving_blueprints: [],
-    planning_sessions: [],
-    lineage_graph: undefined,
-  }
-  const confirmedV1 = {
-    ...requirement.pending_versions[0],
-    version: 1,
-    confirmed: true,
-    content: 'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop.\n```',
-    statements: [{ id: 'REQ-1', statement: 'Retries stop.' }],
-  }
-  const pendingV2 = {
-    ...requirement.pending_versions[0],
-    version: 2,
-    content:
-      'Keep retries bounded and observable.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: Retries are explainable.\n```',
-    statements: [{ id: 'REQ-2', statement: 'Retries are explainable.' }],
-  }
-  let revised = false
-  const retries = () => ({
-    ...requirement,
-    current_version: confirmedV1,
-    pending_versions: revised ? [pendingV2] : [],
-    planning_sessions: [],
-    confirmation_eligible: true,
-  })
-  const session = () => ({
-    id: 'session-revise',
-    title: revised ? 'Retry behavior' : 'Drafting requirement…',
-    status: revised ? 'finalized' : 'active',
-    goal: 'requirement',
-    requirement_context_id: 'req-retries',
-    produced_requirement_id: revised ? 'req-retries' : undefined,
-    workspace: 'demo',
-    created_at: '2026-07-30T10:00:00Z',
-    updated_at: '2026-07-30T10:00:00Z',
-  })
-  await page.route('**/v1/**', async (route) => {
-    const shell = shellResponse(route)
-    if (shell) return await shell
-    const url = new URL(route.request().url())
-    // "Other intent" sorts first, so a bounce lands there and is visible.
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [other, retries()] })
-    if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
-    if (url.pathname === '/v1/requirements/req-other/versions') return route.fulfill({ json: [confirmedV1] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: retries() })
-    if (url.pathname === '/v1/requirements/req-retries/versions') {
-      return route.fulfill({
-        json: revised ? [confirmedV1, pendingV2] : [confirmedV1],
-      })
-    }
-    if (url.pathname === '/v1/planning-sessions' && route.request().method() === 'POST')
-      return route.fulfill({ json: session() })
-    if (url.pathname === '/v1/planning-sessions') return route.fulfill({ json: [session()] })
-    if (url.pathname === '/v1/planning-sessions/session-revise') return route.fulfill({ json: session() })
-    if (url.pathname.endsWith('/messages') && route.request().method() === 'GET') return route.fulfill({ json: [] })
-    if (url.pathname.endsWith('/messages')) {
-      revised = true
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: 'data: {"type":"tool-output-available","toolCallId":"call-1","toolName":"finalize_requirement"}\n\n',
-      })
-    }
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/requirements?requirement=req-retries')
-  const canvas = page.getByRole('region', { name: 'Requirement document' })
-  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
-  const assistant = page.getByRole('complementary', {
-    name: 'Planning assistant',
-  })
-  await assistant.getByRole('button', { name: 'Revise' }).click()
-  await assistant.getByLabel('Planning message').fill('Add the observability statement.')
-  await assistant.getByRole('button', { name: 'Send' }).click()
-
-  // The canvas stays on the revised document and advances to its new version,
-  // with the diff and the unchanged confirmation affordance.
-  await expect(canvas.getByRole('button', { name: 'Confirm version 2' })).toBeEnabled()
-  await expect(canvas.getByText('Compared with confirmed v1')).toBeVisible()
-  await expect(canvas.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-current', 'true')
-  await expect(page).toHaveURL(/requirement=req-retries/)
-  await expect(canvas.getByRole('heading', { name: 'Other intent' })).toHaveCount(0)
-})
-
-// A deep link names the document to open; restoring an earlier finalized
-// session beside it must not navigate the canvas somewhere else.
-test('a deep link to a finalized session keeps the document the URL asked for', async ({ page }) => {
+// A deep link names the document to open: the fall-back-to-the-first-document
+// effect must not steal the canvas from the document the URL asked for.
+test('a deep link opens the document the URL asked for, not the first in the corpus', async ({ page }) => {
   await initShell(page)
   const other = {
     ...requirement,
@@ -1965,10 +1551,8 @@ test('a deep link to a finalized session keeps the document the URL asked for', 
   await page.goto('/requirements?requirement=req-other&session=session-done')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Other intent' })).toBeVisible()
-  await expect(
-    page.getByRole('complementary', { name: 'Planning assistant' }).getByText('Planning artifact finalized'),
-  ).toBeVisible()
-  // The already-finalized session is history, not news: the canvas stays put.
   await expect(page).toHaveURL(/requirement=req-other/)
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toHaveCount(0)
+  // The parked assistant does not reappear for a session named in the URL.
+  await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
 })

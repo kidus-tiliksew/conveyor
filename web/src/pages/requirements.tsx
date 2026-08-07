@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { ArrowRight, Check, Download, FileText, FileUp, GitBranch, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowRight, Check, Download, ExternalLink, FileUp, Trash2 } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
+import {
+  DocumentTree,
+  DocumentTreeGroup,
+  DocumentTreeItem,
+  DocumentTreeNote,
+} from '../components/documents/document-tree'
 import { LineageGraphCard } from '../components/lineage/lineage-graph-card'
-import { type GuidedAction, RequirementAssistant, draftAction } from '../components/planning/requirement-assistant'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmRequirementVersion,
-  createPlanningSession,
   downloadArtifact,
   fetchRequirement,
   fetchRequirements,
@@ -25,7 +30,6 @@ import {
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type {
-  PlanningSession,
   ReferenceDocument,
   ReferenceDocumentVersion,
   RequirementDerivation,
@@ -35,19 +39,23 @@ import type {
 } from '../lib/types'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
-  chat: 'Planning conversation',
-  drift_amendment: 'Delivery drift',
-  feature_migration: 'Migrated feature',
-  operator: 'Operator proposal',
+  chat: 'Written in a planning conversation',
+  drift_amendment: 'Written from a delivery change',
+  feature_migration: 'Carried over from the old feature list',
+  operator: 'Written by an operator',
 }
 
+const referenceAnchor = /^reference-(.+)-v(\d+)$/
+
 /**
- * The Requirements workspace is document-first (spec §21.57 change 1): the
- * corpus list on the left, the requirement document as the canvas in the
- * center, and the planning assistant docked as a subordinate sidebar scoped to
- * whatever document is open. There is no freehand editor anywhere — the
- * sidebar is the editor, and every revision arrives as a proposed version the
- * operator confirms on the canvas (change 2).
+ * Requirements is a document tree beside a document canvas (spec §21.61
+ * change 1; REQ-2, AC-2.1). The tree groups the product overviews apart from
+ * the requirement corpus; whichever document is selected becomes the canvas,
+ * with its history and diffs collapsed underneath. Every machinery signal the
+ * document produces is voiced once, in its attention surface (REQ-1). The
+ * assistant column is withdrawn while in-product planning is parked (AC-2.2,
+ * §21.61 change 3) — nothing about propose→confirm changes: revisions still
+ * arrive as proposed versions an operator confirms here.
  */
 export function RequirementsPage() {
   const token = useOperatorToken()
@@ -64,305 +72,191 @@ export function RequirementsPage() {
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
   })
-  const selectedId = search.requirement ?? ''
-  const sessionId = search.session ?? ''
-
-  // A document the sidebar just produced is selected before the corpus refetch
-  // that contains it lands. Without this latch the fallback below sees it as
-  // unknown and bounces to the first document, so the operator never reaches
-  // the version they have to confirm.
-  const adopting = useRef('')
-  const adoptingTimer = useRef<number | undefined>(undefined)
-  const [adoptionError, setAdoptionError] = useState('')
-  useEffect(
-    () => () => {
-      if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-    },
-    [],
-  )
-  // Falling back to the first document must not close an open conversation
-  // either: the corpus refetches while the sidebar is mid-session, so the
-  // session parameter has to survive the redirect.
-  useEffect(() => {
-    if (!requirements?.length) return
-    const adopted = adopting.current !== '' && adopting.current === selectedId
-    if (requirements.some((item) => item.requirement.id === selectedId)) {
-      if (adopted) adopting.current = ''
-      if (adopted && adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-      if (adopted) setAdoptionError('')
-      return
-    }
-    if (adopted) return
-    void navigate({
-      to: '/requirements',
-      search: {
-        requirement: requirements[0].requirement.id,
-        session: sessionId || undefined,
-      },
-      replace: true,
-    })
-  }, [navigate, requirements, selectedId, sessionId])
-  const selected = requirements?.find((item) => item.requirement.id === selectedId)
-
-  // Opening another document ends the sidebar's scope: its session belonged to
-  // the document it was started from.
-  const selectRequirement = (requirement: string) => {
-    void navigate({
-      to: '/requirements',
-      search: { requirement },
-      replace: true,
-    })
-  }
-  const openSession = (session: string) => {
-    void navigate({
-      to: '/requirements',
-      search: { requirement: selectedId || undefined, session },
-      replace: true,
-    })
-  }
-  const start = useMutation({
-    mutationFn: ({ action, promotion }: { action: GuidedAction; promotion?: RequirementDerivation }) =>
-      createPlanningSession(token, {
-        goal: action.goal,
-        requirement_context_id:
-          action.id === 'promote' ? selectedId || undefined : action.contextual ? selectedId || undefined : undefined,
-        promotion,
-      }),
-    onSuccess: (session) => {
-      void client.invalidateQueries({
-        queryKey: ['planning-sessions', workspace],
-      })
-      openSession(session.id)
-    },
-  })
-  // A finalized session lands its artifact on the canvas without navigating
-  // away: a requirement becomes the open document with its pending version, a
-  // blueprint refreshes the proposed serves link on the document it serves.
-  const adoptFinalized = (session: PlanningSession) => {
-    void client.invalidateQueries({ queryKey: ['requirements', workspace] })
-    const produced = session.produced_requirement_id ?? session.requirement_context_id ?? selectedId
-    if (produced) {
-      void client.invalidateQueries({
-        queryKey: ['requirement', workspace, produced],
-      })
-      void client.invalidateQueries({
-        queryKey: ['requirement-versions', workspace, produced],
-      })
-    }
-    if (session.produced_requirement_id && session.produced_requirement_id !== selectedId) {
-      adopting.current = session.produced_requirement_id
-      setAdoptionError('')
-      if (adoptingTimer.current !== undefined) window.clearTimeout(adoptingTimer.current)
-      adoptingTimer.current = window.setTimeout(() => {
-        if (adopting.current !== session.produced_requirement_id) return
-        adopting.current = ''
-        setAdoptionError(
-          `The new requirement ${session.produced_requirement_id} did not appear in the corpus. Refresh or reopen the planning session.`,
-        )
-      }, 10_000)
-      void navigate({
-        to: '/requirements',
-        search: {
-          requirement: session.produced_requirement_id,
-          session: session.id,
-        },
-        replace: true,
-      })
-    }
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
-            <Badge variant="mono">{requirements?.length ?? 0}</Badge>
-          </div>
-          <p className="mt-0.5 text-xs text-muted">
-            Living intent documents, confirmed by an operator and connected to the blueprints that deliver them.
-          </p>
-        </div>
-        <Button
-          disabled={!token || !workspace || start.isPending}
-          onClick={() => start.mutate({ action: draftAction })}
-        >
-          <Sparkles /> {start.isPending ? 'Starting…' : 'New requirement'}
-        </Button>
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        <aside
-          aria-label="Requirement corpus"
-          className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-surface/40"
-        >
-          <ReferenceDocumentsPanel token={token} workspace={workspace} />
-          <div className="flex items-baseline justify-between px-4 py-3">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Living documents</p>
-            <span className="text-[10px] text-faint">Flat corpus</span>
-          </div>
-          <div className="divide-y divide-border">
-            {requirements?.map((item) => (
-              <button
-                key={item.requirement.id}
-                type="button"
-                aria-current={selectedId === item.requirement.id ? 'true' : undefined}
-                onClick={() => selectRequirement(item.requirement.id)}
-                className={`block w-full px-4 py-3.5 text-left transition-colors ${selectedId === item.requirement.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
-              >
-                <span className="flex items-start gap-3">
-                  <FileText
-                    className={`mt-0.5 size-4 shrink-0 ${selectedId === item.requirement.id ? 'text-primary' : 'text-faint'}`}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <strong className="block truncate text-sm font-medium">{item.requirement.title}</strong>
-                    <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                      {item.current_version ? (
-                        <Badge variant="positive">
-                          <Check /> Confirmed v{item.current_version.version}
-                        </Badge>
-                      ) : (
-                        <Badge variant="attention">Needs confirmation</Badge>
-                      )}
-                      <RequirementStateBadges item={item} compact />
-                      {item.serving_blueprints.length > 0 && (
-                        <Badge variant="mono">{item.serving_blueprints.length} blueprints</Badge>
-                      )}
-                    </span>
-                  </span>
-                </span>
-              </button>
-            ))}
-          </div>
-          {requirements?.length === 0 && (
-            <p className="px-4 text-xs leading-5 text-muted">No requirement documents yet.</p>
-          )}
-        </aside>
-
-        <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-4xl px-6 py-6">
-            {!workspace && <EmptyMessage>Choose a workspace to open its requirement corpus.</EmptyMessage>}
-            {isLoading && <EmptyMessage>Loading requirement documents…</EmptyMessage>}
-            {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
-            {adoptionError && <EmptyMessage tone="failure">{adoptionError}</EmptyMessage>}
-            {requirements?.length === 0 && (
-              <Card className="mt-2 border-dashed">
-                <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-                  <Sparkles className="size-7 text-primary" />
-                  <h2 className="mt-4 text-base font-semibold">Start with intent, not filing</h2>
-                  <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                    Describe what the system should do. The assistant beside this canvas turns the conversation into a
-                    structured requirement for you to confirm.
-                  </p>
-                  <Button
-                    className="mt-5"
-                    disabled={!token || !workspace || start.isPending}
-                    onClick={() => start.mutate({ action: draftAction })}
-                  >
-                    Draft a requirement <ArrowRight />
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
-            {selected && <RequirementDetail key={selected.requirement.id} seed={selected} token={token} />}
-          </div>
-        </section>
-
-        <RequirementAssistant
-          selected={selected}
-          sessionId={sessionId}
-          token={token}
-          workspace={workspace}
-          onStart={(action, promotion) => start.mutate({ action, promotion })}
-          starting={start.isPending}
-          startError={start.error}
-          onFinalized={adoptFinalized}
-        />
-      </div>
-    </div>
-  )
-}
-
-function ReferenceDocumentsPanel({ token, workspace }: { token: string; workspace: string }) {
-  const client = useQueryClient()
-  const { data: documents = [] } = useQuery({
+  const { data: overviews = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: fetchReferenceDocuments,
     enabled: Boolean(workspace),
   })
+  const selectedId = search.requirement ?? ''
+
+  // Overviews open on the same canvas as requirements. Their selection lives
+  // in the existing `#reference-<id>-v<n>` anchor rather than a new query key,
+  // so the links proposals already carry keep working unchanged.
+  const [openOverview, setOpenOverview] = useState<{ id: string; version?: number } | undefined>(() =>
+    readOverviewAnchor(window.location.hash),
+  )
+  useEffect(() => {
+    const follow = () => {
+      const target = readOverviewAnchor(window.location.hash)
+      if (target) setOpenOverview(target)
+    }
+    window.addEventListener('hashchange', follow)
+    return () => window.removeEventListener('hashchange', follow)
+  }, [])
+
+  useEffect(() => {
+    if (!requirements?.length) return
+    if (requirements.some((item) => item.requirement.id === selectedId)) return
+    void navigate({
+      to: '/requirements',
+      search: { requirement: requirements[0].requirement.id },
+      replace: true,
+    })
+  }, [navigate, requirements, selectedId])
+  const selected = requirements?.find((item) => item.requirement.id === selectedId)
+  const openOverviewDocument = overviews.find((document) => document.id === openOverview?.id)
+
+  const selectRequirement = (requirement: string) => {
+    setOpenOverview(undefined)
+    void navigate({ to: '/requirements', search: { requirement }, replace: true })
+  }
+
   const upload = useMutation({
     mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(token, file, id),
     onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
   })
   const remove = useMutation({
     mutationFn: (id: string) => deleteReferenceDocument(token, id),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
+    onSuccess: () => {
+      setOpenOverview(undefined)
+      return client.invalidateQueries({ queryKey: ['reference-documents', workspace] })
+    },
   })
+
   return (
-    <section aria-label="Product overview documents" className="border-b border-border px-4 py-3">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Product overviews</p>
-        <Badge variant="mono">{documents.length}</Badge>
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="shrink-0 border-b border-border px-6 py-4">
+        <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
+        <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <DocumentTree>
+          <DocumentTreeGroup label="Product overviews">
+            {overviews.map((document) => (
+              <DocumentTreeItem
+                key={document.id}
+                label={document.name}
+                meta={`v${document.current_version}`}
+                selected={openOverview?.id === document.id}
+                onClick={() => setOpenOverview({ id: document.id })}
+              />
+            ))}
+            {overviews.length === 0 && (
+              <DocumentTreeNote>Add a product overview, personas, or a glossary.</DocumentTreeNote>
+            )}
+            <div className="px-5 pt-2">
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs text-muted hover:bg-surface">
+                <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
+                <input
+                  className="hidden"
+                  type="file"
+                  accept=".md,.markdown,text/markdown"
+                  disabled={!token || upload.isPending}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) upload.mutate({ file })
+                    event.currentTarget.value = ''
+                  }}
+                />
+              </label>
+              {upload.error && (
+                <p className="mt-2 text-xs text-failure">
+                  {errorMessage(upload.error, 'Could not add that overview.')}
+                </p>
+              )}
+            </div>
+          </DocumentTreeGroup>
+
+          <DocumentTreeGroup label="Requirements">
+            {requirements?.map((item) => (
+              <DocumentTreeItem
+                key={item.requirement.id}
+                label={item.requirement.title}
+                meta={item.current_version ? `v${item.current_version.version}` : undefined}
+                selected={!openOverview && selectedId === item.requirement.id}
+                onClick={() => selectRequirement(item.requirement.id)}
+              />
+            ))}
+            {requirements?.length === 0 && <DocumentTreeNote>No requirements yet.</DocumentTreeNote>}
+          </DocumentTreeGroup>
+        </DocumentTree>
+
+        <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-4xl px-8 py-8">
+            {!workspace && <EmptyMessage>Choose a workspace to open its requirements.</EmptyMessage>}
+            {isLoading && <EmptyMessage>Loading requirements…</EmptyMessage>}
+            {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
+            {openOverviewDocument ? (
+              <OverviewCanvas
+                key={openOverviewDocument.id}
+                document={openOverviewDocument}
+                workspace={workspace}
+                token={token}
+                initialVersion={openOverview?.version}
+                upload={(file) => upload.mutate({ file, id: openOverviewDocument.id })}
+                uploading={upload.isPending}
+                remove={() => remove.mutate(openOverviewDocument.id)}
+                removing={remove.isPending}
+              />
+            ) : (
+              <>
+                {requirements?.length === 0 && (
+                  <Card className="mt-2 border-dashed">
+                    <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                      <h2 className="text-base font-semibold">Nothing written down yet</h2>
+                      <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                        Requirements say what this product should do. Each one arrives as a proposed version for you to
+                        read and confirm here.
+                      </p>
+                    </CardContent>
+                  </Card>
+                )}
+                {selected && <RequirementCanvas key={selected.requirement.id} seed={selected} token={token} />}
+              </>
+            )}
+          </div>
+        </section>
       </div>
-      {documents.length === 0 && (
-        <p className="mt-2 text-xs leading-5 text-muted">
-          Add Product Overview, Personas, or Domain Glossary Markdown.
-        </p>
-      )}
-      <div className="mt-2 space-y-2">
-        {documents.map((document) => (
-          <ReferenceDocumentItem
-            key={document.id}
-            document={document}
-            token={token}
-            workspace={workspace}
-            upload={upload}
-            remove={remove}
-          />
-        ))}
-      </div>
-      <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs text-muted hover:bg-surface">
-        <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
-        <input
-          className="hidden"
-          type="file"
-          accept=".md,.markdown,text/markdown"
-          disabled={!token || upload.isPending}
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) upload.mutate({ file })
-            event.currentTarget.value = ''
-          }}
-        />
-      </label>
-      {upload.error && (
-        <p className="mt-2 text-xs text-failure">{errorMessage(upload.error, 'Could not upload overview.')}</p>
-      )}
-    </section>
+    </div>
   )
 }
 
-function ReferenceDocumentItem({
+function readOverviewAnchor(hash: string) {
+  const match = referenceAnchor.exec(hash.replace(/^#/, ''))
+  return match ? { id: match[1], version: Number(match[2]) } : undefined
+}
+
+/**
+ * A product overview reads on the same canvas as a requirement: the Markdown
+ * is the hero, and its version history, comparison, and file actions sit under
+ * it (spec §21.61 change 1). Overviews are uploaded source material, so they
+ * carry no machinery signals and no attention surface.
+ */
+function OverviewCanvas({
   document,
-  token,
   workspace,
+  token,
+  initialVersion,
   upload,
+  uploading,
   remove,
+  removing,
 }: {
   document: ReferenceDocument
-  token: string
   workspace: string
-  upload: UseMutationResult<unknown, Error, { file: File; id?: string }>
-  remove: UseMutationResult<unknown, Error, string>
+  token: string
+  initialVersion?: number
+  upload: (file: File) => void
+  uploading: boolean
+  remove: () => void
+  removing: boolean
 }) {
-  const versionAnchorPrefix = `reference-${document.id}-v`
-  const initialVersion = (() => {
-    const match = window.location.hash.match(new RegExp(`^#${versionAnchorPrefix}(\\d+)$`))
-    return match ? Number(match[1]) : document.current_version
-  })()
-  const [open, setOpen] = useState(() => window.location.hash.startsWith(`#${versionAnchorPrefix}`))
-  const [selectedVersion, setSelectedVersion] = useState(initialVersion)
-  useEffect(() => setSelectedVersion(document.current_version), [document.current_version])
+  const [selectedVersion, setSelectedVersion] = useState(initialVersion ?? document.current_version)
+  useEffect(
+    () => setSelectedVersion(initialVersion ?? document.current_version),
+    [initialVersion, document.id, document.current_version],
+  )
   const {
     data: versions = [],
     isLoading,
@@ -370,43 +264,31 @@ function ReferenceDocumentItem({
   } = useQuery({
     queryKey: ['reference-document-versions', workspace, document.id, document.current_version],
     queryFn: () => fetchReferenceDocumentVersions(document.id),
-    enabled: open,
   })
   const selected = versions.find((version) => version.version === selectedVersion) ?? versions.at(-1)
   const prior = selected?.supersedes_version
     ? versions.find((version) => version.version === selected.supersedes_version)
     : undefined
-  useEffect(() => {
-    const openLinkedVersion = () => {
-      const match = window.location.hash.match(new RegExp(`^#${versionAnchorPrefix}(\\d+)$`))
-      if (!match) return
-      setOpen(true)
-      setSelectedVersion(Number(match[1]))
-    }
-    window.addEventListener('hashchange', openLinkedVersion)
-    return () => window.removeEventListener('hashchange', openLinkedVersion)
-  }, [versionAnchorPrefix])
-  useEffect(() => {
-    if (!selected) return
-    const id = `${versionAnchorPrefix}${selected.version}`
-    if (window.location.hash === `#${id}`) requestAnimationFrame(() => documentGlobalByID(id)?.scrollIntoView())
-  }, [selected, versionAnchorPrefix])
   return (
-    <details
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-      className="rounded-md border border-border bg-card px-2 py-2"
-    >
-      <summary className="cursor-pointer text-xs font-medium">
-        {document.name} <Badge variant="mono">v{document.current_version}</Badge>
-      </summary>
-      {isLoading && <p className="mt-2 text-xs text-muted">Loading version history…</p>}
-      {error && <p className="mt-2 text-xs text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
-      {versions.length > 0 && (
-        <label className="mt-2 block text-[10px] font-medium" htmlFor={`reference-version-${document.id}`}>
+    <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
+      <header className="mb-6">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Product overview</p>
+        <h2 className="mt-1.5 text-2xl font-semibold tracking-tight">{document.name}</h2>
+        <p className="mt-1.5 text-xs text-muted">
+          Version {document.current_version} · uploaded reference material, not confirmed intent
+        </p>
+      </header>
+      {isLoading && <p className="text-sm text-muted">Loading version history…</p>}
+      {error && <p className="text-sm text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
+      {selected && <MarkdownProse>{selected.content}</MarkdownProse>}
+      {versions.length > 1 && (
+        <label
+          className="mt-8 block max-w-xs border-t border-border pt-4 text-xs font-medium"
+          htmlFor="overview-version"
+        >
           Read version
           <select
-            id={`reference-version-${document.id}`}
+            id="overview-version"
             className="mt-1 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
             value={selected?.version ?? ''}
             onChange={(event) => setSelectedVersion(Number(event.target.value))}
@@ -419,55 +301,38 @@ function ReferenceDocumentItem({
           </select>
         </label>
       )}
-      {selected && (
-        <div id={`${versionAnchorPrefix}${selected.version}`} className="scroll-mt-6">
-          <MarkdownProse>{selected.content}</MarkdownProse>
-        </div>
-      )}
-      {prior && selected && <ReferenceDocumentDiff prior={prior} current={selected} />}
-      <div className="mt-2 flex gap-2">
-        <label className="cursor-pointer text-[10px] text-primary">
-          Re-upload
+      {prior && selected && <OverviewDiff prior={prior} current={selected} />}
+      <div className="mt-4 flex items-center gap-4">
+        <label className="cursor-pointer text-xs font-medium text-primary">
+          {uploading ? 'Uploading…' : 'Re-upload'}
           <input
             className="hidden"
             type="file"
             accept=".md,.markdown,text/markdown"
-            disabled={!token || upload.isPending}
+            disabled={!token || uploading}
             onChange={(event) => {
               const file = event.target.files?.[0]
-              if (file) upload.mutate({ file, id: document.id })
+              if (file) upload(file)
               event.currentTarget.value = ''
             }}
           />
         </label>
         <button
           type="button"
-          className="flex items-center gap-1 text-[10px] text-failure"
-          disabled={!token || remove.isPending}
+          className="flex items-center gap-1 text-xs text-failure"
+          disabled={!token || removing}
           onClick={() => {
-            if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) {
-              remove.mutate(document.id)
-            }
+            if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) remove()
           }}
         >
           <Trash2 className="size-3" /> Delete
         </button>
       </div>
-    </details>
+    </article>
   )
 }
 
-function documentGlobalByID(id: string) {
-  return window.document.getElementById(id)
-}
-
-function ReferenceDocumentDiff({
-  prior,
-  current,
-}: {
-  prior: ReferenceDocumentVersion
-  current: ReferenceDocumentVersion
-}) {
+function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; current: ReferenceDocumentVersion }) {
   const [open, setOpen] = useState(false)
   const comparison = useMemo(
     () => (open ? boundedLineChanges(prior.content, current.content) : undefined),
@@ -476,17 +341,17 @@ function ReferenceDocumentDiff({
   const [priorLines, currentLines] = comparison?.lines ?? [[], []]
   return (
     <details
-      className="mt-2 rounded-md border border-border bg-surface/40"
+      className="mt-4 rounded-lg border border-border bg-surface/40"
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary className="cursor-pointer px-2 py-2 text-[10px] font-medium">Compared with v{prior.version}</summary>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Compared with v{prior.version}</summary>
       {comparison?.limited && (
-        <p className="border-t border-border px-2 py-2 text-[10px] text-muted">
+        <p className="border-t border-border px-4 py-2 text-xs text-muted">
           Diff too large; showing both versions without highlighting.
         </p>
       )}
       <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-card p-2 text-[10px]">
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-card p-3 text-[11px]">
           {priorLines.map((line, index) => (
             <span
               key={`${index}-${line.text}`}
@@ -496,7 +361,7 @@ function ReferenceDocumentDiff({
             </span>
           ))}
         </pre>
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-card p-2 text-[10px]">
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-card p-3 text-[11px]">
           {currentLines.map((line, index) => (
             <span
               key={`${index}-${line.text}`}
@@ -511,7 +376,7 @@ function ReferenceDocumentDiff({
   )
 }
 
-function RequirementDetail({ seed, token }: { seed: RequirementView; token: string }) {
+function RequirementCanvas({ seed, token }: { seed: RequirementView; token: string }) {
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const { data: item = seed, error: detailError } = useQuery({
@@ -526,11 +391,10 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
   })
   const orderedVersions = useMemo(() => [...versions].sort((left, right) => right.version - left.version), [versions])
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
-  // A revision proposed from the sidebar has to become the displayed version.
-  // Only resetting when the selection disappears is not enough — the older
-  // version is still in the refetched list, so the canvas would keep showing
-  // confirmed intent with no pending banner and no confirm action (spec
-  // §21.57 change 1).
+  // A newly proposed revision has to become the displayed version. Only
+  // resetting when the selection disappears is not enough — the older version
+  // is still in the refetched list, so the canvas would keep showing confirmed
+  // intent while a revision waits (spec §21.57 change 1).
   const highestSeen = useRef<number | null>(null)
   useEffect(() => {
     if (!orderedVersions.length) return
@@ -548,7 +412,7 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
   const { data: referenceDocuments = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: fetchReferenceDocuments,
-    enabled: Boolean(displayed?.derived_from),
+    enabled: Boolean(workspace),
   })
   useEffect(() => {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
@@ -558,304 +422,352 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
   const currentVersion = item.current_version?.version ?? 0
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
-    onSuccess: async () => {
+    onSettled: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
-        client.invalidateQueries({
-          queryKey: ['requirement', workspace, item.requirement.id],
-        }),
-        client.invalidateQueries({
-          queryKey: ['requirement-versions', workspace, item.requirement.id],
-        }),
+        client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
       ])
-    },
-    onError: () => {
-      void client.invalidateQueries({ queryKey: ['requirements', workspace] })
-      void client.invalidateQueries({
-        queryKey: ['requirement', workspace, item.requirement.id],
-      })
-      void client.invalidateQueries({
-        queryKey: ['requirement-versions', workspace, item.requirement.id],
-      })
     },
   })
   const upload = useMutation({
     mutationFn: (file: File) => uploadArtifact(token, file, undefined, item.requirement.id),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
-      void client.invalidateQueries({
-        queryKey: ['requirement', workspace, item.requirement.id],
-      })
+      void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
       void client.invalidateQueries({ queryKey: ['artifacts', workspace] })
     },
   })
 
   if (detailError)
     return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
+
+  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
+  // Every entry below already exists as machinery state; this surface only
+  // decides where it is voiced, and it is the only place it is voiced (AC-1.2).
+  const attention: AttentionItem[] = [
+    ...(shipped
+      ? [
+          {
+            id: 'staleness',
+            title: 'Code shipped past the confirmed intent',
+            detail: <span title={deliveryTitle(item)}>Latest delivery: {shipped}.</span>,
+            action: (
+              <Link
+                to="/tasks/$taskId"
+                params={{ taskId: shipped }}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Open the delivery
+              </Link>
+            ),
+          },
+        ]
+      : []),
+    // A truncated lineage walk cannot prove the absence of newer delivery, so
+    // partial evaluation is voiced rather than reported as alignment. It is a
+    // machinery signal like any other and belongs here (spec §21.61 change 1).
+    ...(item.staleness?.partial_evaluation
+      ? [
+          {
+            id: 'staleness-partial',
+            title: 'Staleness could only be partially evaluated',
+            detail: <>The bounded delivery lineage was truncated, so newer delivery may not be reflected here.</>,
+          },
+        ]
+      : []),
+    ...(item.staleness?.active_drift ?? []).map((entry) => ({
+      id: `drift-${entry.id}`,
+      title: `Code changed in ${entry.repository} without reaching this document`,
+      detail: (
+        <>
+          {(entry.matching_paths ?? []).join(', ') || 'No file list was recorded for this change.'}
+          <span className="ml-1 text-faint">· seen {formatDate(entry.detected_at)}</span>
+        </>
+      ),
+      action: entry.source_url ? (
+        <a
+          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          href={entry.source_url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open the change <ExternalLink className="size-3" />
+        </a>
+      ) : undefined,
+    })),
+    ...item.pending_versions.map((version) => ({
+      id: `pending-${version.version}`,
+      title: `Version ${version.version} is waiting for you`,
+      detail: (
+        <>
+          {originLabels[version.origin]} · {formatDate(version.created_at)}
+          {!item.confirmation_eligible && (
+            <span className="block">
+              A migrated seed needs its first deliberate revision before it can be confirmed.
+            </span>
+          )}
+          {version.derived_from && (
+            <RequirementDerivationNotice derivation={version.derived_from} documents={referenceDocuments} />
+          )}
+        </>
+      ),
+      action: (
+        <Button
+          disabled={!token || confirm.isPending || !item.confirmation_eligible}
+          title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
+          onClick={() => confirm.mutate(version.version)}
+        >
+          <Check />
+          {confirm.isPending && confirm.variables === version.version
+            ? 'Confirming…'
+            : `Confirm version ${version.version}`}
+        </Button>
+      ),
+      error:
+        confirm.error && confirm.variables === version.version
+          ? errorMessage(confirm.error, 'Could not confirm this version.')
+          : undefined,
+    })),
+  ]
+
   return (
-    <div className="min-w-0 space-y-4">
-      <Card>
-        <CardHeader className="items-center">
-          <div className="min-w-0">
-            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
-            <h2 className="mt-1 truncate text-lg font-semibold">{item.requirement.title}</h2>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <RequirementStateNotices item={item} />
-          {versionsError && (
-            <p className="rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
-              {errorMessage(versionsError, 'Could not load version history.')}
-            </p>
-          )}
-          {orderedVersions.length > 0 && (
-            <div>
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Version history</p>
-              <section className="flex flex-wrap gap-2" aria-label="Requirement versions">
-                {orderedVersions.map((version) => (
-                  <button
-                    key={version.version}
-                    type="button"
-                    aria-pressed={displayed?.version === version.version}
-                    aria-current={displayed?.version === version.version ? 'true' : undefined}
-                    onClick={() => setSelectedVersion(version.version)}
-                    className={`rounded-md border px-2.5 py-2 text-left text-xs ${displayed?.version === version.version ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface'}`}
-                  >
-                    <span className="font-medium">Version {version.version}</span>
-                    <span className="mt-1 flex gap-1">
-                      <Badge variant={version.confirmed ? 'positive' : 'attention'}>
-                        {version.confirmed ? 'Confirmed' : 'Pending'}
-                      </Badge>
-                      <Badge variant="mono">{originLabels[version.origin]}</Badge>
-                    </span>
-                  </button>
-                ))}
-              </section>
-            </div>
-          )}
-          {displayed ? (
-            <>
-              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                <Badge variant={displayed.confirmed ? 'positive' : 'attention'}>
-                  {displayed.confirmed ? `Confirmed v${displayed.version}` : `Pending v${displayed.version}`}
-                </Badge>
-                <Badge variant="mono">{originLabels[displayed.origin]}</Badge>
-                <time className="ml-auto text-[11px] text-faint">{formatDate(displayed.created_at)}</time>
-              </div>
-              <RequirementDocument version={displayed} />
-              {!displayed.confirmed && item.current_version && (
-                <RequirementDiff current={item.current_version} pending={displayed} />
-              )}
-              {!displayed.confirmed && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-attention/30 bg-attention-soft px-4 py-3">
-                  {displayed.derived_from && (
-                    <RequirementDerivationNotice derivation={displayed.derived_from} documents={referenceDocuments} />
-                  )}
-                  <p className="text-xs leading-5 text-attention">
-                    This revision is not current intent until an operator confirms it.
-                  </p>
-                  <Button
-                    size="sm"
-                    disabled={!token || confirm.isPending || !item.confirmation_eligible}
-                    title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
-                    onClick={() => confirm.mutate(displayed.version)}
-                  >
-                    <Check />{' '}
-                    {confirm.isPending && confirm.variables === displayed.version
-                      ? 'Confirming…'
-                      : `Confirm version ${displayed.version}`}
-                  </Button>
-                  {!item.confirmation_eligible && (
-                    <p className="basis-full text-xs text-muted">
-                      A migrated seed needs its first deliberate revision before it can be confirmed.
-                    </p>
-                  )}
-                  {confirm.error && confirm.variables === displayed.version && (
-                    <p className="basis-full text-xs text-failure">
-                      {errorMessage(confirm.error, 'Could not confirm this version.')}
-                    </p>
-                  )}
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-sm text-muted">No requirement version has been proposed yet.</p>
-          )}
-        </CardContent>
-      </Card>
+    <div className="min-w-0">
+      <header className="mb-6">
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
+        <h2 className="mt-1.5 text-2xl font-semibold tracking-tight">{item.requirement.title}</h2>
+        {displayed && (
+          <p className="mt-1.5 text-xs text-muted">
+            Version {displayed.version} · {displayed.confirmed ? 'confirmed' : 'proposed'}{' '}
+            {formatDate(displayed.created_at)}
+          </p>
+        )}
+      </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Serving tasks</CardTitle>
-          <Badge variant="mono">{servingTasks.length}</Badge>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {servingTasks.length === 0 && (
-            <p className="text-sm text-muted">No delivery task is attached to this requirement yet.</p>
-          )}
-          {servingTasks.map((task) => (
-            <Link
-              key={task.id}
-              to="/tasks/$taskId/full"
-              params={{ taskId: task.id }}
-              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
-            >
-              <GitBranch className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0 flex-1">
-                <strong className="block truncate text-sm">{task.title}</strong>
-                <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-              </span>
-              <ArrowRight className="size-4 text-faint" />
-            </Link>
-          ))}
-        </CardContent>
-      </Card>
+      <AttentionSurface items={attention} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Historical serving blueprints</CardTitle>
-          <Badge variant="mono">{item.serving_blueprints.length}</Badge>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {item.serving_blueprints.length === 0 && (
-            <p className="text-sm text-muted">No blueprint has been planned in this requirement’s context yet.</p>
-          )}
-          {item.serving_blueprints.map(({ task, spec }) => (
-            <Link
-              key={task.id}
-              to="/blueprints/$taskId"
-              params={{ taskId: task.id }}
-              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
-            >
-              <GitBranch className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0 flex-1">
-                <strong className="block truncate text-sm">{task.title}</strong>
-                <span className="mt-1 flex gap-1.5">
-                  <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-                  {spec && (
-                    <Badge variant={spec.approved ? 'positive' : 'attention'}>
-                      Spec v{spec.version} {spec.approved ? 'approved' : 'at gate'}
-                    </Badge>
-                  )}
-                </span>
-              </span>
-              <ArrowRight className="size-4 text-faint" />
-            </Link>
-          ))}
-        </CardContent>
-      </Card>
+      <div className="mt-6">
+        {displayed ? (
+          <RequirementDocument version={displayed} />
+        ) : (
+          <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
+        )}
+      </div>
 
-      {item.planning_sessions.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Planning provenance</CardTitle>
-            <Badge variant="mono">{item.planning_sessions.length}</Badge>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {item.planning_sessions.map((session) => (
-              <div key={session.id} className="rounded-md border border-border p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <strong className="text-sm">{session.title || session.id}</strong>
-                  <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
-                  {session.model && (
-                    <Badge variant="mono">
-                      {session.model}
-                      {session.effort ? ` · ${session.effort}` : ''}
-                    </Badge>
-                  )}
-                  {session.exploration_output_tokens && (
-                    <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
-                  )}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {Object.entries(session.pinned_revisions ?? {})
-                    .sort(([left], [right]) => left.localeCompare(right))
-                    .map(([repo, revision]) => (
-                      <Badge key={repo} variant="mono">
-                        {repo}@{revision.slice(0, 12)}
-                      </Badge>
-                    ))}
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+      {versionsError && (
+        <p className="mt-4 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
+          {errorMessage(versionsError, 'Could not load version history.')}
+        </p>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Context artifacts</CardTitle>
-            <Badge variant="mono">{item.artifacts.length}</Badge>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {item.artifacts.map((artifact) => (
+      {displayed && !displayed.confirmed && item.current_version && (
+        <RequirementDiff current={item.current_version} pending={displayed} />
+      )}
+
+      {orderedVersions.length > 0 && (
+        <details className="mt-3 rounded-lg border border-border">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Version history</summary>
+          <section className="flex flex-wrap gap-2 border-t border-border p-4" aria-label="Requirement versions">
+            {orderedVersions.map((version) => (
               <button
+                key={version.version}
                 type="button"
-                key={`${artifact.id}-${artifact.role}`}
-                onClick={() => void downloadArtifact(token, artifact)}
-                className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface"
+                aria-pressed={displayed?.version === version.version}
+                aria-current={displayed?.version === version.version ? 'true' : undefined}
+                onClick={() => setSelectedVersion(version.version)}
+                className={`rounded-md border px-2.5 py-2 text-left text-xs ${displayed?.version === version.version ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface'}`}
               >
-                <Download className="size-3.5 text-primary" />
-                <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
-                <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
+                <span className="font-medium">Version {version.version}</span>
+                <span className="mt-1 block text-[11px] text-faint">
+                  {version.confirmed ? 'Confirmed' : 'Proposed'} · {originLabels[version.origin]}
+                </span>
               </button>
             ))}
-            <label
-              className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}
-            >
-              <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
-              <input
-                className="hidden"
-                type="file"
-                disabled={!token || upload.isPending}
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) upload.mutate(file)
-                  event.currentTarget.value = ''
-                }}
-              />
-            </label>
-            {upload.error && (
-              <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>
-            )}
-          </CardContent>
-        </Card>
+          </section>
+        </details>
+      )}
+
+      <div className="mt-10 space-y-4 border-t border-border pt-8">
+        {/*
+          Delivery is task-centric: `serves` sits on the task itself (spec
+          §21.58 change 6). Blueprints are retained below as the historical
+          lens over records planned before the noun was retired, so they stay
+          readable without being mislabelled as newly planned work.
+        */}
         <Card>
           <CardHeader>
-            <CardTitle>Lineage</CardTitle>
-            <Badge variant="mono">{item.lineage.length}</Badge>
+            <CardTitle>Delivery</CardTitle>
+            <Badge variant="mono">{servingTasks.length}</Badge>
           </CardHeader>
-          <CardContent>
-            {item.lineage.length === 0 && (
-              <p className="text-sm text-muted">Lineage appears as planning and delivery advance.</p>
+          <CardContent className="space-y-2">
+            {servingTasks.length === 0 && (
+              <p className="text-sm text-muted">No work has been planned against this requirement yet.</p>
             )}
-            {item.lineage.length > 0 && (
-              <details>
-                <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
-                <ol className="mt-3 space-y-3">
-                  {item.lineage
-                    .slice(-8)
-                    .reverse()
-                    .map((event) => (
-                      <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
-                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
-                        <span className="min-w-0 flex-1">
-                          <strong className="font-medium">{eventLabel(event)}</strong>
-                          <span className="mt-0.5 flex items-center gap-2">
-                            <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
-                            {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
-                          </span>
-                        </span>
-                      </li>
-                    ))}
-                </ol>
-              </details>
-            )}
+            {servingTasks.map((task) => (
+              <Link
+                key={task.id}
+                to="/tasks/$taskId/full"
+                params={{ taskId: task.id }}
+                className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+              >
+                <span className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm">{task.title}</strong>
+                  <span className="mt-1 flex gap-1.5">
+                    <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
+                  </span>
+                </span>
+                <ArrowRight className="size-4 text-faint" />
+              </Link>
+            ))}
           </CardContent>
         </Card>
+
+        {item.serving_blueprints.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Delivery before blueprints retired</CardTitle>
+              <Badge variant="mono">{item.serving_blueprints.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {item.serving_blueprints.map(({ task, spec }) => (
+                <Link
+                  key={task.id}
+                  to="/blueprints/$taskId"
+                  params={{ taskId: task.id }}
+                  className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+                >
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm">{task.title}</strong>
+                    <span className="mt-1 flex gap-1.5">
+                      <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
+                      {spec && (
+                        <Badge variant="mono">
+                          Plan v{spec.version} {spec.approved ? 'approved' : 'awaiting approval'}
+                        </Badge>
+                      )}
+                    </span>
+                  </span>
+                  <ArrowRight className="size-4 text-faint" />
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
+        {item.planning_sessions.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>How this was written</CardTitle>
+              <Badge variant="mono">{item.planning_sessions.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {item.planning_sessions.map((session) => (
+                <div key={session.id} className="rounded-md border border-border p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="text-sm">{session.title || session.id}</strong>
+                    <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
+                    {session.model && (
+                      <Badge variant="mono" title="The model and effort this conversation ran with">
+                        {session.model}
+                        {session.effort ? ` · ${session.effort}` : ''}
+                      </Badge>
+                    )}
+                    {session.exploration_output_tokens && (
+                      <Badge variant="mono" title="Reading budget for each repository lookup">
+                        {session.exploration_output_tokens.toLocaleString()} tokens/call
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {Object.entries(session.pinned_revisions ?? {})
+                      .sort(([left], [right]) => left.localeCompare(right))
+                      .map(([repo, revision]) => (
+                        <Badge key={repo} variant="mono" title="The exact code this conversation read">
+                          {repo}@{revision.slice(0, 12)}
+                        </Badge>
+                      ))}
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Attached files</CardTitle>
+              <Badge variant="mono">{item.artifacts.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {item.artifacts.map((artifact) => (
+                <button
+                  type="button"
+                  key={`${artifact.id}-${artifact.role}`}
+                  onClick={() => void downloadArtifact(token, artifact)}
+                  className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left hover:bg-surface"
+                >
+                  <Download className="size-3.5 text-primary" />
+                  <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
+                  <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
+                </button>
+              ))}
+              <label
+                className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}
+              >
+                <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
+                <input
+                  className="hidden"
+                  type="file"
+                  disabled={!token || upload.isPending}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) upload.mutate(file)
+                    event.currentTarget.value = ''
+                  }}
+                />
+              </label>
+              {upload.error && (
+                <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Activity</CardTitle>
+              <Badge variant="mono">{item.lineage.length}</Badge>
+            </CardHeader>
+            <CardContent>
+              {item.lineage.length === 0 && (
+                <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
+              )}
+              {item.lineage.length > 0 && (
+                <details>
+                  <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
+                  <ol className="mt-3 space-y-3">
+                    {item.lineage
+                      .slice(-8)
+                      .reverse()
+                      .map((event) => (
+                        <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                          <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                          <span className="min-w-0 flex-1">
+                            <strong className="font-medium">{eventLabel(event)}</strong>
+                            <span className="mt-0.5 flex items-center gap-2">
+                              <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                              {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                  </ol>
+                </details>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+        {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} title="Intent to delivery" />}
       </div>
-      {item.lineage_graph && <LineageGraphCard graph={item.lineage_graph} title="Intent to delivery" />}
     </div>
   )
 }
@@ -870,23 +782,27 @@ function RequirementDerivationNotice({
   const source = documents.find((document) => document.id === derivation.document_id)
   const anchor = `reference-${derivation.document_id}-v${derivation.version}`
   return (
-    <p className="basis-full text-xs leading-5 text-muted" title="The exact saved source used to create this proposal.">
+    <span className="block" title="The exact saved source this proposal was written from.">
       Source:{' '}
       <a className="font-medium text-primary underline-offset-2 hover:underline" href={`#${anchor}`}>
         {source?.name ?? derivation.document_id} · version {derivation.version}
       </a>{' '}
       · section {derivation.section_anchor}
-    </p>
+    </span>
   )
+}
+
+function documentGlobalByID(id: string) {
+  return window.document.getElementById(id)
 }
 
 function RequirementDocument({ version }: { version: RequirementVersion }) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
-          <h3 className="text-sm font-semibold">Requirement statements</h3>
+          <h3 className="text-sm font-semibold">What this requires</h3>
           <ol className="mt-2 space-y-2">
             {version.statements.map((statement) => (
               <li
@@ -930,13 +846,13 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
 function RequirementDiff({ current, pending }: { current: RequirementVersion; pending: RequirementVersion }) {
   const [currentLines, pendingLines] = lineChanges(documentText(current), documentText(pending))
   return (
-    <details className="rounded-lg border border-border bg-surface/40" open>
+    <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
         Compared with confirmed v{current.version}
       </summary>
       <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
         <div className="bg-card p-4">
-          <p className="mb-2 text-xs font-medium text-failure">Current confirmed intent</p>
+          <p className="mb-2 text-xs font-medium text-failure">Confirmed today</p>
           <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">
             {currentLines.map((line, index) => (
               <span
@@ -949,7 +865,7 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
           </pre>
         </div>
         <div className="bg-card p-4">
-          <p className="mb-2 text-xs font-medium text-positive">Pending revision</p>
+          <p className="mb-2 text-xs font-medium text-positive">Proposed</p>
           <pre className="whitespace-pre-wrap font-sans text-xs leading-5">
             {pendingLines.map((line, index) => (
               <span
@@ -963,67 +879,6 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
         </div>
       </div>
     </details>
-  )
-}
-
-function RequirementStateBadges({ item, compact = false }: { item: RequirementView; compact?: boolean }) {
-  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
-  const shippedTitle = deliveryTitle(item)
-  const drift = item.staleness?.active_drift.length ?? 0
-  return (
-    <>
-      {shipped && (
-        <Badge variant="attention">
-          <span title={shippedTitle}>Code ahead of intent</span>
-        </Badge>
-      )}
-      {item.staleness?.partial_evaluation && <Badge variant="attention">Staleness partially evaluated</Badge>}
-      {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
-      {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
-      {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
-      {!compact &&
-        item.pending_versions.length === 0 &&
-        !shipped &&
-        drift === 0 &&
-        !item.migrated_seed &&
-        !item.staleness?.partial_evaluation && <Badge variant="positive">Intent aligned</Badge>}
-    </>
-  )
-}
-
-function RequirementStateNotices({ item }: { item: RequirementView }) {
-  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
-  const shippedTitle = deliveryTitle(item)
-  const activeDrift = item.staleness?.active_drift ?? []
-  return (
-    <section className="space-y-2" aria-label="Requirement alignment">
-      {item.staleness?.partial_evaluation && (
-        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
-          Staleness partially evaluated because the bounded delivery lineage was truncated.
-        </p>
-      )}
-      {shipped && (
-        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
-          Code shipped past the confirmed intent. <span title={shippedTitle}>Latest delivery: {shipped}.</span>
-        </p>
-      )}
-      {activeDrift.length > 0 && (
-        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
-          {activeDrift.length} unreconciled repository change
-          {activeDrift.length === 1 ? '' : 's'} affect this requirement through its delivery lineage.
-        </p>
-      )}
-      {item.pending_versions.length > 0 && !item.migrated_seed && (
-        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
-          A revision is pending operator confirmation.
-        </p>
-      )}
-      {item.migrated_seed && (
-        <p className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
-          This migrated seed is awaiting its first deliberate revision.
-        </p>
-      )}
-    </section>
   )
 }
 
@@ -1120,8 +975,5 @@ function EmptyMessage({ children, tone = 'muted' }: { children: string; tone?: '
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
