@@ -32,3 +32,18 @@ func TestMemoryTaskOperationsPaginationConformance(t *testing.T) {
 		Store: st, Context: ctx, WantTotal: 2,
 	})
 }
+
+func TestMemoryTaskFilterConformance(t *testing.T) {
+	t.Parallel()
+	workspace := "task-filter-" + core.NewTaskID()
+	st := store.NewMemoryWithConfig(&config.Config{
+		Workspace: workspace,
+		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+	})
+	fixture := storetest.TaskFilterFixture{
+		Store: st, Context: store.WithWorkspace(t.Context(), workspace),
+		Workspace: workspace, Repo: "conveyor", Suffix: core.NewTaskID(),
+	}
+	storetest.SeedTaskFilterFixture(t, fixture)
+	storetest.RunTaskFilterConformance(t, fixture)
+}

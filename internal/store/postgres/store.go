@@ -607,21 +607,82 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	return result, nil
 }
 
+// ListTasksFiltered narrows the workspace with the shared Tasks/Board predicate
+// (AC-2.4). An inactive filter routes to ListTasks so the many callers that
+// never filter keep their existing plan.
+func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	if !filter.Active() {
+		return s.ListTasks(ctx)
+	}
+	// A zero page limit is the query's own "no LIMIT" spelling, so the paged
+	// Tasks read and this unpaged one stay one SQL predicate.
+	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateTaskRows(ctx, rows)
+}
+
+// taskFilterParams binds the shared predicate. Every member is a store-side
+// argument: nothing about the filter is decided after the rows come back.
+func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTaskOperationsTasksParams {
+	return db.CountTaskOperationsTasksParams{
+		WorkspaceID: workspace(ctx), TaskState: string(filter.State), Repository: filter.Repository,
+		Search: filter.Query, UpdatedFrom: nullableTimestamp(filter.UpdatedFrom),
+		UpdatedTo: nullableTimestamp(filter.UpdatedTo), ServesRequirement: filter.ServesRequirementID,
+		GoverningDesign: filter.GoverningDesignID,
+	}
+}
+
+func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limit, offset int) db.ListTaskOperationsTasksParams {
+	bound := taskFilterParams(ctx, filter)
+	return db.ListTaskOperationsTasksParams{
+		WorkspaceID: bound.WorkspaceID, TaskState: bound.TaskState, Repository: bound.Repository,
+		Search: bound.Search, UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
+		ServesRequirement: bound.ServesRequirement, GoverningDesign: bound.GoverningDesign,
+		PageLimit: int32(limit), PageOffset: int32(offset),
+	}
+}
+
+// hydrateTaskRows fills the relations and GitHub lifecycle every task list
+// projection carries, so the paged and unpaged reads return identical rows.
+func (s *Store) hydrateTaskRows(ctx context.Context, rows []db.ListTaskOperationsTasksRow) ([]core.Task, error) {
+	result := make([]core.Task, len(rows))
+	dependencyTaskIDs := make([]string, 0, len(rows))
+	parentTaskIDs := make([]string, 0, len(rows))
+	for i := range rows {
+		result[i] = taskFromDB(rows[i].Task)
+		if rows[i].HasDependencies {
+			dependencyTaskIDs = append(dependencyTaskIDs, result[i].ID)
+		}
+		if rows[i].HasChildren {
+			parentTaskIDs = append(parentTaskIDs, result[i].ID)
+		}
+	}
+	if err := s.hydrateTaskRelationsBatch(ctx, result, dependencyTaskIDs, parentTaskIDs); err != nil {
+		return nil, err
+	}
+	for i := range result {
+		if err := s.hydrateGitHubLifecycle(ctx, &result[i]); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
 func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperationsQuery) (store.TaskOperationsPage, error) {
 	if err := query.Validate(); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	filter := db.CountTaskOperationsTasksParams{
-		WorkspaceID: workspace(ctx), TaskState: string(query.State), Repository: query.Repository,
-	}
+	filter := taskFilterParams(ctx, query.TaskFilter)
 	total, err := s.queries.CountTaskOperationsTasks(ctx, filter)
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, db.ListTaskOperationsTasksParams{
-		WorkspaceID: filter.WorkspaceID, TaskState: filter.TaskState, Repository: filter.Repository,
-		PageLimit: int32(query.Limit), PageOffset: int32(query.Offset),
-	})
+	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}

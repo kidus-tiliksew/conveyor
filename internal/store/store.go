@@ -74,6 +74,11 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
+	// ListTasksFiltered is ListTasks narrowed by the shared surface predicate,
+	// so the stage-grouped board filters through the same store code as the
+	// Tasks list instead of a second implementation (AC-2.4). An inactive
+	// filter is exactly ListTasks.
+	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
@@ -450,10 +455,10 @@ type ActivityMarker struct {
 }
 
 // TaskFilter is the one predicate set the Tasks list and the Board both send
-// to the server (spec §21.61 change 4). It is shared rather than duplicated so
-// the two surfaces cannot drift into filtering differently, and every member is
+// to the server (AC-2.4). It is shared rather than duplicated so the two
+// surfaces cannot drift into filtering differently, and every member is
 // evaluated by the store in its own query language — never by narrowing a
-// fully-loaded workspace in Go.
+// fully-loaded workspace in Go (AC-2.3).
 //
 // UpdatedFrom/UpdatedTo bound the task's last-activity instant: the timestamp
 // the surfaces render as "Updated", which is the latest event on the task and
@@ -461,6 +466,11 @@ type ActivityMarker struct {
 // shows is what makes the filter explainable — filtering on a timestamp the
 // operator cannot see would leave rows disappearing for no visible reason. The
 // range is half-open: UpdatedFrom is inclusive, UpdatedTo exclusive.
+//
+// ServesRequirementID and GoverningDesignID name a document the task carries as
+// attached context. Both fold the same append-only attachment stream the read
+// model folds (see ActiveTaskContextReferences), so a detached document stops
+// matching exactly when the row stops showing it.
 type TaskFilter struct {
 	State      core.TaskState
 	Repository string
@@ -3849,6 +3859,84 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	if !filter.Active() {
+		return m.ListTasks(ctx)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]core.Task, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if !m.taskMatchesFilterLocked(t, filter) {
+			continue
+		}
+		if lifecycle, exists := m.github[t.ID]; exists {
+			copy := lifecycle
+			t.GitHub = &copy
+		}
+		out = append(out, m.hydrateTaskLocked(t))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// taskMatchesFilterLocked evaluates the shared surface predicate. The Postgres
+// store expresses the same members in SQL; the two must agree, so the fixtures
+// in storetest exercise both through one table.
+func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool {
+	if filter.State != "" && task.State != filter.State {
+		return false
+	}
+	if filter.Repository != "" && task.Repo != filter.Repository {
+		return false
+	}
+	if needle := strings.ToLower(filter.Query); needle != "" {
+		matched := false
+		for _, field := range []string{task.Title, task.ID, task.Source, task.Branch} {
+			matched = matched || strings.Contains(strings.ToLower(field), needle)
+		}
+		if !matched {
+			return false
+		}
+	}
+	if !filter.UpdatedFrom.IsZero() || !filter.UpdatedTo.IsZero() {
+		updated := m.taskLastActivityLocked(task)
+		if !filter.UpdatedFrom.IsZero() && updated.Before(filter.UpdatedFrom) {
+			return false
+		}
+		if !filter.UpdatedTo.IsZero() && !updated.Before(filter.UpdatedTo) {
+			return false
+		}
+	}
+	if filter.ServesRequirementID != "" || filter.GoverningDesignID != "" {
+		requirements, designs := ActiveTaskContextReferences(m.events[task.ID])
+		if filter.ServesRequirementID != "" && !requirements[filter.ServesRequirementID] {
+			return false
+		}
+		if _, attached := designs[filter.GoverningDesignID]; filter.GoverningDesignID != "" && !attached {
+			return false
+		}
+	}
+	return true
+}
+
+// taskLastActivityLocked is the instant the surfaces label "Updated": the
+// task's latest event, or its creation time until one arrives.
+func (m *memory) taskLastActivityLocked(task core.Task) time.Time {
+	if events := m.events[task.ID]; len(events) > 0 {
+		return events[len(events)-1].At
+	}
+	return task.CreatedAt
 }
 
 func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error) {

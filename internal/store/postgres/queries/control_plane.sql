@@ -60,6 +60,18 @@ FROM tasks t
 WHERE t.workspace_id = $1
 ORDER BY t.created_at, t.id;
 
+-- The shared Tasks/Board filter (AC-2.4) is evaluated here rather than in Go, so
+-- neither surface ever loads the workspace to narrow it (AC-2.3). Each member
+-- short-circuits on its own empty argument, leaving the unfiltered plan as it
+-- was. `strpos(lower(...))` is a literal case-insensitive substring test, so an
+-- operator typing `%` or `_` searches for that character instead of a wildcard.
+-- The updated-at bounds read the same last-event expression ListActivityMarkers
+-- projects as `last_event_at` — the value the row labels "Updated" — over
+-- events_task_id_idx. The requirement and design bounds take the latest add or
+-- remove for that one document, which is the SQL spelling of the
+-- store.ActiveTaskContextReferences fold, over migration 073's
+-- events_task_context_task_idx.
+
 -- name: ListTaskOperationsTasks :many
 SELECT sqlc.embed(t),
        EXISTS (
@@ -74,6 +86,31 @@ FROM tasks t
 WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
   AND (sqlc.arg(repository)::text = '' OR t.repo_name = sqlc.arg(repository))
+  AND (sqlc.arg(search)::text = '' OR
+       strpos(lower(t.title), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.id), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.source), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.branch), lower(sqlc.arg(search))) > 0)
+  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) >= sqlc.narg(updated_from))
+  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) < sqlc.narg(updated_to))
+  AND (sqlc.arg(serves_requirement)::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+             AND e.payload_json ->> 'id' = sqlc.arg(serves_requirement)
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_requirement_added')
+  AND (sqlc.arg(governing_design)::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+             AND e.payload_json ->> 'id' = sqlc.arg(governing_design)
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_design_added')
 ORDER BY t.created_at, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -83,7 +120,32 @@ SELECT count(*)::bigint
 FROM tasks t
 WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
-  AND (sqlc.arg(repository)::text = '' OR t.repo_name = sqlc.arg(repository));
+  AND (sqlc.arg(repository)::text = '' OR t.repo_name = sqlc.arg(repository))
+  AND (sqlc.arg(search)::text = '' OR
+       strpos(lower(t.title), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.id), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.source), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.branch), lower(sqlc.arg(search))) > 0)
+  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) >= sqlc.narg(updated_from))
+  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
+           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
+       ), t.created_at) < sqlc.narg(updated_to))
+  AND (sqlc.arg(serves_requirement)::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+             AND e.payload_json ->> 'id' = sqlc.arg(serves_requirement)
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_requirement_added')
+  AND (sqlc.arg(governing_design)::text = '' OR (
+           SELECT e.kind FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+             AND e.payload_json ->> 'id' = sqlc.arg(governing_design)
+           ORDER BY e.id DESC LIMIT 1
+       ) = 'task.context_design_added');
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
