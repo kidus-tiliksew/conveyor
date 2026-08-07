@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1997,6 +1998,137 @@ func taskOperationsRow(t *testing.T, items taskOperationsResponse, id string) in
 	}
 	t.Fatalf("task %s missing from the operations list", id)
 	return -1
+}
+
+type taskOperationsBoundedStore struct {
+	store.Store
+	listEventsCalls int
+	latestPlanCalls int
+}
+
+func (st *taskOperationsBoundedStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	st.listEventsCalls++
+	return nil, fmt.Errorf("per-task ListEvents forbidden for %s", taskID)
+}
+
+func (st *taskOperationsBoundedStore) GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	st.latestPlanCalls++
+	return core.SpecVersion{}, false, fmt.Errorf("per-task latest plan forbidden for %s", taskID)
+}
+
+func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	for index, task := range []core.Task{
+		{ID: "first", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued},
+		{ID: "second", Workspace: "demo", Repo: "web", State: core.TaskRunning},
+		{ID: "third", Workspace: "demo", Repo: "web", State: core.TaskRunning},
+	} {
+		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
+		if err := base.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := &taskOperationsBoundedStore{Store: base}
+	server := NewServer(observed)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=running&repository=web&limit=1&offset=1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("X-Conveyor-Total") != "2" || response.Header().Get("X-Conveyor-Limit") != "1" || response.Header().Get("X-Conveyor-Offset") != "1" {
+		t.Fatalf("pagination headers = %+v", response.Header())
+	}
+	var items taskOperationsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Task.ID != "third" {
+		t.Fatalf("paged rows = %+v", items)
+	}
+	if observed.listEventsCalls != 0 || observed.latestPlanCalls != 0 {
+		t.Fatalf("per-task reads = events:%d plans:%d", observed.listEventsCalls, observed.latestPlanCalls)
+	}
+
+	bad := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bad, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=unknown&limit=1", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid filter status=%d body=%s", bad.Code, bad.Body.String())
+	}
+
+	// Pagination is additive: a caller that does not opt in still receives the
+	// whole workspace as a bare array, with no pagination metadata attached.
+	compat := httptest.NewRecorder()
+	server.Handler().ServeHTTP(compat, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	if compat.Code != http.StatusOK {
+		t.Fatalf("compatibility status=%d body=%s", compat.Code, compat.Body.String())
+	}
+	if compat.Header().Get("X-Conveyor-Total") != "" || compat.Header().Get("X-Conveyor-Limit") != "" || compat.Header().Get("X-Conveyor-Offset") != "" {
+		t.Fatalf("unpaginated response carried pagination headers: %+v", compat.Header())
+	}
+	var all taskOperationsResponse
+	if err := json.Unmarshal(compat.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].Task.ID != "first" || all[2].Task.ID != "third" {
+		t.Fatalf("unpaginated rows = %+v", all)
+	}
+
+	// offset without limit is a caller error rather than a silent full read.
+	orphan := httptest.NewRecorder()
+	server.Handler().ServeHTTP(orphan, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo&offset=1", nil))
+	if orphan.Code != http.StatusBadRequest {
+		t.Fatalf("offset without limit status=%d body=%s", orphan.Code, orphan.Body.String())
+	}
+
+	// The largest representable offset is served — an empty page past the end,
+	// with the total still reported so a client can correct itself.
+	edge := httptest.NewRecorder()
+	server.Handler().ServeHTTP(edge, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=1&offset=%d", store.MaxTaskOperationsOffset), nil))
+	if edge.Code != http.StatusOK {
+		t.Fatalf("boundary offset status=%d body=%s", edge.Code, edge.Body.String())
+	}
+	if edge.Header().Get("X-Conveyor-Total") != "3" ||
+		edge.Header().Get("X-Conveyor-Offset") != strconv.Itoa(store.MaxTaskOperationsOffset) {
+		t.Fatalf("boundary pagination headers = %+v", edge.Header())
+	}
+	var beyond taskOperationsResponse
+	if err := json.Unmarshal(edge.Body.Bytes(), &beyond); err != nil {
+		t.Fatal(err)
+	}
+	if len(beyond) != 0 {
+		t.Fatalf("boundary offset rows = %+v", beyond)
+	}
+
+	// Anything past that bound is rejected at the edge. Passed through, it
+	// narrows to int32 in Postgres — 2^31 to a negative OFFSET Postgres
+	// rejects, 2^32+5 to a page starting at row 5 — while memory returned an
+	// empty page for both. The stores must agree, so neither sees it.
+	for _, offset := range []string{
+		strconv.FormatInt(int64(store.MaxTaskOperationsOffset)+1, 10),
+		"4294967301",
+		"9223372036854775808",
+		"-1",
+	} {
+		overflow := httptest.NewRecorder()
+		server.Handler().ServeHTTP(overflow, httptest.NewRequest(http.MethodGet,
+			"/v1/task-operations?workspace_id=demo&limit=1&offset="+offset, nil))
+		if overflow.Code != http.StatusBadRequest {
+			t.Fatalf("offset=%s status=%d body=%s", offset, overflow.Code, overflow.Body.String())
+		}
+	}
+
+	// The limit bound is the store's, not a second copy of it.
+	overLimit := httptest.NewRecorder()
+	server.Handler().ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=%d", store.MaxTaskOperationsLimit+1), nil))
+	if overLimit.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status=%d body=%s", overLimit.Code, overLimit.Body.String())
+	}
 }
 
 // AC-1.1 and AC-1.2: the projection is one flat, filterable list carrying the

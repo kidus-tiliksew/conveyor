@@ -607,6 +607,109 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	return result, nil
 }
 
+func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperationsQuery) (store.TaskOperationsPage, error) {
+	if err := query.Validate(); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	filter := db.CountTaskOperationsTasksParams{
+		WorkspaceID: workspace(ctx), TaskState: string(query.State), Repository: query.Repository,
+	}
+	total, err := s.queries.CountTaskOperationsTasks(ctx, filter)
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	rows, err := s.queries.ListTaskOperationsTasks(ctx, db.ListTaskOperationsTasksParams{
+		WorkspaceID: filter.WorkspaceID, TaskState: filter.TaskState, Repository: filter.Repository,
+		PageLimit: int32(query.Limit), PageOffset: int32(query.Offset),
+	})
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	page := store.TaskOperationsPage{
+		Tasks: make([]core.Task, len(rows)), Events: map[string][]core.Event{},
+		Plans: map[string]core.SpecVersion{}, Total: int(total),
+	}
+	dependencyTaskIDs := make([]string, 0, len(rows))
+	parentTaskIDs := make([]string, 0, len(rows))
+	taskIDs := make([]string, 0, len(rows))
+	for i := range rows {
+		page.Tasks[i] = taskFromDB(rows[i].Task)
+		taskIDs = append(taskIDs, page.Tasks[i].ID)
+		if rows[i].HasDependencies {
+			dependencyTaskIDs = append(dependencyTaskIDs, page.Tasks[i].ID)
+		}
+		if rows[i].HasChildren {
+			parentTaskIDs = append(parentTaskIDs, page.Tasks[i].ID)
+		}
+	}
+	if err = s.hydrateTaskRelationsBatch(ctx, page.Tasks, dependencyTaskIDs, parentTaskIDs); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	if len(taskIDs) == 0 {
+		return page, nil
+	}
+	lifecycleRows, err := s.pool.Query(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=ANY($2::text[])", filter.WorkspaceID, taskIDs)
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	lifecycles := make(map[string]core.GitHubLifecycle, len(taskIDs))
+	for lifecycleRows.Next() {
+		lifecycle, scanErr := scanGitHubLifecycle(lifecycleRows)
+		if scanErr != nil {
+			lifecycleRows.Close()
+			return store.TaskOperationsPage{}, scanErr
+		}
+		lifecycles[lifecycle.TaskID] = lifecycle
+	}
+	if err = lifecycleRows.Err(); err != nil {
+		lifecycleRows.Close()
+		return store.TaskOperationsPage{}, err
+	}
+	lifecycleRows.Close()
+	for i := range page.Tasks {
+		if lifecycle, ok := lifecycles[page.Tasks[i].ID]; ok {
+			page.Tasks[i].GitHub = &lifecycle
+		}
+	}
+	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: filter.WorkspaceID, TaskIds: taskIDs})
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	for _, event := range events {
+		converted := eventFromDB(event)
+		page.Events[converted.TaskID] = append(page.Events[converted.TaskID], converted)
+	}
+	plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: filter.WorkspaceID, TaskIds: taskIDs})
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	for _, plan := range plans {
+		page.Plans[plan.TaskID] = specFromDB(plan)
+	}
+	legacyRows, err := s.pool.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
+		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, filter.WorkspaceID, taskIDs)
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	defer legacyRows.Close()
+	for legacyRows.Next() {
+		var taskID string
+		var version int
+		if err = legacyRows.Scan(&taskID, &version); err != nil {
+			return store.TaskOperationsPage{}, err
+		}
+		plan, ok := page.Plans[taskID]
+		if ok && plan.Version == version {
+			plan.LegacyGate = true
+			page.Plans[taskID] = plan
+		}
+	}
+	if err = legacyRows.Err(); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	return page, nil
+}
+
 func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}
@@ -2307,11 +2410,57 @@ func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, erro
 }
 
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
-	rows, err := s.queries.ListActivityMarkers(ctx, workspace(ctx))
-	if err != nil {
-		return nil, err
+	return s.listActivityMarkers(ctx, nil)
+}
+
+func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	if taskIDs != nil && len(taskIDs) == 0 {
+		return []store.ActivityMarker{}, nil
 	}
-	orders, err := s.ListWorkOrders(ctx)
+	return s.listActivityMarkers(ctx, taskIDs)
+}
+
+func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	type markerRow struct {
+		taskID      string
+		latestStage string
+		lastEventAt time.Time
+	}
+	var rows []markerRow
+	if len(taskIDs) == 0 {
+		stored, err := s.queries.ListActivityMarkers(ctx, workspace(ctx))
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range stored {
+			rows = append(rows, markerRow{taskID: row.TaskID, latestStage: row.LatestStage, lastEventAt: row.LastEventAt.Time})
+		}
+	} else {
+		selected, err := s.pool.Query(ctx, `SELECT t.id,
+			COALESCE((SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),'')::text,
+			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),t.created_at)::timestamptz
+			FROM tasks t WHERE t.workspace_id=$1 AND t.id=ANY($2::text[]) ORDER BY t.created_at,t.id`, workspace(ctx), taskIDs)
+		if err != nil {
+			return nil, err
+		}
+		for selected.Next() {
+			var row markerRow
+			if err = selected.Scan(&row.taskID, &row.latestStage, &row.lastEventAt); err != nil {
+				selected.Close()
+				return nil, err
+			}
+			rows = append(rows, row)
+		}
+		if err = selected.Err(); err != nil {
+			selected.Close()
+			return nil, err
+		}
+		selected.Close()
+	}
+	// Scope the order read to the requested tasks. The activity feed still
+	// wants the whole workspace, but a Tasks page must not pull every
+	// workspace order in only to discard most of it (spec §21.58).
+	orders, err := s.listWorkOrdersForTasks(ctx, taskIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -2343,12 +2492,18 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	}
 	eventsByTask := make(map[string][]core.Event)
 	if hasReviewOrders {
-		lifecycleRows, queryErr := s.pool.Query(ctx, `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+		lifecycleQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
 			FROM events e JOIN tasks t ON t.id=e.task_id
 			WHERE t.workspace_id=$1 AND e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
 			AND EXISTS (SELECT 1 FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=e.task_id
 				AND w.stage='review' AND w.state IN ('claimed','queued') AND w.execution_started_at IS NOT NULL)
-			ORDER BY e.at,e.id`, workspace(ctx))
+			ORDER BY e.at,e.id`
+		lifecycleArgs := []any{workspace(ctx)}
+		if len(taskIDs) > 0 {
+			lifecycleQuery = strings.Replace(lifecycleQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
+			lifecycleArgs = append(lifecycleArgs, taskIDs)
+		}
+		lifecycleRows, queryErr := s.pool.Query(ctx, lifecycleQuery, lifecycleArgs...)
 		if queryErr != nil {
 			return nil, queryErr
 		}
@@ -2367,13 +2522,19 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 		lifecycleRows.Close()
 	}
 	forgeEventsByTask := make(map[string][]core.Event)
-	forgeRows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+	forgeQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1 AND e.kind IN (
 			'github_issue.publication_failed','github_issue.publication_published',
 			'review.publication_failed','review.publication_published',
 			'merge.failed','merge.confirmed','merge.reconciled'
-		) ORDER BY e.at,e.id`, workspace(ctx))
+		) ORDER BY e.at,e.id`
+	forgeArgs := []any{workspace(ctx)}
+	if len(taskIDs) > 0 {
+		forgeQuery = strings.Replace(forgeQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
+		forgeArgs = append(forgeArgs, taskIDs)
+	}
+	forgeRows, err := s.pool.Query(ctx, forgeQuery, forgeArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -2393,12 +2554,12 @@ func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
 		result[i] = store.ActivityMarker{
-			TaskID: row.TaskID, LatestStage: core.Stage(row.LatestStage), LastEventAt: row.LastEventAt.Time,
-			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.TaskID]),
-			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.TaskID], eventsByTask[row.TaskID], time.Now().UTC()),
-			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.TaskID], eventsByTask[row.TaskID]),
-			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.TaskID], eventsByTask[row.TaskID])),
-			Stalled:                   store.StalledTask(ordersByTask[row.TaskID]),
+			TaskID: row.taskID, LatestStage: core.Stage(row.latestStage), LastEventAt: row.lastEventAt,
+			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.taskID]),
+			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.taskID], eventsByTask[row.taskID], time.Now().UTC()),
+			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.taskID], eventsByTask[row.taskID]),
+			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.taskID], eventsByTask[row.taskID])),
+			Stalled:                   store.StalledTask(ordersByTask[row.taskID]),
 		}
 	}
 	return result, nil
@@ -2468,7 +2629,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if err != nil {
 		return core.Task{}, notFound(err, "task %s", intervention.TaskID)
 	}
-	if core.TaskState(priorState) == core.TaskMerged || core.TaskState(priorState) == core.TaskClosed {
+	if core.TaskTerminal(core.TaskState(priorState)) {
 		return core.Task{}, store.ErrTaskTerminal
 	}
 	taskState, transitionErr := core.TransitionTask(core.TaskState(priorState), core.TaskCancel)
@@ -3410,6 +3571,29 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]core.WorkOrder, 0)
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
+	}
+	return orders, rows.Err()
+}
+
+// listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
+// workspace when the set is empty. It backs the activity-marker projection so a
+// page-scoped caller pays for its page only (spec §21.58).
+func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	if len(taskIDs) == 0 {
+		return s.ListWorkOrders(ctx)
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}

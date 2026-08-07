@@ -62,7 +62,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		return store.SetupChangeResult{}, notFound(err, "task %s", request.TaskID)
 	}
 	task := taskFromDB(row)
-	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if core.TaskTerminal(task.State) {
 		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", store.ErrSetupChangeConflict, task.ID)
 	}
 	// Submitted spec/implement attempts are delivered, not executing; only

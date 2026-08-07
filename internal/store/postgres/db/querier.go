@@ -15,6 +15,7 @@ type Querier interface {
 	// The §21.17 check-in window: events of a kind recorded after the latest
 	// human intervention on the task (all of them when no human has intervened).
 	CountEventsSinceHumanIntervention(ctx context.Context, arg CountEventsSinceHumanInterventionParams) (int64, error)
+	CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error)
 	DeleteLineageLink(ctx context.Context, arg DeleteLineageLinkParams) error
 	GetJob(ctx context.Context, arg GetJobParams) (Job, error)
 	GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job, error)
@@ -35,6 +36,9 @@ type Querier interface {
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
 	ListRequirementEvents(ctx context.Context, arg ListRequirementEventsParams) ([]Event, error)
+	ListTaskOperationsEvents(ctx context.Context, arg ListTaskOperationsEventsParams) ([]Event, error)
+	ListTaskOperationsLatestPlans(ctx context.Context, arg ListTaskOperationsLatestPlansParams) ([]TaskSpec, error)
+	ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
 	ListLineageLinks(ctx context.Context, workspaceID string) ([]Link, error)

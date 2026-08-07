@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { FileCode2, ListChecks, Network, Search, Workflow } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspace, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent } from '../components/ui/card'
 import { Input, Select } from '../components/ui/input'
@@ -20,32 +20,42 @@ import type { TaskOperationsItem, TaskPlanStatus, TaskRelation } from '../lib/ty
 // none may be added to support it (AC-1.5).
 export function TasksPage() {
   const { workspace } = useWorkspaceSelection()
-  const {
-    data: items,
-    isLoading,
-    error,
-  } = useQuery({
-    queryKey: ['task-operations', workspace],
-    queryFn: fetchTaskOperations,
-    enabled: Boolean(workspace),
-  })
+  const { data: workspaceInfo } = useWorkspace()
   const [query, setQuery] = useState('')
   const [state, setState] = useState('')
   const [repo, setRepo] = useState('')
+  const [offset, setOffset] = useState(0)
+  const limit = 100
+  const {
+    data: page,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['task-operations', workspace, state, repo, offset],
+    queryFn: () => fetchTaskOperations({ limit, offset, state, repository: repo }),
+    enabled: Boolean(workspace),
+    refetchInterval: 15_000,
+  })
+  const items = page?.items
 
-  const repos = useMemo(() => [...new Set((items ?? []).map((item) => item.task.repo).filter(Boolean))].sort(), [items])
-  const states = useMemo(() => [...new Set((items ?? []).map((item) => item.task.state))].sort(), [items])
+  // State and repository are server-side filters now, so the returned page no
+  // longer contains the values the operator has filtered away. The option lists
+  // come from workspace-stable sources instead: the declared task states and
+  // the configured repositories.
+  const states = useMemo(() => Object.keys(taskStateLabels).sort(), [])
+  const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
+  // Free text stays a client-side narrowing of the fetched page; state and
+  // repository are already applied by the server.
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return (items ?? []).filter((item) => {
-      if (state && item.task.state !== state) return false
-      if (repo && item.task.repo !== repo) return false
-      if (!needle) return true
-      return [item.task.title, item.task.id, item.task.source, item.task.branch]
+    if (!needle) return items ?? []
+    return (items ?? []).filter((item) =>
+      [item.task.title, item.task.id, item.task.source, item.task.branch]
         .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(needle))
-    })
-  }, [items, query, state, repo])
+        .some((field) => field.toLowerCase().includes(needle)),
+    )
+  }, [items, query])
+  const filtersActive = Boolean(query.trim() || state || repo)
 
   return (
     <div className="h-full overflow-y-auto">
@@ -53,7 +63,9 @@ export function TasksPage() {
         <header>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
-            <Badge variant="mono">{filtered.length}</Badge>
+            {/* The server total counts what the state/repository filters match;
+                a free-text needle narrows the fetched page, so it counts rows. */}
+            <Badge variant="mono">{query.trim() ? filtered.length : (page?.total ?? filtered.length)}</Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Every task in this workspace with its ordering, attached context, and plan status.
@@ -76,7 +88,10 @@ export function TasksPage() {
           <Select
             aria-label="Filter by state"
             value={state}
-            onChange={(event) => setState(event.target.value)}
+            onChange={(event) => {
+              setState(event.target.value)
+              setOffset(0)
+            }}
             className="h-8 w-44 text-xs"
           >
             <option value="">All states</option>
@@ -89,7 +104,10 @@ export function TasksPage() {
           <Select
             aria-label="Filter by repository"
             value={repo}
-            onChange={(event) => setRepo(event.target.value)}
+            onChange={(event) => {
+              setRepo(event.target.value)
+              setOffset(0)
+            }}
             className="h-8 w-44 text-xs"
           >
             <option value="">All repositories</option>
@@ -115,13 +133,16 @@ export function TasksPage() {
           <Card className="mt-8 border-dashed">
             <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
               <ListChecks className="size-7 text-primary" />
+              {/* The state and repository filters are applied by the server, so
+                  an empty page no longer means an empty workspace — whether any
+                  filter is active is what separates the two messages. */}
               <h2 className="mt-4 text-base font-semibold">
-                {items.length === 0 ? 'No tasks yet' : 'No tasks match these filters'}
+                {filtersActive ? 'No tasks match these filters' : 'No tasks yet'}
               </h2>
               <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                {items.length === 0
-                  ? 'Delivery work arrives here once planning files a task set.'
-                  : 'Clear the search, state, or repository filter to see the rest of the workspace.'}
+                {filtersActive
+                  ? 'Clear the search, state, or repository filter to see the rest of the workspace.'
+                  : 'Delivery work arrives here once planning files a task set.'}
               </p>
             </CardContent>
           </Card>
@@ -135,6 +156,30 @@ export function TasksPage() {
               </li>
             ))}
           </ul>
+        )}
+
+        {page && page.total > page.limit && (
+          <nav className="mt-5 flex items-center justify-end gap-2" aria-label="Task pages">
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+              disabled={page.offset === 0}
+              onClick={() => setOffset(Math.max(0, page.offset - page.limit))}
+            >
+              Previous
+            </button>
+            <span className="text-xs text-muted">
+              {page.offset + 1}–{Math.min(page.offset + page.items.length, page.total)} of {page.total}
+            </span>
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+              disabled={page.offset + page.limit >= page.total}
+              onClick={() => setOffset(page.offset + page.limit)}
+            >
+              Next
+            </button>
+          </nav>
         )}
       </div>
     </div>
@@ -197,11 +242,26 @@ function PlanBadge({ plan }: { plan: TaskPlanStatus }) {
   const version = plan.version ? ` v${plan.version}` : ''
   switch (plan.state) {
     case 'approved':
-      return <Badge variant="positive">Plan approved{version}</Badge>
+      return (
+        <>
+          <Badge variant="positive">Plan approved{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     case 'pending_gate':
-      return <Badge variant="attention">Plan awaiting approval{version}</Badge>
+      return (
+        <>
+          <Badge variant="attention">Plan awaiting approval{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     case 'redirected':
-      return <Badge variant="attention">Plan changes requested{version}</Badge>
+      return (
+        <>
+          <Badge variant="attention">Plan changes requested{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     default:
       return <Badge variant="outline">No plan</Badge>
   }

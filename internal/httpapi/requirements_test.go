@@ -398,6 +398,52 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	if len(view.ServingBlueprints) != 0 {
 		t.Fatalf("task-centric delivery invented a blueprint record: %+v", view.ServingBlueprints)
 	}
+	if len(view.ServingTasks) != 1 || view.ServingTasks[0].ID != task.ID {
+		t.Fatalf("task-centric serving tasks = %+v", view.ServingTasks)
+	}
+}
+
+type truncatedRequirementLineageStore struct{ store.Store }
+
+func (st *truncatedRequirementLineageStore) ListLineageNeighborhood(_ context.Context, roots []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	links := make([]core.LineageLink, 0, 300)
+	root := roots[0]
+	for index := 0; index < 300; index++ {
+		links = append(links, core.LineageLink{
+			Workspace: "demo", SrcType: root.Type, SrcID: root.ID,
+			DstType: core.LineageEvidence, DstID: fmt.Sprintf("artifact-%03d", index), Kind: "supports", CreatedByEventID: int64(index + 1),
+		})
+	}
+	return links, nil
+}
+
+func TestRequirementStalenessSurfacesTruncatedEvaluation(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-partial", Title: "Bounded intent"}, core.RequirementVersion{
+		Content: "Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial evaluation is visible."}},
+		Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = base.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(&truncatedRequirementLineageStore{Store: base})
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != "" {
+		t.Fatalf("partial staleness = %+v", view.Staleness)
+	}
 }
 
 func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {

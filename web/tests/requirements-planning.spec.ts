@@ -707,6 +707,49 @@ test('a requirement voices drift once and collapses to a quiet line when nothing
   await expect(attention.getByRole('button')).toHaveCount(0)
 })
 
+test('partial staleness is voiced and delivery is task-centric with blueprints as history', async ({ page }) => {
+  await initShell(page)
+  const partial = {
+    ...requirement,
+    current_version: { ...requirement.pending_versions[0], confirmed: true },
+    pending_versions: [],
+    serving_tasks: [{ id: '260807-0e2bc1', title: 'Scale task operations queries', state: 'running' }],
+    // A truncated lineage walk cannot prove the absence of newer delivery, so
+    // delivery_after_intent is a false negative here (spec §21.58 change 6).
+    staleness: { delivery_after_intent: false, active_drift: [], partial_evaluation: true },
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: [partial] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: partial })
+    if (path.endsWith('/versions')) return route.fulfill({ json: [partial.current_version] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  // An incomplete evaluation is never reported as alignment: it is voiced in
+  // the one attention surface, like every other machinery signal (AC-1.2).
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toContainText('Staleness could only be partially evaluated')
+  await expect(attention).toContainText('bounded delivery lineage was truncated')
+  await expect(attention).not.toContainText('Nothing needs your attention')
+  await expect(page.getByText('Staleness partially evaluated')).toHaveCount(0)
+  await expect(page.getByText('Intent aligned')).toHaveCount(0)
+
+  // Delivery counts the serving tasks; the blueprint list reads as history.
+  await expect(page.getByRole('link', { name: /Scale task operations queries/ })).toHaveAttribute(
+    'href',
+    '/tasks/260807-0e2bc1/full',
+  )
+  await expect(page.getByRole('heading', { name: 'Delivery before blueprints retired' })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
+    'href',
+    '/blueprints/blueprint-task',
+  )
+})
+
 test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({
   page,
 }) => {

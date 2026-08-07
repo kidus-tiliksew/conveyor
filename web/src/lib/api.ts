@@ -5,6 +5,7 @@ import type {
   InterventionAction,
   Task,
   TaskOperationsItem,
+  TaskOperationsPage,
   VersionedWorkspaceConfig,
   WorkspaceConfigDocument,
   WorkspaceConfigReceipt,
@@ -32,9 +33,13 @@ function workspaceURL(path: string) {
   return `${path}${separator}workspace_id=${encodeURIComponent(workspace)}`
 }
 
-async function getJSON<T>(url: string): Promise<T> {
+function authHeaders(): HeadersInit {
   const token = sessionStorage.getItem('conveyor-token') ?? ''
-  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const response = await fetch(url, { headers: authHeaders() })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<T>
 }
@@ -246,8 +251,24 @@ export function fetchTasks() {
 }
 // The Tasks view's read-only projection (spec §21.58): task state, relations,
 // attached context, and plan status from one durable source.
-export function fetchTaskOperations() {
-  return getJSON<TaskOperationsItem[]>(workspaceURL('/v1/task-operations'))
+export async function fetchTaskOperations(input: {
+  limit: number
+  offset: number
+  state?: string
+  repository?: string
+}) {
+  const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  if (input.state) query.set('state', input.state)
+  if (input.repository) query.set('repository', input.repository)
+  const response = await fetch(workspaceURL(`/v1/task-operations?${query}`), { headers: authHeaders() })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  const items = (await response.json()) as TaskOperationsItem[]
+  return {
+    items,
+    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
+    offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
+  } satisfies TaskOperationsPage
 }
 export async function fetchArtifacts(token: string) {
   const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } })
