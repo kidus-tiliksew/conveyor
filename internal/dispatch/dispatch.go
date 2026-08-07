@@ -1419,8 +1419,12 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 		return fmt.Errorf("task %s requires distinct approved and current heads for refresh", task.ID)
 	}
 	scope := d.refreshScope(task, conflict)
-	if err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason); err != nil {
+	created, err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason)
+	if err != nil {
 		return err
+	}
+	if !created {
+		return nil
 	}
 	if scope == config.RefreshReviewNone && !conflict {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")

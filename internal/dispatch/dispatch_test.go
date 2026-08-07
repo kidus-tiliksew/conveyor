@@ -1283,6 +1283,45 @@ func TestStaleApprovalDispatchesDeltaRefreshRound(t *testing.T) {
 	}
 }
 
+func TestRepeatedStaleApprovalPollKeepsActiveRefreshSeat(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "new-head"}, nil
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "STALE" {
+		t.Fatalf("first poll readiness=%+v err=%v", readiness, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "deliberating-seat", ClientToken: "seat-token", Agent: "codex", Model: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "STALE" {
+		t.Fatalf("second poll readiness=%+v err=%v", readiness, err)
+	}
+	after, err := st.GetWorkOrder(ctx, claimed.ID)
+	if err != nil || after.State != core.WorkOrderClaimed || after.SessionID != claimed.SessionID || after.ReviewRound != claimed.ReviewRound {
+		t.Fatalf("active seat changed: before=%+v after=%+v err=%v", claimed, after, err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "approval.stale"); countErr != nil || count != 1 {
+		t.Fatalf("approval.stale events=%d err=%v", count, countErr)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "review.refresh_round_created"); countErr != nil || count != 1 {
+		t.Fatalf("refresh triggers=%d err=%v", count, countErr)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 1 {
+		t.Fatalf("repeated poll created superseding round: %+v", orders)
+	}
+}
+
 func TestCleanStaleApprovalCanSkipRefreshUnderFrozenNone(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {

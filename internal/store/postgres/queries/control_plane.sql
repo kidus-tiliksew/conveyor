@@ -91,6 +91,9 @@ SET approved_head_sha = sqlc.arg(approved_head_sha), approval_stale = true,
     refresh_head_sha = sqlc.arg(new_head_sha),
     refresh_review_scope = sqlc.arg(refresh_review_scope), updated_at = now()
 WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id)
+  AND NOT (approval_stale
+    AND refresh_baseline_sha = sqlc.arg(approved_head_sha)
+    AND refresh_head_sha = sqlc.arg(new_head_sha))
 RETURNING *;
 
 -- name: SkipTaskRefresh :one

@@ -1556,11 +1556,12 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 				var request core.WorkOrderRelease
 				var wire struct {
 					Reason     string `json:"reason"`
+					Cause      string `json:"release_cause"`
 					Outcome    string `json:"outcome"`
 					ExitStatus *int   `json:"exit_status"`
 				}
 				_ = json.NewDecoder(r.Body).Decode(&wire)
-				request.Reason, request.Outcome, request.ExitStatus = wire.Reason, wire.Outcome, wire.ExitStatus
+				request.Reason, request.Cause, request.Outcome, request.ExitStatus = wire.Reason, wire.Cause, wire.Outcome, wire.ExitStatus
 				released <- request
 				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
 			default:
@@ -1592,7 +1593,7 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		}
 		select {
 		case release := <-released:
-			if release.Outcome != wantOutcome || !reflect.DeepEqual(release.ExitStatus, wantExit) {
+			if release.Outcome != wantOutcome || release.Cause != core.WorkOrderReleaseCauseSessionExit || !reflect.DeepEqual(release.ExitStatus, wantExit) {
 				t.Fatalf("release=%+v want outcome=%s exit=%v", release, wantOutcome, wantExit)
 			}
 		case <-time.After(2 * time.Second):

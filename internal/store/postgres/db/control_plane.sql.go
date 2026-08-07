@@ -1157,6 +1157,9 @@ SET approved_head_sha = $1, approval_stale = true,
     refresh_head_sha = $2,
     refresh_review_scope = $3, updated_at = now()
 WHERE id = $4 AND workspace_id = $5
+  AND NOT (approval_stale
+    AND refresh_baseline_sha = $1
+    AND refresh_head_sha = $2)
 RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
 `
 

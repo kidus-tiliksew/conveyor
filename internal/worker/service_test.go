@@ -100,7 +100,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased})
+	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
@@ -120,8 +120,11 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 			t.Fatalf("checkpoint handoff emitted recovery-shaped event %q", event.Kind)
 		}
 	}
-	if checkpointEvent.Kind == "" || !strings.Contains(string(checkpointEvent.Payload), `"reason":"`+core.WorkOrderReleaseReasonOperatorCheckpointReached+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"outcome":"released"`) || !strings.Contains(string(checkpointEvent.Payload), `"retry_suppressed":true`) {
+	if checkpointEvent.Kind == "" || !strings.Contains(string(checkpointEvent.Payload), `"reason":"`+core.WorkOrderReleaseReasonOperatorCheckpointReached+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"release_cause":"`+core.WorkOrderReleaseCauseOperatorAction+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"outcome":"released"`) || !strings.Contains(string(checkpointEvent.Payload), `"retry_suppressed":true`) {
 		t.Fatalf("checkpoint release event=%+v", checkpointEvent)
+	}
+	if _, err = service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Cause: "uncontrolled"}); err == nil || !strings.Contains(err.Error(), "invalid work-order release cause") {
+		t.Fatalf("invalid release cause err=%v", err)
 	}
 
 	createOrder("submitted-task", false)

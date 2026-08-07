@@ -178,7 +178,7 @@ func (c *client) releaseWorkerOrder(credential, id string, release core.WorkOrde
 	return c.releaseWorkerOrderContext(context.Background(), credential, id, release)
 }
 func (c *client) releaseWorkerOrderContext(ctx context.Context, credential, id string, release core.WorkOrderRelease) error {
-	payload, _ := json.Marshal(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "outcome": release.Outcome, "exit_status": release.ExitStatus, "failure_detail": release.FailureDetail})
+	payload, _ := json.Marshal(map[string]any{"session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "outcome": release.Outcome, "exit_status": release.ExitStatus, "failure_detail": release.FailureDetail})
 	var ignored core.WorkOrder
 	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/release", payload, &ignored, credential)
 }

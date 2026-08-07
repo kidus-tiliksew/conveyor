@@ -605,7 +605,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus, FailureDetail: detail})
+		cause := core.WorkOrderReleaseCauseSessionExit
+		if strings.HasPrefix(reason, "claim authority lost") {
+			cause = core.WorkOrderReleaseCauseLeaseLoss
+		}
+		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
 	}
 	checkpointAttempt := func(reason string) error {
 		if item.Order.Stage != core.StageImplement {

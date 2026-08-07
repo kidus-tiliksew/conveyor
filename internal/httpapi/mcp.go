@@ -168,7 +168,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if !workerAuth {
 			return nil, fmt.Errorf("release_work_order requires a worker credential")
 		}
-		return s.Workers.Release(ctx, worker, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Outcome: core.WorkOrderOutcomeReleased})
+		return s.Workers.Release(ctx, worker, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	case "get_work_order":
 		if workerAuth {
 			workOrderID := stringArg("work_order_id")
