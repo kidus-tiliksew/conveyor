@@ -73,8 +73,10 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 		}
 	}
 	for _, observation := range observations {
-		if observation.Kind == PostMergeFailure && !strings.Contains(observation.Context["failed_check_runs"], "unit (check run 77)") {
-			t.Fatalf("failed check context=%+v", observation.Context)
+		if observation.Kind == PostMergeFailure {
+			if observation.CommitSHA != "known-sha" || !strings.Contains(observation.Context["failed_check_runs"], "unit (check run 77)") {
+				t.Fatalf("failed check observation=%+v", observation)
+			}
 		}
 	}
 }
@@ -118,6 +120,9 @@ func TestGitHubSourceAggregatesFailedChecksPerCommitAttempt(t *testing.T) {
 	}
 	if first[0].CheckRunID != "11,22" || first[0].SourceURL != "https://example/check/11" {
 		t.Fatalf("aggregate=%+v", first[0])
+	}
+	if first[0].IntakeKey() != first[1].IntakeKey() || first[0].Identity() == first[1].Identity() {
+		t.Fatalf("attempt identity/grouping first=%+v", first)
 	}
 	detail := first[0].Context["failed_check_runs"]
 	if !strings.Contains(detail, "unit (check run 11)") || !strings.Contains(detail, "integration (check run 22)") {

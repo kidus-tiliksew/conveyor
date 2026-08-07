@@ -122,6 +122,101 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	}
 }
 
+func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.Repos, server.BearerToken = "demo", []string{"conveyor"}, "secret"
+	frozen := config.ExecutionSetup{
+		Name: "monitor-default",
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-5.6", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "4h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
+		},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}},
+	}
+	server.ConfigProvider = func(context.Context) (*config.Config, error) {
+		return &config.Config{
+			Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
+			DefaultSetup: frozen.Name, Setups: []config.ExecutionSetup{frozen},
+			Execution: config.ExecutionPolicy{SpecApproval: true},
+		}, nil
+	}
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Repair post-merge failure", nil }
+	enqueued := 0
+	server.OnCreate = func(context.Context, string) { enqueued++ }
+	server.Monitor = &monitor.Service{
+		Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true,
+		Repositories: map[string]struct{}{"conveyor": {}},
+	}
+	server.Monitor.Intake = server.CreateMonitorTask
+	handler := server.Handler()
+	post := func(attempt, check string) monitor.ObservationRecord {
+		t.Helper()
+		payload, err := json.Marshal(monitor.Observation{
+			Repository: "conveyor", Kind: monitor.PostMergeFailure,
+			OccurrenceID: "commit:abc:attempt:" + attempt, CommitSHA: "abc",
+			SourceURL: "https://github.com/acme/conveyor/check/" + check,
+			Context:   map[string]string{"failed_check_runs": "- ci (check run " + check + ")"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/observations", bytes.NewReader(payload))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("attempt %s status=%d body=%s", attempt, response.Code, response.Body.String())
+		}
+		var record monitor.ObservationRecord
+		if err = json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+
+	first := post("1", "11")
+	second := post("2", "22")
+	redelivered := post("2", "22")
+	if first.TaskID == "" || second.TaskID != first.TaskID || redelivered.TaskID != first.TaskID ||
+		second.TaskOutcome != "reused" || redelivered.DeduplicatedCount != 1 {
+		t.Fatalf("first=%+v second=%+v redelivered=%+v", first, second, redelivered)
+	}
+	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(tasks) != 1 || enqueued != 1 {
+		t.Fatalf("tasks=%+v enqueued=%d err=%v", tasks, enqueued, err)
+	}
+	if !strings.Contains(tasks[0].Body, "check run 11") || strings.Contains(tasks[0].Body, "check run 22") {
+		t.Fatalf("first task body was not preserved: %q", tasks[0].Body)
+	}
+	status, err := server.Monitor.Status(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(status.Observations) != 2 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	for _, observation := range status.Observations {
+		if observation.TaskID != first.TaskID {
+			t.Fatalf("observation not linked to shared task: %+v", observation)
+		}
+	}
+	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), first.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, reused := 0, 0
+	for _, event := range events {
+		switch event.Kind {
+		case "monitor.task_created":
+			created++
+		case "monitor.task_reused":
+			reused++
+		}
+	}
+	if created != 1 || reused != 1 {
+		t.Fatalf("create/reuse audit counts created=%d reused=%d events=%+v", created, reused, events)
+	}
+}
+
 func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

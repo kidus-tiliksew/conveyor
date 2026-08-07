@@ -86,6 +86,25 @@ async function mockTaskCreateAPIs(
             artifacts: [],
             lineage: [],
           },
+          {
+            requirement: { id: 'req-second', title: 'Operators can resume a stalled task', current_version: 3 },
+            current_version: { requirement_id: 'req-second', version: 3, confirmed: true },
+            pending_versions: [],
+            serving_blueprints: [],
+            planning_sessions: [],
+            artifacts: [],
+            lineage: [],
+          },
+          {
+            // Never confirmed: it has no current version and must stay unselectable.
+            requirement: { id: 'req-draft', title: 'Unconfirmed product outcome', current_version: 0 },
+            current_version: null,
+            pending_versions: [],
+            serving_blueprints: [],
+            planning_sessions: [],
+            artifacts: [],
+            lineage: [],
+          },
         ],
       })
       return
@@ -97,6 +116,14 @@ async function mockTaskCreateAPIs(
           {
             document: { id: 'design-context', title: 'Confirmed technical guidance', current_version: 2 },
             current_version: { document_id: 'design-context', version: 2, confirmed: true },
+            pending_versions: [],
+            versions: [],
+            lineage: [],
+            drift: [],
+          },
+          {
+            document: { id: 'design-draft', title: 'Unconfirmed technical guidance', current_version: 0 },
+            current_version: null,
             pending_versions: [],
             versions: [],
             lineage: [],
@@ -206,11 +233,79 @@ test('intake attaches confirmed product and design context with authenticated re
   const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
   await page.locator('textarea').fill('Implement the attached desired state')
-  await page.getByRole('checkbox', { name: /Confirmed product outcome/ }).check()
-  await page.getByRole('checkbox', { name: /Confirmed technical guidance/ }).check()
+
+  // One Context control now, not a checkbox list per document tier.
+  const search = page.getByRole('combobox', { name: 'Search context' })
+  await expect(page.getByRole('listbox', { name: 'Context' })).toHaveCount(0)
+  await search.click()
+  const list = page.getByRole('listbox', { name: 'Context' })
+  await expect(list).toBeVisible()
+  await expect(list.getByRole('group', { name: 'Requirements' })).toBeVisible()
+  await expect(list.getByRole('group', { name: 'System Design' })).toBeVisible()
+  await list.getByRole('option', { name: /Confirmed product outcome/ }).click()
+  await list.getByRole('option', { name: /Confirmed technical guidance/ }).click()
+  await expect(list.getByRole('option', { name: /Confirmed product outcome/ })).toHaveAttribute('aria-selected', 'true')
+
   await page.getByRole('button', { name: 'Create task' }).click()
   await expect.poll(submitted).toContain('"requirement_ids":["req-context"]')
   await expect.poll(submitted).toContain('"system_design_ids":["design-context"]')
+})
+
+test('context dropdown searches, keeps selections visible, and removes them', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+  await page.locator('textarea').fill('Attach several documents')
+
+  const search = page.getByRole('combobox', { name: 'Search context' })
+  await search.click()
+  const list = page.getByRole('listbox', { name: 'Context' })
+  await expect(list.getByRole('option')).toHaveCount(3)
+
+  // Search spans both groups and matches title or ID.
+  await search.fill('stalled')
+  await expect(list.getByRole('option')).toHaveCount(1)
+  await expect(list.getByRole('option', { name: /Operators can resume a stalled task/ })).toBeVisible()
+  await search.fill('design-context')
+  await expect(list.getByRole('option', { name: /Confirmed technical guidance/ })).toBeVisible()
+  await expect(list.getByRole('group', { name: 'Requirements' })).toHaveCount(0)
+
+  await search.fill('nothing matches this')
+  await expect(list.getByRole('option')).toHaveCount(0)
+  await expect(page.getByText('No context matches your search.')).toBeVisible()
+
+  // Multi-select across both groups, driven from the keyboard.
+  await search.fill('')
+  await expect(list.getByRole('option')).toHaveCount(3)
+  await search.press('ArrowDown')
+  await search.press('Enter')
+  await search.press('ArrowDown')
+  await search.press('ArrowDown')
+  await search.press('Enter')
+  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove context Confirmed technical guidance' })).toBeVisible()
+
+  // Selections survive closing the dropdown.
+  await search.press('Escape')
+  await expect(list).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove context Confirmed technical guidance' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Remove context Confirmed product outcome' }).click()
+  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('"system_design_ids":["design-context"]')
+  expect(submitted()).not.toContain('"requirement_ids"')
+})
+
+test('context dropdown never offers unconfirmed documents', async ({ page }) => {
+  await mockTaskCreateAPIs(page)
+  await page.goto('/new')
+  await page.getByRole('combobox', { name: 'Search context' }).click()
+  const list = page.getByRole('listbox', { name: 'Context' })
+  await expect(list.getByRole('option', { name: /Confirmed product outcome/ })).toBeVisible()
+  await expect(list.getByRole('option', { name: /Unconfirmed product outcome/ })).toHaveCount(0)
+  await expect(list.getByRole('option', { name: /Unconfirmed technical guidance/ })).toHaveCount(0)
+  await expect(list.getByRole('option')).toHaveCount(3)
 })
 
 test('intake offers a hold toggle and advisory worker warning instead of modes', async ({ page }) => {

@@ -17,6 +17,7 @@ import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
 import { Sheet } from '../ui/sheet'
 import { Switch } from '../ui/switch'
+import { type ContextGroup, TaskContextPicker } from './task-context-picker'
 
 const descriptionScaffold = `Context — where this lives, links to prior work…
 
@@ -128,6 +129,28 @@ export function TaskCreateSheet() {
       return [...current, ...list.filter((f) => !seen.has(`${f.name}:${f.size}`))]
     })
   }
+  // Only confirmed documents are attachable, and the two tiers stay separate
+  // groups so the create payload still carries distinct ID arrays (spec §21.58).
+  const contextGroups: ContextGroup[] = [
+    {
+      key: 'requirements',
+      label: 'Requirements',
+      options: (requirements.data ?? [])
+        .filter((item) => item.current_version != null)
+        .map((item) => ({ id: item.requirement.id, title: item.requirement.title })),
+      selected: requirementIds,
+      onChange: setRequirementIds,
+    },
+    {
+      key: 'system-design',
+      label: 'System Design',
+      options: (designs.data ?? [])
+        .filter((item) => item.current_version != null)
+        .map((item) => ({ id: item.document.id, title: item.document.title })),
+      selected: systemDesignIds,
+      onChange: setSystemDesignIds,
+    },
+  ]
   const matchingDependencyOptions = (tasks.data ?? []).filter((task) => {
     if (task.state === 'merged' || task.state === 'closed') return false
     const query = dependencySearch.trim().toLowerCase()
@@ -224,28 +247,12 @@ export function TaskCreateSheet() {
           )}
         </Field>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <ContextPicker
-            label="Requirements this task serves"
-            hint="Optional — choose confirmed product outcomes this work should satisfy."
-            loading={requirements.isPending}
-            items={(requirements.data ?? [])
-              .filter((item) => item.current_version != null)
-              .map((item) => ({ id: item.requirement.id, title: item.requirement.title }))}
-            selected={requirementIds}
-            onChange={setRequirementIds}
-          />
-          <ContextPicker
-            label="Design guidance for this task"
-            hint="Optional — choose confirmed technical guidance that governs this work."
-            loading={designs.isPending}
-            items={(designs.data ?? [])
-              .filter((item) => item.current_version != null)
-              .map((item) => ({ id: item.document.id, title: item.document.title }))}
-            selected={systemDesignIds}
-            onChange={setSystemDesignIds}
-          />
-        </div>
+        <TaskContextPicker
+          label="Context"
+          hint="Optional — attach the confirmed requirements this work should satisfy and the system design that governs it."
+          loading={requirements.isPending || designs.isPending}
+          groups={contextGroups}
+        />
 
         <details
           open={advancedOpen}
@@ -418,49 +425,6 @@ export function TaskCreateSheet() {
         </Button>
       </footer>
     </Sheet>
-  )
-}
-
-function ContextPicker({
-  label,
-  hint,
-  loading,
-  items,
-  selected,
-  onChange,
-}: {
-  label: string
-  hint: string
-  loading: boolean
-  items: Array<{ id: string; title: string }>
-  selected: string[]
-  onChange: (ids: string[]) => void
-}) {
-  return (
-    <Field label={label} hint={hint}>
-      <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-border p-2">
-        {loading && <p className="px-1 text-xs text-faint">Loading…</p>}
-        {!loading && items.length === 0 && <p className="px-1 text-xs text-faint">No confirmed documents yet.</p>}
-        {items.map((item) => (
-          <label
-            key={item.id}
-            className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-xs hover:bg-surface"
-          >
-            <input
-              type="checkbox"
-              checked={selected.includes(item.id)}
-              onChange={(event) =>
-                onChange(event.target.checked ? [...selected, item.id] : selected.filter((id) => id !== item.id))
-              }
-            />
-            <span className="min-w-0">
-              <span className="block truncate">{item.title}</span>
-              <span className="font-mono text-faint">{item.id}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-    </Field>
   )
 }
 
