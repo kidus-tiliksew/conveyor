@@ -1,8 +1,8 @@
 # Conveyor: A Software Factory Platform
 
-**Specification — v2.20**
-**Date:** August 6, 2026
-**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. v2.14 (§21.54) accepts **Phase 8 — deployment & multi-user**, sequenced after the Phase 7 memory store: user identity with admin-as-grant and typed actors on events, solo/server authentication with opaque per-user credentials, a human/agent/worker credential-class boundary enforced per route, the embedded worker inside `conveyord`, per-repo delivery tiers (`github` / `remote` / `local`) making GitHub optional, and control-plane packaging with versioned releases and `conveyor init` — renumbering the later deferred phases (memory keeps 7; flywheel → 9, managed execution → 10, enterprise → 11). v2.15 (§21.55) rejects the memory store outright — knowledge promotes into maintained artifacts (requirements, hints, pack), never parks in volunteered rows — rescoping Phase 7 to demand-triggered read-only recall and resequencing Phase 8 to follow Phase 6 directly. v2.16 (§21.56) retires §21.53 change 5's attempt-grouped history section — the current-state card and the technical-activity disclosure are the two surviving presentation layers — ratifying the deletion that landed as PR #207. v2.17 (§21.57) makes planning document-first: the Requirements view becomes the canvas with the assistant as a document-scoped sidebar and guided actions, sessions declare a goal artifact steering the finalize target, and freehand requirement editing is rejected in favor of propose→confirm. v2.18 (§21.58) accepts **Phase 8 — the desired-state document model**: four durable document tiers (markdown product-overview uploads, requirements with REQ→AC structure, a System Design corpus, DEC-n decisions), retirement of the per-change spec/blueprint artifact with every function relocated, execution plans riding the existing spec-stage machinery re-contented (gate semantics byte-compatible), task-centric delivery with bundle approval, and a Tasks view — resequencing deployment to Phase 9, flywheel to 10, managed execution to 11, enterprise to 12. v2.19 (§21.59) closes Phase 6 complete — all three exit criteria attested, the first live lineage rebuild reconciled with zero loss, the fabricated events and non-regenerable edges recorded permanently, §18's untrusted surfaces extended — making Phase 8 the active scope. v2.20 (§21.60) accepts the local planning surface: an operator-side agent session may propose every document tier over the operator-credentialed REST routes as a true headless twin of in-product planning — proposals only, confirmation a distinct human act, server-assigned operator origin, no fabricated session lineage — ratifying the guidance that reconciliation record 260806-9f5495 correctly flagged as unaccepted. Subsequent changes proceed by amendment with version bumps.
+**Specification — v2.21**
+**Date:** August 7, 2026
+**Status:** Accepted — **Beta achieved July 15, 2026** (§19 exit criterion met). The v2.0 text is the **consolidated restatement** of v1.0–v1.40: the body (§§1–20) states the current design directly, with every accepted amendment folded in. The amendment log (§21) is the change record and review rationale; §21.40 records the consolidation itself. v2.1 (§21.41) adds supervision hygiene adopted from an external comparative review — worker stall detection, deterministic claim ordering, worktree path safety, pinned defaults, forge error categories, observational rate-limit telemetry — and corrects the W14 restatement defect. v2.2 (§21.42) adds worker-side first-activity liveness. v2.3 (§21.43) completes the Phase 5.3 GitHub review projection and corrects its publication invariant. v2.4 (§21.44) completes Phase 5.4 evidence-gated review submission. v2.5 (§21.45) completes the Phase 5.6 monitor, reverse synchronization, and advisory repository hints. v2.6 (§21.46) closes Phase 5 (5.5 worker service packaging complete) and accepts **Phase 6 — planning & the knowledge graph**: blueprint materialization with dependency-gated claiming, in-product planning sessions producing requirement documents and blueprints, requirements reformed as living intent documents (the curated features tree retires), and first-class lineage links along the chain requirement → blueprint → code → evidence, renumbering the deferred phases (memory → 7, flywheel → 8, managed execution → 9, enterprise → 10). v2.7 (§21.47) clarifies dependency semantics from the Phase 6.1 implementation review: unsatisfiable edges surfaced with an audited operator unlink, cross-repo edges legal, the claim gate scoped to implementation orders at claim time only, and queue-clock suspension while blocked. v2.8 (§21.48) contains implicit task worktrees, verifies checkout repository identity, and reconciles terminal cleanup plus primary-checkout pruning without deleting branches or dirty work. v2.9 (§21.49) moves blueprint anchors onto a dedicated presentation surface beside requirements and out of the stage-grouped feed — presentation only, the epic-entity bar stands. v2.10 (§21.50) grounds planning in code: revision-pinned read-only repo exploration tools over the §8.1 bare-clone cache with cross-model output contracts, and an operator-configurable planning model (`control_plane.planning`, curated allowlist) recorded per session with the pinned SHA. v2.11 (§21.51) extends exploration across every workspace repo — per-repo lazy pinning recorded as a `{repo: SHA}` map, `repo:path:line` citations — since cross-repo blueprints must be planned against every repo they decompose into. v2.12 (§21.52) makes the per-call exploration output cap planning configuration (`control_plane.planning.exploration_output_tokens`, default 10 000; the session budget defaults to fifteen times it). v2.13 (§21.53) adds durable execution-attempt identity and provider-neutral child-failure categorization, then makes the latest actionable attempt authoritative in the task-detail recovery presentation. v2.14 (§21.54) accepts **Phase 8 — deployment & multi-user**, sequenced after the Phase 7 memory store: user identity with admin-as-grant and typed actors on events, solo/server authentication with opaque per-user credentials, a human/agent/worker credential-class boundary enforced per route, the embedded worker inside `conveyord`, per-repo delivery tiers (`github` / `remote` / `local`) making GitHub optional, and control-plane packaging with versioned releases and `conveyor init` — renumbering the later deferred phases (memory keeps 7; flywheel → 9, managed execution → 10, enterprise → 11). v2.15 (§21.55) rejects the memory store outright — knowledge promotes into maintained artifacts (requirements, hints, pack), never parks in volunteered rows — rescoping Phase 7 to demand-triggered read-only recall and resequencing Phase 8 to follow Phase 6 directly. v2.16 (§21.56) retires §21.53 change 5's attempt-grouped history section — the current-state card and the technical-activity disclosure are the two surviving presentation layers — ratifying the deletion that landed as PR #207. v2.17 (§21.57) makes planning document-first: the Requirements view becomes the canvas with the assistant as a document-scoped sidebar and guided actions, sessions declare a goal artifact steering the finalize target, and freehand requirement editing is rejected in favor of propose→confirm. v2.18 (§21.58) accepts **Phase 8 — the desired-state document model**: four durable document tiers (markdown product-overview uploads, requirements with REQ→AC structure, a System Design corpus, DEC-n decisions), retirement of the per-change spec/blueprint artifact with every function relocated, execution plans riding the existing spec-stage machinery re-contented (gate semantics byte-compatible), task-centric delivery with bundle approval, and a Tasks view — resequencing deployment to Phase 9, flywheel to 10, managed execution to 11, enterprise to 12. v2.19 (§21.59) closes Phase 6 complete — all three exit criteria attested, the first live lineage rebuild reconciled with zero loss, the fabricated events and non-regenerable edges recorded permanently, §18's untrusted surfaces extended — making Phase 8 the active scope. v2.20 (§21.60) accepts the local planning surface: an operator-side agent session may propose every document tier over the operator-credentialed REST routes as a true headless twin of in-product planning — proposals only, confirmation a distinct human act, server-assigned operator origin, no fabricated session lineage — ratifying the guidance that reconciliation record 260806-9f5495 correctly flagged as unaccepted. v2.21 (§21.61) simplifies the operating surfaces from the operator's judgment of the delivered Phase 8 set: document surfaces restructure around a navigation tree, a document canvas, and a single per-document attention surface that becomes the only rendering of drift, staleness, and pending-version signals; task, requirement, and design detail gain an on-demand lineage explorer panel of grouped related entities over the existing §16 read API; the in-product planning chat surfaces and the Blueprint-history navigation entry are parked — withdrawn from presentation with machinery retained, reversal by future amendment; task creation, a paginated filterable list with a detail panel, and shared date/requirement/design filters (defaulting to recently updated) consolidate on the Tasks and Board surfaces. Subsequent changes proceed by amendment with version bumps.
 **Naming note:** "Conveyor" is a working title pending trademark clearance (known adjacent uses include Hydraulic's Conveyor packaging tool and the Konveyor modernization project). The CLI command, branch prefix (`conveyor/task-<id>`), paths, and issue labels are branded `conveyor`; a final-name change would require renaming these user-facing conventions, so clearance should happen before external users script against them.
 
 ---
@@ -1510,6 +1510,22 @@ branch, hold); cancel remains, as lifecycle. Children remain ordinary
 tasks in the feed.
 
 ---
+
+**Operating surfaces (§21.61).** The dashboard presents exactly the
+operating surfaces: Board (the pipeline lens, filterable by updated
+date, served requirement, and governing design, defaulting to recent
+activity), Tasks (the list-first management surface: paginated,
+filterable, creation-in-view, rows opening a permalinked detail
+panel), Workspace, Requirements and System Design (category tree,
+document canvas, and one per-document attention surface that is the
+sole rendering of drift, staleness, and pending-version signals),
+Monitor, and Settings. Task, requirement, and design detail expose an
+on-demand lineage explorer — grouped related entities over the §16
+read API, not a visualization. The in-product planning chat surfaces
+(§21.57) and the Blueprint-history navigation entry (§21.49) are
+parked: withdrawn from presentation with their machinery, records,
+and deep links retained; the §21.60 local surface carries planning
+while parked. §6.3's barred fields remain barred from every surface.
 
 ## 14. Usage telemetry (no budget enforcement)
 
@@ -5754,7 +5770,62 @@ reconciliation record is preserved as the provenance of the ruling.
 
 ---
 
-*End of specification. v2.20 accepted August 6, 2026 — the v2.0
+### 21.61 v2.21 — operating-surface simplification (August 7, 2026)
+
+Adopted from operating the complete Phase 8 surface set. The
+operator's judgment: the stage-grouped board is the only delivered
+surface meeting the product's bar; the document and task surfaces
+accreted machinery-truth — scattered drift chips, staleness banners,
+pending-version stacks, an always-present assistant column — without
+an information hierarchy. The direction is the document-as-hero shape
+of the best contemporary factory tools. Five changes, all
+presentation-layer; no gate, lifecycle, graph, or authority semantics
+move:
+
+1. **Document surfaces restructure.** Requirements and System Design
+   present a category navigation tree and a document canvas. Each
+   document carries exactly one **attention surface** consolidating
+   drift signals, staleness, pending versions, and pending
+   confirmations, each entry carrying its action; the scattered
+   renderings of those signals retire from the surface. Alert noise
+   is also a content matter: operators should keep `governs` scopes
+   to what a document genuinely describes (guidance, not machinery).
+
+2. **Lineage explorer.** Task, requirement, and System Design detail
+   gain a corner affordance opening a right panel of related entities
+   — grouped lists (work, documents, delivery, evidence) over the
+   existing §16 lineage read API, linked to their surfaces. No graph
+   visualization.
+
+3. **Presentation parking** (parked, not retired; machinery, records,
+   and deep links retained; reversal by future presentation
+   amendment): the in-product planning chat surfaces — the assistant
+   sidebar and the Planning tab (§21.57's presentation; its
+   propose→confirm doctrine and goal machinery are untouched) — and
+   the Blueprint-history navigation entry (§21.49's canonical routes
+   and anchor rules are untouched; history reaches through task
+   detail and deep links). The §21.60 local surface is the planning
+   path while parked.
+
+4. **Task surfaces consolidate.** Task creation relocates to the
+   Tasks view; list rows open a permalinked right detail panel with
+   the full route retained for deep links; the list is paginated with
+   server-side filters — state, repository, free text, updated-at
+   range, served requirement, governing design. The Board gains the
+   same filter family and defaults to recently updated (last month),
+   operator-adjustable. §6.3 barred fields stay barred.
+
+5. **The §13.3 body gains the operating-surfaces paragraph** stating
+   the exact surface set.
+
+Delivery is planned as requirement documents plus a dependency-ordered
+task set under §21.60. Out of scope, restated: any weakening of
+propose→confirm, the §13.1 gates, drift semantics, or the §21.4
+boundary; freehand editing; priority/assignee/phase fields.
+
+---
+
+*End of specification. v2.21 accepted August 7, 2026 — the v2.0
 consolidated restatement of v1.0–v1.40 (§21.40), supervision hygiene
 (§21.41), worker-side first-activity liveness (§21.42), the completed
 Phase 5.3 review projection (§21.43), Phase 5.4 verification evidence
@@ -5802,7 +5873,10 @@ zero loss, Phase 8 the active scope. §21.60 accepts the local planning
 surface — operator-credentialed REST proposal across every document
 tier as a headless twin of in-product planning, propose→confirm
 unchanged, ratified through the factory's own reconciliation of its
-operator's direct pushes. The
+operator's direct pushes. §21.61 simplifies the operating surfaces:
+document tree + canvas + one attention surface per document, the
+lineage explorer panel, planning and blueprint-history presentation
+parked, and consolidated task surfaces with shared filters. The
 body (§§1–20) is the normative
 authority; §21 is the change record. Subsequent changes proceed by
 amendment with version bumps.*
