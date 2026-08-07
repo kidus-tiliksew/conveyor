@@ -33,9 +33,13 @@ function workspaceURL(path: string) {
   return `${path}${separator}workspace_id=${encodeURIComponent(workspace)}`
 }
 
-async function getJSON<T>(url: string): Promise<T> {
+function authHeaders(): HeadersInit {
   const token = sessionStorage.getItem('conveyor-token') ?? ''
-  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const response = await fetch(url, { headers: authHeaders() })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<T>
 }
@@ -256,10 +260,7 @@ export async function fetchTaskOperations(input: {
   const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
   if (input.state) query.set('state', input.state)
   if (input.repository) query.set('repository', input.repository)
-  const token = sessionStorage.getItem('conveyor-token') ?? ''
-  const response = await fetch(workspaceURL(`/v1/task-operations?${query}`), {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
+  const response = await fetch(workspaceURL(`/v1/task-operations?${query}`), { headers: authHeaders() })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   const items = (await response.json()) as TaskOperationsItem[]
   return {
