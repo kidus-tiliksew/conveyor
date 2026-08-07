@@ -449,15 +449,54 @@ type ActivityMarker struct {
 	Stalled                   *StalledState
 }
 
+// TaskFilter is the one predicate set the Tasks list and the Board both send
+// to the server (spec §21.61 change 4). It is shared rather than duplicated so
+// the two surfaces cannot drift into filtering differently, and every member is
+// evaluated by the store in its own query language — never by narrowing a
+// fully-loaded workspace in Go.
+//
+// UpdatedFrom/UpdatedTo bound the task's last-activity instant: the timestamp
+// the surfaces render as "Updated", which is the latest event on the task and
+// its creation time until one arrives. Keying the range on the value the row
+// shows is what makes the filter explainable — filtering on a timestamp the
+// operator cannot see would leave rows disappearing for no visible reason. The
+// range is half-open: UpdatedFrom is inclusive, UpdatedTo exclusive.
+type TaskFilter struct {
+	State      core.TaskState
+	Repository string
+	// Query narrows on the row's own identifying text — title, ID, source, and
+	// assigned branch — case-insensitively.
+	Query               string
+	UpdatedFrom         time.Time
+	UpdatedTo           time.Time
+	ServesRequirementID string
+	GoverningDesignID   string
+}
+
+// Active reports whether any predicate would narrow the workspace. Callers that
+// have a cheaper unfiltered read path use it to keep that path byte-identical.
+func (f TaskFilter) Active() bool {
+	return f.State != "" || f.Repository != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
+		!f.UpdatedTo.IsZero() || f.ServesRequirementID != "" || f.GoverningDesignID != ""
+}
+
+// Validate rejects a range no task can satisfy, so an inverted range fails at
+// the edge instead of silently rendering an empty workspace.
+func (f TaskFilter) Validate() error {
+	if !f.UpdatedFrom.IsZero() && !f.UpdatedTo.IsZero() && !f.UpdatedFrom.Before(f.UpdatedTo) {
+		return fmt.Errorf("task operations updated_from must precede updated_to")
+	}
+	return nil
+}
+
 // TaskOperationsQuery is the bounded input for the daily Tasks projection.
 // A zero Limit preserves the historical unpaginated array response; callers
 // that opt into pagination use a positive Limit and receive Total alongside
 // the selected page.
 type TaskOperationsQuery struct {
-	Limit      int
-	Offset     int
-	State      core.TaskState
-	Repository string
+	TaskFilter
+	Limit  int
+	Offset int
 }
 
 // MaxTaskOperationsLimit bounds a single page, and MaxTaskOperationsOffset is
@@ -482,7 +521,7 @@ func (q TaskOperationsQuery) Validate() error {
 	case q.Offset < 0 || q.Offset > MaxTaskOperationsOffset:
 		return fmt.Errorf("task operations offset must be between 0 and %d", MaxTaskOperationsOffset)
 	}
-	return nil
+	return q.TaskFilter.Validate()
 }
 
 // TaskOperationsPage batches the task rows with only the event and plan data
@@ -3821,8 +3860,7 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 	workspace := workspaceOrDefault(ctx, "")
 	tasks := make([]core.Task, 0, len(m.tasks))
 	for _, task := range m.tasks {
-		if task.Workspace != workspace || (query.State != "" && task.State != query.State) ||
-			(query.Repository != "" && task.Repo != query.Repository) {
+		if task.Workspace != workspace || !m.taskMatchesFilterLocked(task, query.TaskFilter) {
 			continue
 		}
 		if lifecycle, exists := m.github[task.ID]; exists {
