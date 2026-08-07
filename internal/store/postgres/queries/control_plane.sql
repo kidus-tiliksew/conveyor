@@ -60,6 +60,52 @@ FROM tasks t
 WHERE t.workspace_id = $1
 ORDER BY t.created_at, t.id;
 
+-- name: ListTaskOperationsTasks :many
+SELECT sqlc.embed(t),
+       EXISTS (
+           SELECT 1 FROM task_dependencies edge
+           WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
+       ) AS has_dependencies,
+       EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ) AS has_children
+FROM tasks t
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
+  AND (sqlc.arg(repository)::text = '' OR t.repo = sqlc.arg(repository))
+ORDER BY t.created_at, t.id
+LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
+OFFSET sqlc.arg(page_offset)::int;
+
+-- name: CountTaskOperationsTasks :one
+SELECT count(*)::bigint
+FROM tasks t
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND (sqlc.arg(task_state)::text = '' OR t.state = sqlc.arg(task_state))
+  AND (sqlc.arg(repository)::text = '' OR t.repo = sqlc.arg(repository));
+
+-- name: ListTaskOperationsEvents :many
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND e.task_id = ANY(sqlc.arg(task_ids)::text[])
+  AND e.kind IN (
+    'task.context_requirement_added', 'task.context_requirement_removed',
+    'task.context_design_added', 'task.context_design_removed',
+    'task.state_changed'
+  )
+ORDER BY e.task_id, e.at, e.id;
+
+-- name: ListTaskOperationsLatestPlans :many
+SELECT DISTINCT ON (s.task_id) s.*
+FROM task_specs s
+JOIN tasks t ON t.id = s.task_id
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND s.task_id = ANY(sqlc.arg(task_ids)::text[])
+ORDER BY s.task_id, s.version DESC;
+
 -- name: UpdateTaskState :one
 UPDATE tasks
 SET state = sqlc.arg(state), updated_at = now()
@@ -243,7 +289,7 @@ ORDER BY e.at, e.id;
 SELECT e.* FROM events e
 WHERE e.workspace_id = sqlc.arg(workspace_id)
   AND e.task_id IS NULL
-  AND e.payload_json->>'requirement_id' = sqlc.arg(requirement_id)
+  AND e.payload_json->>'requirement_id' = sqlc.arg(requirement_id)::text
 ORDER BY e.at, e.id;
 
 -- name: ListEventsAfter :many

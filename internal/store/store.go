@@ -73,6 +73,7 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
+	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// SetTaskHold toggles the §21.31 per-task reservation with an audit
 	// event; setting the current value is an idempotent no-op.
@@ -121,6 +122,7 @@ type Store interface {
 	// of that kind.
 	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
+	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order (spec §21.34).
@@ -444,6 +446,27 @@ type ActivityMarker struct {
 	ReviewRecovery            *ReviewRecoveryState
 	InterruptedReviewRecovery *InterruptedReviewRecoveryState
 	Stalled                   *StalledState
+}
+
+// TaskOperationsQuery is the bounded input for the daily Tasks projection.
+// A zero Limit preserves the historical unpaginated array response; callers
+// that opt into pagination use a positive Limit and receive Total alongside
+// the selected page.
+type TaskOperationsQuery struct {
+	Limit      int
+	Offset     int
+	State      core.TaskState
+	Repository string
+}
+
+// TaskOperationsPage batches the task rows with only the event and plan data
+// consumed by the Tasks HTTP projection. It deliberately does not carry full
+// task histories (spec §21.58, REQ-1).
+type TaskOperationsPage struct {
+	Tasks  []core.Task
+	Events map[string][]core.Event
+	Plans  map[string]core.SpecVersion
+	Total  int
 }
 
 // ForgeFailure is the latest unresolved GitHub projection or merge failure
@@ -3763,6 +3786,60 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
+func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	tasks := make([]core.Task, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		if task.Workspace != workspace || (query.State != "" && task.State != query.State) ||
+			(query.Repository != "" && task.Repo != query.Repository) {
+			continue
+		}
+		if lifecycle, exists := m.github[task.ID]; exists {
+			copy := lifecycle
+			task.GitHub = &copy
+		}
+		tasks = append(tasks, m.hydrateTaskLocked(task))
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
+			return tasks[i].ID < tasks[j].ID
+		}
+		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+	})
+	page := TaskOperationsPage{Total: len(tasks), Events: map[string][]core.Event{}, Plans: map[string]core.SpecVersion{}}
+	start := query.Offset
+	if start > len(tasks) {
+		start = len(tasks)
+	}
+	end := len(tasks)
+	if query.Limit > 0 && start+query.Limit < end {
+		end = start + query.Limit
+	}
+	page.Tasks = append([]core.Task(nil), tasks[start:end]...)
+	for _, task := range page.Tasks {
+		for _, event := range m.events[task.ID] {
+			if taskOperationsEventKind(event.Kind) {
+				page.Events[task.ID] = append(page.Events[task.ID], event)
+			}
+		}
+		if versions := m.specs[task.ID]; len(versions) > 0 {
+			page.Plans[task.ID] = versions[len(versions)-1]
+		}
+	}
+	return page, nil
+}
+
+func taskOperationsEventKind(kind string) bool {
+	switch kind {
+	case TaskContextRequirementAdded, TaskContextRequirementRemoved, TaskContextDesignAdded, TaskContextDesignRemoved, "task.state_changed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -4202,6 +4279,24 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })
 	return markers, nil
+}
+
+func (m *memory) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error) {
+	markers, err := m.ListActivityMarkers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		wanted[taskID] = true
+	}
+	result := make([]ActivityMarker, 0, len(taskIDs))
+	for _, marker := range markers {
+		if wanted[marker.TaskID] {
+			result = append(result, marker)
+		}
+	}
+	return result, nil
 }
 
 func (m *memory) CreateIntervention(ctx context.Context, intervention core.Intervention) error {

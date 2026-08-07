@@ -8,8 +8,8 @@ import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
 // Historical Blueprints lens (spec §21.58 change 2): retained records remain
-// queryable, but this surface offers no creation path. Phase 8.4 took it out of
-// the primary navigation — it is reached from Tasks, and it says plainly where
+// queryable, but this surface offers no creation path. Its navigation slot is
+// deliberately retained pending an amendment; the page says plainly where
 // live delivery is managed instead.
 export function BlueprintsPage() {
   const { workspace } = useWorkspaceSelection()

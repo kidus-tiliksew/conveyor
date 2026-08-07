@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,6 +69,41 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 	}
 	if !strings.Contains(queries[0], "WITH RECURSIVE seeds") || !strings.Contains(queries[1], "WITH wanted") {
 		t.Fatalf("unexpected scoped queries: %v", queries)
+	}
+}
+
+func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	for index, task := range []core.Task{
+		phase61Task(workspace, "ops-queued", core.TaskQueued, ""),
+		phase61Task(workspace, "ops-running-1", core.TaskRunning, ""),
+		phase61Task(workspace, "ops-running-2", core.TaskRunning, ""),
+	} {
+		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: "ops-running-2", Content: "## Approach\n\n## Done criteria\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: "ops-running-2", Kind: store.TaskContextRequirementAdded,
+		Payload: core.JSONPayload(map[string]any{"id": "req-ops", "version": 1})}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.ListTaskOperations(ctx, store.TaskOperationsQuery{
+		State: core.TaskRunning, Repository: "conveyor", Limit: 1, Offset: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Tasks) != 1 || page.Tasks[0].ID != "ops-running-2" {
+		t.Fatalf("page = total:%d tasks:%+v", page.Total, page.Tasks)
+	}
+	if page.Plans["ops-running-2"].Version != 1 || len(page.Events["ops-running-2"]) != 1 ||
+		page.Events["ops-running-2"][0].Kind != store.TaskContextRequirementAdded {
+		t.Fatalf("batched page data = plans:%+v events:%+v", page.Plans, page.Events)
 	}
 }
 

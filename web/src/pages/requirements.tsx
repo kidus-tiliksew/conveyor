@@ -519,6 +519,7 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
     queryFn: () => fetchRequirement(seed.requirement.id),
     initialData: seed,
   })
+  const servingTasks = item.serving_tasks ?? []
   const { data: versions = [], error: versionsError } = useQuery({
     queryKey: ['requirement-versions', workspace, item.requirement.id],
     queryFn: () => fetchRequirementVersions(item.requirement.id),
@@ -685,7 +686,34 @@ function RequirementDetail({ seed, token }: { seed: RequirementView; token: stri
 
       <Card>
         <CardHeader>
-          <CardTitle>Serving blueprints</CardTitle>
+          <CardTitle>Serving tasks</CardTitle>
+          <Badge variant="mono">{servingTasks.length}</Badge>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {servingTasks.length === 0 && (
+            <p className="text-sm text-muted">No delivery task is attached to this requirement yet.</p>
+          )}
+          {servingTasks.map((task) => (
+            <Link
+              key={task.id}
+              to="/tasks/$taskId/full"
+              params={{ taskId: task.id }}
+              className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+            >
+              <GitBranch className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1">
+                <strong className="block truncate text-sm">{task.title}</strong>
+                <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
+              </span>
+              <ArrowRight className="size-4 text-faint" />
+            </Link>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Historical serving blueprints</CardTitle>
           <Badge variant="mono">{item.serving_blueprints.length}</Badge>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -949,12 +977,16 @@ function RequirementStateBadges({ item, compact = false }: { item: RequirementVi
           <span title={shippedTitle}>Code ahead of intent</span>
         </Badge>
       )}
+      {item.staleness?.partial_evaluation && <Badge variant="attention">Staleness partially evaluated</Badge>}
       {drift > 0 && <Badge variant="attention">{drift} active drift</Badge>}
       {item.pending_versions.length > 0 && !item.migrated_seed && <Badge variant="attention">Revision pending</Badge>}
       {item.migrated_seed && <Badge variant="mono">Migrated seed</Badge>}
-      {!compact && item.pending_versions.length === 0 && !shipped && drift === 0 && !item.migrated_seed && (
-        <Badge variant="positive">Intent aligned</Badge>
-      )}
+      {!compact &&
+        item.pending_versions.length === 0 &&
+        !shipped &&
+        drift === 0 &&
+        !item.migrated_seed &&
+        !item.staleness?.partial_evaluation && <Badge variant="positive">Intent aligned</Badge>}
     </>
   )
 }
@@ -965,6 +997,11 @@ function RequirementStateNotices({ item }: { item: RequirementView }) {
   const activeDrift = item.staleness?.active_drift ?? []
   return (
     <section className="space-y-2" aria-label="Requirement alignment">
+      {item.staleness?.partial_evaluation && (
+        <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
+          Staleness partially evaluated because the bounded delivery lineage was truncated.
+        </p>
+      )}
       {shipped && (
         <p className="rounded-md border border-attention/30 bg-attention-soft px-3 py-2 text-xs text-attention">
           Code shipped past the confirmed intent. <span title={shippedTitle}>Latest delivery: {shipped}.</span>

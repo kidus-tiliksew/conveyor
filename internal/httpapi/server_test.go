@@ -1999,6 +1999,66 @@ func taskOperationsRow(t *testing.T, items taskOperationsResponse, id string) in
 	return -1
 }
 
+type taskOperationsBoundedStore struct {
+	store.Store
+	listEventsCalls int
+	latestPlanCalls int
+}
+
+func (st *taskOperationsBoundedStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	st.listEventsCalls++
+	return nil, fmt.Errorf("per-task ListEvents forbidden for %s", taskID)
+}
+
+func (st *taskOperationsBoundedStore) GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	st.latestPlanCalls++
+	return core.SpecVersion{}, false, fmt.Errorf("per-task latest plan forbidden for %s", taskID)
+}
+
+func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	for index, task := range []core.Task{
+		{ID: "first", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued},
+		{ID: "second", Workspace: "demo", Repo: "web", State: core.TaskRunning},
+		{ID: "third", Workspace: "demo", Repo: "web", State: core.TaskRunning},
+	} {
+		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
+		if err := base.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := &taskOperationsBoundedStore{Store: base}
+	server := NewServer(observed)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=running&repository=web&limit=1&offset=1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("X-Conveyor-Total") != "2" || response.Header().Get("X-Conveyor-Limit") != "1" || response.Header().Get("X-Conveyor-Offset") != "1" {
+		t.Fatalf("pagination headers = %+v", response.Header())
+	}
+	var items taskOperationsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Task.ID != "third" {
+		t.Fatalf("paged rows = %+v", items)
+	}
+	if observed.listEventsCalls != 0 || observed.latestPlanCalls != 0 {
+		t.Fatalf("per-task reads = events:%d plans:%d", observed.listEventsCalls, observed.latestPlanCalls)
+	}
+
+	bad := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bad, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=unknown&limit=1", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid filter status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
 // AC-1.1 and AC-1.2: the projection is one flat, filterable list carrying the
 // state and repository every row filters on, plus the durable dependency and
 // blocking authority — never a second derivation of it (REQ-1).

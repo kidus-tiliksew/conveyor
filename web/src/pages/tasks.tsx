@@ -20,18 +20,22 @@ import type { TaskOperationsItem, TaskPlanStatus, TaskRelation } from '../lib/ty
 // none may be added to support it (AC-1.5).
 export function TasksPage() {
   const { workspace } = useWorkspaceSelection()
-  const {
-    data: items,
-    isLoading,
-    error,
-  } = useQuery({
-    queryKey: ['task-operations', workspace],
-    queryFn: fetchTaskOperations,
-    enabled: Boolean(workspace),
-  })
   const [query, setQuery] = useState('')
   const [state, setState] = useState('')
   const [repo, setRepo] = useState('')
+  const [offset, setOffset] = useState(0)
+  const limit = 100
+  const {
+    data: page,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['task-operations', workspace, state, repo, offset],
+    queryFn: () => fetchTaskOperations({ limit, offset, state, repository: repo }),
+    enabled: Boolean(workspace),
+    refetchInterval: 15_000,
+  })
+  const items = page?.items
 
   const repos = useMemo(() => [...new Set((items ?? []).map((item) => item.task.repo).filter(Boolean))].sort(), [items])
   const states = useMemo(() => [...new Set((items ?? []).map((item) => item.task.state))].sort(), [items])
@@ -53,7 +57,7 @@ export function TasksPage() {
         <header>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
-            <Badge variant="mono">{filtered.length}</Badge>
+            <Badge variant="mono">{page?.total ?? filtered.length}</Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Every task in this workspace with its ordering, attached context, and plan status.
@@ -76,7 +80,10 @@ export function TasksPage() {
           <Select
             aria-label="Filter by state"
             value={state}
-            onChange={(event) => setState(event.target.value)}
+            onChange={(event) => {
+              setState(event.target.value)
+              setOffset(0)
+            }}
             className="h-8 w-44 text-xs"
           >
             <option value="">All states</option>
@@ -89,7 +96,10 @@ export function TasksPage() {
           <Select
             aria-label="Filter by repository"
             value={repo}
-            onChange={(event) => setRepo(event.target.value)}
+            onChange={(event) => {
+              setRepo(event.target.value)
+              setOffset(0)
+            }}
             className="h-8 w-44 text-xs"
           >
             <option value="">All repositories</option>
@@ -135,6 +145,30 @@ export function TasksPage() {
               </li>
             ))}
           </ul>
+        )}
+
+        {page && page.total > page.limit && (
+          <nav className="mt-5 flex items-center justify-end gap-2" aria-label="Task pages">
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+              disabled={page.offset === 0}
+              onClick={() => setOffset(Math.max(0, page.offset - page.limit))}
+            >
+              Previous
+            </button>
+            <span className="text-xs text-muted">
+              {page.offset + 1}–{Math.min(page.offset + page.items.length, page.total)} of {page.total}
+            </span>
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+              disabled={page.offset + page.limit >= page.total}
+              onClick={() => setOffset(page.offset + page.limit)}
+            >
+              Next
+            </button>
+          </nav>
         )}
       </div>
     </div>
@@ -197,11 +231,26 @@ function PlanBadge({ plan }: { plan: TaskPlanStatus }) {
   const version = plan.version ? ` v${plan.version}` : ''
   switch (plan.state) {
     case 'approved':
-      return <Badge variant="positive">Plan approved{version}</Badge>
+      return (
+        <>
+          <Badge variant="positive">Plan approved{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     case 'pending_gate':
-      return <Badge variant="attention">Plan awaiting approval{version}</Badge>
+      return (
+        <>
+          <Badge variant="attention">Plan awaiting approval{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     case 'redirected':
-      return <Badge variant="attention">Plan changes requested{version}</Badge>
+      return (
+        <>
+          <Badge variant="attention">Plan changes requested{version}</Badge>
+          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+        </>
+      )
     default:
       return <Badge variant="outline">No plan</Badge>
   }

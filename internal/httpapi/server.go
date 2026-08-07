@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -870,7 +871,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, re
 			continue
 		}
 		marker := markerByTask[task.ID]
-		if task.State == core.TaskMerged || task.State == core.TaskClosed {
+		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
 		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil {
@@ -969,19 +970,32 @@ func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
 }
 
 // listTaskOperations serves the Phase 8.4 Tasks view (spec §21.58, REQ-1).
-// Dependencies, blocking edges, and children come from the same task hydration
-// the board and task detail already read; attached context is the existing
-// append-only attachment fold; plan status is the persisted plan version plus
-// the audited gate command. Per-task reads follow the blueprint-list
-// precedent — the projection has no batch authority of its own to invent.
+// Dependencies, blocking edges, and children come from a bounded store page;
+// attached context and plan status fold only the event kinds and latest plan
+// records the projection batches for those returned tasks. The historical
+// blueprint read path is not a scale precedent for this daily surface.
 func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tasks, err := s.Store.ListTasks(ctx)
+	query, paginated, err := parseTaskOperationsQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, err := s.Store.ListTaskOperations(ctx, query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	markers, err := s.Store.ListActivityMarkers(ctx)
+	if paginated {
+		w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
+		w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
+		w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+	}
+	taskIDs := make([]string, 0, len(page.Tasks))
+	for _, task := range page.Tasks {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	markers, err := s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -989,10 +1003,6 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
-	}
-	taskIDs := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		taskIDs = append(taskIDs, task.ID)
 	}
 	// Blocked stays a derived predicate owned by the dependency substrate
 	// (spec §21.47); the view reads it, and reads the unsatisfiable edges the
@@ -1005,23 +1015,15 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	// Attached documents repeat across rows; memoizing only the document reads
 	// keeps the authoritative fold in store.TaskContextFromEvents.
 	documents := &taskContextDocumentCache{Store: s.Store, requirements: map[string]core.Requirement{}, designs: map[string]core.SystemDesign{}}
-	items := make([]taskOperationsItem, 0, len(tasks))
-	for _, task := range tasks {
-		events, eventsErr := s.Store.ListEvents(ctx, task.ID)
-		if eventsErr != nil {
-			http.Error(w, eventsErr.Error(), http.StatusInternalServerError)
-			return
-		}
+	items := make([]taskOperationsItem, 0, len(page.Tasks))
+	for _, task := range page.Tasks {
+		events := page.Events[task.ID]
 		task.Context, err = store.TaskContextFromEvents(ctx, documents, events)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		latest, hasPlan, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
-		if specErr != nil {
-			http.Error(w, specErr.Error(), http.StatusInternalServerError)
-			return
-		}
+		latest, hasPlan := page.Plans[task.ID]
 		marker := markerByTask[task.ID]
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
@@ -1038,6 +1040,48 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool, error) {
+	values := r.URL.Query()
+	repository := strings.TrimSpace(values.Get("repository"))
+	if repository == "" {
+		repository = strings.TrimSpace(values.Get("repo"))
+	}
+	query := store.TaskOperationsQuery{Repository: repository}
+	if state := strings.TrimSpace(values.Get("state")); state != "" {
+		query.State = core.TaskState(state)
+		valid := false
+		for _, candidate := range core.TaskStates() {
+			valid = valid || query.State == candidate
+		}
+		if !valid {
+			return query, false, fmt.Errorf("invalid task state %q", state)
+		}
+	}
+	limitValue, paginated := values["limit"]
+	if !paginated {
+		if values.Get("offset") != "" {
+			return query, false, fmt.Errorf("offset requires limit")
+		}
+		return query, false, nil
+	}
+	if len(limitValue) != 1 {
+		return query, false, fmt.Errorf("limit must be supplied once")
+	}
+	limit, err := strconv.Atoi(limitValue[0])
+	if err != nil || limit < 1 || limit > 200 {
+		return query, false, fmt.Errorf("limit must be between 1 and 200")
+	}
+	offset := 0
+	if value := values.Get("offset"); value != "" {
+		offset, err = strconv.Atoi(value)
+		if err != nil || offset < 0 {
+			return query, false, fmt.Errorf("offset must be a non-negative integer")
+		}
+	}
+	query.Limit, query.Offset = limit, offset
+	return query, true, nil
 }
 
 // taskContextDocumentCache memoizes the requirement and design reads that

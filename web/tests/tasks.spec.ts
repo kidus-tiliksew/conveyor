@@ -116,7 +116,10 @@ async function openTasks(page: Page) {
     route.fulfill({ json: { workspace: 'demo', repos: ['conveyor', 'web'] } }),
   )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
-  await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: operations }))
+  await page.route('**/v1/task-operations?**', (route) => {
+    expect(route.request().headers().authorization).toBe('Bearer test-token')
+    return route.fulfill({ json: operations })
+  })
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 }
