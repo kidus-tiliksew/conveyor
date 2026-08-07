@@ -1098,7 +1098,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if scope == "" || scope == config.RefreshReviewNone {
 			scope = config.RefreshReviewDelta
 		}
-		if err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
+		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
 			return nil, err
 		}
 	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
@@ -1409,7 +1409,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if !found {
 		return nil, fmt.Errorf("review job unavailable")
 	}
-	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot); err != nil {
+	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot, true); err != nil {
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted

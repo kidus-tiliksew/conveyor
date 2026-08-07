@@ -100,7 +100,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased})
+	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
@@ -120,8 +120,11 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 			t.Fatalf("checkpoint handoff emitted recovery-shaped event %q", event.Kind)
 		}
 	}
-	if checkpointEvent.Kind == "" || !strings.Contains(string(checkpointEvent.Payload), `"reason":"`+core.WorkOrderReleaseReasonOperatorCheckpointReached+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"outcome":"released"`) || !strings.Contains(string(checkpointEvent.Payload), `"retry_suppressed":true`) {
+	if checkpointEvent.Kind == "" || !strings.Contains(string(checkpointEvent.Payload), `"reason":"`+core.WorkOrderReleaseReasonOperatorCheckpointReached+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"release_cause":"`+core.WorkOrderReleaseCauseOperatorAction+`"`) || !strings.Contains(string(checkpointEvent.Payload), `"outcome":"released"`) || !strings.Contains(string(checkpointEvent.Payload), `"retry_suppressed":true`) {
 		t.Fatalf("checkpoint release event=%+v", checkpointEvent)
+	}
+	if _, err = service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Cause: "uncontrolled"}); err == nil || !strings.Contains(err.Error(), "invalid work-order release cause") {
+		t.Fatalf("invalid release cause err=%v", err)
 	}
 
 	createOrder("submitted-task", false)
@@ -432,6 +435,33 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	}
 	if healthy := service.TaskAvailability(ctx, cfg, task, orders); !healthy.Available {
 		t.Fatalf("healthy status=%+v", healthy)
+	}
+}
+
+func TestTaskAvailabilityTreatsLiveClaimAsHarnessHealthEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	worker := core.Worker{ID: "stale-probe-worker", Workspace: "demo", Name: "stale", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: false}}, CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Now: func() time.Time { return now }}
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}
+	task := core.Task{ID: "claimed-health", Workspace: "demo", State: core.TaskRunning}
+	claimed := core.WorkOrder{ID: "claimed-health-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderClaimed, RequiredHarness: "codex", LeaseExpiresAt: now.Add(time.Minute)}
+	status := service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed})
+	if status == nil || !status.Available || status.Reason != "active claimed order is being served" {
+		t.Fatalf("live claim status=%+v", status)
+	}
+	claimed.LeaseExpiresAt = now.Add(-time.Second)
+	status = service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed})
+	if status == nil || status.Available {
+		t.Fatalf("expired claim status=%+v", status)
+	}
+	claimed.State = core.WorkOrderCancelled
+	if status = service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed}); status != nil {
+		t.Fatalf("revoked claim status=%+v", status)
 	}
 }
 

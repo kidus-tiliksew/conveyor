@@ -2021,7 +2021,7 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "conflict-fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
+	if _, err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "conflict-fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
 		t.Fatal(err)
 	}
 	job := core.Job{ID: "stale-refresh-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -2269,6 +2269,45 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	}
 	if publication, getErr := base.GetReviewPublication(ctx, job.ID); getErr != nil || publication.State != core.ReviewPublicationQueued {
 		t.Fatalf("publication=%+v err=%v", publication, getErr)
+	}
+}
+
+func TestSubmitVerdictReDerivesRunningFromLiveClaimAfterProjectionRegression(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "claim-demote-verdict", Workspace: "test", Repo: "app", Level: core.L2, PolicyVersion: 1, MergeApproval: true, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning, ModelTier: "reviewer"}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	emptyGovernance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: emptyGovernance}); err != nil {
+		t.Fatal(err)
+	}
+	const session = "owning-review-session"
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret", Model: "reviewer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	if _, err := service.SubmitVerdict(ctx, job.ID, session, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "incident replay passes"}); err != nil {
+		t.Fatalf("submit verdict after demotion: %v", err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskAwaiting {
+		t.Fatalf("task after accepted verdict=%+v err=%v", current, err)
+	}
+	order, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || order.State != core.WorkOrderCompleted {
+		t.Fatalf("review order after accepted verdict=%+v err=%v", order, err)
 	}
 }
 

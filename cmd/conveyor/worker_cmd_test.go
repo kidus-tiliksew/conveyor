@@ -39,6 +39,36 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, config.DefaultFirstActivityTimeout, stdout, stderr)
 }
 
+func TestWorkerHarnessProbesRetryUnhealthyWithBoundedBackoffAndReportRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{Harnesses: []config.Harness{{Name: "codex", ProbeCommand: []string{"codex", "--version"}}}}}
+	tracker := newWorkerHarnessProbes()
+	calls := 0
+	tracker.run = func(_ context.Context, targets []workerservice.HarnessProbeTarget) []core.HarnessProbe {
+		calls++
+		healthy := calls >= 3
+		return []core.HarnessProbe{{Harness: targets[0].Harness.Name, Fingerprint: targets[0].Fingerprint, Healthy: healthy, CheckedAt: now}}
+	}
+	if probes := tracker.probe(t.Context(), document, now); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("initial probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial-time.Millisecond)); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("early retry probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial)); len(probes) != 1 || probes[0].Healthy || calls != 2 {
+		t.Fatalf("first retry probes=%+v calls=%d", probes, calls)
+	}
+	recoveredAt := now.Add(workerProbeRetryInitial + 2*workerProbeRetryInitial)
+	probes := tracker.probe(t.Context(), document, recoveredAt)
+	if len(probes) != 1 || !probes[0].Healthy || probes[0].Transition != "unhealthy_to_healthy" || calls != 3 {
+		t.Fatalf("recovery probes=%+v calls=%d", probes, calls)
+	}
+	tracker.acknowledgeTransitions()
+	if probes = tracker.probe(t.Context(), document, recoveredAt.Add(time.Second)); len(probes) != 1 || probes[0].Transition != "" || calls != 3 {
+		t.Fatalf("acknowledged probes=%+v calls=%d", probes, calls)
+	}
+}
+
 func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
 	secret := "child-only-runtime-secret"
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
@@ -1556,11 +1586,12 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 				var request core.WorkOrderRelease
 				var wire struct {
 					Reason     string `json:"reason"`
+					Cause      string `json:"release_cause"`
 					Outcome    string `json:"outcome"`
 					ExitStatus *int   `json:"exit_status"`
 				}
 				_ = json.NewDecoder(r.Body).Decode(&wire)
-				request.Reason, request.Outcome, request.ExitStatus = wire.Reason, wire.Outcome, wire.ExitStatus
+				request.Reason, request.Cause, request.Outcome, request.ExitStatus = wire.Reason, wire.Cause, wire.Outcome, wire.ExitStatus
 				released <- request
 				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
 			default:
@@ -1592,7 +1623,7 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		}
 		select {
 		case release := <-released:
-			if release.Outcome != wantOutcome || !reflect.DeepEqual(release.ExitStatus, wantExit) {
+			if release.Outcome != wantOutcome || release.Cause != core.WorkOrderReleaseCauseSessionExit || !reflect.DeepEqual(release.ExitStatus, wantExit) {
 				t.Fatalf("release=%+v want outcome=%s exit=%v", release, wantOutcome, wantExit)
 			}
 		case <-time.After(2 * time.Second):

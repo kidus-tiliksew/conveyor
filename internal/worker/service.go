@@ -450,6 +450,13 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 		return &status
 	}
 	now := s.now()
+	for _, order := range activeOrders {
+		if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
+			status.Available = true
+			status.Reason = "active claimed order is being served"
+			return &status
+		}
+	}
 	for _, worker := range workers {
 		if worker.LastSeenAt.After(status.LastHeartbeatAt) {
 			status.LastHeartbeatAt = worker.LastSeenAt
@@ -901,6 +908,13 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}
 	release.Reason = strings.TrimSpace(release.Reason)
+	release.Cause = strings.TrimSpace(release.Cause)
+	if release.Cause == "" {
+		release.Cause = core.WorkOrderReleaseCauseSessionExit
+	}
+	if !core.ValidWorkOrderReleaseCause(release.Cause) {
+		return core.WorkOrder{}, fmt.Errorf("invalid work-order release cause %q", release.Cause)
+	}
 	release.FailureDetail = boundedFailureDetail(release.FailureDetail)
 	release.ModelRejection = providerModelRejection(release.FailureDetail)
 	if release.Outcome == "" {
