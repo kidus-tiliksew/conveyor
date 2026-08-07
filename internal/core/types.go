@@ -657,7 +657,11 @@ const (
 	WorkOrderOutcomeReleased                        = "released"
 	WorkOrderOutcomeCancelled                       = "cancelled"
 	WorkOrderOutcomeExpired                         = "expired"
+	WorkOrderOutcomePreempted                       = "preempted"
 	WorkOrderReleaseReasonOperatorCheckpointReached = "operator checkpoint reached"
+	WorkOrderReleaseCauseSessionExit                = "session_exit"
+	WorkOrderReleaseCauseOperatorAction             = "operator_action"
+	WorkOrderReleaseCauseLeaseLoss                  = "lease_loss"
 	IdenticalFailureSuppressionReason               = "identical failure output on consecutive attempts"
 	WorkOrderFailureProviderUsageLimit              = "provider_usage_limit"
 )
@@ -666,9 +670,15 @@ func WorkOrderOutcomeConsumesRetry(outcome string) bool {
 	return outcome == WorkOrderOutcomeChildFailure || outcome == WorkOrderOutcomeStalled
 }
 
+func ValidWorkOrderReleaseCause(cause string) bool {
+	return cause == WorkOrderReleaseCauseSessionExit ||
+		cause == WorkOrderReleaseCauseOperatorAction || cause == WorkOrderReleaseCauseLeaseLoss
+}
+
 type WorkOrderRelease struct {
 	SessionID           string
 	Reason              string
+	Cause               string `json:"release_cause,omitempty"`
 	Outcome             string
 	FailureCategory     string
 	ExitStatus          *int
@@ -718,6 +728,7 @@ type HarnessProbe struct {
 	Healthy     bool      `json:"healthy"`
 	Message     string    `json:"message,omitempty"`
 	CheckedAt   time.Time `json:"checked_at"`
+	Transition  string    `json:"transition,omitempty"`
 }
 
 type WorkerPairing struct {
@@ -804,6 +815,7 @@ type ReviewDecision struct {
 	Reviewer               string
 	ReviewerModel          string
 	ReviewerSession        string
+	ClaimSession           string
 	SameModelAsImplementer string
 	ReviewRound            int
 	ReviewSeat             int

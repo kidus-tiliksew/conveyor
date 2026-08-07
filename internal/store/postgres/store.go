@@ -1134,17 +1134,26 @@ func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error 
 	})
 }
 
-func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) error {
+func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error) {
 	if approvedHeadSHA == "" || newHeadSHA == "" || approvedHeadSHA == newHeadSHA {
-		return fmt.Errorf("distinct approved and new head SHAs are required")
+		return false, fmt.Errorf("distinct approved and new head SHAs are required")
 	}
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	created := false
+	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		task, err := q.MarkTaskApprovalStale(ctx, db.MarkTaskApprovalStaleParams{ID: id, WorkspaceID: workspace(ctx), ApprovedHeadSha: approvedHeadSHA, NewHeadSha: newHeadSHA, RefreshReviewScope: scope})
+		if errors.Is(err, pgx.ErrNoRows) {
+			if _, getErr := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)}); getErr != nil {
+				return notFound(getErr, "task %s", id)
+			}
+			return nil
+		}
 		if err != nil {
 			return notFound(err, "task %s", id)
 		}
+		created = true
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
 	})
+	return created, err
 }
 
 // AdvanceTaskRefreshHead moves a stale approval's refresh target to the head
@@ -4267,7 +4276,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": updated.LastAttemptOutcome, "retry_suppressed": true}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": updated.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": true}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return updated, nil
@@ -4511,6 +4520,20 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		job, err := q.GetJob(ctx, db.GetJobParams{ID: decision.JobID, WorkspaceID: workspace(ctx)})
 		if err != nil || job.TaskID != decision.TaskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, workspace(ctx))
+		}
+		if decision.ClaimSession != "" {
+			order, orderErr := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), decision.ReviewWorkOrderID))
+			if orderErr != nil || order.TaskID != decision.TaskID || order.Stage != core.StageReview || order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
+				return store.ErrWorkOrderClaimLost
+			}
+			if core.TaskState(before.State) == core.TaskQueued {
+				if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+					"from": core.TaskQueued, "to": core.TaskRunning, "command": core.TaskOrderClaim, "claim_authority_work_order_id": order.ID,
+				})}); err != nil {
+					return err
+				}
+				before.State = string(core.TaskRunning)
+			}
 		}
 		if !completed {
 			if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {

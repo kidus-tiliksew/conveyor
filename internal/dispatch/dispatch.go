@@ -825,7 +825,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if len(authorities) > 0 {
 			authority = authorities[0]
 		}
-		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier, authority.requirements, authority.governance, invalid)
+		return d.applyReview(ctx, cfg, task, job, result, reviewer, job.ID, "", job.ModelTier, authority.requirements, authority.governance, false, invalid)
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
@@ -833,7 +833,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 
 // ApplyExternalReviewPinned completes an MCP review against the immutable
 // citation authority stored on its claimed work order.
-func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot) error {
+func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Task, job core.Job, result pipeline.Review, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot, claimAuthorized ...bool) error {
 	if servedRequirements == nil {
 		return fmt.Errorf("review work order %s predates pinned served-requirement authority; release and reclaim it through the current server", reviewWorkOrderID)
 	}
@@ -844,7 +844,7 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 	if err != nil {
 		return err
 	}
-	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, nil)
+	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, len(claimAuthorized) > 0 && claimAuthorized[0], nil)
 }
 
 // ApplyExternalPlan validates an MCP-authored execution plan and enters the
@@ -883,7 +883,7 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 	return version, nil
 }
 
-func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot, invalid func(error) error) error {
+func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot, claimAuthorized bool, invalid func(error) error) error {
 	if servedRequirements == nil {
 		servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 		if err != nil {
@@ -986,6 +986,12 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
 		RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		ClaimSession: func() string {
+			if claimAuthorized {
+				return session
+			}
+			return ""
+		}(),
 		ReviewRound: round, ReviewSeat: seat, RequiredModel: requiredModel,
 		ReviewKind: decisionReviewKind, ReviewScope: decisionReviewScope, BaselineSHA: decisionBaseline, HeadSHA: decisionHead,
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
@@ -1215,6 +1221,22 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 	if err != nil {
 		return err
 	}
+	if destination == core.TaskQueued && task.State == core.TaskRunning && command == core.TaskStageBounce {
+		orders, listErr := d.Store.ListTaskWorkOrdersSnapshot(ctx, taskID)
+		if listErr != nil {
+			return listErr
+		}
+		now := time.Now().UTC()
+		for _, order := range orders {
+			if order.State != core.WorkOrderClaimed || !order.LeaseExpiresAt.After(now) {
+				continue
+			}
+			return d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: order.JobID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{
+				"from_stage": task.NextStage, "next_stage": task.NextStage, "recovery_stage": task.RecoveryStage, "state": core.TaskRunning,
+				"suppressed_command": command, "claim_authority_work_order_id": order.ID,
+			})})
+		}
+	}
 	outcome, err := taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{
 		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true,
 	})
@@ -1423,13 +1445,17 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	// re-marked: every re-mark re-runs the recover transition, demoting a task
 	// whose refresh round may hold a claimed, deliberating seat — observed
 	// live as a once-per-poll demotion loop that no completed verdict could
-	// survive. A changed pair or an escalated scope (conflict forcing delta
-	// over none) re-engages normally.
+	// survive. The store repeats this guard atomically for concurrent observers;
+	// only a changed head pair or a rebound approval starts a new episode.
 	if task.ApprovalStale && task.RefreshBaselineSHA == baseline && task.RefreshHeadSHA == newHead && task.RefreshReviewScope == scope {
 		return nil
 	}
-	if err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason); err != nil {
+	created, err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason)
+	if err != nil {
 		return err
+	}
+	if !created {
+		return nil
 	}
 	if scope == config.RefreshReviewNone && !conflict {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")

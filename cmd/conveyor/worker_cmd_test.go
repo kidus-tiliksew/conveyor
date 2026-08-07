@@ -39,6 +39,36 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, config.DefaultFirstActivityTimeout, stdout, stderr)
 }
 
+func TestWorkerHarnessProbesRetryUnhealthyWithBoundedBackoffAndReportRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{Harnesses: []config.Harness{{Name: "codex", ProbeCommand: []string{"codex", "--version"}}}}}
+	tracker := newWorkerHarnessProbes()
+	calls := 0
+	tracker.run = func(_ context.Context, targets []workerservice.HarnessProbeTarget) []core.HarnessProbe {
+		calls++
+		healthy := calls >= 3
+		return []core.HarnessProbe{{Harness: targets[0].Harness.Name, Fingerprint: targets[0].Fingerprint, Healthy: healthy, CheckedAt: now}}
+	}
+	if probes := tracker.probe(t.Context(), document, now); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("initial probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial-time.Millisecond)); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("early retry probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial)); len(probes) != 1 || probes[0].Healthy || calls != 2 {
+		t.Fatalf("first retry probes=%+v calls=%d", probes, calls)
+	}
+	recoveredAt := now.Add(workerProbeRetryInitial + 2*workerProbeRetryInitial)
+	probes := tracker.probe(t.Context(), document, recoveredAt)
+	if len(probes) != 1 || !probes[0].Healthy || probes[0].Transition != "unhealthy_to_healthy" || calls != 3 {
+		t.Fatalf("recovery probes=%+v calls=%d", probes, calls)
+	}
+	tracker.acknowledgeTransitions()
+	if probes = tracker.probe(t.Context(), document, recoveredAt.Add(time.Second)); len(probes) != 1 || probes[0].Transition != "" || calls != 3 {
+		t.Fatalf("acknowledged probes=%+v calls=%d", probes, calls)
+	}
+}
+
 func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
 	secret := "child-only-runtime-secret"
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
@@ -1556,11 +1586,12 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 				var request core.WorkOrderRelease
 				var wire struct {
 					Reason     string `json:"reason"`
+					Cause      string `json:"release_cause"`
 					Outcome    string `json:"outcome"`
 					ExitStatus *int   `json:"exit_status"`
 				}
 				_ = json.NewDecoder(r.Body).Decode(&wire)
-				request.Reason, request.Outcome, request.ExitStatus = wire.Reason, wire.Outcome, wire.ExitStatus
+				request.Reason, request.Cause, request.Outcome, request.ExitStatus = wire.Reason, wire.Cause, wire.Outcome, wire.ExitStatus
 				released <- request
 				_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
 			default:
@@ -1592,7 +1623,7 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		}
 		select {
 		case release := <-released:
-			if release.Outcome != wantOutcome || !reflect.DeepEqual(release.ExitStatus, wantExit) {
+			if release.Outcome != wantOutcome || release.Cause != core.WorkOrderReleaseCauseSessionExit || !reflect.DeepEqual(release.ExitStatus, wantExit) {
 				t.Fatalf("release=%+v want outcome=%s exit=%v", release, wantOutcome, wantExit)
 			}
 		case <-time.After(2 * time.Second):
@@ -1724,6 +1755,96 @@ func TestRunHarnessChildAuthorityLossDuringPreStartSetupAbortsLaunch(t *testing.
 	// before launch, so no child output may exist.
 	if output := stdout.String() + stderr.String(); output != "" {
 		t.Fatalf("child was launched despite authority loss: %q", output)
+	}
+}
+
+func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t *testing.T) {
+	previousInterval := workerClaimRenewInterval
+	workerClaimRenewInterval = 50 * time.Millisecond
+	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
+	pidFile := filepath.Join(t.TempDir(), "preempted-harness.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+
+	previousCheckpointer := workerAttemptCheckpointer
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.WorkOrderID != "preempted-order" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() {
+			t.Fatalf("checkpoint metadata=%+v", checkpoint)
+		}
+		return &attemptCheckpointResult{Worktree: "/assigned/preempted", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
+	}
+	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
+
+	checkpoints := make(chan core.WorkOrderAttemptCheckpoint, 1)
+	releases := make(chan core.WorkOrderRelease, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-preempted", LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "renew":
+			if _, err := os.Stat(pidFile); err == nil {
+				w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
+				http.Error(w, "work order was preempted by an operator", http.StatusConflict)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-preempted", LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "attempt-checkpoint":
+			var checkpoint core.WorkOrderAttemptCheckpoint
+			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			checkpoints <- checkpoint
+			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
+		case "release":
+			var release core.WorkOrderRelease
+			_ = json.NewDecoder(r.Body).Decode(&release)
+			releases <- release
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "preempted-order", Stage: core.StageImplement},
+		Task:       core.Task{ID: "preempted-task", Branch: "conveyor/preempted-task", Repo: "conveyor"},
+		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
+		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 5*time.Second, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), errWorkerOrderPreempted.Error()) {
+		t.Fatalf("preempt error=%v", err)
+	}
+	select {
+	case checkpoint := <-checkpoints:
+		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.SessionID == "" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() || checkpoint.PushResult != "pushed" {
+			t.Fatalf("checkpoint=%+v", checkpoint)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("preempted attempt was not checkpointed")
+	}
+	select {
+	case release := <-releases:
+		t.Fatalf("preempted attempt performed stale release: %+v", release)
+	default:
+	}
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("preempted harness process %d was not reaped: %v", pid, err)
 	}
 }
 

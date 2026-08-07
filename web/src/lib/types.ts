@@ -643,7 +643,7 @@ export interface WorkOrder {
   execution_started_at?: string
   execution_deadline?: string
   last_attempt_id?: string
-  last_attempt_outcome?: 'child_failure' | 'stalled' | 'released' | 'cancelled' | 'expired'
+  last_attempt_outcome?: 'child_failure' | 'stalled' | 'released' | 'cancelled' | 'expired' | 'preempted'
   last_failure_category?: 'provider_usage_limit' | string
   last_failure_message?: string
   last_failure_detail?: string

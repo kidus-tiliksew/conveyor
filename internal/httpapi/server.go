@@ -117,6 +117,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/work-orders", s.listWorkOrders)
 			r.Get("/monitor", s.getMonitorStatus)
 			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
+			r.With(s.requireMutationAuth).Post("/work-orders/{id}/preempt", s.preemptWorkOrder)
 			r.Get("/blueprints", s.listBlueprints)
 			r.Get("/requirements", s.listRequirements)
 			r.With(s.requireMutationAuth).Post("/requirements", s.createRequirement)

@@ -285,6 +285,27 @@ func runWorker(ctx context.Context, c *client, pairing, name string, once bool) 
 
 const workerShutdownGracePeriod = 10 * time.Second
 
+const (
+	workerHealthyProbeInterval = time.Minute
+	workerProbeRetryInitial    = 5 * time.Second
+	workerProbeRetryMaximum    = time.Minute
+)
+
+type workerHarnessProbeState struct {
+	probe      core.HarnessProbe
+	nextProbe  time.Time
+	retryDelay time.Duration
+}
+
+type workerHarnessProbes struct {
+	states map[string]workerHarnessProbeState
+	run    func(context.Context, []workerservice.HarnessProbeTarget) []core.HarnessProbe
+}
+
+func newWorkerHarnessProbes() *workerHarnessProbes {
+	return &workerHarnessProbes{states: map[string]workerHarnessProbeState{}, run: probeHarnessTargets}
+}
+
 func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy) error {
 	saved, err := loadOrEnrollWorker(c, pairing, name)
 	if err != nil {
@@ -305,6 +326,7 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 		}
 	}()
 	retryDelay := reconnect.Initial
+	harnessProbes := newWorkerHarnessProbes()
 	for {
 		document, err := c.workerConfigContext(ctx, credential)
 		if err != nil {
@@ -317,13 +339,14 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 			return fmt.Errorf("invalid worker configuration: %w", err)
 		}
 		firstActivityTimeout, _ := time.ParseDuration(document.Execution.FirstActivityTimeoutText)
-		probes := probeWorkerConfig(ctx, document)
+		probes := harnessProbes.probe(ctx, document, time.Now().UTC())
 		if _, err = c.heartbeatWorkerContext(ctx, credential, probes); err != nil {
 			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat worker", err); retryErr != nil {
 				return retryErr
 			}
 			continue
 		}
+		harnessProbes.acknowledgeTransitions()
 		orders, err := c.listWorkerOrdersContext(ctx, credential)
 		if err != nil {
 			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "poll work orders", err); retryErr != nil {
@@ -479,6 +502,10 @@ func probeHarnesses(ctx context.Context, harnesses []config.Harness) []core.Harn
 }
 
 func probeWorkerConfig(ctx context.Context, document workerservice.WorkerConfig) []core.HarnessProbe {
+	return probeHarnessTargets(ctx, workerHarnessProbeTargets(document))
+}
+
+func workerHarnessProbeTargets(document workerservice.WorkerConfig) []workerservice.HarnessProbeTarget {
 	byFingerprint := map[string]workerservice.HarnessProbeTarget{}
 	for _, harness := range document.Harnesses {
 		fingerprint := workerservice.HarnessFingerprint(harness)
@@ -500,7 +527,69 @@ func probeWorkerConfig(ctx context.Context, document workerservice.WorkerConfig)
 		}
 		return targets[i].Fingerprint < targets[j].Fingerprint
 	})
-	return probeHarnessTargets(ctx, targets)
+	return targets
+}
+
+func (p *workerHarnessProbes) probe(ctx context.Context, document workerservice.WorkerConfig, now time.Time) []core.HarnessProbe {
+	targets := workerHarnessProbeTargets(document)
+	active := make(map[string]bool, len(targets))
+	due := make([]workerservice.HarnessProbeTarget, 0, len(targets))
+	for _, target := range targets {
+		key := target.Harness.Name + "\x00" + target.Fingerprint
+		active[key] = true
+		state, ok := p.states[key]
+		if !ok || !state.nextProbe.After(now) {
+			due = append(due, target)
+		}
+	}
+	for key := range p.states {
+		if !active[key] {
+			delete(p.states, key)
+		}
+	}
+	var observed []core.HarnessProbe
+	if len(due) > 0 {
+		observed = p.run(ctx, due)
+	}
+	for _, result := range observed {
+		key := result.Harness + "\x00" + result.Fingerprint
+		prior, hadPrior := p.states[key]
+		if hadPrior && prior.probe.Healthy != result.Healthy {
+			if result.Healthy {
+				result.Transition = "unhealthy_to_healthy"
+			} else {
+				result.Transition = "healthy_to_unhealthy"
+			}
+		}
+		state := workerHarnessProbeState{probe: result, retryDelay: workerProbeRetryInitial}
+		if result.Healthy {
+			state.nextProbe = now.Add(workerHealthyProbeInterval)
+		} else {
+			if hadPrior && !prior.probe.Healthy && prior.retryDelay > 0 {
+				state.retryDelay = prior.retryDelay * 2
+				if state.retryDelay > workerProbeRetryMaximum {
+					state.retryDelay = workerProbeRetryMaximum
+				}
+			}
+			state.nextProbe = now.Add(state.retryDelay)
+		}
+		p.states[key] = state
+	}
+	result := make([]core.HarnessProbe, 0, len(targets))
+	for _, target := range targets {
+		key := target.Harness.Name + "\x00" + target.Fingerprint
+		if state, ok := p.states[key]; ok {
+			result = append(result, state.probe)
+		}
+	}
+	return result
+}
+
+func (p *workerHarnessProbes) acknowledgeTransitions() {
+	for key, state := range p.states {
+		state.probe.Transition = ""
+		p.states[key] = state
+	}
 }
 
 func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessProbeTarget) []core.HarnessProbe {
@@ -605,7 +694,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, ExitStatus: exitStatus, FailureDetail: detail})
+		cause := core.WorkOrderReleaseCauseSessionExit
+		if strings.HasPrefix(reason, "claim authority lost") {
+			cause = core.WorkOrderReleaseCauseLeaseLoss
+		}
+		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
 	}
 	checkpointAttempt := func(reason string) error {
 		if item.Order.Stage != core.StageImplement {
@@ -712,6 +805,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		workingDirectory, err = materializeSpecCheckout(setupCtx, directory, item)
 		if err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
+				if workerOrderPreempted(lost) {
+					return errWorkerOrderPreempted
+				}
 				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 				return lost
 			}
@@ -728,6 +824,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateGrokEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
+				if workerOrderPreempted(lost) {
+					return errWorkerOrderPreempted
+				}
 				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 				return lost
 			}
@@ -754,6 +853,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
+		}
+		if workerOrderPreempted(lost) {
+			return errWorkerOrderPreempted
 		}
 		_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 		return lost
@@ -894,6 +996,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -964,6 +1069,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -1020,6 +1128,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -1376,10 +1487,17 @@ func makeCheckoutWritable(root string) error {
 
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
 var errWorkerOrderCancelled = errors.New("work order was cancelled by an operator")
+var errWorkerOrderPreempted = errors.New("work order was preempted by an operator")
 
 func workerOrderCancelled(err error) bool {
 	var response *workerHTTPError
 	return errors.As(err, &response) && response.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(response.Message), "work order was cancelled")
+}
+
+func workerOrderPreempted(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict &&
+		(response.Code == "work_order_preempted" || strings.Contains(strings.ToLower(response.Message), "work order was preempted"))
 }
 
 func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {

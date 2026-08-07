@@ -746,6 +746,12 @@ function noteFor(
         detail: typeof payload.reason === 'string' ? payload.reason : undefined,
         alarm: payload.reason === 'harness exited without terminal verdict submission',
       }
+    case 'work_order.preempted':
+      return {
+        title: 'Work-order attempt preempted by operator',
+        detail:
+          typeof payload.reason === 'string' ? `${payload.reason} · stops within one renewal interval` : undefined,
+      }
     case 'merge.requested':
       return {
         title: 'Pull request merge requested',
