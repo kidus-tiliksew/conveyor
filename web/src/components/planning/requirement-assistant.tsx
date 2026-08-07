@@ -73,6 +73,13 @@ export const draftAction = guidedActions.find((action) => action.id === 'draft')
  * The planning assistant docked beside the document canvas. It is the only
  * authoring path for requirement content: every revision arrives as a proposed
  * version the operator confirms on the canvas (spec §21.57 change 2).
+ *
+ * PARKED, NOT RETIRED (spec §21.61 change 3): the Requirements surface no
+ * longer renders this column, so nothing in the application imports it today.
+ * It is kept intact — with its guided actions and promotion dialog — because
+ * parking is a presentation decision that a later amendment may reverse; the
+ * propose→confirm doctrine, the goal machinery, and every planning route it
+ * calls are untouched.
  */
 export function RequirementAssistant({
   selected,
