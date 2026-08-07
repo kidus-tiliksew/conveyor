@@ -435,6 +435,33 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	}
 }
 
+func TestTaskAvailabilityTreatsLiveClaimAsHarnessHealthEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	worker := core.Worker{ID: "stale-probe-worker", Workspace: "demo", Name: "stale", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: false}}, CreatedAt: now}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Now: func() time.Time { return now }}
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}
+	task := core.Task{ID: "claimed-health", Workspace: "demo", State: core.TaskRunning}
+	claimed := core.WorkOrder{ID: "claimed-health-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderClaimed, RequiredHarness: "codex", LeaseExpiresAt: now.Add(time.Minute)}
+	status := service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed})
+	if status == nil || !status.Available || status.Reason != "active claimed order is being served" {
+		t.Fatalf("live claim status=%+v", status)
+	}
+	claimed.LeaseExpiresAt = now.Add(-time.Second)
+	status = service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed})
+	if status == nil || status.Available {
+		t.Fatalf("expired claim status=%+v", status)
+	}
+	claimed.State = core.WorkOrderCancelled
+	if status = service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed}); status != nil {
+		t.Fatalf("revoked claim status=%+v", status)
+	}
+}
+
 func TestTaskAvailabilityReturnsEmptyRequiredHarnessesAsArray(t *testing.T) {
 	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
 		store.WithWorkspace(t.Context(), "demo"),

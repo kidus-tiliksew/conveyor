@@ -450,6 +450,13 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 		return &status
 	}
 	now := s.now()
+	for _, order := range activeOrders {
+		if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
+			status.Available = true
+			status.Reason = "active claimed order is being served"
+			return &status
+		}
+	}
 	for _, worker := range workers {
 		if worker.LastSeenAt.After(status.LastHeartbeatAt) {
 			status.LastHeartbeatAt = worker.LastSeenAt

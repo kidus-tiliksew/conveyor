@@ -39,6 +39,36 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, config.DefaultFirstActivityTimeout, stdout, stderr)
 }
 
+func TestWorkerHarnessProbesRetryUnhealthyWithBoundedBackoffAndReportRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{Harnesses: []config.Harness{{Name: "codex", ProbeCommand: []string{"codex", "--version"}}}}}
+	tracker := newWorkerHarnessProbes()
+	calls := 0
+	tracker.run = func(_ context.Context, targets []workerservice.HarnessProbeTarget) []core.HarnessProbe {
+		calls++
+		healthy := calls >= 3
+		return []core.HarnessProbe{{Harness: targets[0].Harness.Name, Fingerprint: targets[0].Fingerprint, Healthy: healthy, CheckedAt: now}}
+	}
+	if probes := tracker.probe(t.Context(), document, now); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("initial probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial-time.Millisecond)); len(probes) != 1 || probes[0].Healthy || calls != 1 {
+		t.Fatalf("early retry probes=%+v calls=%d", probes, calls)
+	}
+	if probes := tracker.probe(t.Context(), document, now.Add(workerProbeRetryInitial)); len(probes) != 1 || probes[0].Healthy || calls != 2 {
+		t.Fatalf("first retry probes=%+v calls=%d", probes, calls)
+	}
+	recoveredAt := now.Add(workerProbeRetryInitial + 2*workerProbeRetryInitial)
+	probes := tracker.probe(t.Context(), document, recoveredAt)
+	if len(probes) != 1 || !probes[0].Healthy || probes[0].Transition != "unhealthy_to_healthy" || calls != 3 {
+		t.Fatalf("recovery probes=%+v calls=%d", probes, calls)
+	}
+	tracker.acknowledgeTransitions()
+	if probes = tracker.probe(t.Context(), document, recoveredAt.Add(time.Second)); len(probes) != 1 || probes[0].Transition != "" || calls != 3 {
+		t.Fatalf("acknowledged probes=%+v calls=%d", probes, calls)
+	}
+}
+
 func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
 	secret := "child-only-runtime-secret"
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))

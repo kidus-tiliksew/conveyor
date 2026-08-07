@@ -4267,6 +4267,20 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil || job.TaskID != decision.TaskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, workspace(ctx))
 		}
+		if decision.ClaimSession != "" {
+			order, orderErr := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), decision.ReviewWorkOrderID))
+			if orderErr != nil || order.TaskID != decision.TaskID || order.Stage != core.StageReview || order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
+				return store.ErrWorkOrderClaimLost
+			}
+			if core.TaskState(before.State) == core.TaskQueued {
+				if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+					"from": core.TaskQueued, "to": core.TaskRunning, "command": core.TaskOrderClaim, "claim_authority_work_order_id": order.ID,
+				})}); err != nil {
+					return err
+				}
+				before.State = string(core.TaskRunning)
+			}
+		}
 		if !completed {
 			if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
 				return err
