@@ -113,7 +113,13 @@ func (o Observation) Identity() string {
 	return string(o.Kind) + ":" + o.Repository + ":" + o.OccurrenceID
 }
 
+// IntakeKey identifies the ordinary task created for an observation. Post-merge
+// check attempts remain distinct observations, but failures for one landed
+// commit share a task so retries do not create duplicate repair work.
 func (o Observation) IntakeKey() string {
+	if o.Kind == PostMergeFailure && o.CommitSHA != "" {
+		return "monitor:" + string(o.Kind) + ":" + o.Repository + ":commit:" + o.CommitSHA
+	}
 	return "monitor:" + o.Identity()
 }
 
@@ -175,11 +181,12 @@ type ProposalSuppression struct {
 }
 
 type TaskRequest struct {
-	Body       string
-	Repository string
-	Source     string
-	IntakeKey  string
-	Hints      *HintContext
+	Body               string
+	Repository         string
+	Source             string
+	IntakeKey          string
+	ReuseExistingByKey bool
+	Hints              *HintContext
 }
 
 type IntakeResult struct {
@@ -356,7 +363,8 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 	result, err := s.Intake(ctx, TaskRequest{
 		Body: body, Repository: observation.Repository,
 		Source: "monitor:" + string(observation.Kind), IntakeKey: observation.IntakeKey(),
-		Hints: observation.Hints,
+		ReuseExistingByKey: observation.Kind == PostMergeFailure && observation.CommitSHA != "",
+		Hints:              observation.Hints,
 	})
 	if err != nil {
 		return ObservationRecord{}, err
