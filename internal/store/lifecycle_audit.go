@@ -119,6 +119,8 @@ func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.Wor
 		return core.WorkOrderCmdRenew, true
 	case "work_order.released", "work_order.child_failed", "work_order.stalled":
 		return core.WorkOrderCmdRelease, true
+	case "work_order.preempted":
+		return core.WorkOrderCmdPreempt, true
 	case "work_order.expired":
 		return core.WorkOrderCmdExpire, true
 	case "work_order.timed_out":

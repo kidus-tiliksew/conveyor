@@ -657,6 +657,7 @@ const (
 	WorkOrderOutcomeReleased                        = "released"
 	WorkOrderOutcomeCancelled                       = "cancelled"
 	WorkOrderOutcomeExpired                         = "expired"
+	WorkOrderOutcomePreempted                       = "preempted"
 	WorkOrderReleaseReasonOperatorCheckpointReached = "operator checkpoint reached"
 	WorkOrderReleaseCauseSessionExit                = "session_exit"
 	WorkOrderReleaseCauseOperatorAction             = "operator_action"

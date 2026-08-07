@@ -260,3 +260,61 @@ func TestChangeTaskSetupRejectsClaimedAttemptWithoutMutation(t *testing.T) {
 		t.Fatalf("task mutated=%+v", current)
 	}
 }
+
+func TestPreemptThenChangeSetupReleaseHoldAndClaimUsesNewContract(t *testing.T) {
+	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{
+		{Model: "stable", Harness: "codex"},
+		{Model: "new-seat", Harness: "claude", Effort: "high"},
+	})
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target core.WorkOrder
+	for _, order := range orders {
+		if order.ReviewSeat == 2 {
+			target = order
+			break
+		}
+	}
+	if target.ID == "" {
+		t.Fatal("review seat 2 not found")
+	}
+	target.RetrySuppressed, target.LastAttemptOutcome = false, ""
+	if err = storetest.For(st).UpdateWorkOrder(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim(ctx, target.ID, core.WorkOrderClaim{
+		SessionID: "old-contract-session", ClientToken: "old-contract-token", ClaimantID: "worker-old", WorkerID: "worker-old",
+		Agent: "codex", Model: target.RequiredModel, Lease: time.Hour, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SetTaskHold(ctx, task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Preempt(ctx, target.ID, "replace the execution contract", "preempt-before-setup-change"); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "use the repaired setup", "setup-after-preempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Task.SetupName != next.Name {
+		t.Fatalf("setup change=%+v", changed)
+	}
+	if _, err = st.SetTaskHold(ctx, task.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := service.Claim(ctx, target.ID, core.WorkOrderClaim{
+		SessionID: "new-contract-session", ClientToken: "new-contract-token", ClaimantID: "worker-new", WorkerID: "worker-new",
+		Agent: "codex", Model: "new-seat", Lease: time.Hour, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successor.AttemptID == claimed.AttemptID || successor.RequiredModel != "new-seat" || successor.RequiredHarness != "claude" || successor.RequiredEffort != "high" {
+		t.Fatalf("successor did not use revised contract: old=%+v new=%+v", claimed, successor)
+	}
+}

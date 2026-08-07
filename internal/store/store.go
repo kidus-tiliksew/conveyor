@@ -42,6 +42,8 @@ var (
 	ErrPairingInvalid               = errors.New("worker pairing token is invalid, expired, or already used")
 	ErrWorkerUnauthorized           = errors.New("worker credential is invalid or revoked")
 	ErrWorkOrderCancelled           = errors.New("work order was cancelled")
+	ErrWorkOrderPreempted           = errors.New("work order was preempted by an operator")
+	ErrWorkOrderPreemptConflict     = errors.New("work order preempt conflict")
 	ErrTaskTerminal                 = errors.New("task is already terminal")
 	ErrLineageRebuildValidation     = errors.New("invalid lineage rebuild request")
 	ErrLineageRebuildConflict       = errors.New("lineage rebuild request conflicts with a prior request")
@@ -170,6 +172,7 @@ type Store interface {
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
 	ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error)
+	PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, request WorkOrderPreemptRequest) (WorkOrderPreemptResult, error)
 	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, command ...core.WorkOrderCommand) error
@@ -878,6 +881,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
+		preemptions:                 map[string]memoryWorkOrderPreemption{},
 		dependencyRemovals:          map[string]memoryDependencyRemoval{},
 		monitorObservations:         map[string]monitor.ObservationRecord{},
 		monitorDrift:                map[string]monitor.Drift{},
@@ -942,6 +946,7 @@ type memory struct {
 	reviewRetries               map[string]memoryReviewRoundRetry
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
+	preemptions                 map[string]memoryWorkOrderPreemption
 	dependencyRemovals          map[string]memoryDependencyRemoval
 	monitorObservations         map[string]monitor.ObservationRecord
 	monitorDrift                map[string]monitor.Drift
@@ -1107,6 +1112,13 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 			m.cancelledSessionMatchesLocked(order, sessionID) ||
 			(order.WorkerID == workerID && order.SessionID == sessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
+	}
+	if ok {
+		for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+			if WorkOrderPreemptEventMatches(m.events[order.TaskID][i], workOrderID, workerID, sessionID) {
+				return core.WorkOrder{}, ErrWorkOrderPreempted
+			}
+		}
 	}
 	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost

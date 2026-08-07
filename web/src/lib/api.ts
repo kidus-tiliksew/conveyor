@@ -642,6 +642,23 @@ export async function recoverWorkOrder(workOrderId: string, token: string, reque
   return response.json() as Promise<WorkOrder>
 }
 
+export async function preemptWorkOrder(workOrderId: string, token: string, reason: string, requestId: string) {
+  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/preempt`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(token), 'X-Idempotency-Key': requestId },
+    body: JSON.stringify({ reason, request_id: requestId }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{
+    request_id: string
+    work_order: WorkOrder
+    revoked_attempt_id: string
+    revoked_session_id: string
+    revoked_worker_id: string
+    grace_bound: string
+  }>
+}
+
 export async function retryReviewRound(taskId: string, token: string, requestId: string, reason: string) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/retry`), {
     method: 'POST',

@@ -1758,6 +1758,96 @@ func TestRunHarnessChildAuthorityLossDuringPreStartSetupAbortsLaunch(t *testing.
 	}
 }
 
+func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t *testing.T) {
+	previousInterval := workerClaimRenewInterval
+	workerClaimRenewInterval = 50 * time.Millisecond
+	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
+	pidFile := filepath.Join(t.TempDir(), "preempted-harness.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
+
+	previousCheckpointer := workerAttemptCheckpointer
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.WorkOrderID != "preempted-order" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() {
+			t.Fatalf("checkpoint metadata=%+v", checkpoint)
+		}
+		return &attemptCheckpointResult{Worktree: "/assigned/preempted", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
+	}
+	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
+
+	checkpoints := make(chan core.WorkOrderAttemptCheckpoint, 1)
+	releases := make(chan core.WorkOrderRelease, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-preempted", LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "renew":
+			if _, err := os.Stat(pidFile); err == nil {
+				w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
+				http.Error(w, "work order was preempted by an operator", http.StatusConflict)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-preempted", LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "attempt-checkpoint":
+			var checkpoint core.WorkOrderAttemptCheckpoint
+			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			checkpoints <- checkpoint
+			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
+		case "release":
+			var release core.WorkOrderRelease
+			_ = json.NewDecoder(r.Body).Decode(&release)
+			releases <- release
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "preempted-order", Stage: core.StageImplement},
+		Task:       core.Task{ID: "preempted-task", Branch: "conveyor/preempted-task", Repo: "conveyor"},
+		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
+		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 5*time.Second, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), errWorkerOrderPreempted.Error()) {
+		t.Fatalf("preempt error=%v", err)
+	}
+	select {
+	case checkpoint := <-checkpoints:
+		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.SessionID == "" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() || checkpoint.PushResult != "pushed" {
+			t.Fatalf("checkpoint=%+v", checkpoint)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("preempted attempt was not checkpointed")
+	}
+	select {
+	case release := <-releases:
+		t.Fatalf("preempted attempt performed stale release: %+v", release)
+	default:
+	}
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("preempted harness process %d was not reaped: %v", pid, err)
+	}
+}
+
 func TestRunHarnessChildReadinessFailureReleasesClaimWithoutStartingModel(t *testing.T) {
 	grok := filepath.Join(t.TempDir(), "grok")
 	if err := os.WriteFile(grok, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {

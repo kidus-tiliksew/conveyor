@@ -805,6 +805,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		workingDirectory, err = materializeSpecCheckout(setupCtx, directory, item)
 		if err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
+				if workerOrderPreempted(lost) {
+					return errWorkerOrderPreempted
+				}
 				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 				return lost
 			}
@@ -821,6 +824,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateGrokEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
+				if workerOrderPreempted(lost) {
+					return errWorkerOrderPreempted
+				}
 				_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 				return lost
 			}
@@ -847,6 +853,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		if ctx.Err() != nil {
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
+		}
+		if workerOrderPreempted(lost) {
+			return errWorkerOrderPreempted
 		}
 		_ = release(core.WorkOrderOutcomeReleased, "claim authority lost: "+lost.Error(), nil)
 		return lost
@@ -987,6 +996,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -1057,6 +1069,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -1113,6 +1128,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
+				if workerOrderPreempted(renewErr) {
+					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
+				}
 				if workerOrderCancelled(renewErr) {
 					return errWorkerOrderCancelled
 				}
@@ -1469,10 +1487,17 @@ func makeCheckoutWritable(root string) error {
 
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
 var errWorkerOrderCancelled = errors.New("work order was cancelled by an operator")
+var errWorkerOrderPreempted = errors.New("work order was preempted by an operator")
 
 func workerOrderCancelled(err error) bool {
 	var response *workerHTTPError
 	return errors.As(err, &response) && response.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(response.Message), "work order was cancelled")
+}
+
+func workerOrderPreempted(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict &&
+		(response.Code == "work_order_preempted" || strings.Contains(strings.ToLower(response.Message), "work order was preempted"))
 }
 
 func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {
