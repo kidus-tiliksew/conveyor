@@ -727,6 +727,7 @@ type HarnessProbe struct {
 	Healthy     bool      `json:"healthy"`
 	Message     string    `json:"message,omitempty"`
 	CheckedAt   time.Time `json:"checked_at"`
+	Transition  string    `json:"transition,omitempty"`
 }
 
 type WorkerPairing struct {
@@ -813,6 +814,7 @@ type ReviewDecision struct {
 	Reviewer               string
 	ReviewerModel          string
 	ReviewerSession        string
+	ClaimSession           string
 	SameModelAsImplementer string
 	ReviewRound            int
 	ReviewSeat             int

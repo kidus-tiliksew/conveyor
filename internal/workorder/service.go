@@ -1409,7 +1409,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if !found {
 		return nil, fmt.Errorf("review job unavailable")
 	}
-	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot); err != nil {
+	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot, true); err != nil {
 		return nil, err
 	}
 	order.State = core.WorkOrderCompleted

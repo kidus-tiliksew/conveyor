@@ -33,6 +33,34 @@ type capturingInputAgent struct {
 	calls int
 }
 
+func TestTransitionDoesNotDemoteTaskWithLiveClaim(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "live-claim-demotion", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "live-review", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, &config.Config{Workspace: "demo"}, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	if err := dispatcher.transition(ctx, task.ID, core.TaskStageBounce, core.StageImplement, ""); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskRunning || current.NextStage != core.StageReview {
+		t.Fatalf("task after demotion attempt=%+v err=%v", current, err)
+	}
+}
+
 func (agent *capturingInputAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
 	agent.calls++
 	agent.input = input
@@ -2587,7 +2615,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			if reviewPath == "external-mcp" {
 				err = d.ApplyExternalReviewPinned(ctx, task, job, review, job.ID, "review-session", "review", []core.ServedRequirementContext{}, emptyGovernanceAuthority())
 			} else {
-				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil, nil)
+				err = d.applyReview(ctx, &config.Config{Workspace: "test", MaxBounces: 2}, task, job, review, "codex", job.ID, "review-session", "review", nil, nil, false, nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -2991,7 +3019,7 @@ func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testin
 		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Summary: "task fallback", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
 		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{design.ID}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
 	}
-	if err = d.applyReview(ctx, cfg, task, job, review, "in-process", job.ID, "", job.ModelTier, nil, nil, nil); err != nil {
+	if err = d.applyReview(ctx, cfg, task, job, review, "in-process", job.ID, "", job.ModelTier, nil, nil, false, nil); err != nil {
 		t.Fatalf("task-scoped live governance validation failed: %v", err)
 	}
 }

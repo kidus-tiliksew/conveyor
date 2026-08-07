@@ -1510,6 +1510,20 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		completed = completed || event.Kind == "review.completed"
 	}
 	if !completed {
+		if decision.ClaimSession != "" {
+			order, exists := m.workOrders[decision.ReviewWorkOrderID]
+			if !exists || order.TaskID != decision.TaskID || order.Stage != core.StageReview || order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
+				return ErrWorkOrderClaimLost
+			}
+			if task.State == core.TaskQueued {
+				from := task.State
+				task.State = core.TaskRunning
+				m.tasks[task.ID] = task
+				m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+					"from": from, "to": task.State, "command": core.TaskOrderClaim, "claim_authority_work_order_id": order.ID,
+				})})
+			}
+		}
 		payload := reviewDecisionPayload(decision)
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: payload})
 	}
