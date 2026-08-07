@@ -1073,6 +1073,217 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 	return items, nil
 }
 
+const countTaskOperationsTasks = `-- name: CountTaskOperationsTasks :one
+SELECT count(*)::bigint
+FROM tasks t
+WHERE t.workspace_id = $1
+  AND ($2::text = '' OR t.state = $2)
+  AND ($3::text = '' OR t.repo_name = $3)
+`
+
+type CountTaskOperationsTasksParams struct {
+	WorkspaceID string `json:"workspace_id"`
+	TaskState   string `json:"task_state"`
+	Repository  string `json:"repository"`
+}
+
+func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTaskOperationsTasks, arg.WorkspaceID, arg.TaskState, arg.Repository)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const listTaskOperationsEvents = `-- name: ListTaskOperationsEvents :many
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1
+  AND e.task_id = ANY($2::text[])
+  AND e.kind IN (
+    'task.context_requirement_added', 'task.context_requirement_removed',
+    'task.context_design_added', 'task.context_design_removed',
+    'task.state_changed'
+  )
+ORDER BY e.task_id, e.at, e.id
+`
+
+type ListTaskOperationsEventsParams struct {
+	WorkspaceID string   `json:"workspace_id"`
+	TaskIds     []string `json:"task_ids"`
+}
+
+func (q *Queries) ListTaskOperationsEvents(ctx context.Context, arg ListTaskOperationsEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listTaskOperationsEvents, arg.WorkspaceID, arg.TaskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.JobID,
+			&i.Kind,
+			&i.ActorID,
+			&i.ActorRole,
+			&i.PayloadJson,
+			&i.At,
+			&i.WorkspaceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskOperationsLatestPlans = `-- name: ListTaskOperationsLatestPlans :many
+SELECT DISTINCT ON (s.task_id) s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model
+FROM task_specs s
+JOIN tasks t ON t.id = s.task_id
+WHERE t.workspace_id = $1
+  AND s.task_id = ANY($2::text[])
+ORDER BY s.task_id, s.version DESC
+`
+
+type ListTaskOperationsLatestPlansParams struct {
+	WorkspaceID string   `json:"workspace_id"`
+	TaskIds     []string `json:"task_ids"`
+}
+
+func (q *Queries) ListTaskOperationsLatestPlans(ctx context.Context, arg ListTaskOperationsLatestPlansParams) ([]TaskSpec, error) {
+	rows, err := q.db.Query(ctx, listTaskOperationsLatestPlans, arg.WorkspaceID, arg.TaskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TaskSpec{}
+	for rows.Next() {
+		var i TaskSpec
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.Version,
+			&i.Content,
+			&i.AcceptanceCount,
+			&i.Acceptance,
+			&i.Decomposition,
+			&i.Approved,
+			&i.CreatedAt,
+			&i.ApprovedAt,
+			&i.Agent,
+			&i.Model,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskOperationsTasks = `-- name: ListTaskOperationsTasks :many
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.feature_id, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id,
+       EXISTS (
+           SELECT 1 FROM task_dependencies edge
+           WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
+       ) AS has_dependencies,
+       EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ) AS has_children
+FROM tasks t
+WHERE t.workspace_id = $1
+  AND ($2::text = '' OR t.state = $2)
+  AND ($3::text = '' OR t.repo_name = $3)
+ORDER BY t.created_at, t.id
+LIMIT NULLIF($5::int, 0)
+OFFSET $4::int
+`
+
+type ListTaskOperationsTasksParams struct {
+	WorkspaceID string `json:"workspace_id"`
+	TaskState   string `json:"task_state"`
+	Repository  string `json:"repository"`
+	PageOffset  int32  `json:"page_offset"`
+	PageLimit   int32  `json:"page_limit"`
+}
+
+type ListTaskOperationsTasksRow struct {
+	Task            Task `json:"task"`
+	HasDependencies bool `json:"has_dependencies"`
+	HasChildren     bool `json:"has_children"`
+}
+
+func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
+	rows, err := q.db.Query(ctx, listTaskOperationsTasks,
+		arg.WorkspaceID,
+		arg.TaskState,
+		arg.Repository,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskOperationsTasksRow{}
+	for rows.Next() {
+		var i ListTaskOperationsTasksRow
+		if err := rows.Scan(
+			&i.Task.ID,
+			&i.Task.WorkspaceID,
+			&i.Task.Source,
+			&i.Task.Title,
+			&i.Task.Body,
+			&i.Task.Class,
+			&i.Task.EscalationLevel,
+			&i.Task.RepoName,
+			&i.Task.BaseBranch,
+			&i.Task.Branch,
+			&i.Task.State,
+			&i.Task.ParentTaskID,
+			&i.Task.CreatedAt,
+			&i.Task.UpdatedAt,
+			&i.Task.NextStage,
+			&i.Task.RecoveryStage,
+			&i.Task.FeatureID,
+			&i.Task.IntakeKey,
+			&i.Task.Mode,
+			&i.Task.SpecApproval,
+			&i.Task.MergeApproval,
+			&i.Task.PolicyVersion,
+			&i.Task.SetupName,
+			&i.Task.SetupContract,
+			&i.Task.Hold,
+			&i.Task.ReviewedHeadSha,
+			&i.Task.ApprovedHeadSha,
+			&i.Task.ApprovalStale,
+			&i.Task.RefreshBaselineSha,
+			&i.Task.RefreshHeadSha,
+			&i.Task.RefreshReviewScope,
+			&i.Task.OriginSpecVersion,
+			&i.Task.OriginSubID,
+			&i.HasDependencies,
+			&i.HasChildren,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasks = `-- name: ListTasks :many
 SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.feature_id, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id,
        EXISTS (

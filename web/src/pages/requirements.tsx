@@ -384,6 +384,7 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
     queryFn: () => fetchRequirement(seed.requirement.id),
     initialData: seed,
   })
+  const servingTasks = item.serving_tasks ?? []
   const { data: versions = [], error: versionsError } = useQuery({
     queryKey: ['requirement-versions', workspace, item.requirement.id],
     queryFn: () => fetchRequirementVersions(item.requirement.id),
@@ -460,6 +461,18 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
                 Open the delivery
               </Link>
             ),
+          },
+        ]
+      : []),
+    // A truncated lineage walk cannot prove the absence of newer delivery, so
+    // partial evaluation is voiced rather than reported as alignment. It is a
+    // machinery signal like any other and belongs here (spec §21.61 change 1).
+    ...(item.staleness?.partial_evaluation
+      ? [
+          {
+            id: 'staleness-partial',
+            title: 'Staleness could only be partially evaluated',
+            detail: <>The bounded delivery lineage was truncated, so newer delivery may not be reflected here.</>,
           },
         ]
       : []),
@@ -575,19 +588,25 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
       )}
 
       <div className="mt-10 space-y-4 border-t border-border pt-8">
+        {/*
+          Delivery is task-centric: `serves` sits on the task itself (spec
+          §21.58 change 6). Blueprints are retained below as the historical
+          lens over records planned before the noun was retired, so they stay
+          readable without being mislabelled as newly planned work.
+        */}
         <Card>
           <CardHeader>
             <CardTitle>Delivery</CardTitle>
-            <Badge variant="mono">{item.serving_blueprints.length}</Badge>
+            <Badge variant="mono">{servingTasks.length}</Badge>
           </CardHeader>
           <CardContent className="space-y-2">
-            {item.serving_blueprints.length === 0 && (
+            {servingTasks.length === 0 && (
               <p className="text-sm text-muted">No work has been planned against this requirement yet.</p>
             )}
-            {item.serving_blueprints.map(({ task, spec }) => (
+            {servingTasks.map((task) => (
               <Link
                 key={task.id}
-                to="/blueprints/$taskId"
+                to="/tasks/$taskId/full"
                 params={{ taskId: task.id }}
                 className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
               >
@@ -595,11 +614,6 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
                   <strong className="block truncate text-sm">{task.title}</strong>
                   <span className="mt-1 flex gap-1.5">
                     <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-                    {spec && (
-                      <Badge variant="mono">
-                        Plan v{spec.version} {spec.approved ? 'approved' : 'awaiting approval'}
-                      </Badge>
-                    )}
                   </span>
                 </span>
                 <ArrowRight className="size-4 text-faint" />
@@ -607,6 +621,38 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
             ))}
           </CardContent>
         </Card>
+
+        {item.serving_blueprints.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Delivery before blueprints retired</CardTitle>
+              <Badge variant="mono">{item.serving_blueprints.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {item.serving_blueprints.map(({ task, spec }) => (
+                <Link
+                  key={task.id}
+                  to="/blueprints/$taskId"
+                  params={{ taskId: task.id }}
+                  className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface"
+                >
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm">{task.title}</strong>
+                    <span className="mt-1 flex gap-1.5">
+                      <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
+                      {spec && (
+                        <Badge variant="mono">
+                          Plan v{spec.version} {spec.approved ? 'approved' : 'awaiting approval'}
+                        </Badge>
+                      )}
+                    </span>
+                  </span>
+                  <ArrowRight className="size-4 text-faint" />
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {item.planning_sessions.length > 0 && (
           <Card>

@@ -27,6 +27,7 @@ type requirementView struct {
 	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
 	PendingVersions      []core.RequirementVersion    `json:"pending_versions"`
 	ServingBlueprints    []blueprintLineage           `json:"serving_blueprints"`
+	ServingTasks         []core.Task                  `json:"serving_tasks"`
 	RequirementLinks     []core.RequirementServesLink `json:"requirement_links"`
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
@@ -39,6 +40,7 @@ type requirementView struct {
 
 type requirementStaleness struct {
 	DeliveryAfterIntent bool            `json:"delivery_after_intent"`
+	PartialEvaluation   bool            `json:"partial_evaluation"`
 	LatestDelivery      string          `json:"latest_delivery,omitempty"`
 	LatestDeliveryAt    *time.Time      `json:"latest_delivery_at,omitempty"`
 	ActiveDrift         []monitor.Drift `json:"active_drift"`
@@ -263,18 +265,16 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	// Staleness is an authority decision, not prompt rendering. Keep enough
 	// fixed delivery-chain depth even when operators tune agent context lower.
 	lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
-	lineageRoots := make([]core.LineageNode, 0, len(requirements))
-	for _, requirement := range requirements {
-		lineageRoots = append(lineageRoots, core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID})
-	}
-	sharedLineage, err := s.Store.ListLineageNeighborhood(r.Context(), lineageRoots, lineageBudget)
-	if err != nil {
-		return nil, err
-	}
 	artifactNodes := map[core.LineageNode]bool{}
 	graphs := make(map[string]core.LineageTraversal, len(requirements))
-	for _, root := range lineageRoots {
-		graph, graphErr := core.TraverseLineage(sharedLineage, []core.LineageNode{root}, lineageBudget)
+	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
+	for _, requirement := range requirements {
+		root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
+		lineage, listErr := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, lineageBudget)
+		if listErr != nil {
+			return nil, listErr
+		}
+		graph, graphErr := core.TraverseLineage(lineage, []core.LineageNode{root}, lineageBudget)
 		if graphErr != nil {
 			return nil, graphErr
 		}
@@ -282,6 +282,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			artifactNodes[node] = true
 		}
 		graphs[root.ID] = graph
+		lineageByRequirement[root.ID] = lineage
 	}
 	nodes := make([]core.LineageNode, 0, len(artifactNodes))
 	for node := range artifactNodes {
@@ -336,6 +337,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			Requirement:       requirement,
 			PendingVersions:   []core.RequirementVersion{},
 			ServingBlueprints: []blueprintLineage{},
+			ServingTasks:      []core.Task{},
 			RequirementLinks:  linksByRequirement[requirement.ID],
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
@@ -405,8 +407,21 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		graph := graphs[requirement.ID]
 		applyLineageLabels(&graph, lineageLabels)
 		view.LineageGraph = graph
-		reachableTasks := deliveryReachableTasks(sharedLineage, requirement.ID)
-		if !confirmedAt.IsZero() {
+		view.Staleness.PartialEvaluation = graph.Truncated
+		lineage := lineageByRequirement[requirement.ID]
+		reachableTasks := deliveryReachableTasks(lineage, requirement.ID)
+		servingTaskIDs := directServingTaskIDs(lineage, requirement.ID)
+		for taskID := range servingTaskIDs {
+			task, getErr := s.Store.GetTask(r.Context(), taskID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if !core.BlueprintAnchor(task) {
+				view.ServingTasks = append(view.ServingTasks, task)
+			}
+		}
+		sort.Slice(view.ServingTasks, func(i, j int) bool { return view.ServingTasks[i].ID < view.ServingTasks[j].ID })
+		if !confirmedAt.IsZero() && !view.Staleness.PartialEvaluation {
 			for taskID := range reachableTasks {
 				events, eventsErr := loadTaskEvents(taskID)
 				if eventsErr != nil {
@@ -424,7 +439,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
 			}
 		}
-		view.Staleness.DeliveryAfterIntent = view.Staleness.LatestDelivery != ""
+		view.Staleness.DeliveryAfterIntent = !view.Staleness.PartialEvaluation && view.Staleness.LatestDelivery != ""
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID
@@ -434,6 +449,22 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+func directServingTaskIDs(links []core.LineageLink, requirementID string) map[string]bool {
+	tasks := map[string]bool{}
+	for _, link := range links {
+		if link.Kind != "serves" {
+			continue
+		}
+		if link.SrcType == core.LineageRequirement && link.SrcID == requirementID && link.DstType == core.LineageTask {
+			tasks[link.DstID] = true
+		}
+		if link.DstType == core.LineageRequirement && link.DstID == requirementID && link.SrcType == core.LineageTask {
+			tasks[link.SrcID] = true
+		}
+	}
+	return tasks
 }
 
 // deliveryReachableTasks is the single staleness predicate. Staleness walks

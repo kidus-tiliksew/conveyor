@@ -247,6 +247,13 @@ export interface TaskOperationsItem {
   plan: TaskPlanStatus
 }
 
+export interface TaskOperationsPage {
+  items: TaskOperationsItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
 // The list-scoped stalled projection: the reason a row cannot move, without
 // the work order the detail surfaces render (spec §21.58 change 7).
 export interface TaskStalledSummary {
@@ -865,12 +872,14 @@ export interface RequirementView {
   current_version?: RequirementVersion
   pending_versions: RequirementVersion[]
   serving_blueprints: BlueprintLineage[]
+  serving_tasks?: Task[]
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
   lineage: TaskEvent[]
   lineage_graph?: LineageGraph
   staleness?: {
     delivery_after_intent: boolean
+    partial_evaluation: boolean
     latest_delivery?: string
     latest_delivery_at?: string
     active_drift: RepositoryDrift[]
