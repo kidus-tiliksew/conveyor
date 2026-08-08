@@ -809,8 +809,10 @@ test('requirements deep-link exact versions, render statements, diff pending int
   await expect(page).toHaveURL(/requirement=req-retries/)
   await page.getByText('Version history').click()
   const history = page.getByRole('region', { name: 'Requirement versions' })
-  await expect(history.getByRole('button', { name: /^v2/ })).toBeVisible()
-  await history.getByRole('button', { name: /^v2/ }).click()
+  const version2 = history.getByRole('button').filter({ hasText: /^v2/ })
+  await expect(version2).toBeVisible()
+  await version2.click()
+  await expect(version2).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByText('Written by an operator').first()).toBeVisible()
   await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
   await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
@@ -894,7 +896,7 @@ test('migrated seeds explain disabled confirmation and requirement switches open
     .click()
   await page.getByText('Version history').click()
   await expect(
-    page.getByRole('region', { name: 'Requirement versions' }).getByRole('button', { name: /^v2/ }),
+    page.getByRole('region', { name: 'Requirement versions' }).getByRole('button').filter({ hasText: /^v2/ }),
   ).toHaveAttribute('aria-pressed', 'true')
 })
 
@@ -1378,9 +1380,8 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
   await expect.poll(() => createRequests).toBe(1)
   const item = page.getByRole('navigation', { name: 'Document tree' }).getByRole('button', { name: /overview/ })
   await item.click()
-  await expect(
-    page.getByRole('region', { name: 'Requirement document' }).getByText('v1', { exact: true }),
-  ).toBeVisible()
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByText('v1', { exact: true })).toBeVisible()
   await expect(page.getByText('Prior line 0').first()).toBeVisible()
 
   await page
@@ -1393,9 +1394,7 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
       buffer: Buffer.from(currentContent),
     })
   await expect.poll(() => supersedeRequests).toBe(1)
-  await expect(
-    page.getByRole('region', { name: 'Requirement document' }).getByText('v2', { exact: true }),
-  ).toBeVisible()
+  await expect(canvas.getByText('v2', { exact: true })).toBeVisible()
   const comparison = page.locator('details').filter({ hasText: 'Compared with v1' })
   await comparison.getByText('Compared with v1').click()
   await expect(comparison.getByText('Diff too large; showing both versions without highlighting.')).toBeVisible()

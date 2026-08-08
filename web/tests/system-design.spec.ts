@@ -172,8 +172,11 @@ test('System Design renders a category tree, one attention surface, and authenti
   await expect(page.locator('textarea')).toHaveCount(0)
 
   // The diff and the version history stay, subordinated under the document.
-  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('From version 1')
-  await expect(page.getByRole('region', { name: 'Pending version diff' })).toContainText('To version 2')
+  const comparison = page.locator('details').filter({ hasText: 'Compare version 1 with the proposed version 2' })
+  await expect(comparison).toHaveAttribute('open', '')
+  const diff = comparison.getByRole('region', { name: 'Pending version diff' })
+  await expect(diff).toContainText('From version 1')
+  await expect(diff).toContainText('To version 2')
   await page.getByText('Version history').click()
   await page.getByText('Read version').first().click()
   await expect(
@@ -208,10 +211,9 @@ test('a System Design with nothing outstanding says so in one quiet line', async
   const quiet = page.getByRole('region', { name: 'Needs your attention' })
   await expect(quiet).toContainText('Nothing needs your attention on this document.')
   await expect(quiet.getByRole('button')).toHaveCount(0)
-  await page.getByText('Version history').click()
-  const history = page.locator('details').filter({ hasText: 'Version history' })
-  await expect(history.getByText('v1', { exact: true })).toBeVisible()
-  await expect(history.getByText('Confirmed', { exact: true })).toBeVisible()
+  const metadata = page.getByRole('heading', { name: 'Dispatch ownership' }).locator('..')
+  await expect(metadata.getByText('v1', { exact: true })).toBeVisible()
+  await expect(metadata.getByText('Confirmed', { exact: true })).toBeVisible()
 })
 
 test('the System Design surface never starts a planning session on its own', async ({ page }) => {
