@@ -972,6 +972,124 @@ func TestMemoryWorkerFailureBackoffSuppressionAndRecovery(t *testing.T) {
 	}
 }
 
+func TestMemoryTransientConnectivityBackoffResetAndObservability(t *testing.T) {
+	ctx := WithWorkspace(WithActor(t.Context(), Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "connectivity-retry-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "connectivity-retry-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+
+	workerID := "connectivity-worker"
+	release := func(attempt int, category string, progress bool) core.WorkOrder {
+		t.Helper()
+		sessionID := fmt.Sprintf("connectivity-session-%d", attempt)
+		_, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: sessionID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		if progress {
+			if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.progress_reported", Payload: core.JSONPayload(map[string]any{"message": "made progress"}), At: time.Now().UTC()}); err != nil {
+				t.Fatalf("progress %d: %v", attempt, err)
+			}
+		}
+		result, err := storetestFor(st).ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{
+			SessionID: sessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited",
+			FailureCategory: category, FailureDetail: fmt.Sprintf("failure-%d", attempt), AutomaticRetryLimit: 10,
+			InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("release %d: %v", attempt, err)
+		}
+		return result
+	}
+	advance := func(order core.WorkOrder) {
+		t.Helper()
+		order.NextRetryAt = time.Now().Add(-time.Millisecond)
+		if err := storetestFor(st).UpdateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for index, want := range []time.Duration{30 * time.Second, 2 * time.Minute, 8 * time.Minute, 8 * time.Minute} {
+		result := release(index+1, core.WorkOrderFailureTransientConnectivity, false)
+		if got := result.NextRetryAt.Sub(result.LastFailureAt); got != want {
+			t.Fatalf("transient attempt %d delay=%s want=%s", index+1, got, want)
+		}
+		wantCount := index + 1
+		if !strings.Contains(result.LastFailureDetail, fmt.Sprintf("consecutive_transient_failures=%d", wantCount)) || !strings.Contains(result.LastFailureDetail, "next_attempt_at=") {
+			t.Fatalf("transient attempt %d detail=%q", index+1, result.LastFailureDetail)
+		}
+		advance(result)
+	}
+
+	nonTransient := release(5, "contract_violation", false)
+	if got := nonTransient.NextRetryAt.Sub(nonTransient.LastFailureAt); got != 4*time.Second {
+		t.Fatalf("non-transient delay=%s want=%s", got, 4*time.Second)
+	}
+	advance(nonTransient)
+	afterCategoryBreak := release(6, core.WorkOrderFailureTransientConnectivity, false)
+	if got := afterCategoryBreak.NextRetryAt.Sub(afterCategoryBreak.LastFailureAt); got != 30*time.Second {
+		t.Fatalf("category-break delay=%s want=30s", got)
+	}
+	advance(afterCategoryBreak)
+	afterProgress := release(7, core.WorkOrderFailureTransientConnectivity, true)
+	if got := afterProgress.NextRetryAt.Sub(afterProgress.LastFailureAt); got != 30*time.Second {
+		t.Fatalf("progress-reset delay=%s want=30s", got)
+	}
+	advance(afterProgress)
+	var exhausted core.WorkOrder
+	for attempt := 8; attempt <= 11; attempt++ {
+		exhausted = release(attempt, core.WorkOrderFailureTransientConnectivity, false)
+		if attempt < 11 {
+			advance(exhausted)
+		}
+	}
+	if !exhausted.RetrySuppressed || exhausted.AutomaticRetryCount != 10 || !exhausted.NextRetryAt.IsZero() || !strings.Contains(exhausted.LastFailureDetail, "next_attempt_at=none") {
+		t.Fatalf("transient exhaustion=%+v", exhausted)
+	}
+	if _, err := storetestFor(st).RecoverWorkOrder(ctx, job.ID, "transient-recovery", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	var redispatchPayload map[string]any
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Kind {
+		case "work_order.redispatched":
+			if redispatchPayload == nil {
+				if err = json.Unmarshal(events[i].Payload, &redispatchPayload); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case "work_order.child_failed":
+			if payload != nil {
+				continue
+			}
+			if err = json.Unmarshal(events[i].Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if payload["failure_category"] != core.WorkOrderFailureTransientConnectivity || payload["consecutive_transient_failures"] != float64(5) || payload["next_retry_at"] == nil {
+		t.Fatalf("failure payload=%v", payload)
+	}
+	if redispatchPayload["failure_category"] != core.WorkOrderFailureTransientConnectivity || redispatchPayload["consecutive_transient_failures"] != float64(5) || redispatchPayload["next_retry_at"] == nil {
+		t.Fatalf("redispatch payload=%v", redispatchPayload)
+	}
+}
+
 func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()

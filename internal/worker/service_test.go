@@ -320,6 +320,24 @@ func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 	}
 }
 
+func TestTransientConnectivityFailureClassification(t *testing.T) {
+	for _, detail := range []string{
+		"failed to connect to websocket wss://example.invalid/responses",
+		"dial tcp: lookup example.invalid: nodename nor servname provided",
+		"temporary failure in name resolution",
+		"read: connection reset by peer",
+	} {
+		if !transientConnectivityFailure(detail) {
+			t.Fatalf("detail was not classified as transient connectivity: %q", detail)
+		}
+	}
+	for _, detail := range []string{"401 unauthorized", "validation failed", "provider usage limit reached"} {
+		if transientConnectivityFailure(detail) {
+			t.Fatalf("detail was incorrectly classified as transient connectivity: %q", detail)
+		}
+	}
+}
+
 func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")

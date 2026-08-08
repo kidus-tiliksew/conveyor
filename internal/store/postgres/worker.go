@@ -270,9 +270,21 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	lastFailureAt := current.LastFailureAt
 	lastFailureCategory := current.LastFailureCategory
 	suppressionReason := ""
+	progressed := false
+	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT kind='work_order.progress_reported' FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.claimed','work_order.progress_reported') ORDER BY id DESC LIMIT 1), false)`, workspace(ctx), current.TaskID, current.JobID).Scan(&progressed); err != nil {
+		return core.WorkOrder{}, err
+	}
+	previousTransientFailures := 0
+	if current.LastFailureCategory == core.WorkOrderFailureTransientConnectivity {
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY id DESC LIMIT 1`, workspace(ctx), current.TaskID, current.JobID).Scan(&previousTransientFailures); errors.Is(err, pgx.ErrNoRows) {
+			previousTransientFailures = 0
+		} else if err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
+	consecutiveTransientFailures := 0
 	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		detail := strings.TrimSpace(release.FailureDetail)
-		identical := detail != "" && current.LastAttemptOutcome == release.Outcome && detail == current.LastFailureDetail
 		lastFailureMessage = strings.TrimSpace(release.Reason)
 		lastFailureCategory = strings.TrimSpace(release.FailureCategory)
 		lastFailureDetail = detail
@@ -282,14 +294,24 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		if limit <= 0 {
 			limit = 3
 		}
+		transientConnectivity := lastFailureCategory == core.WorkOrderFailureTransientConnectivity
+		consecutiveTransientFailures = core.ConsecutiveTransientFailureCount(lastFailureCategory, previousTransientFailures, progressed, current.LastAttemptOutcome == release.Outcome)
+		identical := detail != "" && current.LastAttemptOutcome == release.Outcome && detail == current.LastFailureDetail && !transientConnectivity
 		if retryCount < limit {
 			retryCount++
 			if identical {
 				suppressionReason = core.IdenticalFailureSuppressionReason
 			} else {
-				nextRetry = now.Add(postgresRetryDelay(release, retryCount))
+				delay := postgresRetryDelay(release, retryCount)
+				if transientConnectivity {
+					delay = core.TransientConnectivityRetryDelay(consecutiveTransientFailures)
+				}
+				nextRetry = now.Add(delay)
 				suppressed = false
 			}
+		}
+		if transientConnectivity {
+			lastFailureDetail = core.TransientConnectivityFailureDetail(detail, consecutiveTransientFailures, nextRetry)
 		}
 	} else {
 		lastFailureCategory = ""
@@ -324,7 +346,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 			kind = "work_order.stalled"
 		}
 	}
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now}); err != nil {
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": consecutiveTransientFailures, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
