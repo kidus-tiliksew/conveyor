@@ -37,7 +37,7 @@ import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-
 import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
 import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
 import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
-import { WorkOrderPreemptCard, claimedWorkOrder } from './work-order-preempt-card'
+import { WorkOrderPreemptControl, claimedWorkOrder } from './work-order-preempt-card'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -75,6 +75,9 @@ export function Timeline({
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
+  // Preemption is an execution affordance: a blueprint anchor takes no work
+  // orders, so it never offers one (spec §21.49).
+  const preemptOrder = executionActions ? claimedWorkOrder(item) : undefined
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
@@ -108,11 +111,6 @@ export function Timeline({
             dot: 'bg-attention-dot',
             card: <WorkerStatusCard item={item} />,
           },
-          Boolean(claimedWorkOrder(item)) && {
-            key: 'work-order-preempt',
-            dot: 'bg-attention-dot',
-            card: <WorkOrderPreemptCard item={item} />,
-          },
           hasInterruptedReviewRecovery(item) && {
             key: 'interrupted-review',
             dot: 'bg-attention-dot',
@@ -139,7 +137,19 @@ export function Timeline({
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {executionAnnouncement}
         </p>
-        {currentExecution && <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} />}
+        {currentExecution ? (
+          <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} preemptOrder={preemptOrder} />
+        ) : (
+          // A claimed refresh-review round is deliberately left out of the
+          // current-state summary (see deriveCurrentExecutionState), so the
+          // stop affordance carries its own region there rather than
+          // disappearing while an attempt is running.
+          preemptOrder && (
+            <div className="mb-4">
+              <WorkOrderPreemptControl order={preemptOrder} />
+            </div>
+          )
+        )}
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
@@ -172,9 +182,11 @@ export function Timeline({
 function CurrentExecutionSummary({
   state,
   routeVariant,
+  preemptOrder,
 }: {
   state: CurrentExecutionState
   routeVariant: TaskRouteVariant
+  preemptOrder?: WorkOrder
 }) {
   const paused = state.status === 'paused'
   const relatedRoute = relatedTaskRoute(routeVariant)
@@ -241,6 +253,11 @@ function CurrentExecutionSummary({
           <dd className="text-muted">{state.nextAction}</dd>
         </div>
       </dl>
+      {preemptOrder && (
+        <div className="mt-3 border-t border-border/60 pt-2.5">
+          <WorkOrderPreemptControl order={preemptOrder} />
+        </div>
+      )}
     </section>
   )
 }
