@@ -2986,11 +2986,14 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
   const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-  await expect(timelineRows).toHaveCount(4)
+  await expect(timelineRows).toHaveCount(3)
   await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
-  await expect(timelineRows.nth(3)).toContainText('Stop this claimed attempt')
+  // The claimed attempt's stop affordance lives with the current-state
+  // summary, never as a row in the event list.
+  await expect(timelineRows.getByRole('button', { name: /Stop/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
 
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/tasks/diagnostics')
