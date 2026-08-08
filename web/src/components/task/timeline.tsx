@@ -36,6 +36,7 @@ import { RedispatchCard, canRedispatch } from './redispatch-card'
 import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-card'
 import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
 import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
+import { SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
 import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
 import { WorkOrderPreemptControl, claimedWorkOrder } from './work-order-preempt-card'
 
@@ -78,6 +79,11 @@ export function Timeline({
   // Preemption is an execution affordance: a blueprint anchor takes no work
   // orders, so it never offers one (spec §21.49).
   const preemptOrder = executionActions ? claimedWorkOrder(item) : undefined
+  // A System Design revision this task proposed is a decision waiting on the
+  // operator, so it belongs in the live tail beside the other ones (spec
+  // §21.62). A blueprint anchor runs no session and proposes nothing, which is
+  // why this rides `executionActions` like the rest of the tail.
+  const designProposals = useSystemDesignProposals(item.task.id)
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
@@ -127,6 +133,11 @@ export function Timeline({
             card: <WorkOrderRecoveryCard item={item} />,
           },
           canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
+          designProposals.length > 0 && {
+            key: 'design-proposal',
+            dot: 'bg-attention-dot',
+            card: <SystemDesignProposalCard taskId={item.task.id} />,
+          },
         ]
       : []
   ).filter((entry) => entry !== false)

@@ -3459,3 +3459,101 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toHaveCount(0)
   await expect(page.getByText('Dependency removed')).toBeVisible()
 })
+
+// The origin-task System Design proposal card (spec §21.62). The decision a
+// task raised is confirmable from that task, without leaving for the document.
+function designCollection(originTaskId: string, resolved: boolean) {
+  const confirmedVersion = {
+    document_id: 'design-lifecycle',
+    version: 1,
+    content: '# Lifecycle\n\nThe service owns lifecycle authority.',
+    governs: [{ repository: 'conveyor', paths: ['internal/workorder/**'] }],
+    origin: 'operator',
+    confirmed: true,
+    dismissed: false,
+    workspace: 'demo',
+    created_at: '2026-08-05T08:00:00Z',
+  }
+  const proposal = {
+    ...confirmedVersion,
+    version: 2,
+    content: '# Lifecycle\n\nThe service owns lifecycle authority and recovery direction.',
+    origin: 'implementation_deliberation',
+    origin_task_id: originTaskId,
+    confirmed: resolved,
+    dismissed: false,
+    created_at: '2026-08-05T09:00:00Z',
+  }
+  return [
+    {
+      document: {
+        id: 'design-lifecycle',
+        slug: 'lifecycle',
+        title: 'Work-order lifecycle',
+        category: 'Architecture',
+        current_version: resolved ? 2 : 1,
+        workspace: 'demo',
+        created_at: '2026-08-05T08:00:00Z',
+        updated_at: '2026-08-05T09:00:00Z',
+      },
+      current_version: resolved ? proposal : confirmedVersion,
+      // Confirmation is what empties this list; the card reads no other state.
+      pending_versions: resolved ? [] : [proposal],
+      versions: [confirmedVersion, proposal],
+      lineage: [],
+      drift: [],
+    },
+  ]
+}
+
+test("a task's own System Design proposal is confirmable from its detail and clears in place", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  let confirmed = false
+  let confirmHeaders: Record<string, string> = {}
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('design-proposal', confirmed) }),
+  )
+  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
+    confirmHeaders = route.request().headers()
+    confirmed = true
+    await route.fulfill({ json: {} })
+  })
+
+  await page.goto('/tasks/design-proposal/full')
+  const card = page.getByRole('region', { name: 'System Design proposals from this task' })
+  await expect(card).toContainText('System Design update proposed')
+  await expect(card).toContainText('Version 2 proposed by this task')
+  await expect(card.getByRole('link', { name: 'Work-order lifecycle' })).toHaveAttribute(
+    'href',
+    /system-design.*document=design-lifecycle/,
+  )
+
+  // A confirm that clears the card without a full-page reload keeps this marker.
+  await page.evaluate(() => ((window as unknown as { noReload?: boolean }).noReload = true))
+  await card.getByRole('button', { name: 'Confirm version 2' }).click()
+  await expect(card).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
+  expect(confirmHeaders.authorization).toBe('Bearer test-token')
+  expect(confirmHeaders['if-match']).toBe('"1"')
+
+  // The same composition carries it on the sheet route, not just the full page.
+  confirmed = false
+  await page.goto('/tasks/design-proposal')
+  await expect(
+    page.getByRole('region', { name: 'System Design proposals from this task' }).getByRole('button', {
+      name: 'Confirm version 2',
+    }),
+  ).toBeVisible()
+})
+
+test('task detail renders no proposal card for a pending version another task raised', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
+
+  await page.goto('/tasks/design-proposal/full')
+  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
