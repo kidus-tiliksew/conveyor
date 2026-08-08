@@ -1,19 +1,30 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, ExternalLink, GitCommitHorizontal } from 'lucide-react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { fetchMonitorStatus } from '../lib/api'
+import { Select } from '../components/ui/input'
+import { fetchMonitorStatus, fetchRequirements, resolveMonitorDrift } from '../lib/api'
+import type { MonitorDriftOutcome, RepositoryDrift, RequirementView } from '../lib/types'
 
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
+  const token = useOperatorToken()
   const { data: status, error } = useQuery({
     queryKey: ['monitor', workspace],
     queryFn: fetchMonitorStatus,
     enabled: Boolean(workspace),
     refetchInterval: 15_000,
   })
+  const { data: requirements = [], isPending: requirementsPending } = useQuery({
+    queryKey: ['requirements', workspace, 'monitor-resolution'],
+    queryFn: fetchRequirements,
+    enabled: Boolean(workspace && (status?.drift_count ?? 0) > 0),
+  })
+  const confirmedRequirements = requirements.filter((item) => item.current_version?.confirmed)
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl px-6 py-8">
@@ -85,6 +96,13 @@ export function MonitorPage() {
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
                   <p className="mt-1 text-xs text-muted">Detected {new Date(item.detected_at).toLocaleString()}</p>
+                  <DriftResolutionForm
+                    drift={item}
+                    requirements={confirmedRequirements}
+                    requirementsPending={requirementsPending}
+                    token={token}
+                    workspace={workspace}
+                  />
                 </div>
                 <div className="flex gap-2">
                   <Link
@@ -147,6 +165,87 @@ export function MonitorPage() {
         </Card>
       </div>
     </div>
+  )
+}
+
+const driftOutcomes: Array<{ value: MonitorDriftOutcome; label: string }> = [
+  { value: 'conflict_resolved', label: 'Conflict resolved' },
+  { value: 'requirements_amended', label: 'Requirements amended' },
+  { value: 'design_document_updated', label: 'Design document updated' },
+  { value: 'change_reverted', label: 'Change reverted' },
+]
+
+function DriftResolutionForm({
+  drift,
+  requirements,
+  requirementsPending,
+  token,
+  workspace,
+}: {
+  drift: RepositoryDrift
+  requirements: RequirementView[]
+  requirementsPending: boolean
+  token: string
+  workspace: string
+}) {
+  const queryClient = useQueryClient()
+  const [outcome, setOutcome] = useState<MonitorDriftOutcome>('conflict_resolved')
+  const [requirementID, setRequirementID] = useState(drift.requirement_id ?? '')
+  const mutation = useMutation({
+    mutationFn: () =>
+      resolveMonitorDrift(token, drift.id, outcome, outcome === 'requirements_amended' ? requirementID : undefined),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor', workspace] }),
+  })
+  const needsRequirement = outcome === 'requirements_amended'
+  return (
+    <form
+      className="mt-3 flex flex-wrap items-end gap-2"
+      aria-label={`Resolve drift ${drift.id}`}
+      onSubmit={(event) => {
+        event.preventDefault()
+        mutation.mutate()
+      }}
+    >
+      <label className="min-w-48 text-xs text-muted">
+        Resolution
+        <Select
+          aria-label={`Resolution outcome for ${drift.id}`}
+          value={outcome}
+          onChange={(event) => setOutcome(event.target.value as MonitorDriftOutcome)}
+        >
+          {driftOutcomes.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+      </label>
+      {needsRequirement && (
+        <label className="min-w-56 flex-1 text-xs text-muted">
+          Confirmed requirement
+          <Select
+            aria-label={`Confirmed requirement for ${drift.id}`}
+            value={requirementID}
+            onChange={(event) => setRequirementID(event.target.value)}
+            disabled={requirementsPending}
+          >
+            <option value="">{requirementsPending ? 'Loading confirmed requirements…' : 'Select a requirement'}</option>
+            {requirements.map((item) => (
+              <option key={item.requirement.id} value={item.requirement.id}>
+                {item.requirement.title}
+              </option>
+            ))}
+          </Select>
+          {!requirementsPending && requirements.length === 0 && (
+            <span className="mt-1 block text-faint">No confirmed requirements are available.</span>
+          )}
+        </label>
+      )}
+      <Button type="submit" size="sm" disabled={!token || mutation.isPending || (needsRequirement && !requirementID)}>
+        {mutation.isPending ? 'Resolving…' : 'Resolve'}
+      </Button>
+      {mutation.error && <p className="basis-full text-xs text-failure">{String(mutation.error)}</p>}
+    </form>
   )
 }
 

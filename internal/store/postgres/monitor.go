@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -250,9 +251,13 @@ FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
 	return drift, nil
 }
 
-func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.Drift, error) {
+func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
+	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
+	}
+	if outcome != "requirements_amended" && requirementID != "" {
+		return monitor.Drift{}, fmt.Errorf("%w: outcome %s", monitor.ErrRequirementIDNotAllowed, outcome)
 	}
 	var drift monitor.Drift
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -271,10 +276,19 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 		drift.WorkspaceID, drift.Kind = workspace(ctx), monitor.SignalKind(kind)
 		if resolvedAt != nil {
 			drift.ResolvedAt = *resolvedAt
+			if requirementID != "" && requirementID != drift.RequirementID {
+				return fmt.Errorf("%w: drift %s is linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+			}
 			return nil
 		}
 		now := time.Now().UTC()
 		if outcome == "requirements_amended" {
+			if requirementID != "" && drift.RequirementID != "" && requirementID != drift.RequirementID {
+				return fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+			}
+			if drift.RequirementID == "" {
+				drift.RequirementID = requirementID
+			}
 			if drift.RequirementID == "" {
 				return fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
 			}
@@ -284,17 +298,20 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 				WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), drift.RequirementID).
 				Scan(&currentVersion, &highWaterMark); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					return fmt.Errorf("drift %s references missing requirement %s", id, drift.RequirementID)
+					return fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, drift.RequirementID)
 				}
 				return err
 			}
 			if currentVersion == nil {
-				return fmt.Errorf("drift %s cannot amend requirement %s without a confirmed current version", id, drift.RequirementID)
+				return fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, drift.RequirementID)
 			}
 			current, err := scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
 				` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace(ctx), drift.RequirementID, *currentVersion), drift.RequirementID, int(*currentVersion))
 			if err != nil {
 				return err
+			}
+			if !current.Confirmed {
+				return fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, drift.RequirementID)
 			}
 			proposal, err := store.DriftAmendmentVersion(drift, current)
 			if err != nil {
@@ -359,13 +376,13 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome string) (monitor.D
 				return fmt.Errorf("drift %s requires a confirmed replacement version for system design %s", id, drift.SystemDesignID)
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE repository_drift SET resolved_at=$3,outcome=$4
-			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, outcome); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE repository_drift SET requirement_id=NULLIF($3,''),resolved_at=$4,outcome=$5
+			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, drift.RequirementID, now, outcome); err != nil {
 			return err
 		}
 		drift.Outcome, drift.ResolvedAt = outcome, now
 		if err := insertEvent(ctx, q, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
-			"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
+			"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt, "requirement_id": drift.RequirementID,
 		})}); err != nil {
 			return err
 		}

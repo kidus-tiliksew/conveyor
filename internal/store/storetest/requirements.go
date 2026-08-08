@@ -63,6 +63,93 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
+	t.Run("drift resolution can attach a confirmed requirement", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		monitorStore, ok := st.(monitor.Store)
+		if !ok {
+			t.Fatal("store does not implement monitor.Store")
+		}
+		confirmed, _, err := st.CreateRequirement(ctx,
+			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Confirmed runtime intent"},
+			chatVersion("Runtime intent.", requirementStatement("REQ-1", "External changes remain traceable.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, confirmed.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := createRequirement(t, ctx, st, "Pending runtime intent",
+			chatVersion("Pending intent.", requirementStatement("REQ-1", "Pending intent stays unconfirmed.")))
+		taskID := core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{
+			ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+			Branch: "conveyor/task-" + taskID, Title: "Reconcile drift", State: core.TaskQueued,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		drift := monitor.Drift{
+			ID: "drift-" + core.NewTaskID(), WorkspaceID: workspace, Repository: "conveyor",
+			Kind: monitor.ExternalPRMerge, SourceURL: "https://example.test/pull/355", CommitSHA: "abc355",
+			TaskID: taskID, DetectedAt: time.Now().UTC(),
+		}
+		if _, fresh, recordErr := monitorStore.RecordDrift(ctx, drift); recordErr != nil || !fresh {
+			t.Fatalf("record drift fresh=%t err=%v", fresh, recordErr)
+		}
+		for _, testCase := range []struct {
+			name, outcome, requirementID string
+			target                       error
+		}{
+			{"missing", "requirements_amended", "", monitor.ErrRequirementIDMissing},
+			{"unknown", "requirements_amended", "req-missing", monitor.ErrUnknownRequirementID},
+			{"pending", "requirements_amended", pending.ID, monitor.ErrRequirementIDInvalid},
+			{"irrelevant outcome", "conflict_resolved", confirmed.ID, monitor.ErrRequirementIDNotAllowed},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				if _, resolveErr := monitorStore.ResolveDrift(ctx, drift.ID, testCase.outcome, testCase.requirementID); !errors.Is(resolveErr, testCase.target) {
+					t.Fatalf("resolve error=%v, want %v", resolveErr, testCase.target)
+				}
+				status, statusErr := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
+				if statusErr != nil || status.DriftCount != 1 || status.Drift[0].RequirementID != "" {
+					t.Fatalf("failed resolution mutated drift: status=%+v err=%v", status, statusErr)
+				}
+				versions, versionsErr := st.ListRequirementVersions(ctx, confirmed.ID)
+				if versionsErr != nil || len(versions) != 1 {
+					t.Fatalf("failed resolution mutated versions=%+v err=%v", versions, versionsErr)
+				}
+			})
+		}
+		resolved, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
+		if err != nil || resolved.RequirementID != confirmed.ID || resolved.Outcome != "requirements_amended" || resolved.ResolvedAt.IsZero() {
+			t.Fatalf("resolved drift=%+v err=%v", resolved, err)
+		}
+		repeated, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
+		if err != nil || repeated.RequirementID != confirmed.ID || !sameInstant(repeated.ResolvedAt, resolved.ResolvedAt) {
+			t.Fatalf("repeated resolution=%+v err=%v", repeated, err)
+		}
+		versions, err := st.ListRequirementVersions(ctx, confirmed.ID)
+		if err != nil || len(versions) != 2 || versions[1].OriginDriftID != drift.ID || versions[1].Confirmed {
+			t.Fatalf("amendment versions=%+v err=%v", versions, err)
+		}
+		events, err := st.ListEvents(ctx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reconciled := 0
+		for _, event := range events {
+			if event.Kind != "monitor.drift_reconciled" {
+				continue
+			}
+			reconciled++
+			var payload map[string]any
+			if err = json.Unmarshal(event.Payload, &payload); err != nil || payload["requirement_id"] != confirmed.ID {
+				t.Fatalf("reconciliation payload=%s err=%v", event.Payload, err)
+			}
+		}
+		if reconciled != 1 {
+			t.Fatalf("reconciliation event count=%d, want 1", reconciled)
+		}
+	})
+
 	t.Run("planning uploads follow the produced entity on finalize", func(t *testing.T) {
 		for _, target := range []string{"requirement", "task"} {
 			t.Run(target, func(t *testing.T) {

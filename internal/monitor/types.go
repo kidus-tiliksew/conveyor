@@ -199,7 +199,7 @@ type Store interface {
 	Observe(context.Context, Observation) (ObservationRecord, bool, error)
 	LinkTask(context.Context, string, string, string) (ObservationRecord, error)
 	RecordDrift(context.Context, Drift) (Drift, bool, error)
-	ResolveDrift(context.Context, string, string) (Drift, error)
+	ResolveDrift(context.Context, string, string, string) (Drift, error)
 	MonitorStatus(context.Context, bool, time.Time) (Status, error)
 	RecordMonitorSuccess(context.Context, time.Time) error
 	RecordMonitorFailure(context.Context, string, string, time.Time) error
@@ -214,8 +214,10 @@ type Store interface {
 }
 
 var (
-	ErrUnknownRequirementID = errors.New("unknown monitor requirement_id")
-	ErrRequirementIDMissing = errors.New("monitor requirement_id is missing")
+	ErrUnknownRequirementID    = errors.New("unknown monitor requirement_id")
+	ErrRequirementIDMissing    = errors.New("monitor requirement_id is missing")
+	ErrRequirementIDInvalid    = errors.New("monitor requirement_id is invalid")
+	ErrRequirementIDNotAllowed = errors.New("monitor requirement_id is only allowed for requirements_amended")
 )
 
 type Service struct {
@@ -244,14 +246,14 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	return s.Store.MonitorStatus(ctx, enabled, now)
 }
 
-func (s *Service) Resolve(ctx context.Context, id, outcome string) (Drift, error) {
+func (s *Service) Resolve(ctx context.Context, id, outcome, requirementID string) (Drift, error) {
 	if s.Store == nil {
 		return Drift{}, errors.New("monitor storage is unavailable")
 	}
-	drift, err := s.Store.ResolveDrift(ctx, strings.TrimSpace(id), strings.TrimSpace(outcome))
+	drift, err := s.Store.ResolveDrift(ctx, strings.TrimSpace(id), strings.TrimSpace(outcome), strings.TrimSpace(requirementID))
 	if err == nil {
 		_ = s.Store.AuditMonitor(ctx, "monitor.drift_reconciled", map[string]any{
-			"drift_id": drift.ID, "task_id": drift.TaskID, "outcome": drift.Outcome,
+			"drift_id": drift.ID, "task_id": drift.TaskID, "outcome": drift.Outcome, "requirement_id": drift.RequirementID,
 		})
 	}
 	return drift, err
