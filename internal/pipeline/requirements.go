@@ -10,7 +10,7 @@ import (
 
 // RequirementStatement is the core statement type; requirement documents are
 // validated here so the block contract lives beside the §4.1 spec parser
-// without sharing its rules (spec §4.2 item 1).
+// without sharing its rules.
 type RequirementStatement = core.RequirementStatement
 
 // RequirementDocument is a validated requirement version body: free prose plus
@@ -22,7 +22,7 @@ type RequirementDocument struct {
 
 // ParseRequirementDocument validates a requirement document. Unlike ParseSpec
 // it mandates no prose sections: a requirement states intent in the operator's
-// own language (spec §4.2 item 1), so only the machine block is constrained.
+// own language, so only the machine block is constrained (design-document-corpus).
 //
 // The block is required and must appear exactly once. Its statements may be
 // empty only for a migration seed, which never travels through this parser —

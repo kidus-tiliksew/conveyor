@@ -22,7 +22,7 @@ type LifecycleAuditViolation struct {
 }
 
 // AuditLifecycleHistory folds task and work-order lifecycle events without
-// mutating projections or history (spec §21.37). Pre-command task events are
+// mutating projections or history (design-task-lifecycle). Pre-command task events are
 // accepted only when their recorded edge exists in the canonical table.
 func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 	ordered := append([]core.Event(nil), events...)
@@ -130,7 +130,7 @@ func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.Wor
 	case "work_order.redispatched":
 		// W14 is stale -> queued for never-claimed queue timeouts. Historical
 		// queued recovery events were state-preserving metadata resets, so they
-		// carry no lifecycle command (spec §3.3, §21.41).
+		// carry no lifecycle command (design-task-lifecycle).
 		if from == core.WorkOrderQueued {
 			return "", true
 		}

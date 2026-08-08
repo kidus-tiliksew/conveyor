@@ -18,7 +18,7 @@ type BlueprintDecompositionItem struct {
 	DependsOn []string `yaml:"depends_on" json:"depends_on"`
 }
 
-// BlueprintAnchor reports whether a task is a blueprint anchor (spec §21.49):
+// BlueprintAnchor reports whether a task is a blueprint anchor:
 // an intent artifact rather than work. Children are created only by blueprint
 // materialization, which requires an approved spec carrying a non-empty §4.1
 // decomposition, so the parent/child relation is that decomposition made
@@ -61,7 +61,7 @@ func OrderDecompositionByDependency(items []BlueprintDecompositionItem) []Bluepr
 }
 
 // ValidateBlueprintDecomposition enforces the canonical decomposition schema
-// and rejects duplicate, dangling, or cyclic dependency graphs (spec §4.1).
+// and rejects duplicate, dangling, or cyclic dependency graphs.
 func ValidateBlueprintDecomposition(items []BlueprintDecompositionItem) error {
 	byID := make(map[string]BlueprintDecompositionItem, len(items))
 	for index, item := range items {

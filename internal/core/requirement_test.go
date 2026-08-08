@@ -17,7 +17,7 @@ func TestRequirementStatementNumberRejectsUnstableIDForms(t *testing.T) {
 		{name: "multi digit", id: "REQ-42", want: 42, ok: true},
 		// REQ-0 and REQ-01 are rejected so a statement has exactly one spelling:
 		// the high-water-mark comparison is numeric, and two spellings of the
-		// same number would let a retired identity be reissued (spec §4.2 item 1).
+		// same number would let a retired identity be reissued.
 		{name: "zero", id: "REQ-0"},
 		{name: "leading zero", id: "REQ-01"},
 		{name: "lowercase prefix", id: "req-1"},
@@ -47,7 +47,7 @@ func TestValidateRequirementStatements(t *testing.T) {
 	}
 	// An empty block is deliberately valid: migration 046 seeds carry a retired
 	// feature node's text with no statements, and confirmation — not this
-	// shape check — is where a real block becomes mandatory (spec §21.46).
+	// shape check — is where a real block becomes mandatory.
 	if err := ValidateRequirementStatements(nil); err != nil {
 		t.Fatalf("empty statement block rejected: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestValidateRequirementOriginRequiresExactlyOneProvenance(t *testing.T) {
 		},
 		{
 			// A pending chat version an operator cannot trace back to a session
-			// is not auditable (spec §4.2 item 1).
+			// is not auditable.
 			name:    "chat without session",
 			version: RequirementVersion{Origin: RequirementOriginChat},
 			wantErr: true,

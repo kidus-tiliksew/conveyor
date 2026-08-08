@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Requirements are living intent documents (spec §4.2 item 1, §21.46 change 2).
+// Requirements are living intent documents (design-document-corpus).
 // A requirement is versioned and confirmed, never gated: every revision — chat
 // edit or drift amendment — creates a version an operator confirms, and the
 // approval gate stays on blueprints (§13.1). The corpus is flat; there is no
@@ -39,14 +39,14 @@ type AcceptanceCriterion struct {
 type RequirementOrigin string
 
 const (
-	// RequirementOriginChat is a planning-session revision (spec §9).
+	// RequirementOriginChat is a planning-session revision.
 	RequirementOriginChat RequirementOrigin = "chat"
 	// RequirementOriginDriftAmendment is the monitor's requirements_amended
-	// reconciliation outcome proposing a version (spec §4.2 item 2).
+	// reconciliation outcome proposing a version.
 	RequirementOriginDriftAmendment RequirementOrigin = "drift_amendment"
 	// RequirementOriginFeatureMigration seeds the corpus from a retired
 	// feature-tree node. Seeds carry the node's accumulated text verbatim and
-	// stay pending until an operator confirms them (spec §21.46 change 2).
+	// stay pending until an operator confirms them.
 	RequirementOriginFeatureMigration RequirementOrigin = "feature_migration"
 	// RequirementOriginOperator is a headless operator proposal. It carries no
 	// planning-session or drift provenance and never confirms itself.
@@ -80,7 +80,7 @@ type ServedRequirementContext struct {
 
 // RequirementCitationAssessment is the reviewer's structured assessment of
 // implementation citations. Findings are observational review evidence; they
-// never create lineage or alter confirmed requirement authority (spec §4.2 item 4).
+// never create lineage or alter confirmed requirement authority (design-document-corpus).
 type RequirementCitationAssessment struct {
 	Applicable  bool     `json:"applicable"`
 	CitedIDs    []string `json:"cited_ids"`
@@ -91,7 +91,7 @@ type RequirementCitationAssessment struct {
 
 // DoneCriteriaAssessment is the reviewer's reasoned coverage assessment of
 // the approved execution plan. Its lists classify observations rather than
-// parsed identifiers and must remain disjoint (spec §21.58 change 4).
+// parsed identifiers and must remain disjoint.
 type DoneCriteriaAssessment struct {
 	Applicable  bool     `json:"applicable"`
 	Summary     string   `json:"summary"`
@@ -145,7 +145,7 @@ type RequirementDerivation struct {
 }
 
 // RequirementServesState is the operator-owned lifecycle of a proposed
-// blueprint-to-requirement relationship (spec §4.2 item 1). Machinery may
+// blueprint-to-requirement relationship. Machinery may
 // propose a relation, but only a human confirmation makes it authoritative.
 type RequirementServesState string
 
@@ -192,7 +192,7 @@ type RequirementServesLink struct {
 	UpdatedAt        time.Time               `json:"updated_at"`
 }
 
-// PlanningSessionStatus is the durable session lifecycle (spec §9).
+// PlanningSessionStatus is the durable session lifecycle.
 type PlanningSessionStatus string
 
 const (
@@ -207,7 +207,7 @@ func (s PlanningSessionStatus) Valid() bool {
 }
 
 // PlanningSessionGoal is the artifact a session declares it is working toward
-// (spec §9, §21.57). It is set at creation and never updated: it steers the
+// . It is set at creation and never updated: it steers the
 // agent's finalize target so a requirement-drafting conversation does not skip
 // to a blueprint. `open` keeps the historical unconstrained behavior.
 type PlanningSessionGoal string
@@ -228,7 +228,6 @@ func (g PlanningSessionGoal) Valid() bool {
 // NormalizePlanningSessionGoal defaults an absent goal to `open` — which is
 // exactly how pre-goal rows read — and rejects anything outside the three. It
 // is the single spelling of that rule for every layer that accepts a goal
-// (spec §21.57 change 3).
 func NormalizePlanningSessionGoal(goal PlanningSessionGoal) (PlanningSessionGoal, error) {
 	if goal == "" {
 		return PlanningGoalOpen, nil
@@ -242,7 +241,7 @@ func NormalizePlanningSessionGoal(goal PlanningSessionGoal) (PlanningSessionGoal
 
 // ProvisionalTitle names a session before it has produced anything. It is a
 // per-goal label, so concurrently drafting sessions do share it until one
-// finalizes and adopts its artifact's title (spec §21.57 change 3).
+// finalizes and adopts its artifact's title.
 func (g PlanningSessionGoal) ProvisionalTitle() string {
 	switch g {
 	case PlanningGoalRequirement:
@@ -260,17 +259,17 @@ func (g PlanningSessionGoal) ProvisionalTitle() string {
 
 // PlanningSession is a durable planning chat. It produces at most one artifact
 // — a requirement version or a blueprint parent task — and grants no approval
-// authority over either (spec §9, §13.1).
+// authority over either.
 type PlanningSession struct {
 	ID     string                `json:"id"`
 	Title  string                `json:"title,omitempty"`
 	Status PlanningSessionStatus `json:"status"`
-	// Goal is immutable declared intent (spec §21.57). Pre-goal rows read back
+	// Goal is immutable declared intent. Pre-goal rows read back
 	// as `open`, which is exactly their historical behavior.
 	Goal PlanningSessionGoal `json:"goal"`
 	// Model, Effort, ExplorationOutputTokens, and PinnedRevisions are the
 	// immutable serving provenance selected when the session starts. Existing
-	// pre-provenance rows remain readable with zero values (spec §21.50-§21.52).
+	// pre-provenance rows remain readable with zero values.
 	Model                   string            `json:"model,omitempty"`
 	Effort                  string            `json:"effort,omitempty"`
 	ExplorationOutputTokens int               `json:"exploration_output_tokens,omitempty"`
@@ -359,7 +358,7 @@ func RequirementStatementIDs(statement RequirementStatement) []string {
 }
 
 // ValidateRequirementStatements enforces the shape of one statement block.
-// Prose is deliberately unconstrained (spec §4.2 item 1) — only the machine
+// Prose is deliberately unconstrained — only the machine
 // block is validated.
 func ValidateRequirementStatements(statements []RequirementStatement) error {
 	seen := map[string]bool{}

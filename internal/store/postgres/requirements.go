@@ -15,8 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
-// Requirement and planning-session persistence (spec §§4.2 item 1, 9, 16;
-// §21.46 change 2). Every mutation commits its projection update and audit
+// Requirement and planning-session persistence. Every mutation commits its projection update and audit
 // event in one transaction, exactly as lifecycle transitions do (§3.3).
 
 func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error) {
@@ -739,7 +738,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 		if existing.Status != core.PlanningSessionActive {
 			// The row lock serializes finalize against abandon. When abandon
 			// wins, its terminal state must not be overwritten by the
-			// in-flight planning run (spec §9).
+			// in-flight planning run.
 			return fmt.Errorf(
 				"planning session %s is %s and cannot be finalized", request.SessionID, existing.Status)
 		}

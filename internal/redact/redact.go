@@ -1,5 +1,5 @@
 // Package redact removes credentials from transcripts before they cross the
-// control-plane persistence boundary (spec §10, §21.4).
+// control-plane persistence boundary.
 package redact
 
 import (

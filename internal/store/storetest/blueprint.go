@@ -32,7 +32,7 @@ type blueprintItem struct {
 }
 
 // RunBlueprintConformance exercises the externally visible materialization
-// contract against any Store implementation (spec §4.1).
+// contract against any Store implementation.
 func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 	t.Helper()
 	t.Run("versions terminal history dependencies and parent close", func(t *testing.T) {
@@ -112,7 +112,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		// The governing blueprint is the newest *approved* version, which the
 		// children cannot report: reuse means every child here still records
 		// v1 except SUB-4. A later draft has materialized nothing, so it never
-		// displaces the version delivery answers to (spec §21.49).
+		// displaces the version delivery answers to.
 		assertApprovedSpecVersion(t, ctx, st, parent.ID, v3.Version)
 		draft := createBlueprintSpec(t, ctx, st, parent.ID, append(v3Items, blueprintItem{
 			ID: "SUB-5", Repo: "primary", Summary: "Proposed but unapproved",
