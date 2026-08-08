@@ -91,7 +91,7 @@ export function TasksPage() {
           </p>
         </header>
 
-        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} className="mt-6" />
+        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} compact className="mt-6" />
 
         {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
         {isLoading && workspace && (
