@@ -2293,12 +2293,26 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await page.goto('/tasks/operator-checkpoint/full')
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
+  await expect(page.getByText('Attached context: None')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
   const action = page.getByRole('button', { name: 'Recover work order' })
   await expect(action).toBeDisabled()
   await page.getByLabel('Operator direction').fill('Proceed with the accepted amendment.')
   await expect(action).toBeEnabled()
   await action.click()
   await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
+})
+
+test('checkpoint recovery summarizes attached requirement and design context', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    requirements: [{ id: 'req-1', title: 'Confirmed requirement', version: 2 }],
+    designs: [{ id: 'design-1', title: 'Confirmed design', version: 3 }],
+  }
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByText(/Attached context: 1 requirement\(s\), 1 design document\(s\)/)).toBeVisible()
 })
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {

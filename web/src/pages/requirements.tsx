@@ -30,6 +30,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmRequirementVersion,
+  fetchCheckpointContextCandidates,
   downloadArtifact,
   fetchRequirement,
   fetchRequirements,
@@ -39,6 +40,7 @@ import {
   uploadReferenceDocument,
   deleteReferenceDocument,
   uploadArtifact,
+  updateTaskContext,
 } from '../lib/api'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
@@ -49,7 +51,9 @@ import type {
   RequirementVersion,
   RequirementView,
   TaskEvent,
+  CheckpointContextCandidate,
 } from '../lib/types'
+import { Dialog } from '../components/ui/dialog'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Written in a planning conversation',
@@ -438,8 +442,10 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
     requestAnimationFrame(() => documentGlobalByID(id)?.scrollIntoView())
   }, [displayed])
   const currentVersion = item.current_version?.version ?? 0
+  const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
+    onSuccess: ({ version }) => setAttachmentOffer(version.version),
     onSettled: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
@@ -551,6 +557,14 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
 
   return (
     <div className="min-w-0">
+      {attachmentOffer != null && (
+        <CheckpointContextOffer
+          requirementId={item.requirement.id}
+          requirementTitle={item.requirement.title}
+          token={token}
+          onClose={() => setAttachmentOffer(null)}
+        />
+      )}
       <header className="mb-6 flex items-start gap-4">
         <div className="min-w-0 flex-1">
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
@@ -809,6 +823,106 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
         </div>
       </div>
     </div>
+  )
+}
+
+function CheckpointContextOffer({
+  requirementId,
+  requirementTitle,
+  token,
+  onClose,
+}: {
+  requirementId: string
+  requirementTitle: string
+  token: string
+  onClose: () => void
+}) {
+  const { workspace } = useWorkspaceSelection()
+  const client = useQueryClient()
+  const [selected, setSelected] = useState<string[]>([])
+  const candidates = useQuery({
+    queryKey: ['checkpoint-context-candidates', workspace, requirementId],
+    queryFn: () => fetchCheckpointContextCandidates(requirementId),
+  })
+  useEffect(() => {
+    if (candidates.data)
+      setSelected((current) => current.filter((id) => candidates.data.some((task) => task.id === id)))
+  }, [candidates.data])
+  const attach = useMutation({
+    mutationFn: async () => {
+      const results = await Promise.allSettled(
+        selected.map((taskId) =>
+          updateTaskContext(token, taskId, { add: { requirement_ids: [requirementId] }, remove: {} }),
+        ),
+      )
+      const failed = results.filter((result) => result.status === 'rejected')
+      if (failed.length > 0) throw new Error(`Could not attach context to ${failed.length} selected task(s).`)
+    },
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['checkpoint-context-candidates', workspace, requirementId] }),
+        client.invalidateQueries({ queryKey: ['activity'] }),
+        ...selected.map((taskId) => client.invalidateQueries({ queryKey: ['task', taskId] })),
+      ])
+    },
+    onSuccess: onClose,
+  })
+  if (candidates.isLoading) return null
+  if (candidates.error)
+    return (
+      <Dialog label="Attach confirmed requirement" onClose={onClose}>
+        <div className="space-y-4 px-5 py-4">
+          <h2 className="font-semibold">Requirement confirmed</h2>
+          <p className="text-sm text-failure">Could not check checkpoint-paused tasks for missing context.</p>
+          <div className="flex justify-end">
+            <Button variant="secondary" onClick={onClose}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  if (!candidates.data?.length) return null
+  return (
+    <Dialog label="Attach confirmed requirement" onClose={() => !attach.isPending && onClose()}>
+      <div className="border-b border-border px-5 py-4">
+        <h2 className="font-semibold">Attach this requirement to paused tasks?</h2>
+        <p className="mt-1 text-sm leading-6 text-muted">
+          {requirementTitle} was confirmed. These tasks are paused at an operator checkpoint and cannot see it yet.
+        </p>
+      </div>
+      <div className="space-y-4 px-5 py-4">
+        <div className="space-y-2">
+          {candidates.data.map((task: CheckpointContextCandidate) => (
+            <label key={task.id} className="flex cursor-pointer items-start gap-2 rounded border border-border p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 accent-primary"
+                checked={selected.includes(task.id)}
+                onChange={(event) =>
+                  setSelected((current) =>
+                    event.target.checked ? [...current, task.id] : current.filter((id) => id !== task.id),
+                  )
+                }
+              />
+              <span className="min-w-0 text-sm">
+                <span className="block font-medium">{task.title}</span>
+                <span className="font-mono text-xs text-faint">{task.id}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {attach.error && <p className="text-sm text-failure">{String(attach.error)}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={attach.isPending}>
+            Dismiss
+          </Button>
+          <Button onClick={() => attach.mutate()} disabled={selected.length === 0 || attach.isPending}>
+            {attach.isPending ? 'Attaching…' : `Attach to ${selected.length} task${selected.length === 1 ? '' : 's'}`}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }
 

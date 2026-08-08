@@ -74,6 +74,7 @@ type Store interface {
 	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
+	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
@@ -2288,6 +2289,39 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
 	return orders, nil
+}
+
+func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	result := []CheckpointContextCandidate{}
+	for _, task := range m.tasks {
+		if task.Workspace != workspace || core.TaskTerminal(task.State) {
+			continue
+		}
+		attached, _ := ActiveTaskContextReferences(m.events[task.ID])
+		if attached[requirementID] {
+			continue
+		}
+		var latest *core.WorkOrder
+		for _, order := range m.workOrders {
+			if order.TaskID != task.ID || latest != nil &&
+				(latest.CreatedAt.After(order.CreatedAt) || latest.CreatedAt.Equal(order.CreatedAt) && latest.ID >= order.ID) {
+				continue
+			}
+			copy := order
+			latest = &copy
+		}
+		if latest == nil || latest.State != core.WorkOrderQueued ||
+			latest.LastAttemptOutcome != core.WorkOrderOutcomeReleased ||
+			latest.LastFailureMessage != core.WorkOrderReleaseReasonOperatorCheckpointReached {
+			continue
+		}
+		result = append(result, CheckpointContextCandidate{ID: task.ID, Title: task.Title, State: task.State})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
 }
 
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
