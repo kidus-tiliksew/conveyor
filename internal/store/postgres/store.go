@@ -4129,6 +4129,16 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	prior := order.LastAttemptOutcome
 	priorAttemptID := order.LastAttemptID
 	priorState := order.State
+	priorFailureCategory := order.LastFailureCategory
+	priorNextRetryAt := order.NextRetryAt
+	priorTransientFailures := 0
+	if priorFailureCategory == core.WorkOrderFailureTransientConnectivity {
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY id DESC LIMIT 1`, workspace(ctx), order.TaskID, order.JobID).Scan(&priorTransientFailures); errors.Is(err, pgx.ErrNoRows) {
+			priorTransientFailures = 0
+		} else if err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	lifecycleCommand := core.WorkOrderCmdRecover
 	eventKind := "work_order.recovered"
 	if priorState == core.WorkOrderQueued {
@@ -4178,7 +4188,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace(ctx), "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
