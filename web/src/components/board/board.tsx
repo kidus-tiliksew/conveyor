@@ -66,7 +66,13 @@ export function Board() {
           over work that already exists. */}
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
+        <TaskFilters
+          value={filter}
+          onChange={setFilter}
+          fallback={boardDefaultTaskFilter}
+          compact
+          className="ml-auto"
+        />
       </header>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">

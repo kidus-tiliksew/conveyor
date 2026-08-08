@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { CalendarDays, Check, ChevronDown, Search, X } from 'lucide-react'
+import { CalendarDays, Check, ChevronDown, Search, SlidersHorizontal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
@@ -299,16 +299,222 @@ function DateFilter({ value, set }: { value: TaskFilterState; set: (patch: Parti
   )
 }
 
+type FilterCategory = 'state' | 'repository' | 'updated' | 'requirement' | 'design'
+
+function CompactFilterMenu({
+  value,
+  set,
+  states,
+  repos,
+  requirements,
+  designs,
+  fallback,
+  changed,
+  activeCount,
+  rangeError,
+}: {
+  value: TaskFilterState
+  set: (patch: Partial<TaskFilterState>) => void
+  states: string[]
+  repos: string[]
+  requirements: Option[]
+  designs: Option[]
+  fallback: TaskFilterState
+  changed: boolean
+  activeCount: number
+  rangeError: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [category, setCategory] = useState<FilterCategory>('state')
+  const [search, setSearch] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+  const categories: { id: FilterCategory; label: string; active: boolean }[] = [
+    { id: 'state', label: 'Status', active: Boolean(value.state) },
+    { id: 'repository', label: 'Repository', active: Boolean(value.repository) },
+    { id: 'updated', label: 'Updated', active: value.updated !== fallback.updated },
+    { id: 'requirement', label: 'Requirement', active: Boolean(value.requirement) },
+    { id: 'design', label: 'System design', active: Boolean(value.design) },
+  ]
+  const selected =
+    category === 'state'
+      ? value.state
+      : category === 'repository'
+        ? value.repository
+        : category === 'requirement'
+          ? value.requirement
+          : category === 'design'
+            ? value.design
+            : value.updated
+  const options =
+    category === 'state'
+      ? states.map((id) => ({ id, title: taskStateLabels[id] ?? id }))
+      : category === 'repository'
+        ? repos.map((id) => ({ id, title: id }))
+        : category === 'requirement'
+          ? requirements
+          : category === 'design'
+            ? designs
+            : (Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((id) => ({
+                id,
+                title: updatedWindowLabels[id],
+              }))
+  const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
+  const updateSelection = (id: string) => {
+    if (category === 'state') set({ state: id })
+    else if (category === 'repository') set({ repository: id })
+    else if (category === 'requirement') set({ requirement: id })
+    else if (category === 'design') set({ design: id })
+    else set({ updated: id as UpdatedWindow })
+  }
+  return (
+    <div className="relative" ref={ref}>
+      <Button
+        type="button"
+        variant={changed ? 'secondary' : 'outline'}
+        size="sm"
+        aria-label="Open filters"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <SlidersHorizontal />
+        Filters
+        {activeCount > 0 && (
+          <span className="rounded-full bg-primary/15 px-1.5 text-[10px] text-primary">{activeCount}</span>
+        )}
+      </Button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-2 flex w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+          <div className="w-44 shrink-0 border-r border-border p-2">
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search filters"
+                aria-label="Search filter categories"
+                className="h-8 pl-7 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-0.5" role="tablist" aria-label="Filter categories">
+              {categories.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={category === item.id}
+                  className="flex items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised"
+                  onClick={() => {
+                    setCategory(item.id)
+                    setSearch('')
+                  }}
+                >
+                  {item.label}
+                  {item.active && <span className="size-1.5 rounded-full bg-primary" />}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="min-w-0 flex-1 p-2">
+            <div className="flex items-center justify-between px-2 pb-2">
+              <p className="text-xs font-medium">{categories.find((item) => item.id === category)?.label}</p>
+              <button
+                type="button"
+                className="text-[11px] text-muted hover:text-foreground"
+                onClick={() => {
+                  updateSelection('')
+                  setSearch('')
+                }}
+              >
+                Clear
+              </button>
+            </div>
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={`Search ${categories.find((item) => item.id === category)?.label.toLowerCase()}`}
+                aria-label={`Search ${categories.find((item) => item.id === category)?.label}`}
+                className="h-8 pl-7 text-xs"
+              />
+            </div>
+            <div
+              className="max-h-60 overflow-y-auto"
+              role="listbox"
+              aria-label={categories.find((item) => item.id === category)?.label}
+            >
+              <button
+                type="button"
+                role="option"
+                aria-selected={!selected}
+                className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised"
+                onClick={() => updateSelection('')}
+              >
+                Any {categories.find((item) => item.id === category)?.label.toLowerCase()}
+                {!selected && <Check className="size-4 text-primary" />}
+              </button>
+              {filtered.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="option"
+                  aria-selected={selected === option.id}
+                  className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised"
+                  onClick={() => updateSelection(option.id)}
+                >
+                  <span className="truncate">{option.title}</span>
+                  {selected === option.id && <Check className="size-4 shrink-0 text-primary" />}
+                </button>
+              ))}
+              {!filtered.length && <p className="px-2.5 py-3 text-xs text-muted">No matches found.</p>}
+            </div>
+            {category === 'updated' && value.updated === 'custom' && (
+              <div className="mt-2 grid grid-cols-2 gap-2 border-t border-border px-2 pt-3">
+                <Input
+                  aria-label="Updated from"
+                  type="date"
+                  value={value.updatedFrom}
+                  onChange={(event) => set({ updatedFrom: event.target.value })}
+                />
+                <Input
+                  aria-label="Updated to"
+                  type="date"
+                  value={value.updatedTo}
+                  onChange={(event) => set({ updatedTo: event.target.value })}
+                />
+              </div>
+            )}
+            {rangeError && (
+              <p className="mt-2 px-2 text-xs text-failure" role="alert">
+                {rangeError}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function TaskFilters({
   value,
   onChange,
   fallback = emptyTaskFilter,
   className = '',
+  compact = false,
 }: {
   value: TaskFilterState
   onChange: (next: TaskFilterState) => void
   fallback?: TaskFilterState
   className?: string
+  compact?: boolean
 }) {
   const { workspace } = useWorkspaceSelection()
   const { data: workspaceInfo } = useWorkspace()
@@ -340,6 +546,41 @@ export function TaskFilters({
     value.requirement,
     value.design,
   ].filter(Boolean).length
+  if (compact) {
+    return (
+      <div className={`flex items-center gap-2 ${className}`}>
+        <label className="relative w-56" htmlFor={`task-filter-search-${workspace}`}>
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
+          <Input
+            id={`task-filter-search-${workspace}`}
+            aria-label="Search tasks"
+            type="search"
+            value={value.query}
+            onChange={(event) => set({ query: event.target.value })}
+            placeholder="Search tasks"
+            className="h-9 pl-8 text-xs"
+          />
+        </label>
+        <CompactFilterMenu
+          value={value}
+          set={set}
+          states={states}
+          repos={repos}
+          requirements={requirementOptions}
+          designs={designOptions}
+          fallback={fallback}
+          changed={changed}
+          activeCount={activeCount}
+          rangeError={rangeError}
+        />
+        {changed && (
+          <Button variant="ghost" size="sm" aria-label="Reset filters" onClick={() => onChange(fallback)}>
+            <X /> Reset
+          </Button>
+        )}
+      </div>
+    )
+  }
   return (
     <div className={className}>
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background/60 p-2">
