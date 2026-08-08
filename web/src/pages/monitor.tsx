@@ -197,6 +197,8 @@ function DriftResolutionForm({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor', workspace] }),
   })
   const needsRequirement = outcome === 'requirements_amended'
+  const outcomeSelectID = `resolution-outcome-${drift.id}`
+  const requirementSelectID = `resolution-requirement-${drift.id}`
   return (
     <form
       className="mt-3 flex flex-wrap items-end gap-2"
@@ -206,9 +208,10 @@ function DriftResolutionForm({
         mutation.mutate()
       }}
     >
-      <label className="min-w-48 text-xs text-muted">
+      <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
         Resolution
         <Select
+          id={outcomeSelectID}
           aria-label={`Resolution outcome for ${drift.id}`}
           value={outcome}
           onChange={(event) => setOutcome(event.target.value as MonitorDriftOutcome)}
@@ -221,9 +224,10 @@ function DriftResolutionForm({
         </Select>
       </label>
       {needsRequirement && (
-        <label className="min-w-56 flex-1 text-xs text-muted">
+        <label className="min-w-56 flex-1 text-xs text-muted" htmlFor={requirementSelectID}>
           Confirmed requirement
           <Select
+            id={requirementSelectID}
             aria-label={`Confirmed requirement for ${drift.id}`}
             value={requirementID}
             onChange={(event) => setRequirementID(event.target.value)}
