@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   CalendarDays,
-  ChevronDown,
   ChevronsUpDown,
   CircleAlert,
   FileCode2,
@@ -34,6 +33,17 @@ import type { TaskOperationsItem, TaskPlanStatus } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 
 const PAGE_SIZE = 25
+
+// Every row is its own grid, so the header and the rows line up only because
+// they read one track definition — hence the shared constant rather than a
+// string repeated in two places. State, Stage and Updated are fixed: their
+// content is badges and a short phrase that cannot be reflowed, so each is held
+// at the width its widest value needs and nothing spills into the neighbour.
+// Name and Context take what is left, and they are the two that shorten
+// gracefully. The total is narrower than the table area a 1280px window leaves
+// beside the navigation, so the horizontal scroll below is the fallback for
+// smaller windows rather than the ordinary way this list is read.
+const TASK_COLUMNS = 'grid grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150px,1.4fr)_168px]'
 
 // The list-first Tasks view (spec §21.58, REQ-1 and REQ-2). It reads one
 // paginated projection and renders only what that projection carries: state,
@@ -134,17 +144,25 @@ export function TasksPage() {
 
         {items && items.length > 0 && (
           <section className="mt-7 overflow-hidden rounded-xl border border-border bg-card" aria-label="Tasks table">
-            <div className="min-w-[900px] overflow-x-auto">
-              <div className="grid grid-cols-[minmax(300px,2fr)_minmax(150px,1fr)_minmax(170px,1fr)_minmax(190px,1.2fr)_minmax(170px,1fr)] border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
-                <SortHeader label="Name" />
-                <SortHeader label="State" />
-                <SortHeader label="Stage" />
-                <SortHeader label="Context" />
-                <SortHeader label="Updated" />
-              </div>
-              <div>
+            {/* The scroll lives on the outer element and the width floor on the
+                content inside it: a floor on the scroller itself pushes the
+                table past its own viewport and clips the last column instead of
+                offering the scroll it was meant to. */}
+            <div className="overflow-x-auto">
+              <div className="min-w-[860px]">
+                <div
+                  className={`${TASK_COLUMNS} border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted`}
+                >
+                  <SortHeader label="Name" />
+                  <SortHeader label="State" />
+                  <SortHeader label="Stage" />
+                  <SortHeader label="Context" />
+                  <SortHeader label="Updated" />
+                </div>
+                {/* One static group over the whole page: it labels and counts
+                    what is below it, and carries no expand affordance, because
+                    there is nothing here to collapse it into. */}
                 <div className="flex items-center gap-2 border-b border-border bg-raised/40 px-4 py-3 text-sm font-medium">
-                  <ChevronDown className="size-4 text-muted" aria-hidden="true" />
                   <ListChecks className="size-4 text-primary" aria-hidden="true" />
                   <span>All tasks</span>
                   <span className="text-xs text-muted">{page?.total ?? items.length}</span>
@@ -230,7 +248,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
   return (
     <li
-      className={`grid grid-cols-[minmax(300px,2fr)_minmax(150px,1fr)_minmax(170px,1fr)_minmax(190px,1.2fr)_minmax(170px,1fr)] items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
+      className={`${TASK_COLUMNS} items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
     >
       <div className="flex min-w-0 items-center gap-3 pr-4">
         <span className="text-faint" aria-hidden="true">
@@ -241,6 +259,9 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
             to="/tasks"
             search={{ task: task.id }}
             aria-current={selected ? 'true' : undefined}
+            // A title long enough to be cut by this column stays readable in
+            // place rather than only inside the panel it opens.
+            title={task.title || task.id}
             className="block truncate text-sm font-medium text-foreground hover:underline"
           >
             {task.title || task.id}
@@ -273,11 +294,13 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
         <AttachedContext item={item} />
         {item.child_rollup && <Children item={item} />}
       </div>
+      {/* The timestamp is one short phrase, so it holds its line rather than
+          breaking mid-phrase in the narrowest supported column. */}
       <div
-        className="flex items-center gap-2 text-xs text-muted"
+        className="flex items-center gap-2 whitespace-nowrap text-xs text-muted"
         title={new Date(item.last_event_at || task.created_at).toLocaleString()}
       >
-        <CalendarDays className="size-4 text-faint" aria-hidden="true" />
+        <CalendarDays className="size-4 shrink-0 text-faint" aria-hidden="true" />
         <span>Updated {relativeTime(item.last_event_at || task.created_at)}</span>
       </div>
       {item.stalled?.needed && (
@@ -290,18 +313,16 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
   )
 }
 
-// Plan status is shown for every task, including the ones with no plan record,
-// so a blank cell never stands in for an unknown state (AC-1.4).
+// Plan status is shown where it is actionable (AC-1.4). An approved plan is the
+// state every task passes through on its way to being implemented, so naming it
+// beside the stage that already implies it says nothing an operator can act on;
+// the outcomes that still want a decision, and the absence of a plan, keep their
+// badge. The historical-gate marker is orthogonal to the outcome and stays.
 function PlanBadge({ plan }: { plan: TaskPlanStatus }) {
   const version = plan.version ? ` v${plan.version}` : ''
   switch (plan.state) {
     case 'approved':
-      return (
-        <>
-          <Badge variant="positive">Plan approved{version}</Badge>
-          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
-        </>
-      )
+      return plan.legacy ? <Badge variant="mono">Historical spec gate</Badge> : null
     case 'pending_gate':
       return (
         <>
@@ -337,6 +358,11 @@ function Children({ item }: { item: TaskOperationsItem }) {
 // Attached context links through the existing Requirements and System Design
 // routes. A task with nothing attached says so rather than implying authority
 // it does not carry (AC-1.3).
+//
+// Document titles are written for the document, not for this column, so a badge
+// that refused to shrink would run under the Updated cell. Each attachment takes
+// a line of its own with its kind icon beside it — a badge that shrank away from
+// a wrapped icon would leave the icon stranded on a line by itself.
 function AttachedContext({ item }: { item: TaskOperationsItem }) {
   const requirements = item.task.context?.requirements ?? []
   const designs = item.task.context?.designs ?? []
@@ -344,24 +370,34 @@ function AttachedContext({ item }: { item: TaskOperationsItem }) {
     return <p className="text-muted">No attached context</p>
   }
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-muted">
-      {requirements.length > 0 && <Workflow className="size-3 shrink-0" aria-hidden="true" />}
+    <div className="flex min-w-0 flex-col gap-1 text-muted">
       {requirements.map((requirement) => (
-        <Link key={requirement.id} to="/requirements" search={{ requirement: requirement.id }}>
-          <Badge variant="accent">
-            {requirement.title} v{requirement.version}
-          </Badge>
-        </Link>
+        <div key={requirement.id} className="flex min-w-0 items-center gap-1.5">
+          <Workflow className="size-3 shrink-0" aria-hidden="true" />
+          <Link to="/requirements" search={{ requirement: requirement.id }} className="min-w-0">
+            <ContextBadge label={`${requirement.title} v${requirement.version}`} />
+          </Link>
+        </div>
       ))}
-      {designs.length > 0 && <FileCode2 className="size-3 shrink-0" aria-hidden="true" />}
       {designs.map((design) => (
-        <Link key={design.id} to="/system-design" search={{ document: design.id }}>
-          <Badge variant="accent">
-            {design.title} v{design.version}
-          </Badge>
-        </Link>
+        <div key={design.id} className="flex min-w-0 items-center gap-1.5">
+          <FileCode2 className="size-3 shrink-0" aria-hidden="true" />
+          <Link to="/system-design" search={{ document: design.id }} className="min-w-0">
+            <ContextBadge label={`${design.title} v${design.version}`} />
+          </Link>
+        </div>
       ))}
     </div>
+  )
+}
+
+// Held to the width its column leaves and ellipsised there, with the whole title
+// in the tooltip and the link it opens still carrying the rest.
+function ContextBadge({ label }: { label: string }) {
+  return (
+    <Badge variant="accent" className="max-w-full" title={label}>
+      <span className="truncate">{label}</span>
+    </Badge>
   )
 }
 

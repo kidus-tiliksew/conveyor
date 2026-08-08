@@ -172,12 +172,14 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	settings := cfg.ExecutionSettings.ControlPlane.Planning
 	model := strings.TrimSpace(input.ModelOverride)
 	if model == "" {
-		model = settings.Model
+		model = config.ResolveControlPlaneModel("planning", settings.Model)
 	}
+	planningOverride, overrideActive := config.ControlPlaneModelOverride("planning")
 	allowed := false
 	for _, candidate := range cfg.PlanningModels {
 		allowed = allowed || candidate == model
 	}
+	allowed = allowed || overrideActive && model == planningOverride
 	if !allowed {
 		return core.PlanningSession{}, fmt.Errorf(
 			"planning model %q is not allowlisted; configured models: %s",

@@ -23,7 +23,10 @@ const operations = [
       ],
       context: {
         requirements: [{ id: 'req-tasks-view', title: 'Task-centric operations view', version: 1 }],
-        designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 16 }],
+        // A real document title is written for the document, not for a table
+        // column, so the fixture carries one long enough to press on the Context
+        // cell the way the corpus does.
+        designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle and MCP surface', version: 16 }],
       },
     },
     latest_stage: 'spec',
@@ -114,7 +117,10 @@ const requirementCorpus = [
   { requirement: { id: 'req-draft', title: 'Unconfirmed idea' }, current_version: null },
 ]
 const designCorpus = [
-  { document: { id: 'design-lifecycle', title: 'Work-order lifecycle' }, current_version: { version: 16 } },
+  {
+    document: { id: 'design-lifecycle', title: 'Work-order lifecycle and MCP surface' },
+    current_version: { version: 16 },
+  },
 ]
 
 // The mock stands in for the server-side predicate, so a surface that filtered
@@ -128,11 +134,10 @@ function matchOperations(url: string) {
   const requirements = params.getAll('serves_requirement')
   const designs = params.getAll('governing_design')
   const needle = (params.get('q') ?? '').toLowerCase()
-  const from = params.get('updated_from') ?? ''
-  const to = params.get('updated_to') ?? ''
+  const from = params.get('created_from') ?? ''
+  const to = params.get('created_to') ?? ''
   return operations
     .filter((item) => {
-      const updated = item.last_event_at || item.task.created_at
       if (states.length && !states.includes(item.task.state)) return false
       if (repositories.length && !repositories.includes(item.task.repo)) return false
       if (
@@ -143,9 +148,9 @@ function matchOperations(url: string) {
       ) {
         return false
       }
-      if (from && updated < from) return false
+      if (from && item.task.created_at < from) return false
       // The upper bound is exclusive, exactly as the store evaluates it.
-      if (to && updated >= to) return false
+      if (to && item.task.created_at >= to) return false
       if (
         requirements.length &&
         !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
@@ -303,7 +308,7 @@ test('tasks view links attached requirements and design documents', async ({ pag
     'href',
     '/requirements?requirement=req-tasks-view',
   )
-  await expect(blocked.getByRole('link', { name: 'Work-order lifecycle v16' })).toHaveAttribute(
+  await expect(blocked.getByRole('link', { name: 'Work-order lifecycle and MCP surface v16' })).toHaveAttribute(
     'href',
     '/system-design?document=design-lifecycle',
   )
@@ -317,15 +322,70 @@ test('tasks view links attached requirements and design documents', async ({ pag
   await expect(rows(page).filter({ hasText: 'Shipped web change' }).getByText('No attached context')).toBeVisible()
 })
 
-// AC-1.4: every plan-era row reports one of the four durable plan outcomes.
-test('tasks view reports plan status for every task', async ({ page }) => {
+// AC-1.4: every plan-era row reports the plan outcome an operator can act on.
+// An approved plan is the state a task passes through on the way to being
+// implemented, so the Stage column reports the stage and stays quiet about it;
+// the outcomes still waiting on someone, and the absence of a plan, keep saying
+// so.
+test('tasks view reports actionable plan status and stays quiet about approved plans', async ({ page }) => {
   await openTasks(page)
   await expect(
     rows(page).filter({ hasText: 'Wire the Tasks view' }).getByText('Plan awaiting approval v2'),
   ).toBeVisible()
-  await expect(rows(page).filter({ hasText: 'Historical anchor' }).getByText('Plan approved v1')).toBeVisible()
   await expect(rows(page).filter({ hasText: 'Bounced web plan' }).getByText('Plan changes requested v1')).toBeVisible()
   await expect(rows(page).filter({ hasText: 'Shipped web change' }).getByText('No plan')).toBeVisible()
+
+  const approved = rows(page).filter({ hasText: 'Historical anchor' })
+  await expect(approved.getByText('Plan approved', { exact: false })).toHaveCount(0)
+  // The stage itself is what the column is for, and it stays.
+  await expect(approved.getByText('Implement', { exact: true })).toBeVisible()
+})
+
+// The one group over the list is static, so it carries no expand affordance to
+// suggest a collapse that does not exist.
+test('the all-tasks group header offers no expand control', async ({ page }) => {
+  await openTasks(page)
+  const group = page.getByText('All tasks', { exact: true }).locator('xpath=..')
+  await expect(group).toBeVisible()
+  await expect(group.getByRole('button')).toHaveCount(0)
+  // Only the group's own list icon remains beside the label.
+  await expect(group.locator('svg')).toHaveCount(1)
+})
+
+// The table is read at the width the navigation leaves beside it, so its
+// columns have to hold there: header and rows stay on the same tracks, an
+// overlong attached-context title stops at its own column instead of running
+// under the timestamp, and nothing is cut off past the table's edge.
+test('tasks table stays aligned and readable at a constrained width', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openTasks(page)
+  const table = page.getByRole('region', { name: 'Tasks table' })
+  const row = rows(page).filter({ hasText: 'Wire the Tasks view' })
+
+  // Header and row read one track definition: the Stage column starts at the
+  // same offset in both.
+  const headerStage = await table.getByText('Stage', { exact: true }).boundingBox()
+  const rowStage = await row.getByText('Implement', { exact: true }).boundingBox()
+  expect(Math.abs((headerStage?.x ?? 0) - (rowStage?.x ?? 0))).toBeLessThan(1)
+
+  // Attached context is held inside its own column rather than overlapping the
+  // timestamp beside it, and keeps the full title reachable.
+  const context = row.getByRole('link', { name: 'Work-order lifecycle and MCP surface v16' })
+  const contextBox = await context.boundingBox()
+  const updatedBox = await row.getByText('Updated', { exact: false }).boundingBox()
+  expect((contextBox?.x ?? 0) + (contextBox?.width ?? 0)).toBeLessThanOrEqual(updatedBox?.x ?? 0)
+  await expect(context.getByTitle('Work-order lifecycle and MCP surface v16')).toBeVisible()
+
+  // The Stage column holds its own widest badge rather than spilling the plan
+  // outcome across the Context cell beside it.
+  const planBadge = await row.getByText('Plan awaiting approval v2').boundingBox()
+  expect((planBadge?.x ?? 0) + (planBadge?.width ?? 0)).toBeLessThanOrEqual(contextBox?.x ?? 0)
+
+  // The timestamp is fully inside the table rather than clipped past its edge.
+  const tableBox = await table.boundingBox()
+  expect((updatedBox?.x ?? 0) + (updatedBox?.width ?? 0)).toBeLessThanOrEqual(
+    (tableBox?.x ?? 0) + (tableBox?.width ?? 0),
+  )
 })
 
 // The list-first surface keeps the empty and error behavior the other document
@@ -521,9 +581,9 @@ test('tasks view pages through server-side results', async ({ page }) => {
   expect(requests.some((url) => url.includes('offset=2'))).toBe(true)
 })
 
-// AC-2.4: the shared filter family — updated-at range, served requirement, and
+// AC-2.4: the shared filter family — created-at range, served requirement, and
 // governing design — is applied by the server on the Tasks surface.
-test('tasks view filters by updated-at range, served requirement, and governing design', async ({ page }) => {
+test('tasks view filters by created-at range, served requirement, and governing design', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('button', { name: 'Open filters' }).click()
   await page.getByRole('tab', { name: 'Requirement' }).click()
@@ -541,16 +601,16 @@ test('tasks view filters by updated-at range, served requirement, and governing 
   await expect(rows(page)).toHaveCount(1)
 
   await page.getByRole('option', { name: 'Any system design' }).click()
-  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
   await page.getByRole('option', { name: 'Custom range' }).click()
   // Fixed dates rather than a preset, so the assertion does not depend on when
   // the suite runs. The end date is inclusive of its own day.
-  await page.getByLabel('Updated from').fill('2026-08-05')
-  await page.getByLabel('Updated to').fill('2026-08-05')
+  await page.getByLabel('Created from').fill('2026-08-04')
+  await page.getByLabel('Created to').fill('2026-08-04')
   await expect(rows(page)).toHaveCount(1)
   await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
 
-  await page.getByLabel('Updated to').fill('2026-08-04')
+  await page.getByLabel('Created to').fill('2026-08-03')
   await expect(page.getByText('Choose an end date on or after the start date.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Reset filters' }).click()

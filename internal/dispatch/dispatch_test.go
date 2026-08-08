@@ -30,6 +30,7 @@ import (
 
 type capturingInputAgent struct {
 	input inprocess.Input
+	model string
 	calls int
 }
 
@@ -61,10 +62,59 @@ func TestTransitionDoesNotDemoteTaskWithLiveClaim(t *testing.T) {
 	}
 }
 
-func (agent *capturingInputAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
+func (agent *capturingInputAgent) Run(_ context.Context, model string, input inprocess.Input) (inprocess.Result, error) {
 	agent.calls++
+	agent.model = model
 	agent.input = input
 	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
+}
+
+func TestInProcessDispatchUsesAndAttributesEnvironmentModelOverride(t *testing.T) {
+	t.Setenv(config.ControlPlaneModelEnv, "general")
+	t.Setenv(config.TriageModelEnv, "triage-override")
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "model-override", Workspace: "demo", Repo: "api", Title: "Resolve model", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Model: "stored", Timeout: time.Minute},
+	}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if agent.model != "triage-override" {
+		t.Fatalf("agent model=%q", agent.model)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || jobs[0].ModelTier != "triage-override" {
+		t.Fatalf("jobs=%+v err=%v", jobs, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "pipeline.dispatched" {
+			continue
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err = json.Unmarshal(event.Payload, &payload); err != nil || payload.Model != "triage-override" {
+			t.Fatalf("dispatch payload=%s err=%v", event.Payload, err)
+		}
+		return
+	}
+	t.Fatal("pipeline.dispatched event not found")
 }
 
 type failingTranscriptAgent struct {
