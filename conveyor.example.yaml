@@ -1,6 +1,10 @@
 # Conveyor deployment/bootstrap config (spec §21.4). CONVEYOR_API_KEY is the
 # deployment-owned key used only by in-process triage. MCP clients use
 # their own agent subscriptions or API credentials on their own machines.
+# CONVEYOR_CONTROL_PLANE_MODEL overrides stored models for every in-process
+# invocation. CONVEYOR_TRIAGE_MODEL and CONVEYOR_PLANNING_MODEL override the
+# general value for their stages. Empty values are ignored; these deployment
+# overrides never change the stored workspace configuration or MCP work orders.
 workspace: demo
 pack_dir: pack
 # Review rounds before human check-in (spec §21.17): the window resets after

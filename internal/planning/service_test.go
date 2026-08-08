@@ -934,6 +934,39 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	}
 }
 
+func TestCreateSessionAcceptsActivePlanningEnvironmentOverrideOnly(t *testing.T) {
+	t.Setenv(config.ControlPlaneModelEnv, "general")
+	t.Setenv(config.PlanningModelEnv, "deployment-planner")
+	tmp := t.TempDir()
+	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
+	cfg := &config.Config{
+		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Repos:          []config.Repo{{Name: "primary", URL: "file://" + primary, Base: "main"}},
+		PlanningModels: []string{"stored-planner"},
+		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
+			Planning: config.PlanningSettings{Model: "stored-planner", Effort: "high", TimeoutText: "10m"},
+		}},
+	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	service := &Service{
+		Store: store.NewMemory(), Git: gitx.NewManager(cfg.CacheDir, ""),
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	session, err := service.CreateSession(ctx, CreateSessionInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Model != "deployment-planner" {
+		t.Fatalf("session model=%q", session.Model)
+	}
+	if cfg.ExecutionSettings.ControlPlane.Planning.Model != "stored-planner" || !slices.Equal(cfg.PlanningModels, []string{"stored-planner"}) {
+		t.Fatalf("stored config mutated: model=%q allowlist=%v", cfg.ExecutionSettings.ControlPlane.Planning.Model, cfg.PlanningModels)
+	}
+	if _, err = service.CreateSession(ctx, CreateSessionInput{ModelOverride: "unlisted"}); err == nil || !strings.Contains(err.Error(), "not allowlisted") {
+		t.Fatalf("unrelated unlisted model error=%v", err)
+	}
+}
+
 func TestTruncateExplorationPreservesAnnotatedSearchEnds(t *testing.T) {
 	output := "HEAD\n" + strings.Repeat("middle-only\n", 200) + "TAIL\n"
 	truncated := truncateExploration(output, 40, "refine search", true)

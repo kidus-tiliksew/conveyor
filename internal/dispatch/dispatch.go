@@ -484,6 +484,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	if task.NextStage == core.StageReview && len(cfg.Review.Seats) == 1 {
 		route.Model = cfg.Review.Seats[0].Model
 	}
+	route.Model = config.ResolveControlPlaneModel(string(task.NextStage), route.Model)
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
 	ctx = context.WithValue(ctx, lineageContextMemoKey{}, map[string]lineageContextMemoEntry{})
@@ -501,6 +502,11 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		return err
 	}
 	if err := d.Store.CreateJob(ctx, job); err != nil {
+		return err
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.dispatched", Payload: core.JSONPayload(map[string]any{
+		"stage": task.NextStage, "execution": "in_process", "model": route.Model,
+	})}); err != nil {
 		return err
 	}
 	stageCtx, cancel := context.WithTimeout(ctx, route.Timeout)
