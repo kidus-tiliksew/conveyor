@@ -30,25 +30,29 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
     return (
       <section
         aria-label="Needs your attention"
-        className="flex items-center gap-2 rounded-lg border border-border bg-surface/40 px-3.5 py-2.5 text-xs text-muted"
+        className="flex items-center gap-2.5 rounded-lg border border-border bg-surface/40 px-4 py-3 text-xs text-muted"
       >
-        <Check className="size-3.5 shrink-0 text-positive" />
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive">
+          <Check className="size-3" />
+        </span>
         Nothing needs your attention on this document.
       </section>
     )
   return (
-    <section aria-label="Needs your attention" className="overflow-hidden rounded-lg border border-attention/25">
-      <h2 className="flex items-center gap-1.5 bg-attention-soft/40 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+    <section aria-label="Needs your attention" className="overflow-hidden rounded-lg border border-attention/25 bg-card">
+      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
         <TriangleAlert className="size-3" />
         Needs your attention
-        <span className="ml-0.5 font-mono text-attention/70">{items.length}</span>
+        <span className="ml-0.5 rounded-full bg-attention/15 px-1.5 py-0.5 font-mono text-[10px] leading-none text-attention">
+          {items.length}
+        </span>
       </h2>
-      <ul className="divide-y divide-border bg-attention-soft/10">
+      <ul className="divide-y divide-border">
         {items.map((item) => (
           <li
             key={item.id}
             id={item.anchor}
-            className="flex scroll-mt-6 flex-wrap items-start justify-between gap-3 px-4 py-3"
+            className="flex scroll-mt-6 flex-wrap items-start justify-between gap-3 border-l-2 border-transparent px-4 py-3.5 transition-colors hover:border-l-attention hover:bg-attention-soft/20"
           >
             <div className="min-w-0 flex-1 basis-64">
               <p className="text-sm font-medium leading-5">{item.title}</p>
