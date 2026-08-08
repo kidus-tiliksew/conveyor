@@ -1,31 +1,31 @@
 import type {
   ActivityItem,
   ActivitySummary,
+  Artifact,
   BlueprintView,
+  HarnessTemplate,
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  MonitorStatus,
+  PlanningBundle,
+  PlanningMessage,
+  PlanningMessagePart,
+  PlanningSession,
+  PlanningSessionGoal,
+  RequirementDerivation,
+  RequirementVersion,
+  RequirementView,
   Task,
   TaskOperationsItem,
   TaskOperationsPage,
   VersionedWorkspaceConfig,
+  WorkerList,
+  WorkOrder,
   WorkspaceConfigDocument,
   WorkspaceConfigReceipt,
   WorkspaceInfo,
   WorkspaceRecord,
-  RequirementView,
-  RequirementVersion,
-  PlanningSession,
-  PlanningBundle,
-  PlanningSessionGoal,
-  RequirementDerivation,
-  PlanningMessage,
-  PlanningMessagePart,
-  Artifact,
-  WorkerList,
-  WorkOrder,
-  HarnessTemplate,
-  MonitorStatus,
 } from './types'
 
 function workspaceURL(path: string) {
@@ -49,15 +49,17 @@ async function getJSON<T>(url: string): Promise<T> {
 // The Board sends the shared Tasks/Board filter family to the same store
 // predicate the Tasks list uses (AC-2.4), so the two surfaces cannot narrow
 // differently and neither one narrows a fully-loaded workspace in the browser.
-export function fetchActivity(filter?: Record<string, string | undefined>) {
+export function fetchActivity(filter?: Record<string, string | string[] | undefined>) {
   const query = filterQuery(filter)
   return getJSON<ActivitySummary[]>(workspaceURL(`/v1/activity${query ? `?${query}` : ''}`))
 }
 
-function filterQuery(filter?: Record<string, string | undefined>) {
+// List members repeat their parameter (`state=a&state=b`), the spelling the
+// server's parseTaskFilter reads as a disjunction.
+function filterQuery(filter?: Record<string, string | string[] | undefined>) {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(filter ?? {})) {
-    if (value) params.set(key, value)
+    for (const entry of Array.isArray(value) ? value : value ? [value] : []) params.append(key, entry)
   }
   return params.toString()
 }
@@ -278,11 +280,11 @@ export function fetchTasks() {
 export async function fetchTaskOperations(input: {
   limit: number
   offset: number
-  filter?: Record<string, string | undefined>
+  filter?: Record<string, string | string[] | undefined>
 }) {
   const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
   for (const [key, value] of Object.entries(input.filter ?? {})) {
-    if (value) query.set(key, value)
+    for (const entry of Array.isArray(value) ? value : value ? [value] : []) query.append(key, entry)
   }
   const response = await fetch(workspaceURL(`/v1/task-operations?${query}`), { headers: authHeaders() })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)

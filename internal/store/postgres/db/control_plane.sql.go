@@ -1077,8 +1077,8 @@ const countTaskOperationsTasks = `-- name: CountTaskOperationsTasks :one
 SELECT count(*)::bigint
 FROM tasks t
 WHERE t.workspace_id = $1
-  AND ($2::text = '' OR t.state = $2)
-  AND ($3::text = '' OR t.repo_name = $3)
+  AND (cardinality($2::text[]) = 0 OR t.state = ANY($2::text[]))
+  AND (cardinality($3::text[]) = 0 OR t.repo_name = ANY($3::text[]))
   AND ($4::text = '' OR
        strpos(lower(t.title), lower($4)) > 0 OR
        strpos(lower(t.id), lower($4)) > 0 OR
@@ -1090,43 +1090,49 @@ WHERE t.workspace_id = $1
   AND ($6::timestamptz IS NULL OR COALESCE((
            SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
        ), t.created_at) < $6)
-  AND ($7::text = '' OR (
-           SELECT e.kind FROM events e
-           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
-             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
-             AND e.payload_json ->> 'id' = $7
-           ORDER BY e.id DESC LIMIT 1
-       ) = 'task.context_requirement_added')
-  AND ($8::text = '' OR (
-           SELECT e.kind FROM events e
-           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
-             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
-             AND e.payload_json ->> 'id' = $8
-           ORDER BY e.id DESC LIMIT 1
-       ) = 'task.context_design_added')
+  AND (cardinality($7::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest($7::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.id DESC LIMIT 1
+           ) = 'task.context_requirement_added'
+       ))
+  AND (cardinality($8::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest($8::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.id DESC LIMIT 1
+           ) = 'task.context_design_added'
+       ))
 `
 
 type CountTaskOperationsTasksParams struct {
-	WorkspaceID       string             `json:"workspace_id"`
-	TaskState         string             `json:"task_state"`
-	Repository        string             `json:"repository"`
-	Search            string             `json:"search"`
-	UpdatedFrom       pgtype.Timestamptz `json:"updated_from"`
-	UpdatedTo         pgtype.Timestamptz `json:"updated_to"`
-	ServesRequirement string             `json:"serves_requirement"`
-	GoverningDesign   string             `json:"governing_design"`
+	WorkspaceID        string             `json:"workspace_id"`
+	TaskStates         []string           `json:"task_states"`
+	Repositories       []string           `json:"repositories"`
+	Search             string             `json:"search"`
+	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
+	ServesRequirements []string           `json:"serves_requirements"`
+	GoverningDesigns   []string           `json:"governing_designs"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countTaskOperationsTasks,
 		arg.WorkspaceID,
-		arg.TaskState,
-		arg.Repository,
+		arg.TaskStates,
+		arg.Repositories,
 		arg.Search,
 		arg.UpdatedFrom,
 		arg.UpdatedTo,
-		arg.ServesRequirement,
-		arg.GoverningDesign,
+		arg.ServesRequirements,
+		arg.GoverningDesigns,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1240,8 +1246,8 @@ SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_le
        ) AS has_children
 FROM tasks t
 WHERE t.workspace_id = $1
-  AND ($2::text = '' OR t.state = $2)
-  AND ($3::text = '' OR t.repo_name = $3)
+  AND (cardinality($2::text[]) = 0 OR t.state = ANY($2::text[]))
+  AND (cardinality($3::text[]) = 0 OR t.repo_name = ANY($3::text[]))
   AND ($4::text = '' OR
        strpos(lower(t.title), lower($4)) > 0 OR
        strpos(lower(t.id), lower($4)) > 0 OR
@@ -1253,36 +1259,42 @@ WHERE t.workspace_id = $1
   AND ($6::timestamptz IS NULL OR COALESCE((
            SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
        ), t.created_at) < $6)
-  AND ($7::text = '' OR (
-           SELECT e.kind FROM events e
-           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
-             AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
-             AND e.payload_json ->> 'id' = $7
-           ORDER BY e.id DESC LIMIT 1
-       ) = 'task.context_requirement_added')
-  AND ($8::text = '' OR (
-           SELECT e.kind FROM events e
-           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
-             AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
-             AND e.payload_json ->> 'id' = $8
-           ORDER BY e.id DESC LIMIT 1
-       ) = 'task.context_design_added')
+  AND (cardinality($7::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest($7::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.id DESC LIMIT 1
+           ) = 'task.context_requirement_added'
+       ))
+  AND (cardinality($8::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest($8::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.id DESC LIMIT 1
+           ) = 'task.context_design_added'
+       ))
 ORDER BY t.created_at, t.id
 LIMIT NULLIF($10::int, 0)
 OFFSET $9::int
 `
 
 type ListTaskOperationsTasksParams struct {
-	WorkspaceID       string             `json:"workspace_id"`
-	TaskState         string             `json:"task_state"`
-	Repository        string             `json:"repository"`
-	Search            string             `json:"search"`
-	UpdatedFrom       pgtype.Timestamptz `json:"updated_from"`
-	UpdatedTo         pgtype.Timestamptz `json:"updated_to"`
-	ServesRequirement string             `json:"serves_requirement"`
-	GoverningDesign   string             `json:"governing_design"`
-	PageOffset        int32              `json:"page_offset"`
-	PageLimit         int32              `json:"page_limit"`
+	WorkspaceID        string             `json:"workspace_id"`
+	TaskStates         []string           `json:"task_states"`
+	Repositories       []string           `json:"repositories"`
+	Search             string             `json:"search"`
+	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
+	ServesRequirements []string           `json:"serves_requirements"`
+	GoverningDesigns   []string           `json:"governing_designs"`
+	PageOffset         int32              `json:"page_offset"`
+	PageLimit          int32              `json:"page_limit"`
 }
 
 type ListTaskOperationsTasksRow struct {
@@ -1294,13 +1306,13 @@ type ListTaskOperationsTasksRow struct {
 func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
 	rows, err := q.db.Query(ctx, listTaskOperationsTasks,
 		arg.WorkspaceID,
-		arg.TaskState,
-		arg.Repository,
+		arg.TaskStates,
+		arg.Repositories,
 		arg.Search,
 		arg.UpdatedFrom,
 		arg.UpdatedTo,
-		arg.ServesRequirement,
-		arg.GoverningDesign,
+		arg.ServesRequirements,
+		arg.GoverningDesigns,
 		arg.PageOffset,
 		arg.PageLimit,
 	)

@@ -2433,6 +2433,15 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		})
 	}
 
+	// A repeated parameter is a disjunction: both listed states match, so both
+	// seeded rows come back through one filter member.
+	several := get(t, "/v1/task-operations?workspace_id=demo&state=queued&state=running")
+	if several.Code != http.StatusOK ||
+		!strings.Contains(several.Body.String(), `"id":"ledger-sweep"`) ||
+		!strings.Contains(several.Body.String(), `"id":"rollout"`) {
+		t.Fatalf("repeated state filter status=%d body=%s", several.Code, several.Body.String())
+	}
+
 	// A governing-design filter no task carries is an empty result, not the
 	// unfiltered workspace: an unread parameter would look like the latter.
 	empty := get(t, "/v1/task-operations?workspace_id=demo&governing_design=design-nobody-attached")

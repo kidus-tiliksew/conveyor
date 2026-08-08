@@ -100,7 +100,9 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 		t.Fatal(err)
 	}
 	page, err := st.ListTaskOperations(ctx, store.TaskOperationsQuery{
-		TaskFilter: store.TaskFilter{State: core.TaskRunning, Repository: "conveyor"}, Limit: 1, Offset: 1,
+		TaskFilter: store.TaskFilter{
+			States: []core.TaskState{core.TaskRunning}, Repositories: []string{"conveyor"},
+		}, Limit: 1, Offset: 1,
 	})
 	if err != nil {
 		t.Fatal(err)

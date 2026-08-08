@@ -629,20 +629,34 @@ func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) 
 // taskFilterParams binds the shared predicate. Every member is a store-side
 // argument: nothing about the filter is decided after the rows come back.
 func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTaskOperationsTasksParams {
-	return db.CountTaskOperationsTasksParams{
-		WorkspaceID: workspace(ctx), TaskState: string(filter.State), Repository: filter.Repository,
-		Search: filter.Query, UpdatedFrom: nullableTimestamp(filter.UpdatedFrom),
-		UpdatedTo: nullableTimestamp(filter.UpdatedTo), ServesRequirement: filter.ServesRequirementID,
-		GoverningDesign: filter.GoverningDesignID,
+	// Empty arrays rather than nil: every list member binds as text[], and the
+	// query's cardinality guard is what turns an empty list into "inactive".
+	states := make([]string, len(filter.States))
+	for i, state := range filter.States {
+		states[i] = string(state)
 	}
+	return db.CountTaskOperationsTasksParams{
+		WorkspaceID: workspace(ctx), TaskStates: states,
+		Repositories: emptyIfNil(filter.Repositories),
+		Search:       filter.Query, UpdatedFrom: nullableTimestamp(filter.UpdatedFrom),
+		UpdatedTo: nullableTimestamp(filter.UpdatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
+		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs),
+	}
+}
+
+func emptyIfNil(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limit, offset int) db.ListTaskOperationsTasksParams {
 	bound := taskFilterParams(ctx, filter)
 	return db.ListTaskOperationsTasksParams{
-		WorkspaceID: bound.WorkspaceID, TaskState: bound.TaskState, Repository: bound.Repository,
+		WorkspaceID: bound.WorkspaceID, TaskStates: bound.TaskStates, Repositories: bound.Repositories,
 		Search: bound.Search, UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
-		ServesRequirement: bound.ServesRequirement, GoverningDesign: bound.GoverningDesign,
+		ServesRequirements: bound.ServesRequirements, GoverningDesigns: bound.GoverningDesigns,
 		PageLimit: int32(limit), PageOffset: int32(offset),
 	}
 }

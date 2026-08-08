@@ -15,8 +15,8 @@ import { useEffect, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
 import {
-  TaskFilters,
   emptyTaskFilter,
+  TaskFilters,
   taskFilterActive,
   taskFilterParams,
   taskFilterRangeError,
@@ -30,8 +30,8 @@ import { Skeleton } from '../components/ui/skeleton'
 import { fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
-import { relativeTime } from '../lib/utils'
 import type { TaskOperationsItem, TaskPlanStatus } from '../lib/types'
+import { relativeTime } from '../lib/utils'
 
 const PAGE_SIZE = 25
 
@@ -101,7 +101,7 @@ export function TasksPage() {
           </p>
         </header>
 
-        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} compact className="mt-6" />
+        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} className="mt-6" />
 
         {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
         {isLoading && workspace && (
@@ -149,9 +149,11 @@ export function TasksPage() {
                   <span>All tasks</span>
                   <span className="text-xs text-muted">{page?.total ?? items.length}</span>
                 </div>
-                {items.map((item) => (
-                  <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} />
-                ))}
+                <ul aria-label="Tasks">
+                  {items.map((item) => (
+                    <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} />
+                  ))}
+                </ul>
               </div>
             </div>
             <p className="border-t border-border px-4 py-3 text-xs text-muted">
@@ -227,7 +229,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
   const stage =
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
   return (
-    <div
+    <li
       className={`grid grid-cols-[minmax(300px,2fr)_minmax(150px,1fr)_minmax(170px,1fr)_minmax(190px,1.2fr)_minmax(170px,1fr)] items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
     >
       <div className="flex min-w-0 items-center gap-3 pr-4">
@@ -238,6 +240,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
           <Link
             to="/tasks"
             search={{ task: task.id }}
+            aria-current={selected ? 'true' : undefined}
             className="block truncate text-sm font-medium text-foreground hover:underline"
           >
             {task.title || task.id}
@@ -269,7 +272,6 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
       <div className="flex min-w-0 flex-wrap items-center gap-1.5 pr-3 text-xs text-muted">
         <AttachedContext item={item} />
         {item.child_rollup && <Children item={item} />}
-        {!item.child_rollup && <span>No attached context</span>}
       </div>
       <div
         className="flex items-center gap-2 text-xs text-muted"
@@ -284,7 +286,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
           {item.stalled.last_failure ? `: ${item.stalled.last_failure}` : ''}
         </p>
       )}
-    </div>
+    </li>
   )
 }
 
