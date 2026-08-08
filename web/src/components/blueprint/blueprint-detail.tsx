@@ -11,7 +11,7 @@ import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
 
-// The blueprint anchor detail (spec §21.49), rendered only at its canonical
+// The blueprint anchor detail, rendered only at its canonical
 // route. An anchor is an intent artifact: no order will ever be claimed for it,
 // nothing will land on its branch, and it will never move through a stage
 // column. So it leads with the approved blueprint, reports delivery in
@@ -164,7 +164,7 @@ function BlueprintChildren({ view }: { view: BlueprintView }) {
   )
 }
 
-// The intake body is provenance, not the headline (spec §21.49). What the
+// The intake body is provenance, not the headline. What the
 // anchor promises is the approved blueprint above; the request that started it
 // stays one disclosure away instead of leading with a wall of markdown.
 function OriginalRequest({ body }: { body?: string }) {

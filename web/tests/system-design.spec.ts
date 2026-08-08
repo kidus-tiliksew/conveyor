@@ -240,7 +240,7 @@ test('the System Design surface never starts a planning session on its own', asy
 
   await page.goto('/system-design')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
-  // AC-2.2 and spec §21.61 change 3: the assistant presentation and its
+  // The assistant presentation and its
   // guided-action entry points are withdrawn, so this surface neither renders
   // a chat column nor reaches for the planning routes. The routes themselves
   // are untouched.

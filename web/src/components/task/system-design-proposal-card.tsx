@@ -62,7 +62,7 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
 }
 
 /**
- * The origin-task proposal card (spec §21.62). When an implement session
+ * The origin-task proposal card. When an implement session
  * proposes a System Design revision, the confirm affordance used to live only
  * on the per-document attention surface — a different page from the task the
  * pipeline was waiting on. This renders the same decision where it was raised.

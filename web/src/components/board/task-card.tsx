@@ -13,7 +13,7 @@ function repoColor(seed: string) {
   return repoHues[Math.abs(hash) % repoHues.length]
 }
 
-// One board card (spec §13.3, amended by §21.31): title, a single quiet meta
+// One board card: title, a single quiet meta
 // line, and chips only for state that changes what the operator does next.
 // Class and provenance are metadata, not signal — they live in the task
 // header, so a healthy card carries no chips at all and an exception stands

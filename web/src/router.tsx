@@ -25,7 +25,7 @@ function BoardPage() {
   )
 }
 
-// Deep-link target for PR comments and chat (spec §17.0): the board stays
+// Deep-link target for PR comments and chat: the board stays
 // visible with the task's detail sheet open over it.
 function TaskSheetRoute() {
   const { taskId } = useParams({ strict: false }) as { taskId: string }
@@ -63,7 +63,7 @@ const taskFullRoute = createRoute({
   path: '/tasks/$taskId/full',
   component: TaskFullPage,
 })
-// The list-first Tasks view (spec §21.58), which is also where tasks are
+// The list-first Tasks view, which is also where tasks are
 // created and inspected (REQ-2). Both of the surfaces it hosts are search
 // params on this one route rather than child paths: the list stays mounted —
 // its page, its filters, its scroll — behind whichever sheet is open, and the
@@ -95,7 +95,7 @@ const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/requirements',
   // `session` deep-links the document-scoped planning sidebar, so a reload
-  // restores the assistant beside the same document (spec §21.57).
+  // restores the assistant beside the same document.
   validateSearch: (search: Record<string, unknown>): { requirement?: string; session?: string } => ({
     requirement: typeof search.requirement === 'string' ? search.requirement : undefined,
     session: typeof search.session === 'string' ? search.session : undefined,
@@ -111,7 +111,7 @@ const systemDesignRoute = createRoute({
   }),
   component: SystemDesignPage,
 })
-// The planning-side blueprint surface (spec §21.49): the list, and the
+// The planning-side blueprint surface: the list, and the
 // canonical detail route an anchor now owns. The task routes no longer render
 // an anchor — they redirect here once the task loads — so a blueprint has one
 // home and no second door back into the task costume.

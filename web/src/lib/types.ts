@@ -1,5 +1,5 @@
 // Wire types mirroring internal/core/types.go and the httpapi payloads
-// (spec §16, §17.3). Keep field names in lockstep with the Go JSON tags.
+// Keep field names in lockstep with the Go JSON tags.
 
 export type TaskState =
   | 'claiming'
@@ -44,7 +44,7 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  // Legacy historical record (spec §21.31); behavior is governed by hold.
+  // Legacy historical record; behavior is governed by hold.
   mode?: string
   hold?: boolean
   spec_approval: boolean
@@ -240,7 +240,7 @@ export interface TaskChildRollup {
   open: number
 }
 
-// TaskOperationsItem is the list-first Tasks view's row (spec §21.58, REQ-1).
+// TaskOperationsItem is the list-first Tasks view's row.
 // It carries no priority, assignee, or declared-phase field, and none may be
 // added to support the view (AC-1.5).
 export interface TaskOperationsItem {
@@ -262,7 +262,7 @@ export interface TaskOperationsPage {
 }
 
 // The list-scoped stalled projection: the reason a row cannot move, without
-// the work order the detail surfaces render (spec §21.58 change 7).
+// the work order the detail surfaces render.
 export interface TaskStalledSummary {
   needed: boolean
   reason: string
@@ -758,7 +758,7 @@ export interface RequirementDerivation {
   target_id: string
 }
 
-/** The artifact a session declares it is working toward (spec §21.57). */
+/** The artifact a session declares it is working toward. */
 export type PlanningSessionGoal = 'requirement' | 'system_design' | 'blueprint' | 'bundle' | 'open'
 
 export interface PlanningBundle {
@@ -844,7 +844,7 @@ export interface BlueprintLineage {
   events: TaskEvent[]
 }
 
-// The blueprint presentation surface (spec §21.49). An anchor is an intent
+// The blueprint presentation surface. An anchor is an intent
 // artifact derived from existing parent/child relations, never a stored
 // entity, so this projection is read-only by construction.
 export type BlueprintDeliveryState = 'in_delivery' | 'completed' | 'cancelled'

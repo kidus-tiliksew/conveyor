@@ -31,12 +31,12 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
 }
 
 /**
- * System Design is a category tree beside a document canvas (spec §21.61
- * change 1; REQ-2, AC-2.1). The canvas is the hero: the confirmed guide reads
+ * System Design is a category tree beside a document canvas. The canvas is the
+ * hero: the confirmed guide reads
  * first, its history and its diffs sit under it as collapsed detail, and the
  * one attention surface above it carries every signal that needs an operator.
  * The assistant column is withdrawn from presentation while in-product
- * planning is parked (AC-2.2, §21.61 change 3) — its components and every
+ * planning is parked — its components and every
  * propose→confirm route stay exactly as they are.
  */
 export function SystemDesignPage() {
@@ -84,7 +84,7 @@ export function SystemDesignPage() {
   }, [designs.data])
   const settledDecisions = (decisions.data ?? []).filter((decision) => decision.status !== 'proposed')
   // Decisions are workspace-wide, so they are voiced on whichever document is
-  // open — the same place they were surfaced before (spec §21.61 change 1).
+  // open — the same place they were surfaced before.
   const decisionItems: AttentionItem[] = (decisions.data ?? [])
     .filter((decision) => decision.status === 'proposed')
     .map((decision) => ({

@@ -1,7 +1,7 @@
 import { taskStateLabels } from './contracts'
 import type { BlueprintDelivery, BlueprintView, Task } from './types'
 
-// Blueprint vocabulary (spec §21.49). An anchor is a contract with a progress
+// Blueprint vocabulary. An anchor is a contract with a progress
 // bar, not a card waiting for a worker, so every label here speaks about
 // delivery rather than the pipeline. Centralized so no surface has to invent
 // its own phrasing — or leak a raw task state.

@@ -23,7 +23,7 @@ const descriptionScaffold = 'Enter a description ...'
 
 const DEPENDENCY_RESULT_LIMIT = 20
 
-// Task intake (spec §9): the dashboard is one source among github/cli/cron.
+// Task intake: the dashboard is one source among github/cli/cron.
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
 // description, base branch, execution policy, and artifact attachments.
@@ -124,7 +124,7 @@ export function TaskCreateSheet() {
     })
   }
   // Only confirmed documents are attachable, and the two tiers stay separate
-  // groups so the create payload still carries distinct ID arrays (spec §21.58).
+  // groups so the create payload still carries distinct ID arrays.
   const contextGroups: ContextGroup[] = [
     {
       key: 'requirements',
@@ -315,7 +315,7 @@ export function TaskCreateSheet() {
           </div>
         </details>
 
-        {/* Per-task hold (spec §21.31): reservation from the worker, not a mode. */}
+        {/* Per-task hold: reservation from the worker, not a mode. */}
         <Field label="Hold">
           <div className="flex items-center gap-3 rounded-md border border-border p-3">
             <Switch aria-label="Hold for hands-on work" checked={hold} onChange={setHold} />

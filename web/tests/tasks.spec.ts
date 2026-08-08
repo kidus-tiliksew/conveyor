@@ -1,8 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// UI coverage for the list-first Tasks view (spec §21.58, REQ-1 and
-// AC-1.1 through AC-1.5). The projection is mocked so each assertion reads the
-// rendering of durable authority rather than a live pipeline.
+// UI coverage for the list-first Tasks view. The projection is mocked so each
+// assertion reads the rendering of durable authority rather than a live pipeline.
 const operations = [
   {
     task: {
@@ -422,7 +421,7 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
 })
 
 // Staleness renders from the durable §21.34 state the projection carries, and
-// it says why the task cannot move (spec §21.58 change 7). It sits beside the
+// it says why the task cannot move. It sits beside the
 // needs-operator badge rather than replacing it: a task can hold at a gate and
 // carry a stalled order at once, and a row that hides one of those misreads.
 test('tasks view reports why a stalled task cannot move on its own', async ({ page }) => {
@@ -515,7 +514,7 @@ test('selecting a row opens the task detail panel with a permalink', async ({ pa
   expect(new URL(page.url()).pathname).toBe('/tasks/task-bounced/full')
 })
 
-// A blueprint anchor keeps its one canonical home (spec §21.49). The panel
+// A blueprint anchor keeps its one canonical home. The panel
 // hosts the task's own detail composition rather than a copy of it, so the rule
 // arrives with the composition instead of being restated on this surface.
 test('an anchor opened in the panel is sent to its canonical blueprint route', async ({ page }) => {

@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import type { Task } from '../../lib/types'
 
-// One canonical home for an anchor (spec §21.49). `/blueprints/$taskId` is it;
+// One canonical home for an anchor. `/blueprints/$taskId` is it;
 // the task routes are a second door back into the task costume, so an anchor
 // reached through one is sent to the canonical route rather than rendered
 // there.

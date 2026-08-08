@@ -237,7 +237,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
   // The canvas offers the explorer rather than an inline graph card: one
-  // rendering of lineage, opened on demand (spec §21.61 change 2, REQ-3).
+  // rendering of lineage, opened on demand.
   await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toHaveCount(0)
 
@@ -321,7 +321,7 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   await page.getByLabel('Planning model').selectOption('gpt-plan-fast')
   await page.getByRole('button', { name: 'New session' }).click()
   // The goal and model are the only creation inputs: no caller title reaches
-  // the server, which names the session itself (spec §21.57 change 3).
+  // the server, which names the session itself.
   await expect
     .poll(() => createdWith)
     .toEqual({
@@ -756,7 +756,7 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
     pending_versions: [],
     serving_tasks: [{ id: '260807-0e2bc1', title: 'Scale task operations queries', state: 'running' }],
     // A truncated lineage walk cannot prove the absence of newer delivery, so
-    // delivery_after_intent is a false negative here (spec §21.58 change 6).
+    // delivery_after_intent is a false negative here.
     staleness: { delivery_after_intent: false, active_drift: [], partial_evaluation: true },
   }
   await page.route('**/v1/**', async (route) => {
@@ -1590,7 +1590,7 @@ test('session lists label goals and the requirements surface has no freehand edi
 
   await page.goto('/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()
-  // Freehand editing stays rejected (spec §21.57 change 2), and with the
+  // Freehand editing stays rejected, and with the
   // assistant column parked (§21.61 change 3) there is no composer either, so
   // this surface carries no editable field at all.
   await expect(page.locator('[contenteditable]')).toHaveCount(0)

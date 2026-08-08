@@ -65,13 +65,13 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
 const referenceAnchor = /^reference-(.+)-v(\d+)$/
 
 /**
- * Requirements is a document tree beside a document canvas (spec §21.61
- * change 1; REQ-2, AC-2.1). The tree groups the product overviews apart from
+ * Requirements is a document tree beside a document canvas. The tree groups
+ * the product overviews apart from
  * the requirement corpus; whichever document is selected becomes the canvas,
  * with its history and diffs collapsed underneath. Every machinery signal the
- * document produces is voiced once, in its attention surface (REQ-1). The
- * assistant column is withdrawn while in-product planning is parked (AC-2.2,
- * §21.61 change 3) — nothing about propose→confirm changes: revisions still
+ * document produces is voiced once, in its attention surface. The
+ * assistant column is withdrawn while in-product planning is parked — nothing
+ * about propose→confirm changes: revisions still
  * arrive as proposed versions an operator confirms here.
  */
 export function RequirementsPage() {
@@ -253,7 +253,7 @@ function readOverviewAnchor(hash: string) {
 /**
  * A product overview reads on the same canvas as a requirement: the Markdown
  * is the hero, and its version history, comparison, and file actions sit under
- * it (spec §21.61 change 1). Overviews are uploaded source material, so they
+ * it. Overviews are uploaded source material, so they
  * carry no machinery signals and no attention surface.
  */
 function OverviewCanvas({
@@ -424,7 +424,7 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
   // A newly proposed revision has to become the displayed version. Only
   // resetting when the selection disappears is not enough — the older version
   // is still in the refetched list, so the canvas would keep showing confirmed
-  // intent while a revision waits (spec §21.57 change 1).
+  // intent while a revision waits.
   const highestSeen = useRef<number | null>(null)
   useEffect(() => {
     if (!orderedVersions.length) return
@@ -498,7 +498,7 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
       : []),
     // A truncated lineage walk cannot prove the absence of newer delivery, so
     // partial evaluation is voiced rather than reported as alignment. It is a
-    // machinery signal like any other and belongs here (spec §21.61 change 1).
+    // machinery signal like any other and belongs here.
     ...(item.staleness?.partial_evaluation
       ? [
           {

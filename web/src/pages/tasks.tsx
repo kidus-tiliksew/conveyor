@@ -45,7 +45,7 @@ const PAGE_SIZE = 25
 // smaller windows rather than the ordinary way this list is read.
 const TASK_COLUMNS = 'grid grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150px,1.4fr)_168px]'
 
-// The list-first Tasks view (spec §21.58, REQ-1 and REQ-2). It reads one
+// The list-first Tasks view. It reads one
 // paginated projection and renders only what that projection carries: state,
 // repository, dependencies and blockers, child rollups, attached context, and
 // plan status. There is no priority, assignee, or declared-phase control
@@ -211,7 +211,7 @@ export function TasksPage() {
       {/* The task's own detail composition, mounted as this surface's panel
           rather than reimplemented on it (AC-2.2). A blueprint anchor opened
           here still redirects to its canonical route — that rule belongs to the
-          composition, so hosting it here inherits it (spec §21.49). */}
+          composition, so hosting it here inherits it. */}
       {!create && selectedId && (
         <TaskSheet
           taskId={selectedId}

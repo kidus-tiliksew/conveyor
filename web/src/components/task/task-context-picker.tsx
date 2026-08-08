@@ -7,7 +7,7 @@ export interface ContextOption {
   title: string
 }
 
-// One group per document tier (spec §21.58). Each keeps its own selection
+// One group per document tier. Each keeps its own selection
 // callback so intake still submits two separate ID arrays even though the
 // operator sees a single control.
 export interface ContextGroup {

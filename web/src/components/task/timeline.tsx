@@ -48,14 +48,14 @@ const gateDots: Record<GateTone, string> = {
   alarm: 'bg-attention-dot',
 }
 
-// The execution event timeline (spec §13.3 elements 2 and 3): the audit log
+// The execution event timeline: the audit log
 // rendered as a story — one entry per stage execution, with usage, duration,
 // and the harness/model/auth mode that ran it, interleaved with pipeline
 // incidents and every recorded decision. Anything actionable "now" — status
 // alerts, recovery actions, and the human gate itself — renders as the live
 // tail: cause sits directly above prompt, and a recorded decision resolves
 // in place into its intervention entry.
-// `executionActions` is false for a blueprint anchor (spec §21.49): it takes
+// `executionActions` is false for a blueprint anchor: it takes
 // no work orders, so redispatch, worker serviceability, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
@@ -77,7 +77,7 @@ export function Timeline({
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
   // Preemption is an execution affordance: a blueprint anchor takes no work
-  // orders, so it never offers one (spec §21.49).
+  // orders, so it never offers one.
   const preemptOrder = executionActions ? claimedWorkOrder(item) : undefined
   // A System Design revision this task proposed is a decision waiting on the
   // operator, so it belongs in the live tail beside the other ones (spec
@@ -528,7 +528,7 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
   )
 }
 
-// The review panel as one deliberating body (spec §21.12 change 4): seats as
+// The review panel as one deliberating body: seats as
 // rows inside a single card, a verdict tally in the header, and — on a
 // changes-requested settle — every dissenting seat's notes merged into one
 // attributed round. Vocabulary is the spec's own: panel, seats, verdicts.
@@ -701,7 +701,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
 // family as the spec card's overflow treatment (see SpecCard): a fixed
 // collapsed height with overflow hidden and the shared bottom fade, plus a
 // small per-seat toggle shown only when the text actually overflows. State is
-// session-local and independent per seat (spec task 260720-29ffcc; AC-1..AC-3).
+// session-local and independent per seat.
 function SeatNote({ seat }: { seat: PanelSeat }) {
   const [expanded, setExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
@@ -756,7 +756,7 @@ function SeatNote({ seat }: { seat: PanelSeat }) {
   )
 }
 
-// Enforcement rendered honestly (spec §21.12 change 4): a pin for the model
+// Enforcement rendered honestly: a pin for the model
 // the worker invoked itself, a dashed circle for what a claiming agent
 // merely reported — with the plain-words difference behind a hover.
 function EnforcementChip({ enforcement }: { enforcement?: WorkOrder['model_enforcement'] }) {

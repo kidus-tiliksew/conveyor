@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Conveyor design tokens: a light, product-grade surface (spec §13.3).
+/* Conveyor design tokens: a light, product-grade surface.
    Royal blue is the working accent on cool neutrals; amber is reserved
    exclusively for "Needs attention" — the single alarm color on the page. */
 @theme {

@@ -19,7 +19,7 @@ import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 
-// The operator bearer token authenticates mutations (spec §17.3).
+// The operator bearer token authenticates mutations.
 // Session-scoped on purpose: closing the tab forgets it.
 const TokenContext = createContext<{ token: string; setToken: (value: string) => void }>({
   token: '',
@@ -58,7 +58,7 @@ export function useActivity(filter?: Record<string, string | string[] | undefine
   })
 }
 
-// Blueprint anchors left the activity feed (spec §21.49), so this projection
+// Blueprint anchors left the activity feed, so this projection
 // is the only place the dashboard can resolve one — the Blueprints surface,
 // the anchor's own detail, and a child's parent reference all read it.
 export function useBlueprints() {
@@ -200,7 +200,7 @@ function NavSidebar() {
   const { data: workspace } = useWorkspace()
   const { data: activity } = useActivity()
   // This badge counts what the Board will actually show, so it applies the
-  // board's own predicate (spec §21.49): an anchor lives on the Blueprints
+  // board's own predicate: an anchor lives on the Blueprints
   // surface, and counting one here would send the operator to a board with
   // nothing on it to resolve.
   const attention = (activity ?? []).filter((item) => !isBlueprintAnchor(item.task) && item.needs_attention).length
@@ -217,7 +217,7 @@ function NavSidebar() {
         <NavItem to="/" icon={Kanban} label="Board">
           {attention > 0 && <Badge variant="attention">{attention}</Badge>}
         </NavItem>
-        {/* The list-first delivery surface (spec §21.58). It matches exactly:
+        {/* The list-first delivery surface. It matches exactly:
             a task's own detail route belongs to the Board it opens over. */}
         <NavItem to="/tasks" icon={ListChecks} label="Tasks" exact />
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />

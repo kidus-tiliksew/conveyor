@@ -19,8 +19,8 @@ export function SettingsPage() {
           <CardContent className="space-y-2.5">
             <p className="text-sm leading-6 text-muted">
               Mutations — creating tasks, review decisions, redispatch — authenticate with the control plane's{' '}
-              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code> (spec §17.3). Multi-workspace reads and
-              writes both require it. The token is kept in session storage and forgotten when the tab closes.
+              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code>. Multi-workspace reads and writes both
+              require it. The token is kept in session storage and forgotten when the tab closes.
             </p>
             <Input
               type="password"
