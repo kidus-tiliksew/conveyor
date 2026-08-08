@@ -596,7 +596,7 @@ type WorkOrder struct {
 	// requirements; nil is reserved for pre-snapshot compatibility handling.
 	ServedRequirementSnapshot []ServedRequirementContext `json:"served_requirement_snapshot,omitempty"`
 	// GovernanceSnapshot is the exact design and decision authority plus the
-	// separately non-authoritative task proposal observation rendered for this
+	// separately non-authoritative task proposal evidence refreshed for this
 	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
 }

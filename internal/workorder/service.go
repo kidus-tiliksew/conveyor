@@ -177,16 +177,31 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		}
 		claim.Requirements = append([]core.ServedRequirementContext{}, servedAuthority.Requirements...)
 	}
-	if order.Stage == core.StageReview && order.GovernanceSnapshot == nil {
+	if order.Stage == core.StageReview {
 		task, getErr := s.Store.GetTask(ctx, order.TaskID)
 		if getErr != nil {
 			return core.WorkOrder{}, getErr
 		}
-		governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
-		if resolveErr != nil {
-			return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
+		if order.GovernanceSnapshot == nil {
+			governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
+			if resolveErr != nil {
+				return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
+			}
+			claim.Governance = &governance
+		} else {
+			// Keep authority pinned while refreshing only non-authoritative
+			// proposal evidence for this review claim.
+			governance := *order.GovernanceSnapshot
+			governance.Designs = append([]core.GovernanceDesignContext(nil), order.GovernanceSnapshot.Designs...)
+			governance.Decisions = append([]core.Decision(nil), order.GovernanceSnapshot.Decisions...)
+			proposals, notes, resolveErr := store.SystemDesignProposalEvidenceForTask(ctx, s.Store, task.ID)
+			if resolveErr != nil {
+				return core.WorkOrder{}, fmt.Errorf("refresh System Design proposal evidence for review claim: %w", resolveErr)
+			}
+			governance.PendingDesignProposals = proposals
+			governance.ResolutionNotes = notes
+			claim.Governance = &governance
 		}
-		claim.Governance = &governance
 	}
 	order, err = taskops.New(s.Store).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 	if err != nil {

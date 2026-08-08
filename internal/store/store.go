@@ -241,6 +241,7 @@ type Store interface {
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
 	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
+	ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
@@ -2460,13 +2461,20 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
-		if order.GovernanceSnapshot == nil && claim.Governance != nil {
-			copy := *claim.Governance
-			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
-			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
-			copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
-			copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
-			order.GovernanceSnapshot = &copy
+		if claim.Governance != nil {
+			if order.GovernanceSnapshot == nil {
+				copy := *claim.Governance
+				copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
+				copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
+				copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+				copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
+				order.GovernanceSnapshot = &copy
+			} else {
+				// Proposal observations are claim-time-fresh, unlike the frozen
+				// System Design and decision authority.
+				order.GovernanceSnapshot.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+				order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
+			}
 		}
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&

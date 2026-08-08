@@ -994,17 +994,20 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 }
 
-func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.T) {
+func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending", Title: "Pending", Category: "Architecture"}, core.SystemDesignVersion{
+	document, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending", Title: "Pending", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Initial\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, initial.Version); err != nil {
 		t.Fatal(err)
 	}
 	first, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
@@ -1062,18 +1065,41 @@ func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.
 	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
 		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
 	}
-	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
-		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
-		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
-	}); err != nil {
+	if len(claimed.GovernanceSnapshot.Designs) != 1 || claimed.GovernanceSnapshot.Designs[0].Version != initial.Version {
+		t.Fatalf("first claim authority=%+v", claimed.GovernanceSnapshot.Designs)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	reviewContext, err := service.Get(ctx, reviewJob.ID, "review-session-pending")
+	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
+		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reviewContext.GovernanceSnapshot.PendingDesignProposals) != 1 || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
-		t.Fatalf("review pending context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
+
+	reviewJob2 := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, reviewJob2); err != nil {
+		t.Fatal(err)
+	}
+	stale := *claimed.GovernanceSnapshot
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &stale}); err != nil {
+		t.Fatal(err)
+	}
+	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 1 || claimed2.GovernanceSnapshot.Designs[0].Version != initial.Version || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 2 || !claimed2.GovernanceSnapshot.PendingDesignProposals[0].Confirmed || claimed2.GovernanceSnapshot.PendingDesignProposals[1].Version != second.Version {
+		t.Fatalf("refreshed claim governance=%+v", claimed2.GovernanceSnapshot)
+	}
+	reviewContext, err := service.Get(ctx, reviewJob2.ID, "review-session-refreshed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reviewContext.RolePrompt, "confirmed after proposal") || !strings.Contains(reviewContext.RolePrompt, "matching pending or confirmed proposal") || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
+		t.Fatalf("review proposal context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
 	}
 }
 
