@@ -1356,6 +1356,7 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 
 func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "operator-direction")
+	ctx = store.WithWorkspace(ctx, "test")
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
 		t.Fatal(err)
@@ -1363,6 +1364,34 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 	service.Pack = bundle
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-resume", Title: "Resume authority"}, core.RequirementVersion{
+		Content: "Initial", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "initial",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	humanCtx := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(humanCtx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, order.TaskID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(humanCtx, order.TaskID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Amended", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The amendment permits the change."}}}}, Origin: core.RequirementOriginChat, OriginSessionID: "amendment"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(humanCtx, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	priorProgress := "Checkpoint still blocked; checked req-resume v1."
+	if _, err = service.Progress(ctx, order.ID, claimed.SessionID, priorProgress); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: claimed.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
@@ -1383,7 +1412,12 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 	}
 	context, err := service.Get(ctx, order.ID, resumed.SessionID)
 	lineageJSON, _ := json.Marshal(context.LineageContext.Items)
-	if err != nil || !strings.Contains(context.RolePrompt, "# Operator direction\n\n"+direction) || strings.Contains(string(lineageJSON), direction) {
+	for _, required := range []string{"# Operator direction\n\n" + direction, "req-resume v2", "AC-1.1: The amendment permits the change.", "# Historical prior-attempt checkpoint claims", claimed.AttemptID, "historical context, not authority", "currently served `id vN` versions", priorProgress} {
+		if !strings.Contains(context.RolePrompt, required) {
+			t.Errorf("context role is missing %q: %s", required, context.RolePrompt)
+		}
+	}
+	if err != nil || strings.Contains(string(lineageJSON), direction) {
 		t.Fatalf("context role=%q lineage=%s err=%v", context.RolePrompt, lineageJSON, err)
 	}
 	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: resumed.SessionID, Reason: "done pausing", Outcome: core.WorkOrderOutcomeReleased})
