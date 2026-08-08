@@ -25,8 +25,8 @@ func (e *AuthorityBudgetError) Error() string {
 }
 
 // ServedRequirementsForTask resolves current confirmed requirement authority
-// through the bounded canonical graph used for model context (spec §4.2 item
-// 4; REQ-4). Unconfirmed and merely proposed serves relations project no edge.
+// through the bounded canonical graph used for model context. Unconfirmed and
+// merely proposed serves relations project no edge (design-lineage-graph).
 func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, authorityNodes ...int) (ServedRequirementsResult, error) {
 	task, err := st.GetTask(ctx, taskID)
 	if err != nil {

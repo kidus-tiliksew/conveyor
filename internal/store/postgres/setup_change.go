@@ -52,7 +52,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		return store.SetupChangeResult{}, err
 	}
 	// Claim and setup change share this lock, closing the claim-versus-change
-	// race across control-plane instances (spec §21.35 change 2).
+	// race across control-plane instances.
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspaceID, request.TaskID)); err != nil {
 		return store.SetupChangeResult{}, err
 	}
@@ -66,7 +66,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", store.ErrSetupChangeConflict, task.ID)
 	}
 	// Submitted spec/implement attempts are delivered, not executing; only
-	// claimed attempts and in-flight review verdicts block (spec §21.36).
+	// claimed attempts and in-flight review verdicts block.
 	var claimedAttempt, inFlightVerdict bool
 	if err = tx.QueryRow(ctx, `SELECT
 			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed'),

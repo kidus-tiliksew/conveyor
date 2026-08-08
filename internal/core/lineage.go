@@ -14,8 +14,8 @@ const (
 	DefaultContextArtifactTraversalNodes = 32
 )
 
-// LineageNodeType names a durable node class in the Phase 6 knowledge graph
-// (spec §4.2 item 4, §16). IDs remain opaque to the graph.
+// LineageNodeType names a durable node class in the knowledge graph.
+// IDs remain opaque to the graph (design-lineage-graph).
 type LineageNodeType string
 
 const (
@@ -86,7 +86,7 @@ type LineageRebuildRequest struct {
 
 // LineageNode identifies one endpoint without implying a persisted record of
 // its own. Traversal is over event-provenanced links; nodes are only the
-// bounded read model needed to assemble context (spec §4.2 item 4).
+// bounded read model needed to assemble context (design-lineage-graph).
 type LineageNode struct {
 	Type  LineageNodeType `json:"type"`
 	ID    string          `json:"id"`
@@ -99,7 +99,7 @@ func (node LineageNode) Valid() bool {
 
 // LineageTraversalBudget makes graph reads fail closed against an unbounded
 // workspace graph. MaxDepth counts edges from the root; MaxNodes includes the
-// root and is a hard cap on returned nodes (spec §4.2 item 4, §15.1).
+// root and is a hard cap on returned nodes (design-lineage-graph).
 type LineageTraversalBudget struct {
 	MaxDepth int `json:"max_depth"`
 	MaxNodes int `json:"max_nodes"`
@@ -128,7 +128,7 @@ type LineageTraversal struct {
 // ContextArtifactSelection is the common bounded artifact view used by both
 // MCP work-order delivery and in-process pipeline input. Keeping selection in
 // one pure domain function prevents those context paths from granting
-// different reachability (spec §4.2 item 4).
+// different reachability (design-lineage-graph).
 type ContextArtifactSelection struct {
 	Nodes     []LineageNode
 	Artifacts []Artifact
@@ -484,7 +484,7 @@ func RequirementVersionLineageID(requirementID string, version int) string {
 
 // PullRequestLineageID and CommitRangeLineageID document the stable forge/git
 // identities written into lifecycle events. A range is asserted only when
-// both immutable endpoints are known (spec §4.2 item 4).
+// both immutable endpoints are known (design-lineage-graph).
 func PullRequestLineageID(repository string, number int) string {
 	return fmt.Sprintf("%s#%d", strings.TrimSpace(repository), number)
 }

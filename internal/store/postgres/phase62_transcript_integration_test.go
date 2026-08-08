@@ -13,7 +13,7 @@ import (
 
 // On finalize a planning session archives its transcript as an artifact linked
 // to what it produced, so the rationale behind a requirement becomes lineage
-// instead of evaporating in a chat window (spec §9, §21.46 change 2; AC-2).
+// instead of evaporating in a chat window.
 // The transcript rides the ordinary artifact machinery — content-addressed,
 // immutable, and attached to exactly one owner.
 
@@ -115,13 +115,13 @@ func TestPhase62TranscriptArchivesOntoProducedRequirementIntegration(t *testing.
 	if stored.RequirementID != requirement.ID {
 		t.Errorf("stored artifact requirement = %q", stored.RequirementID)
 	}
-	// A transcript is audit, never model input (spec §21.4).
+	// A transcript is audit, never model input.
 	if stored.Role.ModelInputEligible() {
 		t.Error("transcript artifact is model-input eligible; it is generated audit")
 	}
 
 	// Finalizing granted no approval authority: the requirement is still
-	// pending an operator confirmation (spec §13.1).
+	// pending an operator confirmation.
 	pending, err := st.GetRequirement(ctx, requirement.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestPhase62TranscriptArchivesOntoProducedRequirementIntegration(t *testing.
 }
 
 // An artifact never claims two owners, so a transcript cannot be attached to a
-// requirement and a task at once (spec §21.46 change 5).
+// requirement and a task at once.
 func TestPhase62TranscriptRejectsTwoOwnersIntegration(t *testing.T) {
 	st, ctx, workspaceName := newPhase62IntegrationStore(t)
 
