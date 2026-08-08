@@ -390,8 +390,8 @@ test('tasks view exposes no priority, assignee, or declared-phase field', async 
   await expect(page.getByLabel('Filter by assignee')).toHaveCount(0)
 })
 
-// AC-2.1: intake lives on the surface where delivery is managed. The board's
-// old address survives as a redirect rather than as a second door.
+// AC-2.1: intake lives on the surface where delivery is managed. The legacy
+// address and the Board entry point both hand off to that single surface.
 test('tasks view is where a task is created', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('link', { name: 'New task' }).click()
@@ -408,11 +408,11 @@ test('tasks view is where a task is created', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
   expect(new URL(page.url()).pathname).toBe('/tasks')
 
-  // The board no longer offers creation: the affordance moved rather than
-  // being duplicated onto a second surface.
+  // The board links to the same intake route rather than mounting another
+  // creation form.
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'New task' })).toHaveAttribute('href', '/tasks?create=true')
 })
 
 // AC-2.2: a row opens the task's own detail composition beside the list, at an
