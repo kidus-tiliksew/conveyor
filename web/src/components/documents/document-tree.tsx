@@ -1,3 +1,4 @@
+import { FileText } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 /**
@@ -43,16 +44,19 @@ export function DocumentTreeItem({
       type="button"
       aria-current={selected ? 'true' : undefined}
       onClick={onClick}
-      className={`block w-full rounded-md py-2 px-2.5 text-left transition-colors ${
+      className={`flex w-full items-center gap-2.5 rounded-md py-2 px-2.5 text-left transition-colors ${
         selected ? 'bg-primary-soft text-primary' : 'text-foreground hover:bg-surface'
       }`}
     >
-      <span className="block truncate text-sm font-medium">{label}</span>
-      {meta && (
-        <span className={`mt-0.5 block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
-          {meta}
-        </span>
-      )}
+      <FileText className={`size-4 shrink-0 ${selected ? 'text-primary' : 'text-faint'}`} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{label}</span>
+        {meta && (
+          <span className={`mt-0.5 block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
+            {meta}
+          </span>
+        )}
+      </span>
     </button>
   )
 }

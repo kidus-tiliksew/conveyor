@@ -150,7 +150,6 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={document.id}
                 label={document.name}
-                meta={`v${document.current_version}`}
                 selected={openOverview?.id === document.id}
                 onClick={() => setOpenOverview({ id: document.id })}
               />
@@ -186,7 +185,6 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
-                meta={item.current_version ? `v${item.current_version.version}` : undefined}
                 selected={!openOverview && selectedId === item.requirement.id}
                 onClick={() => selectRequirement(item.requirement.id)}
               />
