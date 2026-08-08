@@ -658,11 +658,11 @@ export async function changeTaskSetup(
   return response.json() as Promise<{ task: Task; review_transition: string }>
 }
 
-export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string) {
+export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string, direction?: string) {
   const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
     method: 'POST',
     headers: { ...mutationHeaders(token), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
-    body: JSON.stringify({ request_id: requestId }),
+    body: JSON.stringify({ request_id: requestId, direction }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<WorkOrder>

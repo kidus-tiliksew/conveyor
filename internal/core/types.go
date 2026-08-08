@@ -18,6 +18,16 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
+const MaxWorkOrderOperatorDirectionRunes = 4096
+
+func NormalizeWorkOrderOperatorDirection(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) > MaxWorkOrderOperatorDirectionRunes {
+		return "", fmt.Errorf("operator direction must be at most %d characters", MaxWorkOrderOperatorDirectionRunes)
+	}
+	return value, nil
+}
+
 // TruncateUTF8Bytes shortens value to at most limit bytes without splitting a
 // UTF-8 encoding. Callers that persist byte-limited user text share this helper
 // so memory and durable stores cannot disagree at multibyte boundaries.
@@ -568,6 +578,7 @@ type WorkOrder struct {
 	RetrySuppressed        bool             `json:"retry_suppressed"`
 	RetrySuppressionReason string           `json:"retry_suppression_reason,omitempty"`
 	RedispatchCount        int              `json:"redispatch_count"`
+	OperatorDirection      string           `json:"operator_direction,omitempty"`
 	Progress               string           `json:"progress,omitempty"`
 	CostUSD                float64          `json:"cost_usd"`
 	TokensIn               int64            `json:"tokens_in"`

@@ -249,8 +249,9 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	server.BearerToken, server.Workspace = "token", "demo"
 	server.ConfigProvider = provider
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
-	call := func(token, requestID string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+job.ID+"/recover?workspace_id=demo", strings.NewReader(`{"request_id":"`+requestID+`"}`))
+	call := func(token, requestID, direction string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"request_id": requestID, "direction": direction})
+		request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+job.ID+"/recover?workspace_id=demo", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		if token != "" {
 			request.Header.Set("Authorization", "Bearer "+token)
@@ -259,21 +260,24 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
-	if response := call("", "recover-1"); response.Code != http.StatusUnauthorized {
+	if response := call("", "recover-1", "Proceed"); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call("token", ""); response.Code != http.StatusConflict {
+	if response := call("token", "", "Proceed"); response.Code != http.StatusConflict {
 		t.Fatalf("missing id status=%d body=%s", response.Code, response.Body.String())
 	}
-	first := call("token", "recover-1")
-	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"claimable":true`) {
+	if response := call("token", "too-long", strings.Repeat("x", core.MaxWorkOrderOperatorDirectionRunes+1)); response.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status=%d body=%s", response.Code, response.Body.String())
+	}
+	first := call("token", "recover-1", "  Proceed with the amendment.  ")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"claimable":true`) || !strings.Contains(first.Body.String(), `"operator_direction":"Proceed with the amendment."`) {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
-	second := call("token", "recover-1")
-	if second.Code != http.StatusOK {
+	second := call("token", "recover-1", "replacement")
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"operator_direction":"Proceed with the amendment."`) {
 		t.Fatalf("duplicate status=%d body=%s", second.Code, second.Body.String())
 	}
-	if response := call("token", "recover-2"); response.Code != http.StatusConflict {
+	if response := call("token", "recover-2", "Another direction"); response.Code != http.StatusConflict {
 		t.Fatalf("new request after recovery status=%d body=%s", response.Code, response.Body.String())
 	}
 	count, _ := st.CountEvents(ctx, task.ID, "work_order.redispatched")

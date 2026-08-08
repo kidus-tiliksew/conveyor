@@ -214,9 +214,17 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	})
 }
 
-func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkOrder, error) {
+func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDirection ...string) (core.WorkOrder, error) {
 	if strings.TrimSpace(requestID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+	}
+	direction := ""
+	if len(suppliedDirection) > 0 {
+		direction = suppliedDirection[0]
+	}
+	direction, err := core.NormalizeWorkOrderOperatorDirection(direction)
+	if err != nil {
+		return core.WorkOrder{}, err
 	}
 	cfg, err := s.config(ctx)
 	if err != nil {
@@ -236,11 +244,11 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	}
 	if change := recoveryRefreeze(cfg, task, order); change != nil {
 		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout, change)
+			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout, change)
 		})
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout)
+		return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout)
 	})
 }
 
@@ -562,6 +570,9 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	}
 	if order.Stage == core.StageReview {
 		role = pack.MCPReviewRole(role)
+	}
+	if order.OperatorDirection != "" {
+		role += "\n\n# Operator direction\n\n" + order.OperatorDirection + "\n"
 	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"

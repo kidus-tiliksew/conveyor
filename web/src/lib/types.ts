@@ -655,6 +655,7 @@ export interface WorkOrder {
   retry_suppressed?: boolean
   retry_suppression_reason?: string
   redispatch_count: number
+  operator_direction?: string
   progress?: string
   cost_usd: number
   tokens_in: number

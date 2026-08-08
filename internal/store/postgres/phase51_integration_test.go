@@ -141,16 +141,17 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {
 		t.Fatalf("released jobs=%+v err=%v", jobs, err)
 	}
-	recovered, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
-	if err != nil || !recovered.Claimable || recovered.RetrySuppressed {
+	direction := "Proceed with the accepted amendment."
+	recovered, err := storetest.For(st).RecoverWorkOrderWithDirection(ctx, job.ID, "integration-recovery", "  "+direction+"  ", time.Hour)
+	if err != nil || !recovered.Claimable || recovered.RetrySuppressed || recovered.OperatorDirection != direction {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	duplicate, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
-	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
+	duplicate, err := storetest.For(st).RecoverWorkOrderWithDirection(ctx, job.ID, "integration-recovery", "replacement", time.Hour)
+	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount || duplicate.OperatorDirection != direction {
 		t.Fatalf("duplicate recovery=%+v err=%v", duplicate, err)
 	}
 	secondClaim, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-2", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
-	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) {
+	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) || secondClaim.OperatorDirection != direction {
 		t.Fatalf("second claim=%+v err=%v", secondClaim, err)
 	}
 	if _, staleErr := storetest.For(st).RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute); staleErr == nil {
@@ -161,7 +162,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	}
 	exit := 1
 	failed, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Reason: "harness exited: status 1", Outcome: core.WorkOrderOutcomeChildFailure, ExitStatus: &exit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3})
-	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second {
+	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second || failed.OperatorDirection != "" {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
 	var recoveries sync.WaitGroup
