@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('monitor page renders health, deduplication, task links, and drift age', async ({ page }) => {
+  let resolution: Record<string, string> | undefined
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     sessionStorage.setItem('conveyor-token', 'test-token')
@@ -10,6 +11,31 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   )
   await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
+  await page.route('**/v1/requirements?**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          requirement: { id: 'req-confirmed', title: 'Confirmed intent', current_version: 1 },
+          current_version: { requirement_id: 'req-confirmed', version: 1, confirmed: true },
+          pending_versions: [],
+        },
+        {
+          requirement: { id: 'req-pending', title: 'Pending intent' },
+          pending_versions: [{ requirement_id: 'req-pending', version: 1, confirmed: false }],
+        },
+      ],
+    }),
+  )
+  await page.route('**/v1/monitor/drift/*/resolve?**', async (route) => {
+    resolution = route.request().postDataJSON() as Record<string, string>
+    await route.fulfill({
+      json: {
+        id: 'direct_push:conveyor:abc',
+        outcome: resolution.outcome,
+        requirement_id: resolution.requirement_id,
+      },
+    })
+  })
   await page.route('**/v1/monitor?**', (route) =>
     route.fulfill({
       json: {
@@ -63,4 +89,13 @@ test('monitor page renders health, deduplication, task links, and drift age', as
     'href',
     '/tasks/drift-task',
   )
+
+  const form = page.getByRole('form', { name: 'Resolve drift direct_push:conveyor:abc' })
+  await form.getByLabel('Resolution outcome for direct_push:conveyor:abc').selectOption('requirements_amended')
+  const picker = form.getByLabel('Confirmed requirement for direct_push:conveyor:abc')
+  await expect(picker.getByRole('option', { name: 'Confirmed intent' })).toBeAttached()
+  await expect(picker.getByRole('option', { name: 'Pending intent' })).toHaveCount(0)
+  await picker.selectOption('req-confirmed')
+  await form.getByRole('button', { name: 'Resolve' }).click()
+  await expect.poll(() => resolution).toEqual({ outcome: 'requirements_amended', requirement_id: 'req-confirmed' })
 })

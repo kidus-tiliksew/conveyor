@@ -238,7 +238,7 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	drift := monitor.Drift{
 		ID: "drift-runtime", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
 		SourceURL: "https://github.com/acme/conveyor/commit/abc", CommitSHA: "abc",
-		RequirementID: requirement.ID, TaskID: task.ID, DetectedAt: time.Now().UTC(),
+		TaskID: task.ID, DetectedAt: time.Now().UTC(),
 	}
 	if _, _, err = st.(monitor.Store).RecordDrift(ctx, drift); err != nil {
 		t.Fatal(err)
@@ -246,14 +246,15 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
-	resolve := func(id string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/drift/"+id+"/resolve", strings.NewReader(`{"outcome":"requirements_amended"}`))
+	resolve := func(id, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/monitor/drift/"+id+"/resolve", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer token")
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
-	if response := resolve(drift.ID); response.Code != http.StatusOK {
+	body := `{"outcome":"requirements_amended","requirement_id":"` + requirement.ID + `"}`
+	if response := resolve(drift.ID, body); response.Code != http.StatusOK {
 		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
 	}
 	versions, err := st.ListRequirementVersions(ctx, requirement.ID)
@@ -261,7 +262,7 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 		versions[1].OriginDriftID != drift.ID || versions[1].Confirmed || !strings.Contains(versions[1].Content, drift.SourceURL) {
 		t.Fatalf("drift versions=%+v err=%v", versions, err)
 	}
-	if response := resolve(drift.ID); response.Code != http.StatusOK {
+	if response := resolve(drift.ID, body); response.Code != http.StatusOK {
 		t.Fatalf("repeat status=%d body=%s", response.Code, response.Body.String())
 	}
 	if versions, err = st.ListRequirementVersions(ctx, requirement.ID); err != nil || len(versions) != 2 {
@@ -284,8 +285,14 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	if _, _, err = st.(monitor.Store).RecordDrift(ctx, missing); err != nil {
 		t.Fatal(err)
 	}
-	if response := resolve(missing.ID); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "requirement_id is missing") {
+	if response := resolve(missing.ID, `{"outcome":"requirements_amended"}`); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "requirement_id is missing") {
 		t.Fatalf("missing requirement status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := resolve(missing.ID, `{"outcome":"conflict_resolved","requirement_id":"`+requirement.ID+`"}`); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "only allowed") {
+		t.Fatalf("irrelevant requirement status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := resolve(missing.ID, `{"outcome":"requirements_amended","requirement_id":"req-missing"}`); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "unknown monitor requirement_id") {
+		t.Fatalf("unknown requirement status=%d body=%s", response.Code, response.Body.String())
 	}
 	status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
 	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != missing.ID {
