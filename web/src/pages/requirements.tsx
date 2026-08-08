@@ -159,7 +159,6 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={document.id}
                 label={document.name}
-                meta={`v${document.current_version}`}
                 selected={openOverview?.id === document.id}
                 onClick={() => setOpenOverview({ id: document.id })}
               />
@@ -195,7 +194,6 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
-                meta={item.current_version ? `v${item.current_version.version}` : 'Unconfirmed'}
                 selected={!openOverview && selectedId === item.requirement.id}
                 onClick={() => selectRequirement(item.requirement.id)}
               />
@@ -992,57 +990,49 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
           <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
             <ListChecks className="size-3.5" /> What this requires
           </h3>
-          {/* Clauses read as a connected spine of numbered circles, the way the
-              spec itself is written — each entry a clause, each criterion a
-              sub-clause hung off it. */}
-          <ol className="relative mt-4">
-            {version.statements.length > 1 && (
-              <div aria-hidden className="absolute top-4 bottom-4 left-4 w-px bg-border" />
-            )}
+          <ol className="mt-4 space-y-3">
             {version.statements.map((statement, index) => (
-              <li key={statement.id} id={statement.id.toLowerCase()} className="relative scroll-mt-6 pb-6 last:pb-0">
-                <div className="flex gap-4">
+              <li
+                key={statement.id}
+                id={statement.id.toLowerCase()}
+                className="scroll-mt-6 overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-edge"
+              >
+                <div className="flex gap-3 p-4">
                   <a
                     href={`#${statement.id.toLowerCase()}`}
                     aria-label={`Link to ${statement.id}`}
-                    className="relative z-10 mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary font-mono text-xs font-semibold text-primary-foreground ring-4 ring-card transition-transform hover:scale-105"
+                    className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft font-mono text-[11px] font-semibold text-primary"
                     title={statement.id}
                   >
                     {index + 1}
                   </a>
-                  <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-edge">
-                    <div className="p-4">
-                      <p className="text-sm leading-6 text-balance">{statement.statement}</p>
-                      {statement.user_story && (
-                        <p className="mt-3 border-l-2 border-primary/30 pl-3 text-xs leading-5 text-muted italic">
-                          As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
-                          {statement.user_story.so_that}.
-                        </p>
-                      )}
-                    </div>
-                    {(statement.acceptance_criteria?.length ?? 0) > 0 && (
-                      <ol className="space-y-2.5 border-t border-border bg-surface/50 px-4 py-3">
-                        {statement.acceptance_criteria?.map((criterion, criterionIndex) => (
-                          <li
-                            key={criterion.id}
-                            id={criterion.id.toLowerCase()}
-                            className="scroll-mt-6 flex gap-2.5 text-xs"
-                          >
-                            <a
-                              href={`#${criterion.id.toLowerCase()}`}
-                              aria-label={`Link to ${criterion.id}`}
-                              className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
-                              title={criterion.id}
-                            >
-                              {criterionIndex + 1}
-                            </a>
-                            <span className="leading-5">{criterion.statement}</span>
-                          </li>
-                        ))}
-                      </ol>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm leading-6 text-balance">{statement.statement}</p>
+                    {statement.user_story && (
+                      <p className="mt-3 border-l-2 border-edge pl-3 text-xs leading-5 text-muted italic">
+                        As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
+                        {statement.user_story.so_that}.
+                      </p>
                     )}
                   </div>
                 </div>
+                {(statement.acceptance_criteria?.length ?? 0) > 0 && (
+                  <ol className="space-y-2.5 border-t border-border bg-surface/40 px-4 py-3">
+                    {statement.acceptance_criteria?.map((criterion, criterionIndex) => (
+                      <li key={criterion.id} id={criterion.id.toLowerCase()} className="scroll-mt-6 flex gap-3 text-xs">
+                        <a
+                          href={`#${criterion.id.toLowerCase()}`}
+                          aria-label={`Link to ${criterion.id}`}
+                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
+                          title={criterion.id}
+                        >
+                          {criterionIndex + 1}
+                        </a>
+                        <span className="leading-5">{criterion.statement}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </li>
             ))}
           </ol>
