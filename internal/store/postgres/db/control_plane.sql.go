@@ -1143,12 +1143,8 @@ WHERE t.workspace_id = $1
        strpos(lower(t.id), lower($4)) > 0 OR
        strpos(lower(t.source), lower($4)) > 0 OR
        strpos(lower(t.branch), lower($4)) > 0)
-  AND ($5::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) >= $5)
-  AND ($6::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) < $6)
+  AND ($5::timestamptz IS NULL OR t.created_at >= $5)
+  AND ($6::timestamptz IS NULL OR t.created_at < $6)
   AND (cardinality($7::text[]) = 0 OR EXISTS (
            SELECT 1 FROM unnest($7::text[]) AS wanted(document_id)
            WHERE (
@@ -1176,8 +1172,8 @@ type CountTaskOperationsTasksParams struct {
 	TaskStates         []string           `json:"task_states"`
 	Repositories       []string           `json:"repositories"`
 	Search             string             `json:"search"`
-	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
-	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
+	CreatedFrom        pgtype.Timestamptz `json:"created_from"`
+	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
 }
@@ -1188,8 +1184,8 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.TaskStates,
 		arg.Repositories,
 		arg.Search,
-		arg.UpdatedFrom,
-		arg.UpdatedTo,
+		arg.CreatedFrom,
+		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
 	)
@@ -1312,12 +1308,8 @@ WHERE t.workspace_id = $1
        strpos(lower(t.id), lower($4)) > 0 OR
        strpos(lower(t.source), lower($4)) > 0 OR
        strpos(lower(t.branch), lower($4)) > 0)
-  AND ($5::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) >= $5)
-  AND ($6::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) < $6)
+  AND ($5::timestamptz IS NULL OR t.created_at >= $5)
+  AND ($6::timestamptz IS NULL OR t.created_at < $6)
   AND (cardinality($7::text[]) = 0 OR EXISTS (
            SELECT 1 FROM unnest($7::text[]) AS wanted(document_id)
            WHERE (
@@ -1348,8 +1340,8 @@ type ListTaskOperationsTasksParams struct {
 	TaskStates         []string           `json:"task_states"`
 	Repositories       []string           `json:"repositories"`
 	Search             string             `json:"search"`
-	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
-	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
+	CreatedFrom        pgtype.Timestamptz `json:"created_from"`
+	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
 	PageOffset         int32              `json:"page_offset"`
@@ -1368,8 +1360,8 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.TaskStates,
 		arg.Repositories,
 		arg.Search,
-		arg.UpdatedFrom,
-		arg.UpdatedTo,
+		arg.CreatedFrom,
+		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
 		arg.PageOffset,

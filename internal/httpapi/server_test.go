@@ -2404,8 +2404,8 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 	}
 
 	// Each member narrows to exactly the seeded row that carries it. The
-	// updated-at bounds straddle the ledger task's last activity, which is the
-	// attachment event above rather than its creation.
+	// created-at bounds straddle the two creation instants. The later attachment
+	// event must not move ledger-sweep across this boundary.
 	for _, applied := range []struct {
 		name  string
 		query string
@@ -2414,8 +2414,8 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		{"free text", "q=LEDGER", "ledger-sweep"},
 		{"free text on the assigned branch", "q=hotfix", "rollout"},
 		{"served requirement", "serves_requirement=req-ledger", "ledger-sweep"},
-		{"updated from", "updated_from=2026-08-02T00:00:00Z", "ledger-sweep"},
-		{"updated to", "updated_to=2026-08-02T00:00:00Z", "rollout"},
+		{"created from", "created_from=2026-08-01T10:00:30Z", "rollout"},
+		{"created to", "created_to=2026-08-01T10:00:30Z", "ledger-sweep"},
 		{"state and repository", "state=running&repository=web", "rollout"},
 	} {
 		t.Run(applied.name, func(t *testing.T) {
@@ -2459,9 +2459,9 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		name  string
 		query string
 	}{
-		{"unparseable instant", "updated_from=last-tuesday"},
-		{"non-RFC-3339 date", "updated_to=2026-08-02"},
-		{"inverted range", "updated_from=2026-08-09T00:00:00Z&updated_to=2026-08-02T00:00:00Z"},
+		{"unparseable instant", "created_from=last-tuesday"},
+		{"non-RFC-3339 date", "created_to=2026-08-02"},
+		{"inverted range", "created_from=2026-08-09T00:00:00Z&created_to=2026-08-02T00:00:00Z"},
 	} {
 		t.Run("rejects "+rejected.name, func(t *testing.T) {
 			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
@@ -2471,6 +2471,22 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// The old parameters represented latest activity, so accepting them as
+	// creation bounds would silently change a stale caller's result. The API
+	// replacement is intentionally explicit; browser saved state migrates in
+	// the shared filter component instead.
+	for _, legacy := range []string{
+		"updated_from=2026-08-01T00:00:00Z",
+		"updated_to=2026-08-02T00:00:00Z",
+	} {
+		for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
+			response := get(t, surface+"?workspace_id=demo&"+legacy)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "retired") {
+				t.Fatalf("%s legacy %q status=%d body=%s", surface, legacy, response.Code, response.Body.String())
+			}
+		}
 	}
 
 	// The review inbox is the whole outstanding queue by construction: an

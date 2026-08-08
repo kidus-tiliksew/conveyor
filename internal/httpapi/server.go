@@ -1074,6 +1074,12 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
 		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),
 	}
+	// Updated bounds previously meant last activity. Rejecting the retired
+	// spelling keeps stale API callers from silently receiving Created semantics
+	// or an unfiltered result; saved browser state is migrated by the UI.
+	if values.Has("updated_from") || values.Has("updated_to") {
+		return filter, fmt.Errorf("updated_from and updated_to are retired; use created_from and created_to")
+	}
 	for _, state := range parseTaskFilterList(values["state"]) {
 		candidate := core.TaskState(state)
 		valid := false
@@ -1086,10 +1092,10 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		filter.States = append(filter.States, candidate)
 	}
 	var err error
-	if filter.UpdatedFrom, err = parseTaskFilterInstant(values.Get("updated_from")); err != nil {
+	if filter.CreatedFrom, err = parseTaskFilterInstant(values.Get("created_from")); err != nil {
 		return filter, err
 	}
-	if filter.UpdatedTo, err = parseTaskFilterInstant(values.Get("updated_to")); err != nil {
+	if filter.CreatedTo, err = parseTaskFilterInstant(values.Get("created_to")); err != nil {
 		return filter, err
 	}
 	return filter, filter.Validate()

@@ -18,7 +18,7 @@ import { useWorkspace, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
-export type UpdatedWindow = 'any' | '7d' | '30d' | '90d' | 'custom'
+export type CreatedWindow = 'any' | '7d' | '30d' | '90d' | 'custom'
 
 // Status, repository, requirement, and design are lists: each is a disjunction
 // the server evaluates — a task matches on any checked value — while distinct
@@ -27,9 +27,9 @@ export interface TaskFilterState {
   query: string
   states: string[]
   repositories: string[]
-  updated: UpdatedWindow
-  updatedFrom: string
-  updatedTo: string
+  created: CreatedWindow
+  createdFrom: string
+  createdTo: string
   requirements: string[]
   designs: string[]
 }
@@ -38,15 +38,15 @@ export const emptyTaskFilter: TaskFilterState = {
   query: '',
   states: [],
   repositories: [],
-  updated: 'any',
-  updatedFrom: '',
-  updatedTo: '',
+  created: 'any',
+  createdFrom: '',
+  createdTo: '',
   requirements: [],
   designs: [],
 }
-export const boardDefaultTaskFilter: TaskFilterState = { ...emptyTaskFilter, updated: '30d' }
+export const boardDefaultTaskFilter: TaskFilterState = { ...emptyTaskFilter, created: '30d' }
 
-const updatedWindowLabels: Record<UpdatedWindow, string> = {
+const createdWindowLabels: Record<CreatedWindow, string> = {
   any: 'Any time',
   '7d': 'Last 7 days',
   '30d': 'Last month',
@@ -62,8 +62,8 @@ export interface TaskFilterParams {
   q?: string
   state?: string[]
   repository?: string[]
-  updated_from?: string
-  updated_to?: string
+  created_from?: string
+  created_to?: string
   serves_requirement?: string[]
   governing_design?: string[]
 }
@@ -91,15 +91,15 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   if (filter.repositories.length) params.repository = filter.repositories
   if (filter.requirements.length) params.serves_requirement = filter.requirements
   if (filter.designs.length) params.governing_design = filter.designs
-  if (filter.updated === 'custom') {
-    const from = localDayStartInstant(filter.updatedFrom)
-    const to = localDayStartInstant(filter.updatedTo, 1)
-    if (from) params.updated_from = from
-    if (to) params.updated_to = to
-  } else if (presetDays[filter.updated]) {
+  if (filter.created === 'custom') {
+    const from = localDayStartInstant(filter.createdFrom)
+    const to = localDayStartInstant(filter.createdTo, 1)
+    if (from) params.created_from = from
+    if (to) params.created_to = to
+  } else if (presetDays[filter.created]) {
     const start = startOfLocalDay(new Date())
-    start.setDate(start.getDate() - presetDays[filter.updated])
-    params.updated_from = start.toISOString()
+    start.setDate(start.getDate() - presetDays[filter.created])
+    params.created_from = start.toISOString()
   }
   return params
 }
@@ -107,9 +107,9 @@ export function taskFilterActive(filter: TaskFilterState): boolean {
   return Object.keys(taskFilterParams(filter)).length > 0
 }
 export function taskFilterRangeError(filter: TaskFilterState): string {
-  if (filter.updated !== 'custom') return ''
+  if (filter.created !== 'custom') return ''
   const params = taskFilterParams(filter)
-  return params.updated_from && params.updated_to && params.updated_from >= params.updated_to
+  return params.created_from && params.created_to && params.created_from >= params.created_to
     ? 'Choose an end date on or after the start date.'
     : ''
 }
@@ -133,14 +133,16 @@ function readStoredFilter(key: string, fallback: TaskFilterState): TaskFilterSta
     const raw = localStorage.getItem(key)
     if (!raw) return fallback
     const stored = JSON.parse(raw) as Record<string, unknown>
-    const updated = storedText(stored.updated)
+    // Read the canonical Created shape first, then migrate the legacy Updated
+    // window in memory. The next user change persists only the Created shape.
+    const created = storedText(stored.created) ?? storedText(stored.updated)
     return {
       query: storedText(stored.query) ?? fallback.query,
       states: storedList(stored.states, stored.state) ?? fallback.states,
       repositories: storedList(stored.repositories, stored.repository) ?? fallback.repositories,
-      updated: updated && updated in updatedWindowLabels ? (updated as UpdatedWindow) : fallback.updated,
-      updatedFrom: storedText(stored.updatedFrom) ?? fallback.updatedFrom,
-      updatedTo: storedText(stored.updatedTo) ?? fallback.updatedTo,
+      created: created && created in createdWindowLabels ? (created as CreatedWindow) : fallback.created,
+      createdFrom: storedText(stored.createdFrom) ?? storedText(stored.updatedFrom) ?? fallback.createdFrom,
+      createdTo: storedText(stored.createdTo) ?? storedText(stored.updatedTo) ?? fallback.createdTo,
       requirements: storedList(stored.requirements, stored.requirement) ?? fallback.requirements,
       designs: storedList(stored.designs, stored.design) ?? fallback.designs,
     }
@@ -296,24 +298,24 @@ function CustomRangeEditor({ value, set }: { value: TaskFilterState; set: (patch
     <div className="mt-2 border-t border-border px-2 pt-3">
       <div className="grid grid-cols-2 gap-2">
         <Input
-          aria-label="Updated from"
+          aria-label="Created from"
           type="date"
-          value={value.updatedFrom}
-          onChange={(event) => set({ updatedFrom: event.target.value })}
+          value={value.createdFrom}
+          onChange={(event) => set({ createdFrom: event.target.value })}
           className="h-8 text-xs"
         />
         <Input
-          aria-label="Updated to"
+          aria-label="Created to"
           type="date"
-          value={value.updatedTo}
-          onChange={(event) => set({ updatedTo: event.target.value })}
+          value={value.createdTo}
+          onChange={(event) => set({ createdTo: event.target.value })}
           className="h-8 text-xs"
         />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
         {rangePresets.map((preset) => {
           const span = preset.range()
-          const active = value.updatedFrom === span.from && value.updatedTo === span.to
+          const active = value.createdFrom === span.from && value.createdTo === span.to
           return (
             <button
               key={preset.label}
@@ -324,7 +326,7 @@ function CustomRangeEditor({ value, set }: { value: TaskFilterState; set: (patch
                   ? 'border-primary bg-primary/15 text-primary'
                   : 'border-edge text-muted hover:bg-raised hover:text-foreground'
               }`}
-              onClick={() => set({ updatedFrom: span.from, updatedTo: span.to })}
+              onClick={() => set({ createdFrom: span.from, createdTo: span.to })}
             >
               {preset.label}
             </button>
@@ -333,21 +335,21 @@ function CustomRangeEditor({ value, set }: { value: TaskFilterState; set: (patch
       </div>
       <div className="mt-2">
         <RangeCalendar
-          from={value.updatedFrom}
-          to={value.updatedTo}
-          onSelect={(range) => set({ updatedFrom: range.from, updatedTo: range.to })}
+          from={value.createdFrom}
+          to={value.createdTo}
+          onSelect={(range) => set({ createdFrom: range.from, createdTo: range.to })}
         />
       </div>
     </div>
   )
 }
 
-type FilterCategory = 'state' | 'repository' | 'updated' | 'requirement' | 'design'
+type FilterCategory = 'state' | 'repository' | 'created' | 'requirement' | 'design'
 
 const filterCategoryIcons = {
   state: CircleDot,
   repository: GitBranch,
-  updated: CalendarDays,
+  created: CalendarDays,
   requirement: Code2,
   design: SlidersHorizontal,
 } as const
@@ -400,15 +402,15 @@ function FilterMenu({
   const categories: { id: FilterCategory; label: string; active: boolean }[] = [
     { id: 'state', label: 'Status', active: value.states.length > 0 },
     { id: 'repository', label: 'Repository', active: value.repositories.length > 0 },
-    { id: 'updated', label: 'Updated', active: value.updated !== fallback.updated },
+    { id: 'created', label: 'Created', active: value.created !== fallback.created },
     { id: 'requirement', label: 'Requirement', active: value.requirements.length > 0 },
     { id: 'design', label: 'System design', active: value.designs.length > 0 },
   ]
   const activeLabel = categories.find((item) => item.id === category)?.label ?? ''
-  // The Updated member is a single window — overlapping spans have no union an
+  // The Created member is a single window — overlapping spans have no union an
   // operator would ask for — so its rows check exclusively. Every other
   // category checks cumulatively and the menu stays open for the next check.
-  const selected: string[] = category === 'updated' ? [value.updated] : value[listCategoryKeys[category]]
+  const selected: string[] = category === 'created' ? [value.created] : value[listCategoryKeys[category]]
   const options: Option[] =
     category === 'state'
       ? states.map((id) => ({ id, title: taskStateLabels[id] ?? id }))
@@ -418,15 +420,15 @@ function FilterMenu({
           ? requirements
           : category === 'design'
             ? designs
-            : (Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((id) => ({
+            : (Object.keys(createdWindowLabels) as CreatedWindow[]).map((id) => ({
                 id,
-                title: updatedWindowLabels[id],
+                title: createdWindowLabels[id],
               }))
   const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
   const ValueIcon = filterCategoryIcons[category]
   const toggleSelection = (id: string) => {
-    if (category === 'updated') {
-      set({ updated: id as UpdatedWindow })
+    if (category === 'created') {
+      set({ created: id as CreatedWindow })
       return
     }
     const key = listCategoryKeys[category]
@@ -434,7 +436,7 @@ function FilterMenu({
     set({ [key]: current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id] })
   }
   const clearCategory = () => {
-    if (category === 'updated') set({ updated: fallback.updated, updatedFrom: '', updatedTo: '' })
+    if (category === 'created') set({ created: fallback.created, createdFrom: '', createdTo: '' })
     else set({ [listCategoryKeys[category]]: [] })
   }
   return (
@@ -525,9 +527,9 @@ function FilterMenu({
               className="max-h-60 overflow-y-auto"
               role="listbox"
               aria-label={activeLabel}
-              aria-multiselectable={category !== 'updated'}
+              aria-multiselectable={category !== 'created'}
             >
-              {category !== 'updated' && (
+              {category !== 'created' && (
                 <button
                   type="button"
                   role="option"
@@ -566,7 +568,7 @@ function FilterMenu({
               })}
               {!filtered.length && <p className="px-2.5 py-3 text-xs text-muted">No matches found.</p>}
             </div>
-            {category === 'updated' && value.updated === 'custom' && <CustomRangeEditor value={value} set={set} />}
+            {category === 'created' && value.created === 'custom' && <CustomRangeEditor value={value} set={set} />}
             {rangeError && (
               <p className="mt-2 px-2 text-xs text-failure" role="alert">
                 {rangeError}
@@ -617,7 +619,7 @@ export function TaskFilters({
   const activeCount = [
     value.states.length > 0,
     value.repositories.length > 0,
-    value.updated !== fallback.updated,
+    value.created !== fallback.created,
     value.requirements.length > 0,
     value.designs.length > 0,
   ].filter(Boolean).length
