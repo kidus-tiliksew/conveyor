@@ -47,6 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	logControlPlaneModelOverrides(log.Printf)
 	cfg := deployment
 	packBundle, err := pack.Load(deployment.PackDir)
 	if err != nil {
@@ -440,5 +441,11 @@ func main() {
 	log.Printf("conveyord listening on %s (workspace %s, %d repo(s))", *addr, cfg.Workspace, len(cfg.Repos))
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func logControlPlaneModelOverrides(logf func(string, ...any)) {
+	for _, override := range config.ActiveControlPlaneModelOverrides() {
+		logf("control-plane model override active: %s=%s", override.Variable, override.Model)
 	}
 }

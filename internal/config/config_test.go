@@ -29,6 +29,49 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestResolveControlPlaneModelEnvironmentPrecedence(t *testing.T) {
+	t.Setenv(ControlPlaneModelEnv, " general ")
+	t.Setenv(TriageModelEnv, " triage ")
+	t.Setenv(PlanningModelEnv, " planning ")
+
+	for _, test := range []struct {
+		stage, want string
+	}{
+		{stage: "triage", want: "triage"},
+		{stage: "planning", want: "planning"},
+		{stage: "review", want: "general"},
+	} {
+		if got := ResolveControlPlaneModel(test.stage, "stored"); got != test.want {
+			t.Fatalf("stage %s resolved model %q, want %q", test.stage, got, test.want)
+		}
+	}
+
+	t.Setenv(TriageModelEnv, " \t")
+	if got := ResolveControlPlaneModel("triage", "stored"); got != "general" {
+		t.Fatalf("empty stage override resolved model %q, want general", got)
+	}
+	t.Setenv(ControlPlaneModelEnv, "")
+	if got := ResolveControlPlaneModel("triage", "stored"); got != "stored" {
+		t.Fatalf("empty overrides resolved model %q, want stored", got)
+	}
+}
+
+func TestControlPlaneModelOverridesDoNotMutateWorkspaceConfig(t *testing.T) {
+	cfg := validConfig()
+	normalized, err := normalize(cfg, "environment override")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := normalized.Routing.Stages["triage"].Model
+	t.Setenv(ControlPlaneModelEnv, "deployment-model")
+	if got := ResolveControlPlaneModel("triage", stored); got != "deployment-model" {
+		t.Fatalf("resolved model=%q", got)
+	}
+	if got := normalized.WorkspaceDocument().ExecutionSettings.ControlPlane.Triage.Model; got != stored {
+		t.Fatalf("workspace document model=%q, want stored %q", got, stored)
+	}
+}
+
 func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 	base := validConfig()
 	normalized, err := normalize(base, "planning defaults")
