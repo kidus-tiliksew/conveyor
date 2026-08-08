@@ -3670,6 +3670,20 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, rows.Err()
 }
 
+func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
+	rows, err := s.queries.ListCheckpointContextCandidates(ctx, db.ListCheckpointContextCandidatesParams{
+		WorkspaceID: workspace(ctx), RequirementID: requirementID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]store.CheckpointContextCandidate, len(rows))
+	for i, row := range rows {
+		result[i] = store.CheckpointContextCandidate{ID: row.ID, Title: row.Title, State: core.TaskState(row.State)}
+	}
+	return result, nil
+}
+
 // listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
 // workspace when the set is empty. It backs the activity-marker projection so a
 // page-scoped caller pays for its page only (spec §21.58).

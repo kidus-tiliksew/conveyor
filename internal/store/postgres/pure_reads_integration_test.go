@@ -144,6 +144,46 @@ func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {
 	storetest.RunTaskFilterConformance(t, fixture)
 }
 
+func TestCheckpointContextCandidatesMatchDirectActiveContextIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	suffix := core.NewTaskID()
+	now := time.Now().UTC()
+	seed := func(prefix, reason string) string {
+		t.Helper()
+		id := prefix + "-" + suffix
+		task := phase61Task(workspace, id, core.TaskRunning, "")
+		task.Title, task.CreatedAt = prefix, now
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: id + "-job", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+			ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued,
+			LastAttemptOutcome: core.WorkOrderOutcomeReleased, LastFailureMessage: reason,
+			QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	eligible := seed("eligible", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+	seed("other-release", "worker stopped")
+	attached := seed("attached", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+	if err := st.AppendEvent(ctx, core.Event{TaskID: attached, Kind: store.TaskContextRequirementAdded,
+		Payload: core.JSONPayload(map[string]any{"id": "req-confirmed"})}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.ListCheckpointContextCandidates(ctx, "req-confirmed")
+	if err != nil || len(got) != 1 || got[0].ID != eligible {
+		t.Fatalf("candidates=%+v err=%v", got, err)
+	}
+}
+
 // A Tasks page pays for its page. The activity-marker projection used to read
 // every work order in the workspace and discard the rest, which is exactly the
 // unbounded read the Tasks list was rewritten to avoid (spec §21.58).

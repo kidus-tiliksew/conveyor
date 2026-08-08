@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/requirements", s.createRequirement)
 			r.Get("/requirements/{id}", s.getRequirement)
 			r.Get("/requirements/{id}/versions", s.listRequirementVersions)
+			r.Get("/requirements/{id}/checkpoint-context-candidates", s.listCheckpointContextCandidates)
 			r.With(s.requireMutationAuth).Post("/requirements/{id}/versions", s.proposeRequirementVersion)
 			r.With(s.requireMutationAuth).Post("/requirements/{id}/versions/{version}/confirm", s.confirmRequirementVersion)
 			r.Get("/reference-documents", s.listReferenceDocuments)

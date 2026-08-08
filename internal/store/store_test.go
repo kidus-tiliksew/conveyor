@@ -94,6 +94,42 @@ func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
 	}
 }
 
+func TestMemoryCheckpointContextCandidatesRequireOpenPausedUnattachedTask(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	seed := func(id, reason string) {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: "demo", Title: id, State: core.TaskRunning, CreatedAt: now}
+		job := core.Job{ID: id + "-job", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{
+			ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued,
+			LastAttemptOutcome: core.WorkOrderOutcomeReleased, LastFailureMessage: reason,
+			QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("eligible", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+	seed("other-release", "worker stopped")
+	seed("attached", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+	if err := st.AppendEvent(ctx, core.Event{TaskID: "attached", Kind: TaskContextRequirementAdded,
+		Payload: core.JSONPayload(map[string]any{"id": "req-confirmed"}), At: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.ListCheckpointContextCandidates(ctx, "req-confirmed")
+	if err != nil || len(got) != 1 || got[0].ID != "eligible" {
+		t.Fatalf("candidates=%+v err=%v", got, err)
+	}
+}
+
 func TestMemoryReviewRequirementSnapshotSurvivesReload(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()

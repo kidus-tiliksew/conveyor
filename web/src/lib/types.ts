@@ -80,6 +80,12 @@ export interface TaskContext {
   designs?: Array<{ id: string; title: string; version: number }>
 }
 
+export interface CheckpointContextCandidate {
+  id: string
+  title: string
+  state: TaskState
+}
+
 export interface TaskRelation {
   id: string
   title: string

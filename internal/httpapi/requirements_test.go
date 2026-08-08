@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
@@ -131,6 +132,50 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	missing := call(http.MethodPost, "/v1/requirements/missing/versions", revision)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestCheckpointContextCandidatesREST(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: "req-confirmed", Title: "Confirmed intent"},
+		core.RequirementVersion{
+			Content:    "Confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Paused tasks receive confirmed context.\n```",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Paused tasks receive confirmed context."}},
+			Origin:     core.RequirementOriginOperator,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: "checkpoint-task", Workspace: "demo", Title: "Checkpoint task", State: core.TaskRunning, CreatedAt: now}
+	job := core.Job{ID: "checkpoint-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued,
+		LastAttemptOutcome: core.WorkOrderOutcomeReleased,
+		LastFailureMessage: core.WorkOrderReleaseReasonOperatorCheckpointReached,
+		QueueEnteredAt:     now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	request := httptest.NewRequest(http.MethodGet, "/v1/requirements/req-confirmed/checkpoint-context-candidates", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"checkpoint-task"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

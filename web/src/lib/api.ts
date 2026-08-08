@@ -109,6 +109,11 @@ export function fetchRequirement(requirementId: string) {
 export function fetchRequirementVersions(requirementId: string) {
   return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`))
 }
+export function fetchCheckpointContextCandidates(requirementId: string) {
+  return getJSON<import('./types').CheckpointContextCandidate[]>(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/checkpoint-context-candidates`),
+  )
+}
 export async function confirmRequirementVersion(
   token: string,
   requirementId: string,
@@ -287,6 +292,19 @@ export async function resolveMonitorDrift(
 }
 export function fetchTasks() {
   return getJSON<Task[]>(workspaceURL('/v1/tasks'))
+}
+export async function updateTaskContext(
+  token: string,
+  taskId: string,
+  change: { add: { requirement_ids?: string[]; system_design_ids?: string[] }; remove: Record<string, never> },
+) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/context`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify(change),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<import('./types').TaskContext>
 }
 // The Tasks view's read-only projection (spec §21.58): task state, relations,
 // attached context, and plan status from one durable source.

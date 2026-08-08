@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Clock3, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Clock3, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { recoverWorkOrder } from '../../lib/api'
 import { deriveCurrentExecutionState, type CurrentExecutionState } from '../../lib/activity'
 import type { ActivityItem } from '../../lib/types'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
+import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 
 export function hasWorkerRecovery(item: ActivityItem) {
   const state = deriveCurrentExecutionState(item)
@@ -49,6 +50,7 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   const requestId = useRef(crypto.randomUUID())
   const [checkoutResolved, setCheckoutResolved] = useState(false)
   const [direction, setDirection] = useState('')
+  const [attachingContext, setAttachingContext] = useState(false)
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (state.kind !== 'retry_pending') return
@@ -102,6 +104,17 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
           <p>
             A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.
           </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-attention/30 bg-surface/60 p-2">
+            <span>
+              <span className="font-medium text-foreground">Attached context: </span>
+              {(item.task.context?.requirements?.length ?? 0) + (item.task.context?.designs?.length ?? 0) === 0
+                ? 'None'
+                : `${item.task.context?.requirements?.length ?? 0} requirement(s), ${item.task.context?.designs?.length ?? 0} design document(s)`}
+            </span>
+            <Button variant="secondary" size="sm" disabled={!token} onClick={() => setAttachingContext(true)}>
+              <Link2 aria-hidden /> Attach context
+            </Button>
+          </div>
           <label className="block space-y-1.5">
             <span className="font-medium text-foreground">Operator direction</span>
             <textarea
@@ -149,6 +162,9 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
       </Button>
       {!token && <p className="text-xs text-muted">Operator authorization is required to retry.</p>}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
+      {attachingContext && (
+        <TaskContextAttachmentDialog task={item.task} token={token} onClose={() => setAttachingContext(false)} />
+      )}
     </div>
   )
 }

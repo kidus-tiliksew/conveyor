@@ -60,6 +60,33 @@ FROM tasks t
 WHERE t.workspace_id = $1
 ORDER BY t.created_at, t.id;
 
+-- name: ListCheckpointContextCandidates :many
+SELECT t.id, t.title, t.state
+FROM tasks t
+JOIN LATERAL (
+    SELECT w.state, w.last_attempt_outcome, w.last_failure_message
+    FROM work_orders w
+    WHERE w.workspace_id = t.workspace_id AND w.task_id = t.id
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT 1
+) latest ON true
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND t.state NOT IN ('merged', 'closed')
+  AND latest.state = 'queued'
+  AND latest.last_attempt_outcome = 'released'
+  AND latest.last_failure_message = 'operator checkpoint reached'
+  AND COALESCE((
+      SELECT e.kind
+      FROM events e
+      WHERE e.workspace_id = t.workspace_id
+        AND e.task_id = t.id
+        AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+        AND e.payload_json ->> 'id' = sqlc.arg(requirement_id)::text
+      ORDER BY e.id DESC
+      LIMIT 1
+  ), '') <> 'task.context_requirement_added'
+ORDER BY t.id;
+
 -- The shared Tasks/Board filter (AC-2.4) is evaluated here rather than in Go, so
 -- neither surface ever loads the workspace to narrow it (AC-2.3). Each member
 -- short-circuits on its own empty argument, leaving the unfiltered plan as it

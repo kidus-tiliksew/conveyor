@@ -245,6 +245,20 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) listCheckpointContextCandidates(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := s.Store.GetRequirement(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	candidates, err := s.Store.ListCheckpointContextCandidates(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, candidates)
+}
+
 func parseRequirementIfMatch(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "W/")
