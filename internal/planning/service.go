@@ -120,7 +120,7 @@ type produced struct {
 	SystemDesignID string
 	BundleID       string
 	// Title is the produced artifact's own title. Finalizing adopts it as the
-	// session title, retiring the provisional one (spec §21.57 change 3).
+	// session title, retiring the provisional one.
 	Title string
 }
 
@@ -131,7 +131,7 @@ type toolExecution struct {
 }
 
 // CreateSessionInput opens a durable planning session. Goal is declared once
-// and never updated (spec §21.57 change 3); an empty goal is compatible and
+// and never updated; an empty goal is compatible and
 // reads back as `open`. There is no title input: the service selects the
 // provisional title from the goal and finalizing adopts the produced
 // artifact's, so a session is never named by a caller's static label.
@@ -200,7 +200,7 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	}
 	// A session carries its goal-derived provisional title until it produces
 	// something, and finalizing swaps in the artifact's own title. That is what
-	// retires the identical "New requirement" rows (spec §21.57 change 3).
+	// retires the identical "New requirement" rows.
 	return s.Store.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
 		RequirementContextID:  input.RequirementContextID,
@@ -426,7 +426,7 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			// A non-open goal accepts only its matching finalizer. The mismatch
 			// is an ordinary recoverable tool result — never a run abort — so
 			// the agent reads the correction and may finalize correctly in a
-			// later step of this same run (spec §21.57 change 3).
+			// later step of this same run.
 			if expected := expectedFinalizeTool(session.Goal); expected != "" &&
 				isFinalize(call.Name) && call.Name != expected {
 				rejectedCalls = append(rejectedCalls, call)
@@ -1127,7 +1127,7 @@ func (s *Service) lineageContext(ctx context.Context, budget lineagecontext.Budg
 
 // goalStatement tells the agent which artifact this session exists to produce,
 // which finalizer it may reach for, and which document it was opened from. The
-// goal is advisory here and enforced at finalize time (spec §21.57 change 3);
+// goal is advisory here and enforced at finalize time;
 // the context document is advisory here and defaulted in requirementTool.
 func goalStatement(session core.PlanningSession) string {
 	statement := "This session's goal is open: finalize_requirement, finalize_system_design, or finalize_bundle is legal. " +
@@ -1405,7 +1405,7 @@ func containsFinalize(calls []toolCall) bool {
 }
 
 // expectedFinalizeTool is the only finalizer a non-open goal accepts; an open
-// goal returns "" because either is legal (spec §21.57 change 3). It lives
+// goal returns "" because either is legal. It lives
 // beside toolNames() because that registry owns the tool vocabulary — a goal is
 // a domain value and knows nothing about tool names.
 func expectedFinalizeTool(goal core.PlanningSessionGoal) string {
@@ -2270,7 +2270,7 @@ func (s *Service) requirementTool(ctx context.Context, session core.PlanningSess
 	// A session opened from a document revises that document. Without this the
 	// omitted requirement_id falls through to the new-document branch below and
 	// forks a competing intent document instead of proposing its next version —
-	// and the sidebar is now the only authoring path there is (spec §21.57).
+	// and the sidebar is now the only authoring path there is.
 	targetRequirementID := strings.TrimSpace(args.RequirementID)
 	if targetRequirementID == "" {
 		targetRequirementID = strings.TrimSpace(session.RequirementContextID)
@@ -2611,7 +2611,7 @@ func (s *Service) archiveAndFinalize(ctx context.Context, session core.PlanningS
 	}
 	// Archive the session as finalizing leaves it, not as the run loaded it, so
 	// the audit artifact and the durable row do not disagree about the name and
-	// outcome of the same session (spec §9).
+	// outcome of the same session.
 	archived := session
 	archived.Status = core.PlanningSessionFinalized
 	archived.ProducedRequirementID = value.RequirementID

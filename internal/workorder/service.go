@@ -352,7 +352,7 @@ func cloneRecoveryEffortArgs(source map[string][]string) map[string][]string {
 
 // refreshQueuedHarnessSnapshot re-resolves an automatically redispatched
 // order's pinned harness definition before it re-enters the queue
-// (spec §21.32). Best-effort: retaining the prior snapshot is the explicit
+// (design-harness-execution). Best-effort: retaining the prior snapshot is the explicit
 // fallback, and the recovery transition that follows reports the authoritative
 // state errors.
 func (s *Service) refreshQueuedHarnessSnapshot(ctx context.Context, cfg *config.Config, id string) {
@@ -551,7 +551,7 @@ func (s *Service) AuthorizeClaimed(ctx context.Context, id, session string) (cor
 
 // GetVisible returns read-only context for an order already authorized by a
 // worker-facing visibility check. It does not relax mutation or artifact
-// authorization for an unclaimed order (spec §21.47).
+// authorization for an unclaimed order (design-260805-973cd4).
 func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -564,7 +564,7 @@ func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
 // snapshots, following the migration 064/067 snapshot pattern; those pins bind
 // verdict validation. A queued review order exposed through the read-only peek
 // instead re-resolves live authority per request, persists nothing, and remains
-// advisory until claim (spec §21.47).
+// advisory until claim (design-260805-973cd4).
 func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Context, error) {
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -590,7 +590,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		role += "\n\n# Operator direction\n\n" + order.OperatorDirection + "\n"
 	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
-		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
+		role += "\n\nThis is a merge-conflict fix order (design-git-delivery). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
 	var cfg *config.Config
 	if s.ConfigProvider != nil {
@@ -610,7 +610,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			servedRequirements = order.ServedRequirementSnapshot
 		} else {
 			// A queued review peek resolves live served-requirement authority for
-			// this request only; it persists nothing and is advisory (spec §21.47).
+			// this request only; it persists nothing and is advisory (design-260805-973cd4).
 			servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve served requirements for queued review task %s: %w", task.ID, resolveErr)
@@ -643,7 +643,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			governance = &pinned
 		} else {
 			// A queued review peek resolves live governance authority for this
-			// request only; it persists nothing and is advisory (spec §21.47).
+			// request only; it persists nothing and is advisory (design-260805-973cd4).
 			live, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve governance for queued review task %s: %w", task.ID, resolveErr)
@@ -727,7 +727,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	result.ContextExhaustionReasons = append([]string(nil), lineage.ExhaustionReasons...)
 	for _, reference := range artifacts {
 		// Verification evidence intentionally remains direct-task only even when
-		// other context arrives through lineage (spec §12, §21.44 change 2).
+		// other context arrives through lineage (req-260802-72fc68 REQ-2).
 		if order.Stage == core.StageReview && reference.TaskID == task.ID && reference.EligibleVerificationEvidence() {
 			result.VerificationEvidence = append(result.VerificationEvidence, reference)
 		}
@@ -831,7 +831,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	}
 	if authorized == nil {
 		// Keep unauthorized ownership mismatches indistinguishable from missing
-		// artifacts; artifact ids alone are never bearer capabilities (spec §21.4).
+		// artifacts; artifact ids alone are never bearer capabilities (design-http-api).
 		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
 	}
 	_, content, err := s.Store.GetArtifact(ctx, artifactID)
@@ -1158,7 +1158,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
 		// A fix submitted while the approval is stale must retarget the
 		// refresh review to the pushed head; each refresh seat order
-		// contracts the baseline and the new head (spec §21.30), so leaving
+		// contracts the baseline and the new head (design-git-delivery), so leaving
 		// the recorded head behind would review a snapshot that predates
 		// the fix on every subsequent round.
 		if err = s.Store.AdvanceTaskRefreshHead(ctx, task.ID, reviewedHead); err != nil {
@@ -1374,7 +1374,7 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 // authorizedSession keeps same-session admission separate from lifecycle
 // legality. Submitted orders remain observable by their owning session without
 // a live lease, while lifecycle mutations retain claimed-only admission
-// (spec §21.37).
+// (design-260805-973cd4).
 func (s *Service) authorizedSession(ctx context.Context, id, session string, allowSubmitted bool) (core.WorkOrder, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {

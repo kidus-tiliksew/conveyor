@@ -376,7 +376,7 @@ func TestBranchDiffReadsPushedBranchFromBareCache(t *testing.T) {
 		t.Fatal("BranchDiff succeeded for a branch that was never pushed")
 	}
 
-	// Simulate the implementing agent's push (spec §21.8): commit task work on
+	// Simulate the implementing agent's push (design-git-delivery): commit task work on
 	// the branch in origin, as `git push` from a task worktree would produce.
 	mustRun(t, origin, "git", "checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(origin, "app.txt"), []byte("v2\n"), 0o644); err != nil {

@@ -173,7 +173,7 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		TaskID: strings.TrimSpace(r.FormValue("task_id")),
 		// Requirement attachments replace feature attachments on the live API;
 		// the store retains legacy fields only for migration compatibility
-		// (spec §21.46).
+		// by construction.
 		RequirementID:     strings.TrimSpace(r.FormValue("requirement_id")),
 		PlanningSessionID: strings.TrimSpace(r.FormValue("planning_session_id")),
 		CreatedAt:         time.Now().UTC(),
