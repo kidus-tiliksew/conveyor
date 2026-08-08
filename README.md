@@ -10,6 +10,8 @@ event, and the events build a knowledge graph that links each merged
 change back through its task, plan, review, and evidence to the
 requirement it serves.
 
+![The Conveyor board: tasks moving through plan, implementing, reviewing, and verifying stages](docs/assets/board.png)
+
 Conveyor has been building itself since July 2026. Nearly every feature
 in this repository entered as a document, went through the plan and
 review gates, and merged with its lineage recorded, including the
