@@ -139,7 +139,6 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
-                  meta={item.document.current_version ? `v${item.document.current_version}` : undefined}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
                     void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
@@ -319,22 +318,21 @@ function DesignCanvas({
       )}
 
       {item.versions.length > 0 && (
-        <section className="mt-8 border-t border-border pt-5" aria-label="System design versions">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+        <details className="mt-8 border-t border-border pt-5">
+          <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
             <History className="size-3.5" /> Version history
-          </h3>
-          <ol className="mt-3 space-y-2">
+            <span className="text-faint">({item.versions.length})</span>
+          </summary>
+          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
             {item.versions.map((version) => (
-              <li key={version.version} className="rounded-md border border-border p-2.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant="mono">v{version.version}</Badge>
-                  <Badge variant={version.confirmed ? 'positive' : version.dismissed ? 'default' : 'accent'}>
-                    {version.confirmed ? 'Confirmed' : version.dismissed ? 'Dismissed' : 'Proposed'}
-                  </Badge>
-                </div>
-                <details className="mt-1.5">
-                  <summary className="cursor-pointer text-xs font-medium text-primary hover:underline">
-                    Read version
+              <li key={version.version} className="px-3 py-2 text-xs">
+                <details>
+                  <summary className="flex cursor-pointer flex-wrap items-center gap-2">
+                    <Badge variant="mono">v{version.version}</Badge>
+                    <Badge variant={version.confirmed ? 'positive' : version.dismissed ? 'default' : 'accent'}>
+                      {version.confirmed ? 'Confirmed' : version.dismissed ? 'Dismissed' : 'Proposed'}
+                    </Badge>
+                    <span className="ml-auto font-medium text-primary hover:underline">Read version</span>
                   </summary>
                   <div className="mt-2 rounded-md bg-surface p-4">
                     <MarkdownProse>{version.content}</MarkdownProse>
@@ -343,7 +341,7 @@ function DesignCanvas({
               </li>
             ))}
           </ol>
-        </section>
+        </details>
       )}
 
       {settledDecisions.length > 0 && (
