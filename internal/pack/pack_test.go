@@ -197,18 +197,33 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 
 func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	t.Parallel()
-	requirements := []core.ServedRequirementContext{{ID: "req-runtime", Title: "Runtime", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-3", Statement: "Retries stop."}}}}
+	requirements := []core.ServedRequirementContext{{ID: "req-runtime", Title: "Runtime", Version: 2, Statements: []core.RequirementStatement{{ID: "REQ-3", Statement: "Retries stop.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-3.1", Statement: "Retry state is durable."}}}}}}
 	implement := WithRequirementCitationContract("implement", core.StageImplement, requirements)
 	review := WithRequirementCitationContract("review", core.StageReview, requirements)
 	unlinked := WithRequirementCitationContract("review", core.StageReview, nil)
-	if !strings.Contains(implement, "REQ-3: Retries stop.") || !strings.Contains(implement, "cite the applicable stable REQ-n IDs") {
-		t.Fatalf("implement contract=%s", implement)
+	unlinkedImplement := WithRequirementCitationContract("implement", core.StageImplement, nil)
+	for _, required := range []string{"REQ-3: Retries stop.", "AC-3.1: Retry state is durable.", "cite the applicable stable REQ-n IDs or AC-n.m IDs", "confirmed DEC-n decisions", "governing System Design document ID", "(design-task-lifecycle)", "Do not add ornamental citations"} {
+		if !strings.Contains(implement, required) {
+			t.Fatalf("implement contract missing %q: %s", required, implement)
+		}
 	}
-	if !strings.Contains(review, "Pinned served requirement citation authority") || !strings.Contains(review, "req-runtime v2") || !strings.Contains(review, "unknown_ids") || !strings.Contains(review, "not a claim of exhaustive source parsing") {
-		t.Fatalf("review contract=%s", review)
+	for _, required := range []string{"Pinned served requirement citation authority", "req-runtime v2", "against the pinned versions above", "approved governing execution plan", "unknown_ids", "not a claim of exhaustive source parsing"} {
+		if !strings.Contains(review, required) {
+			t.Fatalf("review contract missing %q: %s", required, review)
+		}
 	}
 	if !strings.Contains(unlinked, "applicable=false") || !strings.Contains(unlinked, "unlinked task remains legal") {
 		t.Fatalf("unlinked contract=%s", unlinked)
+	}
+	for _, required := range []string{"confirmed DEC-n authority", "governing System Design document ID", "(design-task-lifecycle)", "Do not add ornamental citations"} {
+		if !strings.Contains(unlinkedImplement, required) {
+			t.Fatalf("unlinked implement contract missing %q: %s", required, unlinkedImplement)
+		}
+	}
+	for _, obsolete := range []string{"spec " + "§", "alongside existing", "governing " + "spec"} {
+		if strings.Contains(implement, obsolete) || strings.Contains(unlinkedImplement, obsolete) || strings.Contains(review, obsolete) {
+			t.Fatalf("citation contract contains obsolete authority text %q", obsolete)
+		}
 	}
 }
 
