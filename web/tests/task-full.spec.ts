@@ -2005,7 +2005,7 @@ test('task detail headers show the task name while routes and API lookup keep us
   await expect(fullHeader).not.toContainText(fullTaskID)
   // Relationships live in the explorer panel now, not in a card on the page
   // (spec §21.61 change 2) — the detail surfaces carry the affordance only.
-  await expect(page.getByRole('button', { name: 'Related' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByText('Trace planning to delivery evidence')).toHaveCount(0)
   expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
 
