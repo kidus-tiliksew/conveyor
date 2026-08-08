@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Check } from 'lucide-react'
+import { Check, TriangleAlert } from 'lucide-react'
 
 /**
  * One document carries exactly one attention surface (spec §21.61 change 1).
@@ -28,22 +28,22 @@ export type AttentionItem = {
 export function AttentionSurface({ items }: { items: AttentionItem[] }) {
   if (items.length === 0)
     return (
-      <section aria-label="Needs your attention">
-        <p className="flex items-center gap-2 text-xs text-muted">
-          <Check className="size-3.5 text-positive" />
-          Nothing needs your attention on this document.
-        </p>
+      <section
+        aria-label="Needs your attention"
+        className="flex items-center gap-2 rounded-lg border border-border bg-surface/40 px-3.5 py-2.5 text-xs text-muted"
+      >
+        <Check className="size-3.5 shrink-0 text-positive" />
+        Nothing needs your attention on this document.
       </section>
     )
   return (
-    <section
-      aria-label="Needs your attention"
-      className="overflow-hidden rounded-lg border border-attention/30 bg-attention-soft/25"
-    >
-      <h2 className="border-b border-attention/20 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+    <section aria-label="Needs your attention" className="overflow-hidden rounded-lg border border-attention/25">
+      <h2 className="flex items-center gap-1.5 bg-attention-soft/40 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+        <TriangleAlert className="size-3" />
         Needs your attention
+        <span className="ml-0.5 font-mono text-attention/70">{items.length}</span>
       </h2>
-      <ul className="divide-y divide-attention/15">
+      <ul className="divide-y divide-border bg-attention-soft/10">
         {items.map((item) => (
           <li
             key={item.id}

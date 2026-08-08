@@ -1,3 +1,4 @@
+import { FileText } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 /**
@@ -19,9 +20,9 @@ export function DocumentTree({ children }: { children: ReactNode }) {
 
 export function DocumentTreeGroup({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <section className="mb-5 last:mb-0">
-      <h2 className="px-5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{label}</h2>
-      {children}
+    <section className="mb-5 px-3 last:mb-0">
+      <h2 className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{label}</h2>
+      <div className="space-y-0.5">{children}</div>
     </section>
   )
 }
@@ -43,16 +44,23 @@ export function DocumentTreeItem({
       type="button"
       aria-current={selected ? 'true' : undefined}
       onClick={onClick}
-      className={`block w-full border-l-2 py-2 pl-[18px] pr-4 text-left transition-colors ${
-        selected ? 'border-primary bg-primary-soft text-primary' : 'border-transparent hover:bg-surface'
+      className={`flex w-full items-center gap-2.5 rounded-md py-2 px-2.5 text-left transition-colors ${
+        selected ? 'bg-primary-soft text-primary' : 'text-foreground hover:bg-surface'
       }`}
     >
-      <span className="block truncate text-sm font-medium">{label}</span>
-      {meta && <span className="mt-0.5 block truncate text-[11px] text-faint">{meta}</span>}
+      <FileText className={`size-4 shrink-0 ${selected ? 'text-primary' : 'text-faint'}`} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{label}</span>
+        {meta && (
+          <span className={`mt-0.5 block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
+            {meta}
+          </span>
+        )}
+      </span>
     </button>
   )
 }
 
 export function DocumentTreeNote({ children }: { children: ReactNode }) {
-  return <p className="px-5 py-1.5 text-xs leading-5 text-muted">{children}</p>
+  return <p className="px-2 py-1.5 text-xs leading-5 text-muted">{children}</p>
 }

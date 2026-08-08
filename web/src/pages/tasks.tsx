@@ -1,6 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { FileCode2, ListChecks, Network, Plus, Workflow } from 'lucide-react'
+import {
+  CalendarDays,
+  ChevronDown,
+  ChevronsUpDown,
+  CircleAlert,
+  FileCode2,
+  GitBranch,
+  ListChecks,
+  Plus,
+  Workflow,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
@@ -21,7 +31,7 @@ import { fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import { relativeTime } from '../lib/utils'
-import type { TaskOperationsItem, TaskPlanStatus, TaskRelation } from '../lib/types'
+import type { TaskOperationsItem, TaskPlanStatus } from '../lib/types'
 
 const PAGE_SIZE = 25
 
@@ -91,7 +101,7 @@ export function TasksPage() {
           </p>
         </header>
 
-        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} className="mt-6" />
+        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} compact className="mt-6" />
 
         {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
         {isLoading && workspace && (
@@ -123,13 +133,31 @@ export function TasksPage() {
         )}
 
         {items && items.length > 0 && (
-          <ul aria-label="Tasks" className="mt-7 space-y-3">
-            {items.map((item) => (
-              <li key={item.task.id}>
-                <TaskRow item={item} selected={item.task.id === selectedId} />
-              </li>
-            ))}
-          </ul>
+          <section className="mt-7 overflow-hidden rounded-xl border border-border bg-card" aria-label="Tasks table">
+            <div className="min-w-[900px] overflow-x-auto">
+              <div className="grid grid-cols-[minmax(300px,2fr)_minmax(150px,1fr)_minmax(170px,1fr)_minmax(190px,1.2fr)_minmax(170px,1fr)] border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
+                <SortHeader label="Name" />
+                <SortHeader label="State" />
+                <SortHeader label="Stage" />
+                <SortHeader label="Context" />
+                <SortHeader label="Updated" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 border-b border-border bg-raised/40 px-4 py-3 text-sm font-medium">
+                  <ChevronDown className="size-4 text-muted" aria-hidden="true" />
+                  <ListChecks className="size-4 text-primary" aria-hidden="true" />
+                  <span>All tasks</span>
+                  <span className="text-xs text-muted">{page?.total ?? items.length}</span>
+                </div>
+                {items.map((item) => (
+                  <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} />
+                ))}
+              </div>
+            </div>
+            <p className="border-t border-border px-4 py-3 text-xs text-muted">
+              {page?.total ?? items.length} {page?.total === 1 ? 'task' : 'tasks'}
+            </p>
+          </section>
         )}
 
         {page && page.total > page.limit && (
@@ -185,70 +213,77 @@ function taskPermalink(taskId: string) {
   return typeof window === 'undefined' ? path : new URL(path, window.location.origin).toString()
 }
 
+function SortHeader({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-1">
+      <span>{label}</span>
+      <ChevronsUpDown className="size-3 text-faint" aria-hidden="true" />
+    </div>
+  )
+}
+
 function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boolean }) {
   const { task } = item
   const stage =
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
   return (
-    <div className={`rounded-lg border bg-card p-4 transition-colors ${selected ? 'border-primary' : 'border-border'}`}>
-      {/* Title first, then how the task stands, then the quieter facts: the
-          row is read top-down, and its own name is the loudest thing on it. */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Selecting a row opens the task's detail beside the list rather than
-            navigating away from it (AC-2.2). It stays a link, so the row is
-            still openable in a new tab and the address is still shareable. */}
-        <Link
-          to="/tasks"
-          search={{ task: task.id }}
-          className="truncate text-sm font-medium text-foreground hover:underline"
-        >
-          {task.title || task.id}
-        </Link>
+    <div
+      className={`grid grid-cols-[minmax(300px,2fr)_minmax(150px,1fr)_minmax(170px,1fr)_minmax(190px,1.2fr)_minmax(170px,1fr)] items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
+    >
+      <div className="flex min-w-0 items-center gap-3 pr-4">
+        <span className="text-faint" aria-hidden="true">
+          ⠿
+        </span>
+        <div className="min-w-0">
+          <Link
+            to="/tasks"
+            search={{ task: task.id }}
+            className="block truncate text-sm font-medium text-foreground hover:underline"
+          >
+            {task.title || task.id}
+          </Link>
+          <div className="mt-1 flex items-center gap-2 text-[11px] text-faint">
+            <span className="font-mono">{task.id}</span>
+            {task.repo && (
+              <span className="inline-flex items-center gap-1">
+                <GitBranch className="size-3" aria-hidden="true" />
+                {task.repo}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 pr-3">
         <Badge variant="outline">{taskStateLabels[task.state] ?? task.state}</Badge>
-        {stage && <Badge variant="accent">{stageLabels[stage] ?? stage}</Badge>}
-        <PlanBadge plan={item.plan} />
-        {item.needs_attention && <Badge variant="attention">Needs operator</Badge>}
         {task.hold && <Badge variant="attention">On hold</Badge>}
-        {/* Identity and repository are how a row is looked up, not how it is
-            read, so they sit last and name themselves on hover. */}
-        <Badge variant="mono" title="Task ID">
-          {task.id}
-        </Badge>
-        {task.repo && (
-          <Badge variant="mono" title="Repository">
-            {task.repo}
-          </Badge>
+        {item.needs_attention && <CircleAlert className="size-4 text-attention" aria-label="Needs operator" />}
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 pr-3">
+        {stage ? (
+          <Badge variant="accent">{stageLabels[stage] ?? stage}</Badge>
+        ) : (
+          <span className="text-xs text-muted">No stage</span>
         )}
+        <PlanBadge plan={item.plan} />
       </div>
-
-      {/* One wrapping line of facts, so a row with nothing blocking it and
-          nothing attached collapses to a single quiet statement of that. */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-        <Dependencies item={item} />
-        <Children item={item} />
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 pr-3 text-xs text-muted">
         <AttachedContext item={item} />
+        {item.child_rollup && <Children item={item} />}
+        {!item.child_rollup && <span>No attached context</span>}
       </div>
-
-      {/* Staleness reads as the reason a row cannot move on its own, beside
-          the badge that says a human is wanted rather than instead of it: a
-          task can hold at a gate and carry a stalled order at once. The state
-          itself is the derived §21.34 projection the board and task detail
-          already render — the list neither stores nor re-derives one. */}
+      <div
+        className="flex items-center gap-2 text-xs text-muted"
+        title={new Date(item.last_event_at || task.created_at).toLocaleString()}
+      >
+        <CalendarDays className="size-4 text-faint" aria-hidden="true" />
+        <span>Updated {relativeTime(item.last_event_at || task.created_at)}</span>
+      </div>
       {item.stalled?.needed && (
-        <p className="mt-2 line-clamp-2 text-xs text-failure">
+        <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
           Stalled — {item.stalled.reason}
           {item.stalled.last_failure ? `: ${item.stalled.last_failure}` : ''}
         </p>
       )}
-
-      {/* The instant the updated-at filter keys on, so a row narrowed away by
-          that filter can be explained by the value the row itself shows. */}
-      <p
-        className="mt-2 text-[11px] text-faint"
-        title={new Date(item.last_event_at || task.created_at).toLocaleString()}
-      >
-        Updated {relativeTime(item.last_event_at || task.created_at)}
-      </p>
     </div>
   )
 }
@@ -282,51 +317,6 @@ function PlanBadge({ plan }: { plan: TaskPlanStatus }) {
     default:
       return <Badge variant="outline">No plan</Badge>
   }
-}
-
-// Dependencies and blocking state come from the task's own relations and the
-// projection's unsatisfiable edges; the view derives neither itself (AC-1.2).
-function Dependencies({ item }: { item: TaskOperationsItem }) {
-  const dependencies = item.task.dependencies ?? []
-  if (dependencies.length === 0) {
-    return <p className="text-muted">No dependencies</p>
-  }
-  const blocking = new Set(item.task.blocking_task_ids ?? [])
-  const unsatisfiable = new Set(item.unsatisfiable_task_ids ?? [])
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 text-muted">
-      <Network className="size-3 shrink-0" aria-hidden="true" />
-      <span>{blocking.size > 0 ? `Blocked by ${blocking.size} of ${dependencies.length}` : 'Depends on'}</span>
-      {dependencies.map((dependency) => (
-        <DependencyChip
-          key={dependency.id}
-          dependency={dependency}
-          blocking={blocking.has(dependency.id)}
-          unsatisfiable={unsatisfiable.has(dependency.id)}
-        />
-      ))}
-    </div>
-  )
-}
-
-function DependencyChip({
-  dependency,
-  blocking,
-  unsatisfiable,
-}: {
-  dependency: TaskRelation
-  blocking: boolean
-  unsatisfiable: boolean
-}) {
-  const suffix = unsatisfiable ? ' · unsatisfiable' : blocking ? ' · blocking' : ''
-  return (
-    <Link to="/tasks" search={{ task: dependency.id }}>
-      <Badge variant={unsatisfiable ? 'failure' : blocking ? 'attention' : 'outline'}>
-        {dependency.title || dependency.id}
-        {suffix}
-      </Badge>
-    </Link>
-  )
 }
 
 // A rollup renders only where the projection reports children, so a task
