@@ -471,6 +471,11 @@ export interface WorkspaceConfigDocument {
 }
 
 export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'revert'
+export type MonitorDriftOutcome =
+  | 'requirements_amended'
+  | 'design_document_updated'
+  | 'conflict_resolved'
+  | 'change_reverted'
 export interface MonitorObservation {
   workspace_id: string
   repository: string
@@ -492,6 +497,7 @@ export interface RepositoryDrift {
   kind: MonitorSignalKind
   source_url: string
   commit_sha?: string
+  requirement_id?: string
   task_id: string
   system_design_id?: string
   system_design_version?: number

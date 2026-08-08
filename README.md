@@ -14,8 +14,7 @@ requirement it serves.
 
 Conveyor has been building itself since July 2026. Nearly every feature
 in this repository entered as a document, went through the plan and
-review gates, and merged with its lineage recorded, including the
-machinery that replaced the factory's original spec format.
+review gates, and merged with its lineage recorded.
 
 ## The software factory
 

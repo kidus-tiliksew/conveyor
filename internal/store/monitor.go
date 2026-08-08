@@ -199,7 +199,7 @@ func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.
 	return drift, true, nil
 }
 
-func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.Drift, error) {
+func (m *memory) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, ok := WorkspaceFromContext(ctx)
@@ -212,26 +212,42 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 		return monitor.Drift{}, fmt.Errorf("drift %s not found", id)
 	}
 	outcome = strings.TrimSpace(outcome)
+	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
 	}
+	if outcome != "requirements_amended" && requirementID != "" {
+		return monitor.Drift{}, fmt.Errorf("%w: outcome %s", monitor.ErrRequirementIDNotAllowed, outcome)
+	}
 	if !drift.ResolvedAt.IsZero() {
+		if requirementID != "" && requirementID != drift.RequirementID {
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s is linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+		}
 		return drift, nil
 	}
 	now := time.Now().UTC()
 	if outcome == "requirements_amended" {
+		if requirementID != "" && drift.RequirementID != "" && requirementID != drift.RequirementID {
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+		}
+		if drift.RequirementID == "" {
+			drift.RequirementID = requirementID
+		}
 		if strings.TrimSpace(drift.RequirementID) == "" {
 			return monitor.Drift{}, fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
 		}
 		requirementKey := memoryScopedKey{workspace: workspace, id: drift.RequirementID}
 		requirement, exists := m.requirements[requirementKey]
 		if !exists {
-			return monitor.Drift{}, fmt.Errorf("drift %s references missing requirement %s", id, drift.RequirementID)
+			return monitor.Drift{}, fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, drift.RequirementID)
 		}
 		if requirement.CurrentVersion == 0 {
-			return monitor.Drift{}, fmt.Errorf("drift %s cannot amend requirement %s without a confirmed current version", id, drift.RequirementID)
+			return monitor.Drift{}, fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, drift.RequirementID)
 		}
 		versions := m.requirementVersions[requirementKey]
+		if requirement.CurrentVersion > len(versions) || !versions[requirement.CurrentVersion-1].Confirmed {
+			return monitor.Drift{}, fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, drift.RequirementID)
+		}
 		current := versions[requirement.CurrentVersion-1]
 		proposal, err := DriftAmendmentVersion(drift, current)
 		if err != nil {
@@ -277,7 +293,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome string) (monitor.
 	drift.Outcome, drift.ResolvedAt = outcome, now
 	m.monitorDrift[key] = drift
 	m.appendEventLocked(ctx, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: now, Payload: core.JSONPayload(map[string]any{
-		"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt,
+		"drift_id": drift.ID, "outcome": drift.Outcome, "resolved_at": drift.ResolvedAt, "requirement_id": drift.RequirementID,
 	})})
 	if drift.SystemDesignID != "" {
 		m.appendEventLocked(ctx, core.Event{Kind: "system_design.drift_resolved", At: now, Payload: core.JSONPayload(map[string]any{

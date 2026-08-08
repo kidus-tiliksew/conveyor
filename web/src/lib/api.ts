@@ -7,6 +7,7 @@ import type {
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  MonitorDriftOutcome,
   MonitorStatus,
   PlanningBundle,
   PlanningMessage,
@@ -16,6 +17,7 @@ import type {
   RequirementDerivation,
   RequirementVersion,
   RequirementView,
+  RepositoryDrift,
   Task,
   TaskOperationsItem,
   TaskOperationsPage,
@@ -268,6 +270,20 @@ export function fetchLineage(type: LineageNodeType, id: string) {
 }
 export function fetchMonitorStatus() {
   return getJSON<MonitorStatus>(workspaceURL('/v1/monitor'))
+}
+export async function resolveMonitorDrift(
+  token: string,
+  driftId: string,
+  outcome: MonitorDriftOutcome,
+  requirementId?: string,
+) {
+  const response = await fetch(workspaceURL(`/v1/monitor/drift/${encodeURIComponent(driftId)}/resolve`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ outcome, ...(requirementId ? { requirement_id: requirementId } : {}) }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<RepositoryDrift>
 }
 export function fetchTasks() {
   return getJSON<Task[]>(workspaceURL('/v1/tasks'))
