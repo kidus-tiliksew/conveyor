@@ -259,18 +259,21 @@ type GovernanceDesignContext struct {
 
 // PendingSystemDesignProposal is observable review/implementation context,
 // never governance authority. ProposalEventID identifies the append-only event
-// that created the immutable pending version.
+// that created the immutable version. Confirmed distinguishes proposal evidence
+// that an operator confirmed after the task proposed it; dismissed versions are
+// never included.
 type PendingSystemDesignProposal struct {
 	DocumentID      string `json:"document_id"`
 	Version         int    `json:"version"`
 	ProposalEventID int64  `json:"proposal_event_id"`
 	OriginTaskID    string `json:"origin_task_id"`
+	Confirmed       bool   `json:"confirmed,omitempty"`
 }
 
-// GovernanceSnapshot pins repository-scoped design authority, workspace-wide
-// decision authority, and a separately non-authoritative task-origin proposal
-// observation used by a review contract. Non-nil empty slices distinguish a
-// current empty snapshot from a legacy missing pin.
+// GovernanceSnapshot pins repository-scoped design authority and workspace-wide
+// decision authority. Its separately non-authoritative task-origin proposal
+// observations refresh at review claim time. Non-nil empty slices distinguish
+// a current empty snapshot from a legacy missing pin.
 type GovernanceSnapshot struct {
 	Designs                []GovernanceDesignContext     `json:"designs"`
 	Decisions              []Decision                    `json:"decisions"`

@@ -923,8 +923,13 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	if release.Outcome != core.WorkOrderOutcomeChildFailure && release.Outcome != core.WorkOrderOutcomeStalled && release.Outcome != core.WorkOrderOutcomeReleased && release.Outcome != core.WorkOrderOutcomeCancelled {
 		return core.WorkOrder{}, fmt.Errorf("invalid worker release outcome %q", release.Outcome)
 	}
-	if release.Outcome == core.WorkOrderOutcomeChildFailure && release.FailureCategory == "" && providerUsageLimit(release.FailureDetail) {
-		release.FailureCategory = core.WorkOrderFailureProviderUsageLimit
+	if release.Outcome == core.WorkOrderOutcomeChildFailure && release.FailureCategory == "" {
+		switch {
+		case providerUsageLimit(release.FailureDetail):
+			release.FailureCategory = core.WorkOrderFailureProviderUsageLimit
+		case transientConnectivityFailure(release.FailureDetail):
+			release.FailureCategory = core.WorkOrderFailureTransientConnectivity
+		}
 	}
 	release.InitialRetryDelay = s.RetryDelay
 	if release.InitialRetryDelay <= 0 {
@@ -954,6 +959,26 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
 }
 
+func transientConnectivityFailure(detail string) bool {
+	detail = strings.ToLower(detail)
+	for _, marker := range []string{
+		"failed to connect to websocket",
+		"nodename nor servname provided",
+		"temporary failure in name resolution",
+		"network is unreachable",
+		"no such host",
+		"connection refused",
+		"connection reset by peer",
+		"tls handshake timeout",
+		"i/o timeout",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckpointAttempt records a successful additive Git preservation commit.
 // Store implementations re-check active attempt authority atomically with the
 // idempotent append so a stale child cannot acknowledge a newer claim.
@@ -972,7 +997,7 @@ func (s *Service) CheckpointAttempt(ctx context.Context, worker core.Worker, id 
 	return s.Store.RecordWorkOrderAttemptCheckpoint(ctx, id, worker.ID, checkpoint)
 }
 
-const FailureDetailLimit = 2 * 1024
+const FailureDetailLimit = core.WorkOrderFailureDetailLimit
 
 func boundedFailureDetail(detail string) string {
 	detail = strings.ToValidUTF8(detail, "�")

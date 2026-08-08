@@ -74,6 +74,7 @@ type Store interface {
 	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
+	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
@@ -241,6 +242,7 @@ type Store interface {
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
 	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
+	ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
@@ -1234,6 +1236,8 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	order.OperatorDirection = ""
 	order.State = next
 	previousOutcome := order.LastAttemptOutcome
+	progressed := m.attemptReportedProgressLocked(order)
+	previousTransientFailures := m.previousTransientFailuresLocked(order)
 	order.LastAttemptOutcome = release.Outcome
 	order.NextRetryAt = time.Time{}
 	order.RetrySuppressionReason = ""
@@ -1249,14 +1253,26 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 		if limit <= 0 {
 			limit = 3
 		}
-		identical := detail != "" && previousOutcome == release.Outcome && detail == previousDetail
+		transientConnectivity := order.LastFailureCategory == core.WorkOrderFailureTransientConnectivity
+		consecutiveTransientFailures := 0
+		if transientConnectivity {
+			consecutiveTransientFailures = 1
+			if !progressed && previousOutcome == release.Outcome {
+				consecutiveTransientFailures += previousTransientFailures
+			}
+		}
+		identical := detail != "" && previousOutcome == release.Outcome && detail == previousDetail && !transientConnectivity
 		if order.AutomaticRetryCount < limit {
 			order.AutomaticRetryCount++
 			if identical {
 				order.RetrySuppressed = true
 				order.RetrySuppressionReason = core.IdenticalFailureSuppressionReason
 			} else {
-				order.NextRetryAt = now.Add(workOrderRetryDelay(release, order.AutomaticRetryCount))
+				delay := workOrderRetryDelay(release, order.AutomaticRetryCount)
+				if transientConnectivity {
+					delay = core.TransientConnectivityRetryDelay(consecutiveTransientFailures)
+				}
+				order.NextRetryAt = now.Add(delay)
 				order.RetrySuppressed = false
 			}
 		} else {
@@ -1266,6 +1282,9 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			workspace, _ := WorkspaceFromContext(ctx)
 			key := workspace + "\x00" + order.RequiredHarness + "\x00" + order.RequiredModel
 			m.harnessModelFailures[key] = core.HarnessModelFailure{Harness: order.RequiredHarness, Model: order.RequiredModel, Detail: detail, WorkOrderID: order.ID, ObservedAt: now}
+		}
+		if transientConnectivity {
+			order.LastFailureDetail = core.TransientConnectivityFailureDetail(detail, consecutiveTransientFailures, order.NextRetryAt)
 		}
 	} else {
 		order.LastFailureCategory = ""
@@ -1296,8 +1315,44 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			kind = "work_order.stalled"
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
+}
+
+func (m *memory) attemptReportedProgressLocked(order core.WorkOrder) bool {
+	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+		event := m.events[order.TaskID][i]
+		if event.JobID != order.JobID {
+			continue
+		}
+		if event.Kind == "work_order.progress_reported" {
+			return true
+		}
+		if event.Kind == "work_order.claimed" {
+			return false
+		}
+	}
+	return false
+}
+
+func (m *memory) previousTransientFailuresLocked(order core.WorkOrder) int {
+	if order.LastFailureCategory != core.WorkOrderFailureTransientConnectivity {
+		return 0
+	}
+	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+		event := m.events[order.TaskID][i]
+		if event.JobID != order.JobID || (event.Kind != "work_order.child_failed" && event.Kind != "work_order.stalled") {
+			continue
+		}
+		var payload struct {
+			Consecutive int `json:"consecutive_transient_failures"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			return payload.Consecutive
+		}
+		return 0
+	}
+	return 0
 }
 
 func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
@@ -2290,6 +2345,39 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, nil
 }
 
+func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	result := []CheckpointContextCandidate{}
+	for _, task := range m.tasks {
+		if task.Workspace != workspace || core.TaskTerminal(task.State) {
+			continue
+		}
+		attached, _ := ActiveTaskContextReferences(m.events[task.ID])
+		if attached[requirementID] {
+			continue
+		}
+		var latest *core.WorkOrder
+		for _, order := range m.workOrders {
+			if order.TaskID != task.ID || latest != nil &&
+				(latest.CreatedAt.After(order.CreatedAt) || latest.CreatedAt.Equal(order.CreatedAt) && latest.ID >= order.ID) {
+				continue
+			}
+			copy := order
+			latest = &copy
+		}
+		if latest == nil || latest.State != core.WorkOrderQueued ||
+			latest.LastAttemptOutcome != core.WorkOrderOutcomeReleased ||
+			latest.LastFailureMessage != core.WorkOrderReleaseReasonOperatorCheckpointReached {
+			continue
+		}
+		result = append(result, CheckpointContextCandidate{ID: task.ID, Title: task.Title, State: task.State})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
 // observational responses. It performs no store writes; the River order clock
 // persists the same canonical commands asynchronously (spec §21.38).
@@ -2460,13 +2548,20 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
-		if order.GovernanceSnapshot == nil && claim.Governance != nil {
-			copy := *claim.Governance
-			copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
-			copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
-			copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
-			copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
-			order.GovernanceSnapshot = &copy
+		if claim.Governance != nil {
+			if order.GovernanceSnapshot == nil {
+				copy := *claim.Governance
+				copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
+				copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
+				copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+				copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
+				order.GovernanceSnapshot = &copy
+			} else {
+				// Proposal observations are claim-time-fresh, unlike the frozen
+				// System Design and decision authority.
+				order.GovernanceSnapshot.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
+				order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
+			}
 		}
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
@@ -2680,6 +2775,9 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	prior := order.LastAttemptOutcome
 	priorAttemptID := order.LastAttemptID
 	priorState := order.State
+	priorFailureCategory := order.LastFailureCategory
+	priorTransientFailures := m.previousTransientFailuresLocked(order)
+	priorNextRetryAt := order.NextRetryAt
 	clearActiveAttempt(&order)
 	lifecycleCommand := core.WorkOrderCmdRecover
 	eventKind := "work_order.recovered"
@@ -2729,7 +2827,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		m.jobs[job.TaskID][index] = job
 	}
 	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}), At: now})
 	return order, nil
 }
 

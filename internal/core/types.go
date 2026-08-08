@@ -596,7 +596,7 @@ type WorkOrder struct {
 	// requirements; nil is reserved for pre-snapshot compatibility handling.
 	ServedRequirementSnapshot []ServedRequirementContext `json:"served_requirement_snapshot,omitempty"`
 	// GovernanceSnapshot is the exact design and decision authority plus the
-	// separately non-authoritative task proposal observation rendered for this
+	// separately non-authoritative task proposal evidence refreshed for this
 	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
 }
@@ -675,10 +675,55 @@ const (
 	WorkOrderReleaseCauseLeaseLoss                  = "lease_loss"
 	IdenticalFailureSuppressionReason               = "identical failure output on consecutive attempts"
 	WorkOrderFailureProviderUsageLimit              = "provider_usage_limit"
+	WorkOrderFailureTransientConnectivity           = "transient_connectivity"
+	WorkOrderFailureDetailLimit                     = 2 * 1024
 )
 
 func WorkOrderOutcomeConsumesRetry(outcome string) bool {
 	return outcome == WorkOrderOutcomeChildFailure || outcome == WorkOrderOutcomeStalled
+}
+
+// TransientConnectivityRetryDelay returns the fixed bounded worker pacing for
+// one consecutive connectivity-failure streak.
+func TransientConnectivityRetryDelay(consecutive int) time.Duration {
+	switch consecutive {
+	case 1:
+		return 30 * time.Second
+	case 2:
+		return 2 * time.Minute
+	default:
+		return 8 * time.Minute
+	}
+}
+
+// ConsecutiveTransientFailureCount advances or resets the connectivity-only
+// streak without changing the separate bounded-attempt counter.
+func ConsecutiveTransientFailureCount(category string, previous int, progressed, sameOutcome bool) int {
+	if category != WorkOrderFailureTransientConnectivity {
+		return 0
+	}
+	if progressed || !sameOutcome {
+		return 1
+	}
+	return previous + 1
+}
+
+// TransientConnectivityFailureDetail keeps the redacted child tail and makes
+// the derived wait visible without exceeding the existing detail bound.
+func TransientConnectivityFailureDetail(detail string, consecutive int, nextRetryAt time.Time) string {
+	nextAttempt := "none"
+	if !nextRetryAt.IsZero() {
+		nextAttempt = nextRetryAt.UTC().Format(time.RFC3339Nano)
+	}
+	context := fmt.Sprintf("retry pacing: category=%s consecutive_transient_failures=%d next_attempt_at=%s", WorkOrderFailureTransientConnectivity, consecutive, nextAttempt)
+	if detail = strings.TrimSpace(detail); detail != "" {
+		available := WorkOrderFailureDetailLimit - len(context) - 2
+		if len(detail) > available {
+			detail = strings.ToValidUTF8(detail[len(detail)-available:], "�")
+		}
+		return detail + "\n\n" + context
+	}
+	return context
 }
 
 func ValidWorkOrderReleaseCause(cause string) bool {
