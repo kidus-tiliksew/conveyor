@@ -95,9 +95,8 @@ ORDER BY t.id;
 -- inactive — mirroring the memory store's slice predicate exactly.
 -- `strpos(lower(...))` is a literal case-insensitive substring test, so an
 -- operator typing `%` or `_` searches for that character instead of a wildcard.
--- The updated-at bounds read the same last-event expression ListActivityMarkers
--- projects as `last_event_at` — the value the row labels "Updated" — over
--- events_task_id_idx. The requirement and design bounds take the latest add or
+-- The created-at bounds compare the task's persisted creation instant directly;
+-- later events cannot change whether the task matches. The requirement and design bounds take the latest add or
 -- remove per listed document, which is the SQL spelling of the
 -- store.ActiveTaskContextReferences fold, over migration 073's
 -- events_task_context_task_idx.
@@ -121,12 +120,8 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
        strpos(lower(t.id), lower(sqlc.arg(search))) > 0 OR
        strpos(lower(t.source), lower(sqlc.arg(search))) > 0 OR
        strpos(lower(t.branch), lower(sqlc.arg(search))) > 0)
-  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) >= sqlc.narg(updated_from))
-  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) < sqlc.narg(updated_to))
+  AND (sqlc.narg(created_from)::timestamptz IS NULL OR t.created_at >= sqlc.narg(created_from))
+  AND (sqlc.narg(created_to)::timestamptz IS NULL OR t.created_at < sqlc.narg(created_to))
   AND (cardinality(sqlc.arg(serves_requirements)::text[]) = 0 OR EXISTS (
            SELECT 1 FROM unnest(sqlc.arg(serves_requirements)::text[]) AS wanted(document_id)
            WHERE (
@@ -162,12 +157,8 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
        strpos(lower(t.id), lower(sqlc.arg(search))) > 0 OR
        strpos(lower(t.source), lower(sqlc.arg(search))) > 0 OR
        strpos(lower(t.branch), lower(sqlc.arg(search))) > 0)
-  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) >= sqlc.narg(updated_from))
-  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
-           SELECT e.at FROM events e WHERE e.task_id = t.id ORDER BY e.id DESC LIMIT 1
-       ), t.created_at) < sqlc.narg(updated_to))
+  AND (sqlc.narg(created_from)::timestamptz IS NULL OR t.created_at >= sqlc.narg(created_from))
+  AND (sqlc.narg(created_to)::timestamptz IS NULL OR t.created_at < sqlc.narg(created_to))
   AND (cardinality(sqlc.arg(serves_requirements)::text[]) = 0 OR EXISTS (
            SELECT 1 FROM unnest(sqlc.arg(serves_requirements)::text[]) AS wanted(document_id)
            WHERE (

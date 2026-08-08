@@ -106,13 +106,13 @@ async function routeBoard(page: Page, seen: string[]) {
     const url = route.request().url()
     seen.push(url)
     const params = new URL(url).searchParams
-    const from = params.get('updated_from') ?? ''
+    const from = params.get('created_from') ?? ''
     const needle = (params.get('q') ?? '').toLowerCase()
     // List members repeat their parameter and mean "any of" (AC-2.4).
     const repositories = params.getAll('repository')
     return route.fulfill({
       json: activity.filter((item) => {
-        if (from && (item.last_event_at || item.task.created_at) < from) return false
+        if (from && item.task.created_at < from) return false
         if (repositories.length && !repositories.includes(item.task.repo)) return false
         return !needle || item.task.title.toLowerCase().includes(needle)
       }),
@@ -153,37 +153,60 @@ test('board opens on the last month and remembers the operator adjustment per wo
   await openBoard(page, seen)
 
   // The default is a starting point the operator can see the effect of: the
-  // board asks the server for recent activity, and the ancient task is gone.
+  // board asks the server for recently created tasks, and the ancient task is gone.
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
   // The bound went to the server rather than being applied to a fully-loaded
   // workspace. The rail's attention badge speaks for the whole workspace and
   // keeps reading the unfiltered feed, so this is `some`, not `every`.
-  expect(seen.some((url) => url.includes('updated_from='))).toBe(true)
+  expect(seen.some((url) => url.includes('created_from='))).toBe(true)
 
   // Adjusting it is what gets remembered — including across a reload.
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('option', { name: 'Any time' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.reload()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
   await expect(page.getByRole('option', { name: 'Any time' })).toHaveAttribute('aria-selected', 'true')
 
   // Persistence is scoped to the workspace it was set in, so another workspace
   // opens on its own default rather than inheriting a repository filter or a
   // window from a workspace it has nothing in common with.
   expect(await page.evaluate(() => localStorage.getItem('conveyor-task-filters:board:demo'))).toContain(
-    '"updated":"any"',
+    '"created":"any"',
   )
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
   await page.reload()
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
+})
+
+test('board migrates a saved Updated window and persists only the Created shape', async ({ page }) => {
+  const seen: string[] = []
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'test-token')
+    localStorage.setItem(
+      'conveyor-task-filters:board:demo',
+      JSON.stringify({ updated: '7d', updatedFrom: '', updatedTo: '' }),
+    )
+  })
+  await routeBoard(page, seen)
+  await page.goto('/')
+
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
+  await expect(page.getByRole('option', { name: 'Last 7 days' })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('option', { name: 'Any time' }).click()
+
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('conveyor-task-filters:board:demo') ?? '{}'))
+  expect(stored).toMatchObject({ created: 'any', createdFrom: '', createdTo: '' })
+  expect(stored).not.toHaveProperty('updated')
 })
 
 test('board sends the shared filter family to the server rather than narrowing in the browser', async ({ page }) => {

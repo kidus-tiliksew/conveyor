@@ -54,7 +54,57 @@ type ExecutionMode string
 const (
 	ExecutionInProcess ExecutionMode = "in_process"
 	ExecutionMCP       ExecutionMode = "mcp"
+
+	ControlPlaneModelEnv = "CONVEYOR_CONTROL_PLANE_MODEL"
+	TriageModelEnv       = "CONVEYOR_TRIAGE_MODEL"
+	PlanningModelEnv     = "CONVEYOR_PLANNING_MODEL"
 )
+
+// ModelEnvironmentOverride is one non-persistent deployment override for an
+// in-process control-plane model. It is deliberately separate from Config so
+// workspace documents and their projections continue to describe stored state.
+type ModelEnvironmentOverride struct {
+	Variable string
+	Model    string
+}
+
+// ActiveControlPlaneModelOverrides returns every non-empty process-level model
+// override for startup observability. Whitespace-only values are unset.
+func ActiveControlPlaneModelOverrides() []ModelEnvironmentOverride {
+	overrides := make([]ModelEnvironmentOverride, 0, 3)
+	for _, variable := range []string{ControlPlaneModelEnv, TriageModelEnv, PlanningModelEnv} {
+		if model := strings.TrimSpace(os.Getenv(variable)); model != "" {
+			overrides = append(overrides, ModelEnvironmentOverride{Variable: variable, Model: model})
+		}
+	}
+	return overrides
+}
+
+// ControlPlaneModelOverride resolves stage-specific > general environment
+// precedence without consulting or changing the stored workspace config.
+func ControlPlaneModelOverride(stage string) (string, bool) {
+	model := strings.TrimSpace(os.Getenv(ControlPlaneModelEnv))
+	variable := ""
+	switch strings.TrimSpace(stage) {
+	case "triage":
+		variable = TriageModelEnv
+	case "planning":
+		variable = PlanningModelEnv
+	}
+	if stageModel := strings.TrimSpace(os.Getenv(variable)); stageModel != "" {
+		model = stageModel
+	}
+	return model, model != ""
+}
+
+// ResolveControlPlaneModel returns the process-effective model for an
+// in-process invocation while preserving the supplied stored value unchanged.
+func ResolveControlPlaneModel(stage, stored string) string {
+	if model, ok := ControlPlaneModelOverride(stage); ok {
+		return model
+	}
+	return stored
+}
 
 type StageRoute struct {
 	Model       string        `yaml:"model" json:"model"`

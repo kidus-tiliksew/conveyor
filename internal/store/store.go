@@ -466,12 +466,9 @@ type ActivityMarker struct {
 // evaluated by the store in its own query language — never by narrowing a
 // fully-loaded workspace in Go (AC-2.3).
 //
-// UpdatedFrom/UpdatedTo bound the task's last-activity instant: the timestamp
-// the surfaces render as "Updated", which is the latest event on the task and
-// its creation time until one arrives. Keying the range on the value the row
-// shows is what makes the filter explainable — filtering on a timestamp the
-// operator cannot see would leave rows disappearing for no visible reason. The
-// range is half-open: UpdatedFrom is inclusive, UpdatedTo exclusive.
+// CreatedFrom/CreatedTo bound the task's persisted creation instant. Later
+// events never change whether a task matches. The range is half-open:
+// CreatedFrom is inclusive, CreatedTo exclusive.
 //
 // ServesRequirementIDs and GoverningDesignIDs name documents the task carries
 // as attached context. Both fold the same append-only attachment stream the
@@ -487,8 +484,8 @@ type TaskFilter struct {
 	// Query narrows on the row's own identifying text — title, ID, source, and
 	// assigned branch — case-insensitively.
 	Query                string
-	UpdatedFrom          time.Time
-	UpdatedTo            time.Time
+	CreatedFrom          time.Time
+	CreatedTo            time.Time
 	ServesRequirementIDs []string
 	GoverningDesignIDs   []string
 }
@@ -496,15 +493,15 @@ type TaskFilter struct {
 // Active reports whether any predicate would narrow the workspace. Callers that
 // have a cheaper unfiltered read path use it to keep that path byte-identical.
 func (f TaskFilter) Active() bool {
-	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Query != "" || !f.UpdatedFrom.IsZero() ||
-		!f.UpdatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 || len(f.GoverningDesignIDs) > 0
+	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Query != "" || !f.CreatedFrom.IsZero() ||
+		!f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 || len(f.GoverningDesignIDs) > 0
 }
 
 // Validate rejects a range no task can satisfy, so an inverted range fails at
 // the edge instead of silently rendering an empty workspace.
 func (f TaskFilter) Validate() error {
-	if !f.UpdatedFrom.IsZero() && !f.UpdatedTo.IsZero() && !f.UpdatedFrom.Before(f.UpdatedTo) {
-		return fmt.Errorf("task operations updated_from must precede updated_to")
+	if !f.CreatedFrom.IsZero() && !f.CreatedTo.IsZero() && !f.CreatedFrom.Before(f.CreatedTo) {
+		return fmt.Errorf("task operations created_from must precede created_to")
 	}
 	return nil
 }
@@ -4048,12 +4045,11 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 			return false
 		}
 	}
-	if !filter.UpdatedFrom.IsZero() || !filter.UpdatedTo.IsZero() {
-		updated := m.taskLastActivityLocked(task)
-		if !filter.UpdatedFrom.IsZero() && updated.Before(filter.UpdatedFrom) {
+	if !filter.CreatedFrom.IsZero() || !filter.CreatedTo.IsZero() {
+		if !filter.CreatedFrom.IsZero() && task.CreatedAt.Before(filter.CreatedFrom) {
 			return false
 		}
-		if !filter.UpdatedTo.IsZero() && !updated.Before(filter.UpdatedTo) {
+		if !filter.CreatedTo.IsZero() && !task.CreatedAt.Before(filter.CreatedTo) {
 			return false
 		}
 	}
@@ -4080,15 +4076,6 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 		}
 	}
 	return true
-}
-
-// taskLastActivityLocked is the instant the surfaces label "Updated": the
-// task's latest event, or its creation time until one arrives.
-func (m *memory) taskLastActivityLocked(task core.Task) time.Time {
-	if events := m.events[task.ID]; len(events) > 0 {
-		return events[len(events)-1].At
-	}
-	return task.CreatedAt
 }
 
 func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error) {
