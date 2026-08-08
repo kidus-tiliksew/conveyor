@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { Check, ExternalLink, X } from 'lucide-react'
+import { Check, Clock, ExternalLink, GitCompare, History, X } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import {
@@ -269,12 +269,21 @@ function DesignCanvas({
           <span title="The group this document belongs to">
             <Badge>{item.document.category}</Badge>
           </span>
-          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
-          <p className="mt-1.5 text-xs text-muted">
-            {displayed
-              ? `Version ${displayed.version} · ${displayed.confirmed ? 'confirmed' : 'proposed'} ${formatDate(displayed.created_at)}`
-              : 'No version has been written yet.'}
-          </p>
+          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight text-balance">{item.document.title}</h2>
+          {displayed ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <Badge variant="mono">v{displayed.version}</Badge>
+              <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
+                {displayed.confirmed ? 'Confirmed' : 'Proposed'}
+              </Badge>
+              <span className="inline-flex items-center gap-1 text-xs text-faint">
+                <Clock className="size-3" />
+                {formatDate(displayed.created_at)}
+              </span>
+            </div>
+          ) : (
+            <p className="mt-1.5 text-xs text-muted">No version has been written yet.</p>
+          )}
         </div>
         {/* The document's corner affordance (REQ-3): the code, work, and
             evidence this guide governs, on demand. */}
@@ -287,7 +296,7 @@ function DesignCanvas({
         {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
         {displayed && displayed.governs.length > 0 && (
           <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-            <span className="text-xs text-muted">Covers</span>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Covers</span>
             {displayed.governs.flatMap((scope) =>
               scope.paths.map((path) => (
                 <Badge key={`${scope.repository}:${path}`} variant="mono" title="Code this document describes">
@@ -300,8 +309,9 @@ function DesignCanvas({
       </section>
 
       {pending && item.current_version && (
-        <details className="mt-6 rounded-lg border border-border">
-          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+        <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
+          <summary className="flex cursor-pointer items-center gap-1.5 px-4 py-3 text-sm font-medium">
+            <GitCompare className="size-3.5 text-muted" />
             Compare version {item.current_version.version} with the proposed version {pending.version}
           </summary>
           <DesignDiff from={item.current_version} to={pending} />
@@ -309,15 +319,23 @@ function DesignCanvas({
       )}
 
       {item.versions.length > 0 && (
-        <details className="mt-3 rounded-lg border border-border">
-          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Version history</summary>
-          <ol className="space-y-2 border-t border-border px-4 py-3">
+        <section className="mt-8 border-t border-border pt-5" aria-label="System design versions">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+            <History className="size-3.5" /> Version history
+          </h3>
+          <ol className="mt-3 space-y-2">
             {item.versions.map((version) => (
-              <li key={version.version} className="text-sm">
-                <span className="font-mono">v{version.version}</span> ·{' '}
-                {version.confirmed ? 'confirmed' : version.dismissed ? 'dismissed' : 'proposed'}{' '}
-                <details>
-                  <summary className="cursor-pointer text-xs text-primary">Read version</summary>
+              <li key={version.version} className="rounded-md border border-border p-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="mono">v{version.version}</Badge>
+                  <Badge variant={version.confirmed ? 'positive' : version.dismissed ? 'default' : 'accent'}>
+                    {version.confirmed ? 'Confirmed' : version.dismissed ? 'Dismissed' : 'Proposed'}
+                  </Badge>
+                </div>
+                <details className="mt-1.5">
+                  <summary className="cursor-pointer text-xs font-medium text-primary hover:underline">
+                    Read version
+                  </summary>
                   <div className="mt-2 rounded-md bg-surface p-4">
                     <MarkdownProse>{version.content}</MarkdownProse>
                   </div>
@@ -325,12 +343,14 @@ function DesignCanvas({
               </li>
             ))}
           </ol>
-        </details>
+        </section>
       )}
 
       {settledDecisions.length > 0 && (
         <section className="mt-10 border-t border-border pt-6" aria-label="Settled decisions">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Settled decisions</h2>
+          <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+            <Check className="size-3" /> Settled decisions
+          </h2>
           <div className="mt-3 space-y-2">
             {settledDecisions.map((decision) => (
               <article
@@ -345,13 +365,15 @@ function DesignCanvas({
                 <p className="mt-2 text-sm font-medium">{decision.statement}</p>
                 <p className="mt-1 text-xs text-muted">{decision.context}</p>
                 {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
-                  <p className="mt-2 text-xs text-muted">
-                    Confirmed by {decision.confirmed_by} on {formatDate(decision.confirmed_at)}
+                  <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                    <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
+                    {formatDate(decision.confirmed_at)}
                   </p>
                 )}
                 {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
-                  <p className="mt-2 text-xs text-muted">
-                    Dismissed by {decision.dismissed_by} on {formatDate(decision.dismissed_at)}
+                  <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                    <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
+                    {formatDate(decision.dismissed_at)}
                   </p>
                 )}
               </article>
