@@ -824,7 +824,7 @@ SELECT
     ), t.created_at)::timestamptz AS last_event_at
 FROM tasks t
 WHERE t.workspace_id = $1
-ORDER BY t.created_at, t.id
+ORDER BY t.created_at DESC, t.id
 `
 
 type ListActivityMarkersRow struct {
@@ -1279,7 +1279,7 @@ WHERE t.workspace_id = $1
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
-ORDER BY t.created_at, t.id
+ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF($10::int, 0)
 OFFSET $9::int
 `
@@ -1382,7 +1382,7 @@ SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_le
        ) AS has_children
 FROM tasks t
 WHERE t.workspace_id = $1
-ORDER BY t.created_at, t.id
+ORDER BY t.created_at DESC, t.id
 `
 
 type ListTasksRow struct {

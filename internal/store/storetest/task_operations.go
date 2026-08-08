@@ -2,9 +2,11 @@ package storetest
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -15,6 +17,8 @@ type TaskOperationsFixture struct {
 	Store     store.Store
 	Context   context.Context
 	WantTotal int
+	WantOrder []string
+	Filter    store.TaskFilter
 }
 
 // RunTaskOperationsPaginationConformance asserts that every store answers the
@@ -26,6 +30,38 @@ type TaskOperationsFixture struct {
 // ordinary past-the-end page (spec §21.58).
 func RunTaskOperationsPaginationConformance(t *testing.T, fixture TaskOperationsFixture) {
 	t.Helper()
+
+	if len(fixture.WantOrder) > 0 {
+		all, err := fixture.Store.ListTasks(fixture.Context)
+		if err != nil {
+			t.Fatalf("list tasks: %v", err)
+		}
+		assertTaskOrder(t, "unfiltered tasks", all, fixture.WantOrder)
+
+		filtered, err := fixture.Store.ListTasksFiltered(fixture.Context, fixture.Filter)
+		if err != nil {
+			t.Fatalf("list filtered tasks: %v", err)
+		}
+		assertTaskOrder(t, "filtered tasks", filtered, fixture.WantOrder)
+
+		operations, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{
+			TaskFilter: fixture.Filter,
+		})
+		if err != nil {
+			t.Fatalf("list task operations: %v", err)
+		}
+		assertTaskOrder(t, "task operations", operations.Tasks, fixture.WantOrder)
+
+		for offset, wantID := range fixture.WantOrder {
+			page, pageErr := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{
+				TaskFilter: fixture.Filter, Limit: 1, Offset: offset,
+			})
+			if pageErr != nil {
+				t.Fatalf("page at offset %d: %v", offset, pageErr)
+			}
+			assertTaskOrder(t, "paginated task operations", page.Tasks, []string{wantID})
+		}
+	}
 
 	page, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{
 		Limit: 1, Offset: store.MaxTaskOperationsOffset,
@@ -53,5 +89,16 @@ func RunTaskOperationsPaginationConformance(t *testing.T, fixture TaskOperations
 		if !strings.Contains(rejectErr.Error(), "task operations") {
 			t.Fatalf("%s: unexpected error %v", name, rejectErr)
 		}
+	}
+}
+
+func assertTaskOrder(t *testing.T, surface string, tasks []core.Task, want []string) {
+	t.Helper()
+	got := make([]string, len(tasks))
+	for i := range tasks {
+		got[i] = tasks[i].ID
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s order=%v want %v", surface, got, want)
 	}
 }
