@@ -65,11 +65,13 @@ export function Board() {
         <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
         {/* Keep intake on the Tasks surface while making it reachable from
             either daily operating view. */}
-        <Link to="/tasks" search={{ create: true }}>
-          <Button size="sm" tabIndex={-1}>
-            <Plus />
-            New task
-          </Button>
+        <Link
+          to="/tasks"
+          search={{ create: true }}
+          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-4 [&_svg]:shrink-0"
+        >
+          <Plus />
+          New task
         </Link>
       </header>
       {error != null && (
