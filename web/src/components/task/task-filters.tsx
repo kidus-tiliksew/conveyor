@@ -1,5 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { CalendarDays, Check, ChevronDown, Search, SlidersHorizontal, X } from 'lucide-react'
+import {
+  CalendarDays,
+  Check,
+  ChevronDown,
+  CircleDot,
+  Code2,
+  GitBranch,
+  Search,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
@@ -301,6 +311,14 @@ function DateFilter({ value, set }: { value: TaskFilterState; set: (patch: Parti
 
 type FilterCategory = 'state' | 'repository' | 'updated' | 'requirement' | 'design'
 
+const filterCategoryIcons = {
+  state: CircleDot,
+  repository: GitBranch,
+  updated: CalendarDays,
+  requirement: Code2,
+  design: SlidersHorizontal,
+} as const
+
 function CompactFilterMenu({
   value,
   set,
@@ -403,22 +421,28 @@ function CompactFilterMenu({
               />
             </div>
             <div className="flex flex-col gap-0.5" role="tablist" aria-label="Filter categories">
-              {categories.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={category === item.id}
-                  className="flex items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised"
-                  onClick={() => {
-                    setCategory(item.id)
-                    setSearch('')
-                  }}
-                >
-                  {item.label}
-                  {item.active && <span className="size-1.5 rounded-full bg-primary" />}
-                </button>
-              ))}
+              {categories.map((item) => {
+                const Icon = filterCategoryIcons[item.id]
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={category === item.id}
+                    className="flex items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised"
+                    onClick={() => {
+                      setCategory(item.id)
+                      setSearch('')
+                    }}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Icon className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+                      <span className="truncate">{item.label}</span>
+                    </span>
+                    {item.active && <span className="size-1.5 rounded-full bg-primary" />}
+                  </button>
+                )
+              })}
             </div>
           </div>
           <div className="min-w-0 flex-1 p-2">
