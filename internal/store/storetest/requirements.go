@@ -108,13 +108,26 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				if _, resolveErr := monitorStore.ResolveDrift(ctx, drift.ID, testCase.outcome, testCase.requirementID); !errors.Is(resolveErr, testCase.target) {
 					t.Fatalf("resolve error=%v, want %v", resolveErr, testCase.target)
 				}
-				status, statusErr := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
-				if statusErr != nil || status.DriftCount != 1 || status.Drift[0].RequirementID != "" {
-					t.Fatalf("failed resolution mutated drift: status=%+v err=%v", status, statusErr)
+				persisted, fresh, recordErr := monitorStore.RecordDrift(ctx, drift)
+				if recordErr != nil || fresh || persisted.RequirementID != "" || !persisted.ResolvedAt.IsZero() || persisted.Outcome != "" {
+					t.Fatalf("failed resolution mutated drift: drift=%+v fresh=%t err=%v", persisted, fresh, recordErr)
 				}
 				versions, versionsErr := st.ListRequirementVersions(ctx, confirmed.ID)
 				if versionsErr != nil || len(versions) != 1 {
 					t.Fatalf("failed resolution mutated versions=%+v err=%v", versions, versionsErr)
+				}
+				pendingVersions, pendingErr := st.ListRequirementVersions(ctx, pending.ID)
+				if pendingErr != nil || len(pendingVersions) != 1 {
+					t.Fatalf("failed resolution mutated pending versions=%+v err=%v", pendingVersions, pendingErr)
+				}
+				events, eventsErr := st.ListEvents(ctx, taskID)
+				if eventsErr != nil {
+					t.Fatal(eventsErr)
+				}
+				for _, event := range events {
+					if event.Kind == "monitor.drift_reconciled" {
+						t.Fatalf("failed resolution emitted reconciliation event: %+v", event)
+					}
 				}
 			})
 		}
