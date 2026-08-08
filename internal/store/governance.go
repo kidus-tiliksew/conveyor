@@ -73,15 +73,17 @@ func GovernanceForTask(ctx context.Context, st Store, taskID, repository string)
 		snapshot.Designs = append(snapshot.Designs, design)
 	}
 	sort.Slice(snapshot.Designs, func(i, j int) bool { return snapshot.Designs[i].ID < snapshot.Designs[j].ID })
-	snapshot.PendingDesignProposals, snapshot.ResolutionNotes, err = pendingSystemDesignProposalsForTask(ctx, st, taskID)
+	snapshot.PendingDesignProposals, snapshot.ResolutionNotes, err = SystemDesignProposalEvidenceForTask(ctx, st, taskID)
 	if err != nil {
 		return snapshot, err
 	}
 	return snapshot, nil
 }
 
-func pendingSystemDesignProposalsForTask(ctx context.Context, st Store, taskID string) ([]core.PendingSystemDesignProposal, []string, error) {
-	versions, err := st.ListPendingSystemDesignVersionsForTask(ctx, taskID)
+// SystemDesignProposalEvidenceForTask resolves non-authoritative task-origin
+// proposal observations independently from pinned governance authority.
+func SystemDesignProposalEvidenceForTask(ctx context.Context, st Store, taskID string) ([]core.PendingSystemDesignProposal, []string, error) {
+	versions, err := st.ListSystemDesignProposalVersionsForTask(ctx, taskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -112,7 +114,7 @@ func pendingSystemDesignProposalsForTask(ctx context.Context, st Store, taskID s
 		}
 		out = append(out, core.PendingSystemDesignProposal{
 			DocumentID: version.DocumentID, Version: version.Version,
-			ProposalEventID: eventID, OriginTaskID: taskID,
+			ProposalEventID: eventID, OriginTaskID: taskID, Confirmed: version.Confirmed,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
