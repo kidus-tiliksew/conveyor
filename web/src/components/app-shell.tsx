@@ -1,23 +1,23 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
+  FileCode2,
   FolderGit2,
   Kanban,
   ListChecks,
+  type LucideIcon,
   Plus,
   Settings,
   SunMoon,
   Workflow,
-  FileCode2,
-  type LucideIcon,
 } from 'lucide-react'
+import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
 import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
-import { Badge } from './ui/badge'
 import { ThemeProvider, useTheme } from './theme-provider'
+import { Badge } from './ui/badge'
 
 // The operator bearer token authenticates mutations (spec §17.3).
 // Session-scoped on purpose: closing the tab forgets it.
@@ -48,7 +48,7 @@ export function useTokenState() {
 // badge below, the sheet's prev/next order — pass nothing and keep reading the
 // unfiltered feed: an operator narrowing the board must not also narrow what is
 // waiting on them.
-export function useActivity(filter?: Record<string, string | undefined>, enabled = true) {
+export function useActivity(filter?: Record<string, string | string[] | undefined>, enabled = true) {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
     queryKey: ['activity', workspace, filter ?? null],

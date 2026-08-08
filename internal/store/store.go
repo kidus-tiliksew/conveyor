@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -470,27 +471,31 @@ type ActivityMarker struct {
 // operator cannot see would leave rows disappearing for no visible reason. The
 // range is half-open: UpdatedFrom is inclusive, UpdatedTo exclusive.
 //
-// ServesRequirementID and GoverningDesignID name a document the task carries as
-// attached context. Both fold the same append-only attachment stream the read
-// model folds (see ActiveTaskContextReferences), so a detached document stops
-// matching exactly when the row stops showing it.
+// ServesRequirementIDs and GoverningDesignIDs name documents the task carries
+// as attached context. Both fold the same append-only attachment stream the
+// read model folds (see ActiveTaskContextReferences), so a detached document
+// stops matching exactly when the row stops showing it.
+//
+// Every list member is a disjunction — a task matches when it satisfies any of
+// the listed states, repositories, requirements, or designs — while distinct
+// members still intersect. An empty list leaves that member inactive.
 type TaskFilter struct {
-	State      core.TaskState
-	Repository string
+	States       []core.TaskState
+	Repositories []string
 	// Query narrows on the row's own identifying text — title, ID, source, and
 	// assigned branch — case-insensitively.
-	Query               string
-	UpdatedFrom         time.Time
-	UpdatedTo           time.Time
-	ServesRequirementID string
-	GoverningDesignID   string
+	Query                string
+	UpdatedFrom          time.Time
+	UpdatedTo            time.Time
+	ServesRequirementIDs []string
+	GoverningDesignIDs   []string
 }
 
 // Active reports whether any predicate would narrow the workspace. Callers that
 // have a cheaper unfiltered read path use it to keep that path byte-identical.
 func (f TaskFilter) Active() bool {
-	return f.State != "" || f.Repository != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
-		!f.UpdatedTo.IsZero() || f.ServesRequirementID != "" || f.GoverningDesignID != ""
+	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Query != "" || !f.UpdatedFrom.IsZero() ||
+		!f.UpdatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 || len(f.GoverningDesignIDs) > 0
 }
 
 // Validate rejects a range no task can satisfy, so an inverted range fails at
@@ -3920,10 +3925,10 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 // store expresses the same members in SQL; the two must agree, so the fixtures
 // in storetest exercise both through one table.
 func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool {
-	if filter.State != "" && task.State != filter.State {
+	if len(filter.States) > 0 && !slices.Contains(filter.States, task.State) {
 		return false
 	}
-	if filter.Repository != "" && task.Repo != filter.Repository {
+	if len(filter.Repositories) > 0 && !slices.Contains(filter.Repositories, task.Repo) {
 		return false
 	}
 	if needle := strings.ToLower(filter.Query); needle != "" {
@@ -3944,13 +3949,26 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 			return false
 		}
 	}
-	if filter.ServesRequirementID != "" || filter.GoverningDesignID != "" {
+	if len(filter.ServesRequirementIDs) > 0 || len(filter.GoverningDesignIDs) > 0 {
 		requirements, designs := ActiveTaskContextReferences(m.events[task.ID])
-		if filter.ServesRequirementID != "" && !requirements[filter.ServesRequirementID] {
-			return false
+		if len(filter.ServesRequirementIDs) > 0 {
+			matched := false
+			for _, id := range filter.ServesRequirementIDs {
+				matched = matched || requirements[id]
+			}
+			if !matched {
+				return false
+			}
 		}
-		if _, attached := designs[filter.GoverningDesignID]; filter.GoverningDesignID != "" && !attached {
-			return false
+		if len(filter.GoverningDesignIDs) > 0 {
+			matched := false
+			for _, id := range filter.GoverningDesignIDs {
+				_, attached := designs[id]
+				matched = matched || attached
+			}
+			if !matched {
+				return false
+			}
 		}
 	}
 	return true

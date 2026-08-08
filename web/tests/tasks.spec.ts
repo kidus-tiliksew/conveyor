@@ -121,17 +121,19 @@ const designCorpus = [
 // in the browser instead would return the whole fixture and fail (AC-2.3).
 function matchOperations(url: string) {
   const params = new URL(url).searchParams
-  const state = params.get('state') ?? ''
-  const repository = params.get('repository') ?? ''
+  // Each list member repeats its parameter and matches on any listed value,
+  // exactly as parseTaskFilter reads it on the server (AC-2.4).
+  const states = params.getAll('state')
+  const repositories = params.getAll('repository')
+  const requirements = params.getAll('serves_requirement')
+  const designs = params.getAll('governing_design')
   const needle = (params.get('q') ?? '').toLowerCase()
   const from = params.get('updated_from') ?? ''
   const to = params.get('updated_to') ?? ''
-  const requirement = params.get('serves_requirement') ?? ''
-  const design = params.get('governing_design') ?? ''
   return operations.filter((item) => {
     const updated = item.last_event_at || item.task.created_at
-    if (state && item.task.state !== state) return false
-    if (repository && item.task.repo !== repository) return false
+    if (states.length && !states.includes(item.task.state)) return false
+    if (repositories.length && !repositories.includes(item.task.repo)) return false
     if (
       needle &&
       ![item.task.title, item.task.id, item.task.source, item.task.branch]
@@ -143,8 +145,13 @@ function matchOperations(url: string) {
     if (from && updated < from) return false
     // The upper bound is exclusive, exactly as the store evaluates it.
     if (to && updated >= to) return false
-    if (requirement && !(item.task.context?.requirements ?? []).some((entry) => entry.id === requirement)) return false
-    if (design && !(item.task.context?.designs ?? []).some((entry) => entry.id === design)) return false
+    if (
+      requirements.length &&
+      !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
+    ) {
+      return false
+    }
+    if (designs.length && !(item.task.context?.designs ?? []).some((entry) => designs.includes(entry.id))) return false
     return true
   })
 }
@@ -218,7 +225,8 @@ function rows(page: Page) {
 }
 
 // AC-1.1: the view is a filterable list, not stage columns, and filters by
-// state, repository, and free text.
+// state, repository, and free text. State and repository are multi-select:
+// checking a second value widens the member rather than replacing it.
 test('tasks view lists every task and filters by state, repository, and free text', async ({ page }) => {
   await openTasks(page)
   await expect(rows(page)).toHaveCount(5)
@@ -230,32 +238,38 @@ test('tasks view lists every task and filters by state, repository, and free tex
   await expect(page.getByRole('link', { name: 'Bounced web plan' })).toBeVisible()
 
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
-  await page.getByLabel('Filter by repository').selectOption('web')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Repository' }).click()
+  await page.getByRole('option', { name: 'web' }).click()
   await expect(rows(page)).toHaveCount(2)
 
-  await page.getByLabel('Filter by state').selectOption('merged')
+  await page.getByRole('tab', { name: 'Status' }).click()
+  await page.getByRole('option', { name: 'Merged' }).click()
   await expect(rows(page)).toHaveCount(1)
   await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
 
-  await page.getByLabel('Filter by state').selectOption('running')
+  // Both checks hold at once: merged-or-queued over the web repository is the
+  // two web tasks, and the menu stays open for the next adjustment.
+  await page.getByRole('option', { name: 'Queued' }).click()
+  await expect(rows(page)).toHaveCount(2)
+  await expect(page.getByRole('option', { name: 'Merged' })).toHaveAttribute('aria-selected', 'true')
+
+  // Narrowing to a pair no seeded task satisfies empties the list rather than
+  // falling back to the unfiltered workspace.
+  await page.getByRole('option', { name: 'Merged' }).click()
+  await page.getByRole('option', { name: 'Queued' }).click()
+  await page.getByRole('option', { name: 'Running' }).click()
   await expect(rows(page)).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'No tasks match these filters' })).toBeVisible()
 })
 
-// AC-1.2: dependencies, blocking state, and child rollups render from durable
-// authority, and their absence renders as absence.
-test('tasks view shows dependency, blocking, and child rollup state', async ({ page }) => {
+// AC-1.2: child rollups render from durable authority, and their absence
+// renders as absence. The table redesign folded the per-dependency breakdown
+// out of the row — the task's own detail panel is where it renders now.
+test('tasks view shows child rollup state', async ({ page }) => {
   await openTasks(page)
-  const blocked = rows(page).filter({ hasText: 'Wire the Tasks view' })
-  await expect(blocked.getByText('Blocked by 2 of 3')).toBeVisible()
-  await expect(blocked.getByText('Abandoned prerequisite · unsatisfiable')).toBeVisible()
-  await expect(blocked.getByText('Running prerequisite · blocking')).toBeVisible()
-  // A merged dependency is satisfied, so it is listed without a blocking mark.
-  await expect(blocked.getByText('Delivered prerequisite', { exact: true })).toBeVisible()
-
   const anchor = rows(page).filter({ hasText: 'Historical anchor' })
   await expect(anchor.getByText('3 child tasks · 1 merged · 1 closed · 1 open')).toBeVisible()
-  await expect(anchor.getByText('No dependencies')).toBeVisible()
 
   // A task with no children states that rather than tallying zeroes.
   const shipped = rows(page).filter({ hasText: 'Shipped web change' })
@@ -339,11 +353,11 @@ test('tasks view reports why a stalled task cannot move on its own', async ({ pa
   await expect(
     stuck.getByText('Stalled — dispatch is failing repeatedly: harness exited before completing work order'),
   ).toBeVisible()
-  await expect(stuck.getByText('Needs operator')).toBeVisible()
+  await expect(stuck.getByLabel('Needs operator')).toBeVisible()
 
   const healthy = rows(page).filter({ hasText: 'Shipped web change' })
   await expect(healthy.getByText('Stalled', { exact: false })).toHaveCount(0)
-  await expect(healthy.getByText('Needs operator')).toHaveCount(0)
+  await expect(healthy.getByLabel('Needs operator')).toHaveCount(0)
 })
 
 // AC-1.5: no barred field appears on the surface, and none is offered as a
@@ -493,20 +507,24 @@ test('tasks view pages through server-side results', async ({ page }) => {
 // governing design — is applied by the server on the Tasks surface.
 test('tasks view filters by updated-at range, served requirement, and governing design', async ({ page }) => {
   await openTasks(page)
-  await page.getByLabel('Filter by requirement served').selectOption('req-tasks-view')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Requirement' }).click()
+  await page.getByRole('option', { name: 'Task-centric operations view' }).click()
   await expect(rows(page)).toHaveCount(1)
   await expect(page.getByRole('link', { name: 'Wire the Tasks view' })).toBeVisible()
 
-  await page.getByLabel('Filter by requirement served').selectOption('')
-  await page.getByLabel('Filter by design guidance').selectOption('design-lifecycle')
-  await expect(rows(page)).toHaveCount(1)
-
   // An unconfirmed document is not an option: only confirmed documents can be
   // attached to a task, so only confirmed documents can narrow the list.
-  await expect(page.getByLabel('Filter by requirement served')).not.toContainText('Unconfirmed idea')
+  await expect(page.getByRole('option', { name: 'Unconfirmed idea' })).toHaveCount(0)
 
-  await page.getByLabel('Filter by design guidance').selectOption('')
-  await page.getByLabel('Filter by last update').selectOption('custom')
+  await page.getByRole('option', { name: 'Any requirement' }).click()
+  await page.getByRole('tab', { name: 'System design' }).click()
+  await page.getByRole('option', { name: 'Work-order lifecycle' }).click()
+  await expect(rows(page)).toHaveCount(1)
+
+  await page.getByRole('option', { name: 'Any system design' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('option', { name: 'Custom range' }).click()
   // Fixed dates rather than a preset, so the assertion does not depend on when
   // the suite runs. The end date is inclusive of its own day.
   await page.getByLabel('Updated from').fill('2026-08-05')

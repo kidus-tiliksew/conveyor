@@ -78,11 +78,12 @@ async function routeBoard(page: Page, seen: string[]) {
     const params = new URL(url).searchParams
     const from = params.get('updated_from') ?? ''
     const needle = (params.get('q') ?? '').toLowerCase()
-    const repository = params.get('repository') ?? ''
+    // List members repeat their parameter and mean "any of" (AC-2.4).
+    const repositories = params.getAll('repository')
     return route.fulfill({
       json: activity.filter((item) => {
         if (from && (item.last_event_at || item.task.created_at) < from) return false
-        if (repository && item.task.repo !== repository) return false
+        if (repositories.length && !repositories.includes(item.task.repo)) return false
         return !needle || item.task.title.toLowerCase().includes(needle)
       }),
     })
@@ -112,7 +113,6 @@ test('board opens on the last month and remembers the operator adjustment per wo
 
   // The default is a starting point the operator can see the effect of: the
   // board asks the server for recent activity, and the ancient task is gone.
-  await expect(page.getByLabel('Filter by last update')).toHaveValue('30d')
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
   // The bound went to the server rather than being applied to a fully-loaded
@@ -121,11 +121,16 @@ test('board opens on the last month and remembers the operator adjustment per wo
   expect(seen.some((url) => url.includes('updated_from='))).toBe(true)
 
   // Adjusting it is what gets remembered — including across a reload.
-  await page.getByLabel('Filter by last update').selectOption('any')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('option', { name: 'Any time' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.reload()
-  await expect(page.getByLabel('Filter by last update')).toHaveValue('any')
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await expect(page.getByRole('option', { name: 'Any time' })).toHaveAttribute('aria-selected', 'true')
 
   // Persistence is scoped to the workspace it was set in, so another workspace
   // opens on its own default rather than inheriting a repository filter or a
@@ -135,7 +140,9 @@ test('board opens on the last month and remembers the operator adjustment per wo
   )
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
   await page.reload()
-  await expect(page.getByLabel('Filter by last update')).toHaveValue('30d')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
 })
 
 test('board sends the shared filter family to the server rather than narrowing in the browser', async ({ page }) => {
@@ -145,17 +152,28 @@ test('board sends the shared filter family to the server rather than narrowing i
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
   await expect.poll(() => seen.some((url) => url.includes('q=ancient')), { timeout: 5000 }).toBe(true)
 
-  await page.getByLabel('Filter by repository').selectOption('web')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Repository' }).click()
+  await page.getByRole('option', { name: 'web' }).click()
   await expect.poll(() => seen.some((url) => url.includes('repository=web')), { timeout: 5000 }).toBe(true)
+
+  // Checking a second value keeps the first: the member travels as one
+  // repeated parameter, and the server reads it as a disjunction (AC-2.4).
+  await page.getByRole('option', { name: 'conveyor' }).click()
+  await expect
+    .poll(() => seen.some((url) => url.includes('repository=web') && url.includes('repository=conveyor')), {
+      timeout: 5000,
+    })
+    .toBe(true)
 
   // The same family the Tasks list offers, on the same surface, by the same
   // component — including the two document filters.
-  await expect(page.getByLabel('Filter by requirement served')).toBeVisible()
-  await expect(page.getByLabel('Filter by design guidance')).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Requirement' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'System design' })).toBeVisible()
 
   // AC-1.5 stands on this surface too: no barred field is offered as a filter.
-  await expect(page.getByLabel('Filter by priority')).toHaveCount(0)
-  await expect(page.getByLabel('Filter by assignee')).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'Assignee' })).toHaveCount(0)
 })
 
 test('board no longer offers task creation', async ({ page }) => {

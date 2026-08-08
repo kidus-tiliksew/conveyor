@@ -1061,25 +1061,28 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 // rather than dropped: a silently ignored filter reads as a workspace that
 // contains the wrong rows.
 func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
-	repository := strings.TrimSpace(values.Get("repository"))
-	if repository == "" {
-		repository = strings.TrimSpace(values.Get("repo"))
+	// Every list member repeats its parameter — `state=a&state=b` — which keeps
+	// a single-valued caller byte-compatible with the historical form.
+	repositories := parseTaskFilterList(values["repository"])
+	if len(repositories) == 0 {
+		repositories = parseTaskFilterList(values["repo"])
 	}
 	filter := store.TaskFilter{
-		Repository:          repository,
-		Query:               strings.TrimSpace(values.Get("q")),
-		ServesRequirementID: strings.TrimSpace(values.Get("serves_requirement")),
-		GoverningDesignID:   strings.TrimSpace(values.Get("governing_design")),
+		Repositories:         repositories,
+		Query:                strings.TrimSpace(values.Get("q")),
+		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
+		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),
 	}
-	if state := strings.TrimSpace(values.Get("state")); state != "" {
-		filter.State = core.TaskState(state)
+	for _, state := range parseTaskFilterList(values["state"]) {
+		candidate := core.TaskState(state)
 		valid := false
-		for _, candidate := range core.TaskStates() {
-			valid = valid || filter.State == candidate
+		for _, known := range core.TaskStates() {
+			valid = valid || candidate == known
 		}
 		if !valid {
 			return filter, fmt.Errorf("invalid task state %q", state)
 		}
+		filter.States = append(filter.States, candidate)
 	}
 	var err error
 	if filter.UpdatedFrom, err = parseTaskFilterInstant(values.Get("updated_from")); err != nil {
@@ -1089,6 +1092,18 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		return filter, err
 	}
 	return filter, filter.Validate()
+}
+
+// parseTaskFilterList trims a repeated parameter's values and drops the empty
+// ones, so `state=` narrows nothing rather than matching nothing.
+func parseTaskFilterList(raw []string) []string {
+	var out []string
+	for _, value := range raw {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // parseTaskFilterInstant takes an absolute RFC 3339 instant. The bound is

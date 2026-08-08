@@ -1,11 +1,11 @@
-import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
+import { useMemo } from 'react'
 import { groupForSummary } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
-import { stageGroups, type GroupKey } from '../../lib/contracts'
+import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
 import {
@@ -66,13 +66,7 @@ export function Board() {
           over work that already exists. */}
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <TaskFilters
-          value={filter}
-          onChange={setFilter}
-          fallback={boardDefaultTaskFilter}
-          compact
-          className="ml-auto"
-        />
+        <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
       </header>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">

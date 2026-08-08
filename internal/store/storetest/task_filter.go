@@ -106,9 +106,16 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 		filter store.TaskFilter
 		want   []string
 	}{
-		{"state", store.TaskFilter{State: core.TaskRunning}, []string{"beta"}},
-		{"repository", store.TaskFilter{Repository: fixture.Repo}, []string{"alpha", "beta", "gamma"}},
-		{"unknown repository", store.TaskFilter{Repository: "absent"}, nil},
+		{"state", store.TaskFilter{States: []core.TaskState{core.TaskRunning}}, []string{"beta"}},
+		// A list member is a disjunction: any listed value matches (AC-2.4).
+		{"several states", store.TaskFilter{
+			States: []core.TaskState{core.TaskRunning, core.TaskQueued},
+		}, []string{"alpha", "beta", "gamma"}},
+		{"repository", store.TaskFilter{Repositories: []string{fixture.Repo}}, []string{"alpha", "beta", "gamma"}},
+		{"unknown repository", store.TaskFilter{Repositories: []string{"absent"}}, nil},
+		{"several repositories", store.TaskFilter{
+			Repositories: []string{"absent", fixture.Repo},
+		}, []string{"alpha", "beta", "gamma"}},
 		{"free text on title", store.TaskFilter{Query: "ledger"}, []string{"alpha", "beta"}},
 		{"free text ignores case", store.TaskFilter{Query: "LeDgEr"}, []string{"alpha", "beta"}},
 		{"free text on source", store.TaskFilter{Query: "github"}, []string{"beta"}},
@@ -128,10 +135,21 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 		{"updated range falls back to creation", store.TaskFilter{
 			UpdatedFrom: filterInstant(1, 1), UpdatedTo: filterInstant(2, 1),
 		}, []string{"gamma"}},
-		{"served requirement", store.TaskFilter{ServesRequirementID: "req-ledger"}, []string{"alpha"}},
-		{"detached requirement", store.TaskFilter{ServesRequirementID: "req-absent"}, nil},
-		{"governing design", store.TaskFilter{GoverningDesignID: "design-ledger"}, []string{"beta"}},
-		{"members intersect", store.TaskFilter{State: core.TaskQueued, Query: "ledger"}, []string{"alpha"}},
+		{"served requirement", store.TaskFilter{ServesRequirementIDs: []string{"req-ledger"}}, []string{"alpha"}},
+		{"detached requirement", store.TaskFilter{ServesRequirementIDs: []string{"req-absent"}}, nil},
+		// Beta removed req-ledger, so listing it alongside an absent document
+		// still selects only the task that kept it: the fold stays per-document
+		// even when several are listed.
+		{"several requirements", store.TaskFilter{
+			ServesRequirementIDs: []string{"req-absent", "req-ledger"},
+		}, []string{"alpha"}},
+		{"governing design", store.TaskFilter{GoverningDesignIDs: []string{"design-ledger"}}, []string{"beta"}},
+		{"several designs", store.TaskFilter{
+			GoverningDesignIDs: []string{"design-absent", "design-ledger"},
+		}, []string{"beta"}},
+		{"members intersect", store.TaskFilter{
+			States: []core.TaskState{core.TaskQueued}, Query: "ledger",
+		}, []string{"alpha"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			want := make([]string, len(testCase.want))
