@@ -1,92 +1,112 @@
 # Conveyor
 
-**A software factory: durable documents describe the desired state of a
-product, and the factory reconciles code toward them — through planned,
-reviewed, evidence-gated tasks, with every step on the record.**
+Conveyor is a software factory. You describe what a product should be
+in versioned documents (requirements, system design, decisions), and
+the factory turns the gap between those documents and the code into
+tasks. Agents you run on your own machines claim the tasks over MCP,
+then plan, implement, and review them. Humans confirm the documents,
+approve the plans, and gate the merges. Every step is recorded as an
+event, and the events build a knowledge graph that links each merged
+change back through its task, plan, review, and evidence to the
+requirement it serves.
 
-Most agent tooling treats each change as a conversation that evaporates
-when the terminal closes. Conveyor is built on the opposite bet: the
-compounding value of AI-driven development is **what survives between
-tasks** — confirmed intent, documented mechanism, recorded decisions,
-and a knowledge graph connecting every merged line of code back to the
-reason it exists. Task N should be cheaper than task 1, and the only
-way to get there is to own the planning, the paper trail, and the
-proof — not just the code generation.
+Conveyor has been building itself since July 2026. Nearly every feature
+in this repository entered as a document, went through the plan and
+review gates, and merged with its lineage recorded, including the
+machinery that replaced the factory's original spec format.
 
-Conveyor develops Conveyor. Since Beta (July 15, 2026), nearly every
-feature in this repository was planned as a document in the factory,
-delivered as a factory task through its own gates, reviewed by its own
-adversarial panel against its own citation contracts, and merged with
-its lineage recorded — including the machinery that retired the
-factory's original spec format, and the surfaces you'd use to watch it
-happen.
+## The software factory
 
-## The model
+You can run a factory of agents dark, shipping code no human reads.
+That feels fast for a few months, until nobody understands the system
+anymore. Conveyor runs lit, with human judgment pushed as early in the
+process as it will go:
 
-**Documents are truth; tasks are reconciliation.** Four durable tiers,
-each with its own maintenance loop:
+- Work enters as requirements and design documents.
+  Agents can draft and propose them; only an operator can confirm them.
+- An optional plan gate has the agent submit a short written plan
+  (approach, files, risks, done-criteria) for approval before it writes
+  any code.
+- Review runs in a separate agent session. The server rejects
+  self-review at claim time, and a submission without test evidence is
+  rejected outright.
+- System Design documents declare which code they govern. A merge that
+  touches governed code without a design revision raises a drift
+  signal, and a monitor watches the default branch and files
+  reconciliation tasks when changes land outside the pipeline.
+- Every state transition appends to an event log. The knowledge graph
+  is a projection of that log
 
-| Tier | Nature | IDs | Loop |
+## The document tiers
+
+| Tier | Nature | IDs | Maintenance |
 |---|---|---|---|
-| Product overviews | Informative | — | Markdown uploads, versioned with diffs; enforceable claims **promote** into requirements with a section-anchored link |
-| Requirements | Normative intent | `REQ-n` / `AC-n.m` | Drafted by agents or operators, versioned, operator-confirmed; user stories + nested acceptance criteria |
-| System Design | Normative mechanism | — | Factory-resident markdown declaring the code it governs; merges that touch governed code without a design revision raise a **drift signal** |
-| Decisions | Settled arguments | `DEC-n` | Extracted from real deliberation with alternatives-rejected on record; append-only with supersession |
+| Product overviews | Informative | — | Markdown uploads, versioned with diffs; enforceable claims promote into requirements with a section-anchored link |
+| Requirements | Normative intent | `REQ-n` / `AC-n.m` | Drafted by agents or operators, versioned, operator-confirmed; user stories with nested acceptance criteria |
+| System Design | Normative mechanism | — | Factory-resident markdown that declares the code it governs; ungoverned merges raise a drift signal |
+| Decisions | Settled arguments | `DEC-n` | Extracted from real deliberation with the rejected alternatives on record; append-only with supersession |
 
-Stable IDs are citable in code comments. Implementing agents cite the
-requirements and decisions their code serves; reviewers validate those
-citations against authority **pinned at claim time** — so the contract
-an agent was shown is the contract it is judged by.
+The IDs are stable and citable in code comments. An implementing agent
+cites the requirements and decisions its code serves, and the reviewer
+checks those citations against the document versions pinned when the
+work order was claimed, so the contract the agent saw is the contract
+it is judged by.
 
-## The loop
+## How a task moves
 
-1. **Plan** — in an operator-side agent session (the [planning
-   playbook](docs/playbooks/conveyor-planning.md)) or the in-product
-   planning agent. Output: requirement and design *proposals* plus a
-   dependency-ordered task set. Agents propose; **operators confirm** —
-   always, structurally.
-2. **Task** — the sole transition object. Tasks carry attached context
-   (the requirements they serve, the designs that govern them) and are
-   claimable in dependency order from one queue. No priority fields, no
-   assignees — blocked is a derived predicate, workers claim.
-3. **Plan gate** — when enabled, a stage-typed work order collects a
-   versioned markdown execution plan (approach, files, risks,
-   done-criteria) for operator approval or redirect before any
+1. **Plan.** In the in-product planning agent or an operator-side
+   session (see the [planning playbook](docs/playbooks/conveyor-planning.md)).
+   Output: proposed requirement and design revisions plus a
+   dependency-ordered set of tasks.
+2. **Queue.** Tasks carry their context with them: the requirements
+   they serve and the designs that govern them. There are no priority
+   fields and no assignees. Blocked is derived from dependencies, and
+   workers claim whatever is claimable.
+3. **Plan gate** (optional). A stage-typed work order collects a
+   versioned execution plan for approval or redirect before
    implementation dispatches.
-4. **Implement** — an operator-owned agent (Codex, Claude, or anything
-   speaking MCP) claims the work order, resolves a dedicated worktree,
-   and does every edit, test, and push there. Conveyor never runs your
-   code or holds your model credentials.
-5. **Review** — a fresh agent session (self-review is rejected at claim
-   time) judges the diff against cited acceptance criteria and plan
-   done-criteria, with structured verdicts the server validates.
-   Evidence-gated: no test output, no submission.
-6. **Merge & watch** — gated or automatic merge; the monitor watches
-   the default branch for out-of-pipeline changes and post-merge
-   failures, and files reconciliation tasks instead of letting history
-   drift silently.
+4. **Implement.** An agent you own (Codex, Claude, anything that
+   speaks MCP) claims the work order, checks out a dedicated worktree,
+   and does every edit, test, commit, and push there. Conveyor never
+   executes your code and never holds your model credentials.
+5. **Review.** A fresh agent session judges the diff against the cited
+   acceptance criteria and the plan's done-criteria, and files a
+   structured verdict that the server validates.
+6. **Merge and watch.** Gated or automatic merge, then the monitor
+   keeps watching the branch for out-of-pipeline changes and
+   post-merge failures.
 
-Every transition appends an event. Every relationship in the knowledge
-graph — session → document → task → work order → PR → evidence →
-verdict — is a projection of those events, rebuildable from history,
-never a free-standing claim. Agent token usage is telemetry on every
-work order.
+## Architecture
 
-## Human authority
+```
+   Operators (browser)                  Agents (Codex, Claude, ...)
+          |                                       |
+   React dashboard                      MCP work-order server
+   Board / Tasks / Docs                 claim, plan, review, verdict
+          |                                       |
+          +----------------+----------------------+
+                           |
+                    conveyord (Go, one binary)
+              REST API, SSE planning chat, event log
+                           |
+                      PostgreSQL
+             events, documents, links, one queue
+                           |
+                 conveyor worker (your machine)
+             supervises your agents, your credentials
+                           |
+              git worktrees -> your repos -> PRs
+```
 
-Two gates (plan approval, merge approval), document confirmation,
-drift resolution, and task cancel/hold answer **only to human
-credentials — structurally**, not by configurable permission. Agents
-file tasks but cannot cancel them; they propose documents but cannot
-confirm them; a persuaded agent hits a credential wall, not a policy
-suggestion. The factory has paused mid-task to ask for a human
-decision and refused to fabricate evidence to satisfy its own gates;
-that behavior is the design, and it has survived live contact.
+Conveyor is a coordination plane, not an execution sandbox. The worker
+is a thin supervisor over agents you already run. Edits and tests
+happen in worktrees on your hardware, and delivery lands as ordinary
+pull requests.
 
-## Run locally
+## Running it
 
-Requirements: Go 1.24, Node/npm, PostgreSQL 15+, Docker with Compose,
-and an authenticated `gh` CLI for GitHub-delivery repos.
+You need Go 1.24, Node/npm, PostgreSQL 15+, Docker with Compose, and
+an authenticated `gh` CLI for GitHub-delivery repos.
 
 ```sh
 cp conveyor.example.yaml conveyor.yaml
@@ -94,61 +114,32 @@ cp .env.example .env   # set CONVEYOR_API_KEY; regenerate the operator token: op
 make dev               # health-checked Postgres on :5432 + build + conveyord on :8080
 ```
 
-Open `http://127.0.0.1:8080` — the Board and Tasks views are the
-operating surfaces. `http://127.0.0.1:8080/settings` has the MCP
-endpoint and a paste-ready client snippet.
+Open `http://127.0.0.1:8080`. The Board and Tasks views are the
+operating surfaces, and `http://127.0.0.1:8080/settings` has the MCP
+endpoint with a paste-ready client snippet.
 
-Start a worker on your hardware (it supervises your agents; it is not
-an execution sandbox):
+Start a worker on the machine where your agents run:
 
 ```sh
 bin/conveyor --workspace demo worker pair                      # prints a single-use pairing token
 bin/conveyor --workspace demo worker run --pairing-token <t>   # exchanges it for a revocable credential
 ```
 
-File work from anywhere:
+File work from the CLI:
 
 ```sh
 bin/conveyor --workspace demo task new --repo api --message 'fix the typo in README'
 ```
 
 or over MCP with `create_task` (idempotent; `body`, `repo`, and a
-caller-stable `idempotency_key` required; attach served requirements
-and governing designs at intake). Any MCP-speaking agent can claim
-work orders, submit plans, and file review verdicts using
-`CONVEYOR_API_TOKEN` — model credentials stay yours.
-
-`CONVEYOR_API_KEY` powers only the server-owned triage and planning
-stages. `.env` is auto-loaded by both binaries; process environment
-wins.
-
-## Developing Conveyor
-
-The authoritative design is [conveyor-spec.md](conveyor-spec.md) —
-body §§1–20 normative, §21 the amendment record. **When code and spec
-disagree, the spec wins**; changes go by version-bumped amendment,
-never silent edits. Code cites the spec (`(spec §N)`) and confirmed
-documents (`REQ-n`, `AC-n.m`, `DEC-n`) as its traceability layer.
-
-```sh
-make build            # binaries
-make test             # Go + web typecheck + Biome + Playwright
-make test-integration # disposable Postgres on :5433; the database-backed lane
-make vet fmt-check
-```
-
-Planning and task filing from agent sessions follow the
-[planning](docs/playbooks/conveyor-planning.md) and
-[task-filing](docs/playbooks/conveyor-task-filing.md) playbooks
-(`.claude/skills/` wraps them for Claude Code; `AGENTS.md` is a symlink
-to the same guidance for Codex and friends). Every push is a proposal;
-operators confirm.
+caller-stable `idempotency_key` are required, and you can attach served
+requirements and governing designs at intake). Any MCP-speaking agent
+can claim work orders, submit plans, and file review verdicts with
+`CONVEYOR_API_TOKEN`. `CONVEYOR_API_KEY` powers only the server-owned
+triage and planning stages. Both binaries auto-load `.env`; process
+environment wins.
 
 ## Status
 
-Beta July 15, 2026. Phases through 8 (the desired-state document
-model) are delivered and attested in the factory's own records; the
-current work — including the UI it's judged by — is planned and built
-through the loop above. [docs/phase8-plan.md](docs/phase8-plan.md) and
-the spec's §21 record carry the history, defects and all: the
-reviews, the incidents, and the amendments are part of the product.
+Conveyor is in active development. The factory's own records carry the
+full history, defects included.
