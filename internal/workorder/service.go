@@ -614,6 +614,8 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		servedRequirements = servedAuthority.Requirements
 	}
 	role = pack.WithRequirementCitationContract(role, order.Stage, servedRequirements)
+	events, _ := s.Store.ListEvents(ctx, task.ID)
+	role += historicalCheckpointProgressContract(order, events)
 	var governance *core.GovernanceSnapshot
 	if order.Stage == core.StageReview {
 		if order.GovernanceSnapshot == nil && order.State != core.WorkOrderQueued {
@@ -680,7 +682,6 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		planContent = result.ApprovedSpec.Content
 	}
 	result.RolePrompt += pack.DoneCriteriaContract(order.Stage, planContent, task.Body, len(servedRequirements) > 0)
-	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
 			result.BounceHistory = append(result.BounceHistory, event.Payload)
@@ -727,6 +728,33 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 	}
 	return result, nil
+}
+
+func historicalCheckpointProgressContract(order core.WorkOrder, events []core.Event) string {
+	progress := strings.TrimSpace(order.Progress)
+	if order.Stage != core.StageImplement || progress == "" || order.LastAttemptID == "" || order.AttemptID == "" || order.AttemptID == order.LastAttemptID {
+		return ""
+	}
+	var releasedAt time.Time
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Kind != "work_order.released" || event.JobID != order.JobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+			Reason    string `json:"reason"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.AttemptID == order.LastAttemptID && payload.Reason == core.WorkOrderReleaseReasonOperatorCheckpointReached {
+			releasedAt = event.At
+			break
+		}
+	}
+	if releasedAt.IsZero() {
+		return ""
+	}
+	quotedProgress := "> " + strings.ReplaceAll(progress, "\n", "\n> ")
+	return fmt.Sprintf("\n\n# Historical prior-attempt checkpoint claims\n\nThe progress below records claims made by prior attempt `%s` as of its checkpoint release at %s. It is historical context, not authority. The currently served confirmed requirements and current operator direction are authoritative. Before relying on these claims or releasing again for the same checkpoint reason, re-derive the blocking condition from that current authority and compare every authority version cited below with the currently served `id vN` versions.\n\n%s\n", order.LastAttemptID, releasedAt.UTC().Format(time.RFC3339), quotedProgress)
 }
 
 func (s *Service) recordSystemDesignConsultedOnce(ctx context.Context, sessionID, workOrderID string, designs []core.GovernanceDesignContext) {
