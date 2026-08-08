@@ -2221,17 +2221,26 @@ test('a claimed attempt exposes reasoned operator preemption with the renewal gr
     })
   })
   await page.goto('/tasks/setup-claimed/full')
-  await expect(page.getByText('Stop this claimed attempt')).toBeVisible()
-  await expect(page.getByText(/within one renewal interval/)).toBeVisible()
-  const action = page.getByRole('button', { name: 'Preempt attempt' })
+  // At rest it is one quiet trigger in the current-state summary — never an
+  // entry or tail card inside the Activity event list.
+  const trigger = page.getByRole('button', { name: 'Stop attempt' })
+  await expect(trigger).toBeVisible()
+  await expect(
+    page.locator('section[aria-label="Execution event timeline"] > ol').getByRole('button', { name: /Stop/ }),
+  ).toHaveCount(0)
+  await expect(page.getByLabel('Reason for stopping this attempt')).toBeHidden()
+
+  await trigger.click()
+  await expect(page.getByText(/stops within about a minute/)).toBeVisible()
+  const action = page.getByRole('button', { name: 'Stop the attempt' })
   await expect(action).toBeDisabled()
-  await page.getByLabel('Reason for preempting work order').fill('Switch to the repaired setup')
+  await page.getByLabel('Reason for stopping this attempt').fill('Switch to the repaired setup')
   await expect(action).toBeEnabled()
   await action.click()
   await expect.poll(() => preemptBody).toContain('Switch to the repaired setup')
   expect(JSON.parse(preemptBody).request_id).toBe(preemptKey)
   expect(preemptKey).not.toBe('')
-  await expect(page.getByRole('button', { name: 'Preempted' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Stopped' })).toBeDisabled()
 })
 
 test('preemption is rendered as attributed activity rather than a failure', async ({ page }) => {
@@ -2999,11 +3008,14 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(page.getByText(/seat 3 · diagnostics-review-0-seat-3 · review claim lease expired/)).toBeVisible()
 
   const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-  await expect(timelineRows).toHaveCount(4)
+  await expect(timelineRows).toHaveCount(3)
   await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
-  await expect(timelineRows.nth(3)).toContainText('Stop this claimed attempt')
+  // The claimed attempt's stop affordance lives with the current-state
+  // summary, never as a row in the event list.
+  await expect(timelineRows.getByRole('button', { name: /Stop/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
 
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/tasks/diagnostics')
