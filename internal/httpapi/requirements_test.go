@@ -391,7 +391,7 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	}
 }
 
-// Staleness walks delivery edges at task level (spec §21.58 change 6).
+// Staleness walks delivery edges at task level.
 // Task-centric delivery attaches the requirement to the task itself (change 3),
 // so a merge on that task is the requirement's delivery — with no blueprint
 // anywhere in the walk, and none invented to stand in for one.

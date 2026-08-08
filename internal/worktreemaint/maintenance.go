@@ -1,6 +1,6 @@
 // Package worktreemaint reconciles operator-owned linked worktrees after
 // terminal task transitions. Failures never roll back terminal state and are
-// retried on the next reconciliation pass (spec §8.1, §8.2).
+// retried on the next reconciliation pass (design-git-delivery).
 package worktreemaint
 
 import (

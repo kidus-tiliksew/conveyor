@@ -1318,7 +1318,7 @@ func TestBlueprintPlanningToolsAreRetired(t *testing.T) {
 }
 
 // AC-1: the goal is declared once at creation and names the session until it
-// produces something (spec §21.57 change 3).
+// produces something.
 func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	tmp := t.TempDir()
 	repo := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "planning fixture\n")
@@ -1379,7 +1379,7 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 }
 
 // AC-2: finalizing replaces the provisional title with the produced artifact's
-// own title, and a retry keeps it (spec §21.57 change 3).
+// own title, and a retry keeps it.
 func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
 	t.Run("requirement", func(t *testing.T) {
 		ctx, st, session := goalPlanningFixture(t, "session-260802-title-req", core.PlanningGoalRequirement)
@@ -1426,7 +1426,7 @@ func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
 
 // AC-3: a non-open goal rejects the mismatched finalizer in band. The run
 // survives, nothing is produced, and the matching finalize still lands in the
-// same run (spec §21.57 change 3).
+// same run.
 func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 	requirementArgsJSON := jsonString(t, requirementArgs{
 		Title: "Bounded retries", Prose: "Retries stay explainable.",
@@ -1520,7 +1520,7 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 // A session opened from a document revises that document. Without this the
 // sidebar's Revise action forks a competing requirement whenever the model
 // omits requirement_id — and the sidebar is the only authoring path there is
-// (spec §21.57 changes 1 and 2).
+// by construction.
 func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -1612,7 +1612,7 @@ func TestServiceOpenGoalAcceptsEitherFinalizer(t *testing.T) {
 }
 
 // The role prompt states the goal and its finalize expectation, so steering
-// reaches the agent before enforcement does (spec §21.57 change 3).
+// reaches the agent before enforcement does.
 func TestPlanningPromptStatesTheSessionGoal(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-prompt", core.PlanningGoalRequirement)
 	service := &Service{Store: st, Model: "planner", Prompt: testPlanningPrompt + " at most {{MAX_CALLS_PER_STEP}} tool calls", MaxCallsPerStep: 3}
@@ -1892,7 +1892,7 @@ func planningFixture(t *testing.T, id string) (context.Context, store.Store, cor
 	return goalPlanningFixture(t, id, "")
 }
 
-// goalPlanningFixture opens a session with a declared goal (spec §21.57). An
+// goalPlanningFixture opens a session with a declared goal. An
 // empty goal exercises the compatible `open` default.
 func goalPlanningFixture(
 	t *testing.T,

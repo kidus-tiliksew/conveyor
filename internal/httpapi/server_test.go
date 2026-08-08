@@ -927,7 +927,7 @@ func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T)
 	}
 	// The Requirements read model no longer leaks task.feature_id or the
 	// retired feature hierarchy. Requirement/blueprint lineage is deposited by
-	// planning and rendered from living documents instead (spec §21.46).
+	// planning and rendered from living documents instead.
 	request := httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -2268,7 +2268,7 @@ func TestTaskOperationsLinksAttachedContextAndReportsItsAbsence(t *testing.T) {
 
 // AC-1.4: every plan-status outcome is read off durable authority — the
 // persisted plan version and the audited gate command that parked or resumed
-// it (spec §13.1).
+// it (design-task-lifecycle).
 func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
@@ -2497,7 +2497,7 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 	}
 }
 
-// Staleness renders from the task-level surface (spec §21.58 change 7), so the
+// Staleness renders from the task-level surface, so the
 // row carries the derived §21.34 reason a task cannot move — "needs operator"
 // alone does not say why. It travels as the list-scoped summary, never the work
 // order the detail surfaces render. A terminal task carries none: there is

@@ -15,7 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// client is a thin wrapper over the control-plane API (spec §17.3).
+// client is a thin wrapper over the control-plane API (design-http-api).
 type client struct {
 	base      string
 	token     string

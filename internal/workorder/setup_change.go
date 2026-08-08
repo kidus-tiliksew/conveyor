@@ -15,7 +15,7 @@ import (
 )
 
 // ChangeTaskSetup resolves a current named workspace setup and builds the
-// future-only transition submitted atomically to persistence (spec §21.35).
+// future-only transition submitted atomically to persistence (design-harness-execution; DEC-7).
 func (s *Service) ChangeTaskSetup(ctx context.Context, taskID, setupName, reason, requestID string) (store.SetupChangeResult, error) {
 	setupName, reason, requestID = strings.TrimSpace(setupName), strings.TrimSpace(reason), strings.TrimSpace(requestID)
 	if setupName == "" || requestID == "" {

@@ -15,7 +15,7 @@ import (
 
 // Snapshot is an immutable commit inside Conveyor's fetch-only bare cache.
 // The directory is server-owned and never enters a planning tool argument
-// (spec §§8.1, 21.50-21.51).
+// (design-git-delivery).
 type Snapshot struct {
 	Repository string
 	Revision   string

@@ -1,6 +1,6 @@
 // Package github implements the Phase 1 trigger and output: issues
 // labeled conveyor:ready become tasks, and completed tasks open PRs
-// (spec §9, §19 Phase 1: "GitHub issue → PR").
+// (DEC-8; design-git-delivery).
 //
 // Phase 1 shells out to the gh CLI (already authenticated on the
 // user's machine); webhook ingestion arrives with the HTTP API in
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ReadyLabel dispatches an issue into the factory (spec §9).
+// ReadyLabel dispatches an issue into the factory (DEC-8).
 const ReadyLabel = "conveyor:ready"
 
 // DispatchedLabel is the durable claim marker for a GitHub issue. Moving
@@ -31,7 +31,7 @@ const DispatchedLabel = "conveyor:dispatched"
 // ReviewStatusContext is the portable commit-status context used for the
 // aggregate review result. Unlike Check Runs, commit statuses can be written
 // by the user-owned credentials already required for GitHub coordination
-// (spec §21.22).
+// (design-git-delivery).
 const ReviewStatusContext = "Conveyor / Code review"
 
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
@@ -44,7 +44,7 @@ var (
 )
 
 // ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
-// operator evidence (spec §11.1, §21.41). It deliberately remains local to
+// operator evidence (design-git-delivery). It deliberately remains local to
 // the one supported forge instead of introducing a provider abstraction.
 type ForgeErrorCategory string
 
@@ -365,7 +365,7 @@ func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner
 
 // ListReviewFeedback returns human-authored PR review bodies and inline
 // comments for the task branch. The dispatcher deduplicates IDs in its event
-// log before converting them to redirect interventions (spec §9).
+// log before converting them to redirect interventions (DEC-8).
 func ListReviewFeedback(ctx context.Context, repo, branch string, cursor ReviewCursor) (ReviewFeedbackPage, error) {
 	return listReviewFeedback(ctx, repo, branch, cursor, gh)
 }
@@ -522,7 +522,7 @@ type ReviewHistoryItem struct {
 
 type ReviewPublicationResult struct {
 	// CheckRunID is retained for wire/storage compatibility with historical
-	// publications. Commit-status publications leave it zero (spec §21.22).
+	// publications. Commit-status publications leave it zero.
 	CheckRunID        int64
 	CommentID         int64
 	ReviewedCommitSHA string
@@ -768,7 +768,7 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 
 // OpenPRForBranch trusts the operator-owned agent to have pushed branch. It
 // creates or reuses the PR without requiring Conveyor to own a worktree
-// (spec §21.4 change 5, amended by §21.7).
+// (design-git-delivery).
 func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
 	existing, err := gh(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err != nil {
@@ -801,7 +801,7 @@ func DiffForBranch(ctx context.Context, repo, branch string) (string, error) {
 
 // DiffBetween returns only the commits introduced after an approved review
 // baseline. GitHub's compare endpoint is the authoritative delta source for
-// refresh reviews (spec §21.30 change 4).
+// refresh reviews (design-git-delivery).
 func DiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
 	out, err := gh(ctx, "api", "repos/"+repo+"/compare/"+baseline+"..."+head, "-H", "Accept: application/vnd.github.v3.diff")
 	if err != nil {

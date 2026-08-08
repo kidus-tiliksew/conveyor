@@ -70,7 +70,7 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "enforced" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
-	// Held tasks are rejected at claim time (spec §21.31 change 2), and a
+	// Held tasks are rejected at claim time (DEC-5), and a
 	// cleared hold releases the order back to worker claimability.
 	if _, claimErr := service.ClaimForWorker(workerCtx, worker, "manual-task-implement-1", core.WorkOrderClaim{SessionID: "session-held", ClientToken: "held-token"}); claimErr == nil || !strings.Contains(claimErr.Error(), "held") {
 		t.Fatalf("held claim err=%v", claimErr)
