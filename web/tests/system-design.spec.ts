@@ -3,7 +3,8 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 const first = {
   document_id: 'design-dispatch',
   version: 1,
-  content: '# Dispatch\n\nThe dispatcher owns durable stage transitions.',
+  content:
+    '# Dispatch\n\nThe dispatcher owns durable stage transitions.\n\n```mermaid\nsequenceDiagram\n  participant UI\n  participant API\n  UI->>API: dispatch\n```\n\n```mermaid\nthis is deliberately malformed design mermaid\n```',
   governs: [{ repository: 'conveyor', paths: ['internal/dispatch/**'] }],
   origin: 'operator',
   confirmed: true,
@@ -147,6 +148,11 @@ test('System Design renders a category tree, one attention surface, and authenti
   await expect(tree.getByRole('button', { name: /Dispatch ownership/ })).toHaveAttribute('aria-current', 'true')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
   await expect(page.getByText('The dispatcher owns durable stage transitions.').first()).toBeVisible()
+  const documentCanvas = page.getByRole('heading', { name: 'Dispatch ownership' }).locator('xpath=ancestor::article')
+  await expect(documentCanvas.locator('[data-mermaid] svg').first()).toBeVisible()
+  await expect(documentCanvas.locator('code.language-mermaid').first()).toContainText(
+    'this is deliberately malformed design mermaid',
+  )
 
   // AC-1.1: drift and the pending version are listed in the one attention
   // surface, each beside the affordance that resolves it.

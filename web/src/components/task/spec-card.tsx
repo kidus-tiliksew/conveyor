@@ -1,5 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import mermaid from 'mermaid'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import { taskStateLabels } from '../../lib/contracts'
@@ -19,45 +18,6 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
   playwright: Globe,
   'computer-use': MousePointerClick,
   human: Square,
-}
-
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
-
-export function MermaidBlock({ source }: { source: string }) {
-  const id = `mermaid-${useId().replace(/:/g, '')}`
-  const [svg, setSvg] = useState<string>()
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    let active = true
-    setSvg(undefined)
-    setFailed(false)
-    mermaid
-      .render(id, source)
-      .then(({ svg: rendered }) => {
-        if (active) setSvg(rendered)
-      })
-      .catch(() => {
-        if (active) setFailed(true)
-      })
-    return () => {
-      active = false
-    }
-  }, [id, source])
-
-  if (failed)
-    return (
-      <pre>
-        <code className="language-mermaid">{source}</code>
-      </pre>
-    )
-  if (!svg)
-    return (
-      <pre>
-        <code className="language-mermaid">{source}</code>
-      </pre>
-    )
-  return <div className="my-4 overflow-x-auto" data-mermaid dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
 // The spec review card (spec §13.3 element 3): rendered markdown plus the
@@ -152,21 +112,7 @@ export function SpecCard({
               className={cn(overflowExpandable && !contentExpanded && 'max-h-96 overflow-hidden')}
             >
               <div>
-                <MarkdownProse
-                  components={{
-                    code({ className, children, ...props }) {
-                      const source = String(children).replace(/\n$/, '')
-                      if (className === 'language-mermaid') return <MermaidBlock source={source} />
-                      return (
-                        <code className={className} {...props}>
-                          {children}
-                        </code>
-                      )
-                    },
-                  }}
-                >
-                  {prose}
-                </MarkdownProse>
+                <MarkdownProse>{prose}</MarkdownProse>
                 {criteria.length > 0 && (
                   <div className="mt-5 border-t border-border pt-4">
                     <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">

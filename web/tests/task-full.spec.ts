@@ -3284,9 +3284,17 @@ test('board activity surfaces expired-without-verdict state', async ({ page }) =
   await expect(page.getByText('Verdict claim expired')).toBeVisible()
 })
 
-test('spec diagrams render best-effort and malformed Mermaid falls back to source', async ({ page }) => {
+test('shared Markdown renders plan diagrams responsively in both themes and falls back to source', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 })
   await page.goto('/tasks/mermaid-valid/full')
-  await expect(page.locator('[data-mermaid] svg')).toBeVisible()
+  const diagram = page.locator('[data-mermaid]')
+  await expect(diagram.locator('svg')).toBeVisible()
+  await expect(diagram).toHaveCSS('overflow-x', 'auto')
+  for (const theme of ['light', 'dark']) {
+    await page.getByLabel('Theme').selectOption(theme)
+    await expect(diagram.locator('svg')).toBeVisible()
+    await expect(diagram).toBeInViewport()
+  }
 
   await page.goto('/tasks/mermaid-invalid/full')
   await expect(page.locator('code.language-mermaid')).toContainText('this is deliberately malformed')
