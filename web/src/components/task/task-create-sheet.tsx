@@ -19,13 +19,7 @@ import { Sheet } from '../ui/sheet'
 import { Switch } from '../ui/switch'
 import { type ContextGroup, TaskContextPicker } from './task-context-picker'
 
-const descriptionScaffold = `Context — where this lives, links to prior work…
-
-What should change —
-
-Constraints & non-goals —
-
-Acceptance ideas — how we'd know it works…`
+const descriptionScaffold = 'Enter a description ...'
 
 const DEPENDENCY_RESULT_LIMIT = 20
 
