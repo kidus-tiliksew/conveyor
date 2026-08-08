@@ -1,24 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { Search, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { CalendarDays, Check, ChevronDown, Search, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
 import { useWorkspace, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select } from '../ui/input'
 
-// One filter family for the Tasks list and the Board (AC-2.4). Both surfaces
-// mount this component and send what it produces to the server, so a filter
-// cannot mean one thing on one surface and something else on the other, and
-// neither surface narrows a fully-loaded workspace in the browser (AC-2.3).
-//
-// Nothing here filters on priority, assignee, or a declared phase, and no such
-// control may be added: the barred fields do not exist on the wire and adding a
-// control for one would be the first step to inventing them (AC-1.5).
-
-// The updated-at window is a preset rather than two date pickers for the
-// common case, because "updated in the last month" is the question operators
-// actually ask; `custom` opens the explicit range for the rest.
 export type UpdatedWindow = 'any' | '7d' | '30d' | '90d' | 'custom'
 
 export interface TaskFilterState {
@@ -26,7 +14,6 @@ export interface TaskFilterState {
   state: string
   repository: string
   updated: UpdatedWindow
-  // Local calendar days (YYYY-MM-DD), only read when `updated` is `custom`.
   updatedFrom: string
   updatedTo: string
   requirement: string
@@ -43,27 +30,18 @@ export const emptyTaskFilter: TaskFilterState = {
   requirement: '',
   design: '',
 }
-
-// The Board opens on the last month of activity (AC-2.4). It is a starting
-// point rather than a rule: the operator adjusts it, and the adjustment is what
-// gets remembered.
 export const boardDefaultTaskFilter: TaskFilterState = { ...emptyTaskFilter, updated: '30d' }
 
 const updatedWindowLabels: Record<UpdatedWindow, string> = {
   any: 'Any time',
-  '7d': 'Updated in the last week',
-  '30d': 'Updated in the last month',
-  '90d': 'Updated in the last quarter',
-  custom: 'Updated in a date range…',
+  '7d': 'Last 7 days',
+  '30d': 'Last month',
+  '90d': 'Last quarter',
+  custom: 'Custom range',
 }
-
 const presetDays: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 }
 
-// The wire shape both surfaces send. Absent members are omitted rather than
-// sent empty, so an inactive filter produces the same request it always did.
 export interface TaskFilterParams {
-  // The members are named for the reader; the index signature is what lets the
-  // two fetchers take the whole family without restating it.
   [key: string]: string | undefined
   q?: string
   state?: string
@@ -74,20 +52,13 @@ export interface TaskFilterParams {
   governing_design?: string
 }
 
-// Bounds are resolved to absolute instants here, in the browser, where the
-// operator's own day boundaries live — the server never has to guess a timezone
-// for "the last month". They land on local midnight, so the resolved value is
-// stable for the whole day and a React Query key built from it does not churn
-// on every render.
 function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }
-
 function localDayStartInstant(day: string, offsetDays = 0): string | undefined {
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
   if (!parts) return undefined
-  const date = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) + offsetDays)
-  return date.toISOString()
+  return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) + offsetDays).toISOString()
 }
 
 export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
@@ -99,8 +70,6 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   if (filter.design) params.governing_design = filter.design
   if (filter.updated === 'custom') {
     const from = localDayStartInstant(filter.updatedFrom)
-    // The server's upper bound is exclusive, so an operator-chosen end date
-    // resolves to the start of the following day: picking a day includes it.
     const to = localDayStartInstant(filter.updatedTo, 1)
     if (from) params.updated_from = from
     if (to) params.updated_to = to
@@ -111,47 +80,32 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   }
   return params
 }
-
 export function taskFilterActive(filter: TaskFilterState): boolean {
-  const params = taskFilterParams(filter)
-  return Object.keys(params).length > 0
+  return Object.keys(taskFilterParams(filter)).length > 0
 }
-
-// An inverted custom range matches nothing and the server rejects it, so the
-// surface says why instead of rendering an empty workspace behind an error.
 export function taskFilterRangeError(filter: TaskFilterState): string {
   if (filter.updated !== 'custom') return ''
   const params = taskFilterParams(filter)
-  if (!params.updated_from || !params.updated_to) return ''
-  return params.updated_from < params.updated_to ? '' : 'Choose an end date on or after the start date.'
+  return params.updated_from && params.updated_to && params.updated_from >= params.updated_to
+    ? 'Choose an end date on or after the start date.'
+    : ''
 }
 
 function storageKey(surface: string, workspace: string) {
   return `conveyor-task-filters:${surface}:${workspace}`
 }
-
 function readStoredFilter(key: string, fallback: TaskFilterState): TaskFilterState {
   try {
     const raw = localStorage.getItem(key)
-    if (!raw) return fallback
-    // Merge over the default so a filter stored by an older build gains new
-    // members instead of arriving with holes in it.
-    return { ...fallback, ...(JSON.parse(raw) as Partial<TaskFilterState>) }
+    return raw ? { ...fallback, ...(JSON.parse(raw) as Partial<TaskFilterState>) } : fallback
   } catch {
     return fallback
   }
 }
-
-// Filter state, remembered per operator and scoped to the workspace it was set
-// in (AC-2.4): switching workspaces restores that workspace's own view rather
-// than carrying a repository filter into a workspace that has no such repo.
 export function useTaskFilters(surface: 'tasks' | 'board', fallback: TaskFilterState = emptyTaskFilter) {
   const { workspace } = useWorkspaceSelection()
   const key = storageKey(surface, workspace)
   const [filter, setFilter] = useState(() => readStoredFilter(key, fallback))
-  // Switching workspaces re-reads that workspace's own stored view. Both call
-  // sites pass a module constant, so this reloads on the workspace, not on
-  // every render.
   useEffect(() => {
     setFilter(readStoredFilter(key, fallback))
   }, [key, fallback])
@@ -161,12 +115,188 @@ export function useTaskFilters(surface: 'tasks' | 'board', fallback: TaskFilterS
       try {
         localStorage.setItem(key, JSON.stringify(next))
       } catch {
-        // A browser refusing storage costs persistence, never filtering.
+        /* persistence is best effort */
       }
     },
     [key],
   )
   return [filter, update, fallback] as const
+}
+
+type Option = { id: string; title: string }
+
+function SearchableFilter({
+  label,
+  value,
+  options,
+  onChange,
+  emptyLabel,
+  help,
+}: {
+  label: string
+  value: string
+  options: Option[]
+  onChange: (value: string) => void
+  emptyLabel: string
+  help: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = options.find((option) => option.id === value)
+  const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        className="flex h-9 w-full min-w-52 items-center justify-between gap-3 rounded-md border border-edge bg-background px-3 text-left text-xs text-foreground transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:outline-primary/40"
+        aria-label={label}
+        aria-expanded={open}
+        title={help}
+        onClick={() => setOpen(!open)}
+      >
+        <span className={selected ? 'truncate' : 'truncate text-muted'}>{selected?.title ?? emptyLabel}</span>
+        <ChevronDown className="size-4 shrink-0 text-faint" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-2 w-72 rounded-lg border border-border bg-surface p-2 shadow-xl">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
+            <Input
+              autoFocus
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={`Search ${label.toLowerCase().replace('filter by ', '')}`}
+              aria-label={`Search ${label.toLowerCase().replace('filter by ', '')}`}
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
+          <div className="mt-2 max-h-56 overflow-y-auto" role="listbox" aria-label={label}>
+            <button
+              type="button"
+              role="option"
+              aria-selected={!value}
+              className="flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs hover:bg-raised"
+              onClick={() => {
+                onChange('')
+                setOpen(false)
+                setSearch('')
+              }}
+            >
+              {emptyLabel}
+              {!value && <Check className="size-4 text-primary" />}
+            </button>
+            {filtered.map((option) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={value === option.id}
+                key={option.id}
+                className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left text-xs hover:bg-raised"
+                onClick={() => {
+                  onChange(option.id)
+                  setOpen(false)
+                  setSearch('')
+                }}
+              >
+                <span className="truncate">{option.title}</span>
+                {value === option.id && <Check className="size-4 shrink-0 text-primary" />}
+              </button>
+            ))}
+            {!filtered.length && <p className="px-2 py-3 text-xs text-muted">No matches found.</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DateFilter({ value, set }: { value: TaskFilterState; set: (patch: Partial<TaskFilterState>) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+  const summary =
+    value.updated === 'custom' && value.updatedFrom
+      ? `${value.updatedFrom}${value.updatedTo ? ` → ${value.updatedTo}` : ''}`
+      : updatedWindowLabels[value.updated]
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        aria-label="Filter by last update"
+        aria-expanded={open}
+        className="flex h-9 min-w-44 items-center justify-between gap-3 rounded-md border border-edge bg-background px-3 text-left text-xs hover:bg-surface focus-visible:outline-2 focus-visible:outline-primary/40"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="flex min-w-0 items-center gap-2 truncate">
+          <CalendarDays className="size-4 shrink-0 text-muted" />
+          <span className="truncate">{summary}</span>
+        </span>
+        <ChevronDown className="size-4 shrink-0 text-faint" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-2 w-72 rounded-lg border border-border bg-surface p-2 shadow-xl">
+          <p className="px-2 pb-2 text-[11px] font-medium uppercase tracking-wider text-muted">Updated</p>
+          {(Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((window) => (
+            <button
+              type="button"
+              key={window}
+              className="flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs hover:bg-raised"
+              onClick={() => {
+                set({ updated: window })
+                if (window !== 'custom') setOpen(false)
+              }}
+            >
+              {updatedWindowLabels[window]}
+              {value.updated === window && <Check className="size-4 text-primary" />}
+            </button>
+          ))}
+          {value.updated === 'custom' && (
+            <div className="mt-2 grid grid-cols-2 gap-2 border-t border-border px-2 pt-3">
+              <label htmlFor="task-filter-updated-from" className="text-[11px] text-muted">
+                From
+                <Input
+                  id="task-filter-updated-from"
+                  aria-label="Updated from"
+                  type="date"
+                  value={value.updatedFrom}
+                  onChange={(event) => set({ updatedFrom: event.target.value })}
+                  className="mt-1 h-8 text-xs"
+                />
+              </label>
+              <label htmlFor="task-filter-updated-to" className="text-[11px] text-muted">
+                To
+                <Input
+                  id="task-filter-updated-to"
+                  aria-label="Updated to"
+                  type="date"
+                  value={value.updatedTo}
+                  onChange={(event) => set({ updatedTo: event.target.value })}
+                  className="mt-1 h-8 text-xs"
+                />
+              </label>
+              <Button size="sm" variant="secondary" className="col-span-2" onClick={() => setOpen(false)}>
+                Apply date range
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function TaskFilters({
@@ -182,9 +312,6 @@ export function TaskFilters({
 }) {
   const { workspace } = useWorkspaceSelection()
   const { data: workspaceInfo } = useWorkspace()
-  // The option lists come from workspace-stable sources rather than from the
-  // rows on screen: a server-side filter removes the very rows whose values
-  // would otherwise populate the menus.
   const states = useMemo(() => Object.keys(taskStateLabels).sort(), [])
   const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
   const requirements = useQuery({
@@ -197,8 +324,6 @@ export function TaskFilters({
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
   })
-  // Only a confirmed document can be attached to a task, so only a confirmed
-  // document can narrow the list.
   const requirementOptions = (requirements.data ?? [])
     .filter((item) => item.current_version != null)
     .map((item) => ({ id: item.requirement.id, title: item.requirement.title }))
@@ -208,11 +333,17 @@ export function TaskFilters({
   const set = (patch: Partial<TaskFilterState>) => onChange({ ...value, ...patch })
   const rangeError = taskFilterRangeError(value)
   const changed = JSON.stringify(value) !== JSON.stringify(fallback)
-
+  const activeCount = [
+    value.state,
+    value.repository,
+    value.updated !== fallback.updated ? value.updated : '',
+    value.requirement,
+    value.design,
+  ].filter(Boolean).length
   return (
     <div className={className}>
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="relative" htmlFor={`task-filter-search-${workspace}`}>
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background/60 p-2">
+        <label className="relative min-w-52 flex-1" htmlFor={`task-filter-search-${workspace}`}>
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
           <Input
             id={`task-filter-search-${workspace}`}
@@ -221,14 +352,14 @@ export function TaskFilters({
             value={value.query}
             onChange={(event) => set({ query: event.target.value })}
             placeholder="Search tasks"
-            className="h-8 w-56 pl-8 text-xs"
+            className="h-9 pl-8 text-xs"
           />
         </label>
         <Select
           aria-label="Filter by state"
           value={value.state}
           onChange={(event) => set({ state: event.target.value })}
-          className="h-8 w-40 text-xs"
+          className="w-36 text-xs"
         >
           <option value="">All states</option>
           {states.map((state) => (
@@ -241,7 +372,7 @@ export function TaskFilters({
           aria-label="Filter by repository"
           value={value.repository}
           onChange={(event) => set({ repository: event.target.value })}
-          className="h-8 w-40 text-xs"
+          className="w-40 text-xs"
         >
           <option value="">All repositories</option>
           {repos.map((repo) => (
@@ -250,80 +381,42 @@ export function TaskFilters({
             </option>
           ))}
         </Select>
-        <Select
-          aria-label="Filter by last update"
-          title="Filters on the same “Updated” time each row shows."
-          value={value.updated}
-          onChange={(event) => set({ updated: event.target.value as UpdatedWindow })}
-          className="h-8 w-52 text-xs"
-        >
-          {(Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((window) => (
-            <option key={window} value={window}>
-              {updatedWindowLabels[window]}
-            </option>
-          ))}
-        </Select>
-        <Select
-          aria-label="Filter by requirement served"
-          title="Show only tasks that serve this confirmed requirement."
+        <DateFilter value={value} set={set} />
+        <SearchableFilter
+          label="Filter by requirement served"
           value={value.requirement}
-          onChange={(event) => set({ requirement: event.target.value })}
-          className="h-8 w-52 text-xs"
-        >
-          <option value="">Any requirement</option>
-          {requirementOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.title}
-            </option>
-          ))}
-        </Select>
-        <Select
-          aria-label="Filter by design guidance"
-          title="Show only tasks governed by this confirmed design document."
+          options={requirementOptions}
+          onChange={(requirement) => set({ requirement })}
+          emptyLabel="Any requirement"
+          help="Show only tasks that serve this confirmed requirement."
+        />
+        <SearchableFilter
+          label="Filter by design guidance"
           value={value.design}
-          onChange={(event) => set({ design: event.target.value })}
-          className="h-8 w-52 text-xs"
-        >
-          <option value="">Any design guidance</option>
-          {designOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.title}
-            </option>
-          ))}
-        </Select>
+          options={designOptions}
+          onChange={(design) => set({ design })}
+          emptyLabel="Any design guidance"
+          help="Show only tasks governed by this confirmed design document."
+        />
         {changed && (
           <Button variant="ghost" size="sm" onClick={() => onChange(fallback)}>
             <X />
-            Reset filters
+            Reset
+            {activeCount > 0 && (
+              <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary">{activeCount}</span>
+            )}
           </Button>
         )}
       </div>
-      {value.updated === 'custom' && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
-          <label className="flex items-center gap-1.5" htmlFor={`task-filter-from-${workspace}`}>
-            From
-            <Input
-              id={`task-filter-from-${workspace}`}
-              aria-label="Updated from"
-              type="date"
-              value={value.updatedFrom}
-              onChange={(event) => set({ updatedFrom: event.target.value })}
-              className="h-8 w-40 text-xs"
-            />
-          </label>
-          <label className="flex items-center gap-1.5" htmlFor={`task-filter-to-${workspace}`}>
-            To
-            <Input
-              id={`task-filter-to-${workspace}`}
-              aria-label="Updated to"
-              type="date"
-              value={value.updatedTo}
-              onChange={(event) => set({ updatedTo: event.target.value })}
-              className="h-8 w-40 text-xs"
-            />
-          </label>
-          {rangeError && <span className="text-failure">{rangeError}</span>}
-        </div>
+      {rangeError && (
+        <p className="mt-2 text-xs text-failure" role="alert">
+          {rangeError}
+        </p>
+      )}
+      {(requirements.isLoading || designs.isLoading) && (
+        <p className="sr-only" role="status">
+          Loading filter options
+        </p>
       )}
     </div>
   )
