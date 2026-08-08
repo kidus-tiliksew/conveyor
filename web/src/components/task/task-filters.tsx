@@ -384,6 +384,7 @@ function CompactFilterMenu({
                 title: updatedWindowLabels[id],
               }))
   const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
+  const ValueIcon = filterCategoryIcons[category]
   const updateSelection = (id: string) => {
     if (category === 'state') set({ state: id })
     else if (category === 'repository') set({ repository: id })
@@ -478,11 +479,17 @@ function CompactFilterMenu({
                 type="button"
                 role="option"
                 aria-selected={!selected}
-                className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised"
                 onClick={() => updateSelection('')}
               >
-                Any {categories.find((item) => item.id === category)?.label.toLowerCase()}
-                {!selected && <Check className="size-4 text-primary" />}
+                <span
+                  className={`flex size-4 shrink-0 items-center justify-center rounded border ${!selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted'}`}
+                >
+                  {!selected && <Check className="size-3" aria-hidden="true" />}
+                </span>
+                <span className="truncate">
+                  Any {categories.find((item) => item.id === category)?.label.toLowerCase()}
+                </span>
               </button>
               {filtered.map((option) => (
                 <button
@@ -490,11 +497,16 @@ function CompactFilterMenu({
                   type="button"
                   role="option"
                   aria-selected={selected === option.id}
-                  className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs hover:bg-raised"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised"
                   onClick={() => updateSelection(option.id)}
                 >
+                  <span
+                    className={`flex size-4 shrink-0 items-center justify-center rounded border ${selected === option.id ? 'border-primary bg-primary text-primary-foreground' : 'border-muted'}`}
+                  >
+                    {selected === option.id && <Check className="size-3" aria-hidden="true" />}
+                  </span>
+                  <ValueIcon className="size-4 shrink-0 text-muted" aria-hidden="true" />
                   <span className="truncate">{option.title}</span>
-                  {selected === option.id && <Check className="size-4 shrink-0 text-primary" />}
                 </button>
               ))}
               {!filtered.length && <p className="px-2.5 py-3 text-xs text-muted">No matches found.</p>}
