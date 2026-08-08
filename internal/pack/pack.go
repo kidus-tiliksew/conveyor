@@ -1,6 +1,6 @@
 // Package pack loads the reviewable role prompts used by in-process stages
 // and MCP work-order context. Sandbox tool policies retired in Phase 4.7
-// (design-harness-execution).
+// (DEC-3).
 package pack
 
 import (
