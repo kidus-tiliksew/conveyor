@@ -33,8 +33,8 @@ func filterInstant(month, day int) time.Time {
 	return time.Date(2026, time.Month(month), day, 12, 0, 0, 0, time.UTC)
 }
 
-// SeedTaskFilterFixture writes three tasks whose text, last activity, and
-// attached context differ along exactly one axis at a time.
+// SeedTaskFilterFixture writes three tasks whose text, creation time, later
+// activity, and attached context differ along exactly one axis at a time.
 func SeedTaskFilterFixture(t *testing.T, fixture TaskFilterFixture) {
 	t.Helper()
 	for _, seed := range []struct {
@@ -48,10 +48,15 @@ func SeedTaskFilterFixture(t *testing.T, fixture TaskFilterFixture) {
 		{"gamma", "Gamma rollout", "operator", core.TaskQueued},
 	} {
 		id := fixture.id(seed.name)
+		createdAt := map[string]time.Time{
+			"alpha": filterInstant(3, 1),
+			"beta":  filterInstant(6, 1),
+			"gamma": filterInstant(1, 1),
+		}[seed.name]
 		if err := fixture.Store.CreateTask(fixture.Context, core.Task{
 			ID: id, Workspace: fixture.Workspace, Title: seed.title, Source: seed.source,
 			Repo: fixture.Repo, BaseBranch: "main", Branch: "conveyor/task-" + id,
-			State: seed.state, NextStage: core.StageImplement, CreatedAt: filterInstant(1, 1),
+			State: seed.state, NextStage: core.StageImplement, CreatedAt: createdAt,
 		}); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
@@ -78,14 +83,14 @@ func SeedTaskFilterFixture(t *testing.T, fixture TaskFilterFixture) {
 			t.Fatalf("seed %s attachment: %v", attachment.task, err)
 		}
 	}
-	// Gamma is deliberately left without an event, so its last activity is its
-	// creation time — the fallback the surfaces render and the filter shares.
+	// Later activity deliberately falls outside the creation windows below. It
+	// must not change whether any task matches a Created filter.
 	for _, activity := range []struct {
 		task string
 		at   time.Time
 	}{
-		{"alpha", filterInstant(3, 1)},
-		{"beta", filterInstant(6, 1)},
+		{"alpha", filterInstant(7, 1)},
+		{"beta", filterInstant(7, 2)},
 	} {
 		if err := fixture.Store.AppendEvent(fixture.Context, core.Event{
 			TaskID: fixture.id(activity.task), Kind: "task.state_changed", At: activity.at,
@@ -110,14 +115,14 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 		// A list member is a disjunction: any listed value matches (AC-2.4).
 		{"several states", store.TaskFilter{
 			States: []core.TaskState{core.TaskRunning, core.TaskQueued},
-		}, []string{"alpha", "beta", "gamma"}},
-		{"repository", store.TaskFilter{Repositories: []string{fixture.Repo}}, []string{"alpha", "beta", "gamma"}},
+		}, []string{"beta", "alpha", "gamma"}},
+		{"repository", store.TaskFilter{Repositories: []string{fixture.Repo}}, []string{"beta", "alpha", "gamma"}},
 		{"unknown repository", store.TaskFilter{Repositories: []string{"absent"}}, nil},
 		{"several repositories", store.TaskFilter{
 			Repositories: []string{"absent", fixture.Repo},
-		}, []string{"alpha", "beta", "gamma"}},
-		{"free text on title", store.TaskFilter{Query: "ledger"}, []string{"alpha", "beta"}},
-		{"free text ignores case", store.TaskFilter{Query: "LeDgEr"}, []string{"alpha", "beta"}},
+		}, []string{"beta", "alpha", "gamma"}},
+		{"free text on title", store.TaskFilter{Query: "ledger"}, []string{"beta", "alpha"}},
+		{"free text ignores case", store.TaskFilter{Query: "LeDgEr"}, []string{"beta", "alpha"}},
 		{"free text on source", store.TaskFilter{Query: "github"}, []string{"beta"}},
 		{"free text on id", store.TaskFilter{Query: fixture.id("gamma")}, []string{"gamma"}},
 		{"free text on branch", store.TaskFilter{Query: "conveyor/task-" + fixture.id("alpha")}, []string{"alpha"}},
@@ -125,15 +130,13 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 		// for rather than expanded into "everything".
 		{"free text treats wildcards literally", store.TaskFilter{Query: "%"}, nil},
 		{"free text underscore is literal", store.TaskFilter{Query: "_"}, nil},
-		{"updated from is inclusive", store.TaskFilter{UpdatedFrom: filterInstant(6, 1)}, []string{"beta"}},
-		{"updated to is exclusive", store.TaskFilter{UpdatedTo: filterInstant(6, 1)}, []string{"alpha", "gamma"}},
-		{"updated range", store.TaskFilter{
-			UpdatedFrom: filterInstant(2, 1), UpdatedTo: filterInstant(5, 1),
+		{"created from is inclusive", store.TaskFilter{CreatedFrom: filterInstant(6, 1)}, []string{"beta"}},
+		{"created to is exclusive", store.TaskFilter{CreatedTo: filterInstant(6, 1)}, []string{"alpha", "gamma"}},
+		{"created range ignores later events", store.TaskFilter{
+			CreatedFrom: filterInstant(2, 1), CreatedTo: filterInstant(5, 1),
 		}, []string{"alpha"}},
-		// Gamma has no events at all, so its creation time is what the range
-		// must see.
-		{"updated range falls back to creation", store.TaskFilter{
-			UpdatedFrom: filterInstant(1, 1), UpdatedTo: filterInstant(2, 1),
+		{"created range", store.TaskFilter{
+			CreatedFrom: filterInstant(1, 1), CreatedTo: filterInstant(2, 1),
 		}, []string{"gamma"}},
 		{"served requirement", store.TaskFilter{ServesRequirementIDs: []string{"req-ledger"}}, []string{"alpha"}},
 		{"detached requirement", store.TaskFilter{ServesRequirementIDs: []string{"req-absent"}}, nil},
@@ -177,9 +180,9 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 	// An inverted range selects nothing at all, so both stores reject it at the
 	// edge rather than rendering an empty workspace as if it were the answer.
 	if _, err := fixture.Store.ListTasksFiltered(fixture.Context, store.TaskFilter{
-		UpdatedFrom: filterInstant(6, 1), UpdatedTo: filterInstant(2, 1),
+		CreatedFrom: filterInstant(6, 1), CreatedTo: filterInstant(2, 1),
 	}); err == nil {
-		t.Fatal("inverted updated range accepted")
+		t.Fatal("inverted created range accepted")
 	}
 }
 

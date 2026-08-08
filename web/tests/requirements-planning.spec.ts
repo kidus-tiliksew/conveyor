@@ -234,7 +234,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByText('conveyor@0123456789ab')).toBeVisible()
   // The canvas offers the explorer rather than an inline graph card: one
   // rendering of lineage, opened on demand (spec §21.61 change 2, REQ-3).
-  await expect(page.getByRole('button', { name: 'Related' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toHaveCount(0)
 
   await attention.getByRole('button', { name: 'Confirm version 1' }).click()

@@ -1,26 +1,31 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
-// The lineage explorer and the parked navigation (spec §21.61 changes 2–3).
-// REQ-3: task, requirement, and System Design detail each open a right panel of
-// related entities grouped by kind, derived only from the canonical lineage read
-// (AC-3.1, AC-3.2). REQ-4: primary navigation carries exactly the accepted
+// The Knowledge explorer and the parked navigation (spec §21.61 changes 2–3).
+// Task, requirement, and System Design detail each open a focused right panel
+// derived only from the canonical lineage read. REQ-4: primary navigation carries exactly the accepted
 // operating surfaces while the parked routes stay reachable by deep link
 // (AC-4.1).
 
 const createdAt = '2026-08-06T09:00:00Z'
 const taskId = 'task-explorer'
 
-// One lineage response, carrying at least one node for every group so the
-// panel's grouping, linking, and unlinked-entry handling are all exercised.
 function populatedGraph(rootType: string, rootId: string) {
+  const rootLabel =
+    rootType === 'task'
+      ? 'Bound the retry loop'
+      : rootType === 'system_design'
+        ? 'Dispatch ownership'
+        : 'Retry behavior'
   return {
-    roots: [{ type: rootType, id: rootId, label: 'The record itself' }],
+    roots: [{ type: rootType, id: rootId, label: rootLabel }],
     nodes: [
-      { type: rootType, id: rootId, label: 'The record itself' },
+      { type: rootType, id: rootId, label: rootLabel },
       { type: 'task', id: 'task-neighbour', label: 'Serve the retry limit' },
       { type: 'work_order', id: `${taskId}-implement-1`, label: 'implement work order for task-explorer' },
       { type: 'requirement', id: 'req-retries', label: 'Retry behavior' },
+      { type: 'requirement_version', id: 'req-retries:v2', label: 'Retry behavior v2' },
       { type: 'system_design', id: 'design-dispatch', label: 'Dispatch ownership' },
+      { type: 'system_design_version', id: 'design-dispatch:v3', label: 'Dispatch ownership v3' },
       { type: 'decision', id: 'DEC-1', label: 'Usage telemetry is observational' },
       { type: 'pull_request', id: 'kidus-tiliksew/conveyor#284', label: 'Pull request kidus-tiliksew/conveyor#284' },
       { type: 'repository_path', id: 'conveyor:internal/dispatch/**', label: 'conveyor:internal/dispatch/**' },
@@ -184,6 +189,8 @@ interface Options {
   /** Every lineage request the page made, with its auth header and workspace. */
   reads?: Array<{ path: string; authorization?: string; workspace: string | null }>
   parentTaskId?: string
+  lineageDelayMs?: number
+  lineageFailure?: boolean
 }
 
 async function routeAPI(page: Page, options: Options = {}) {
@@ -226,6 +233,10 @@ async function routeAPI(page: Page, options: Options = {}) {
         authorization: request.headers().authorization,
         workspace: url.searchParams.get('workspace_id'),
       })
+      if (options.lineageDelayMs) await new Promise((resolve) => setTimeout(resolve, options.lineageDelayMs))
+      if (options.lineageFailure) {
+        return route.fulfill({ status: 503, body: 'Lineage temporarily unavailable.' })
+      }
       return route.fulfill({
         json: options.empty ? emptyGraph(rootType, rootId) : populatedGraph(rootType, rootId),
       })
@@ -243,9 +254,7 @@ async function routeAPI(page: Page, options: Options = {}) {
   })
 }
 
-// AC-3.1 and AC-3.2 on the task full route, where every group and every link
-// class is present at once.
-test('the task explorer groups related entities, links them, and discloses the bounded walk', async ({ page }) => {
+test('the task Knowledge explorer shows its focused hierarchy and canonical bounded read', async ({ page }) => {
   await initShell(page)
   const reads: Options['reads'] = []
   await routeAPI(page, { reads })
@@ -255,8 +264,8 @@ test('the task explorer groups related entities, links them, and discloses the b
   await expect(page.getByRole('heading', { name: 'Bound the retry loop' })).toBeVisible()
   expect(reads).toHaveLength(0)
 
-  await page.getByRole('button', { name: 'Related' }).click()
-  const panel = page.getByRole('dialog', { name: 'Related records' })
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel).toBeVisible()
 
   // The read is the canonical lineage route, authenticated and workspace-scoped.
@@ -265,48 +274,34 @@ test('the task explorer groups related entities, links them, and discloses the b
   expect(reads[0].authorization).toBe('Bearer test-token')
   expect(reads[0].workspace).toBe('demo')
 
-  // Grouped by kind, in the order AC-3.1 names them.
-  await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Work/, /Documents/, /Delivery/, /Evidence/])
+  await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Requirements/, /System Designs/, /Tasks/])
 
-  const work = panel.getByRole('region', { name: 'Work' })
-  await expect(work.getByRole('link', { name: /Serve the retry limit/ })).toHaveAttribute(
-    'href',
-    '/tasks/task-neighbour/full',
-  )
-  // A work order has no surface of its own, so it is listed without a link
-  // rather than pointed at an approximate page.
-  await expect(work.getByText('implement work order for task-explorer')).toBeVisible()
-  await expect(work.getByRole('link', { name: /work order/ })).toHaveCount(0)
-
-  const documents = panel.getByRole('region', { name: 'Documents' })
-  await expect(documents.getByRole('link', { name: /Retry behavior/ })).toHaveAttribute(
+  const requirements = panel.getByRole('region', { name: 'Requirements' })
+  await expect(requirements.getByRole('link', { name: /Retry behavior/ })).toHaveAttribute(
     'href',
     '/requirements?requirement=req-retries',
   )
-  await expect(documents.getByRole('link', { name: /Dispatch ownership/ })).toHaveAttribute(
+  // Durable and version nodes normalize to one destination.
+  await expect(requirements.getByRole('link')).toHaveCount(1)
+
+  const designs = panel.getByRole('region', { name: 'System Designs' })
+  await expect(designs.getByRole('link', { name: /Dispatch ownership/ })).toHaveAttribute(
     'href',
     '/system-design?document=design-dispatch',
   )
-  await expect(documents.getByRole('link', { name: /Usage telemetry is observational/ })).toHaveAttribute(
-    'href',
-    '/system-design#decision-dec-1',
-  )
+  await expect(designs.getByRole('link')).toHaveCount(1)
 
-  const delivery = panel.getByRole('region', { name: 'Delivery' })
-  await expect(delivery.getByRole('link', { name: /Pull request/ })).toHaveAttribute(
-    'href',
-    'https://github.com/kidus-tiliksew/conveyor/pull/284',
-  )
-  await expect(delivery.getByText('conveyor:internal/dispatch/**')).toBeVisible()
+  const tasks = panel.getByRole('region', { name: 'Tasks' })
+  const current = tasks.locator('[aria-current="true"]')
+  await expect(current).toContainText('Bound the retry loop')
+  await expect(current).toContainText('Current')
+  await expect(tasks.getByRole('link')).toHaveCount(0)
 
-  const evidence = panel.getByRole('region', { name: 'Evidence' })
-  await expect(evidence.getByText('proof screenshot.png')).toBeVisible()
-  await expect(evidence.getByText('Review verdict order-1')).toBeVisible()
-
-  // The root is the subject, not one of its own relations.
-  await expect(panel.getByText('The record itself')).toHaveCount(0)
-  // No free-standing relationship is rendered: the edge kind never appears.
-  await expect(panel.getByText('serves', { exact: true })).toHaveCount(0)
+  // Task context ends at the current task, and unrelated lineage kinds stay out.
+  await expect(panel.getByText('Serve the retry limit')).toHaveCount(0)
+  await expect(panel.getByText('Usage telemetry is observational')).toHaveCount(0)
+  await expect(panel.getByText('Pull request kidus-tiliksew/conveyor#284')).toHaveCount(0)
+  await expect(panel.getByText('proof screenshot.png')).toHaveCount(0)
 
   // The server bounded the walk, and the panel says so (7 = 3 nodes + 4 links).
   await expect(panel.getByText('This is a bounded view: 7 further connections were not read.')).toBeVisible()
@@ -314,12 +309,11 @@ test('the task explorer groups related entities, links them, and discloses the b
   // Opening the panel is not navigation.
   expect(new URL(page.url()).pathname).toBe(`/tasks/${taskId}/full`)
 
-  await panel.getByRole('button', { name: 'Close related records' }).click()
+  await panel.getByRole('button', { name: 'Close Knowledge explorer' }).click()
   await expect(panel).toHaveCount(0)
 })
 
-// AC-3.1 empty half, on each of the three detail kinds: a record with nothing
-// linked says so, and no group heading is rendered for a kind with no entries.
+// A record with no focused relations says so while retaining its current anchor.
 const detailSurfaces = [
   { kind: 'task detail', path: `/tasks/${taskId}/full` },
   { kind: 'requirement detail', path: '/requirements' },
@@ -327,15 +321,15 @@ const detailSurfaces = [
 ]
 
 for (const surface of detailSurfaces) {
-  test(`the explorer on ${surface.kind} collapses every empty group and says nothing is related`, async ({ page }) => {
+  test(`the explorer on ${surface.kind} accurately communicates an empty focused result`, async ({ page }) => {
     await initShell(page)
     await routeAPI(page, { empty: true })
 
     await page.goto(surface.path)
-    await page.getByRole('button', { name: 'Related' }).click()
-    const panel = page.getByRole('dialog', { name: 'Related records' })
-    await expect(panel.getByText('Nothing is linked to this record yet.')).toBeVisible()
-    await expect(panel.getByRole('heading', { level: 3 })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+    const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+    await expect(panel.getByText('No related requirements, System Designs, or tasks are linked')).toBeVisible()
+    await expect(panel.locator('[aria-current="true"]')).toHaveCount(1)
     await expect(panel.getByText('This is a bounded view')).toHaveCount(0)
   })
 }
@@ -351,9 +345,9 @@ test('the explorer opens from the task detail panel without closing it', async (
   const taskPanel = page.getByRole('dialog', { name: 'Task detail' })
   await expect(taskPanel).toBeVisible()
 
-  await taskPanel.getByRole('button', { name: 'Related' }).click()
-  const panel = page.getByRole('dialog', { name: 'Related records' })
-  await expect(panel.getByRole('region', { name: 'Work' })).toBeVisible()
+  await taskPanel.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByRole('region', { name: 'Tasks' })).toBeVisible()
   await expect(reads).toHaveLength(1)
 
   // Escape dismisses the panel the operator opened — and only that one.
@@ -370,10 +364,12 @@ test('the requirement canvas opens the explorer for its own document', async ({ 
 
   await page.goto('/requirements')
   await expect(page.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
-  await page.getByRole('button', { name: 'Related' }).click()
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
 
-  const panel = page.getByRole('dialog', { name: 'Related records' })
-  await expect(panel.getByRole('region', { name: 'Work' })).toBeVisible()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByRole('region', { name: 'Requirements' }).locator('[aria-current="true"]')).toContainText(
+    'Retry behavior',
+  )
   await expect.poll(() => reads.map((read) => read.path)).toEqual(['/v1/lineage/requirement/req-retries'])
 })
 
@@ -385,11 +381,27 @@ test('the System Design canvas opens the explorer for its own document', async (
 
   await page.goto('/system-design')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
-  await page.getByRole('button', { name: 'Related' }).click()
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
 
-  const panel = page.getByRole('dialog', { name: 'Related records' })
-  await expect(panel.getByRole('region', { name: 'Documents' })).toBeVisible()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Requirements/, /System Designs/, /Tasks/])
+  const current = panel.getByRole('region', { name: 'System Designs' }).locator('[aria-current="true"]')
+  await expect(current).toContainText('Dispatch ownership')
+  await expect(
+    panel.getByRole('region', { name: 'Tasks' }).getByRole('link', { name: /Serve the retry limit/ }),
+  ).toHaveAttribute('href', '/tasks/task-neighbour/full')
   await expect.poll(() => reads.map((read) => read.path)).toEqual(['/v1/lineage/system_design/design-dispatch'])
+})
+
+test('the Knowledge explorer exposes loading and error states with updated accessible names', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page, { lineageDelayMs: 200, lineageFailure: true })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByRole('status', { name: 'Loading Knowledge explorer' })).toBeVisible()
+  await expect(panel.getByText('Lineage temporarily unavailable.')).toBeVisible()
 })
 
 // AC-4.1 first half: the navigation carries exactly the §21.61 surface set.

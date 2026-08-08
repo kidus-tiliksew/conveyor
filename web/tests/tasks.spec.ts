@@ -134,11 +134,10 @@ function matchOperations(url: string) {
   const requirements = params.getAll('serves_requirement')
   const designs = params.getAll('governing_design')
   const needle = (params.get('q') ?? '').toLowerCase()
-  const from = params.get('updated_from') ?? ''
-  const to = params.get('updated_to') ?? ''
+  const from = params.get('created_from') ?? ''
+  const to = params.get('created_to') ?? ''
   return operations
     .filter((item) => {
-      const updated = item.last_event_at || item.task.created_at
       if (states.length && !states.includes(item.task.state)) return false
       if (repositories.length && !repositories.includes(item.task.repo)) return false
       if (
@@ -149,9 +148,9 @@ function matchOperations(url: string) {
       ) {
         return false
       }
-      if (from && updated < from) return false
+      if (from && item.task.created_at < from) return false
       // The upper bound is exclusive, exactly as the store evaluates it.
-      if (to && updated >= to) return false
+      if (to && item.task.created_at >= to) return false
       if (
         requirements.length &&
         !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
@@ -582,9 +581,9 @@ test('tasks view pages through server-side results', async ({ page }) => {
   expect(requests.some((url) => url.includes('offset=2'))).toBe(true)
 })
 
-// AC-2.4: the shared filter family — updated-at range, served requirement, and
+// AC-2.4: the shared filter family — created-at range, served requirement, and
 // governing design — is applied by the server on the Tasks surface.
-test('tasks view filters by updated-at range, served requirement, and governing design', async ({ page }) => {
+test('tasks view filters by created-at range, served requirement, and governing design', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('button', { name: 'Open filters' }).click()
   await page.getByRole('tab', { name: 'Requirement' }).click()
@@ -602,16 +601,16 @@ test('tasks view filters by updated-at range, served requirement, and governing 
   await expect(rows(page)).toHaveCount(1)
 
   await page.getByRole('option', { name: 'Any system design' }).click()
-  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
   await page.getByRole('option', { name: 'Custom range' }).click()
   // Fixed dates rather than a preset, so the assertion does not depend on when
   // the suite runs. The end date is inclusive of its own day.
-  await page.getByLabel('Updated from').fill('2026-08-05')
-  await page.getByLabel('Updated to').fill('2026-08-05')
+  await page.getByLabel('Created from').fill('2026-08-04')
+  await page.getByLabel('Created to').fill('2026-08-04')
   await expect(rows(page)).toHaveCount(1)
   await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
 
-  await page.getByLabel('Updated to').fill('2026-08-04')
+  await page.getByLabel('Created to').fill('2026-08-03')
   await expect(page.getByText('Choose an end date on or after the start date.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Reset filters' }).click()
