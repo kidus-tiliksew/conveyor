@@ -18,18 +18,29 @@ func TestMemoryTaskOperationsPaginationConformance(t *testing.T) {
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	for index, id := range []string{"ops-first", "ops-second"} {
+	created := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	for _, task := range []struct {
+		id string
+		at time.Time
+	}{
+		{id: "ops-oldest", at: created.Add(-time.Hour)},
+		{id: "ops-zeta", at: created},
+		{id: "ops-alpha", at: created},
+		{id: "ops-newest", at: created.Add(time.Hour)},
+	} {
 		if err := st.CreateTask(ctx, core.Task{
-			ID: id, Workspace: workspace, Title: id, Repo: "conveyor",
-			BaseBranch: "main", Branch: "conveyor/task-" + id,
+			ID: task.id, Workspace: workspace, Title: task.id, Repo: "conveyor",
+			BaseBranch: "main", Branch: "conveyor/task-" + task.id,
 			State: core.TaskQueued, NextStage: core.StageImplement,
-			CreatedAt: time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC),
+			CreatedAt: task.at,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	storetest.RunTaskOperationsPaginationConformance(t, storetest.TaskOperationsFixture{
-		Store: st, Context: ctx, WantTotal: 2,
+		Store: st, Context: ctx, WantTotal: 4,
+		WantOrder: []string{"ops-newest", "ops-alpha", "ops-zeta", "ops-oldest"},
+		Filter:    store.TaskFilter{Repositories: []string{"conveyor"}},
 	})
 }
 

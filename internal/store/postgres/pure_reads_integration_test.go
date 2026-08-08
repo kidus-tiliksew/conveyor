@@ -102,7 +102,7 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 	page, err := st.ListTaskOperations(ctx, store.TaskOperationsQuery{
 		TaskFilter: store.TaskFilter{
 			States: []core.TaskState{core.TaskRunning}, Repositories: []string{"conveyor"},
-		}, Limit: 1, Offset: 1,
+		}, Limit: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,15 +120,32 @@ func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
 	suffix := core.NewTaskID()
-	for index, id := range []string{"bounds-first-" + suffix, "bounds-second-" + suffix} {
-		task := phase61Task(workspace, id, core.TaskQueued, "")
-		task.CreatedAt = time.Date(2026, 8, 7, 10, index, 0, 0, time.UTC)
+	created := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	ids := map[string]string{
+		"oldest": "bounds-oldest-" + suffix,
+		"zeta":   "bounds-zeta-" + suffix,
+		"alpha":  "bounds-alpha-" + suffix,
+		"newest": "bounds-newest-" + suffix,
+	}
+	for _, fixture := range []struct {
+		id string
+		at time.Time
+	}{
+		{id: ids["oldest"], at: created.Add(-time.Hour)},
+		{id: ids["zeta"], at: created},
+		{id: ids["alpha"], at: created},
+		{id: ids["newest"], at: created.Add(time.Hour)},
+	} {
+		task := phase61Task(workspace, fixture.id, core.TaskQueued, "")
+		task.CreatedAt = fixture.at
 		if err := st.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 	}
 	storetest.RunTaskOperationsPaginationConformance(t, storetest.TaskOperationsFixture{
-		Store: st, Context: ctx, WantTotal: 2,
+		Store: st, Context: ctx, WantTotal: 4,
+		WantOrder: []string{ids["newest"], ids["alpha"], ids["zeta"], ids["oldest"]},
+		Filter:    store.TaskFilter{Repositories: []string{"conveyor"}},
 	})
 }
 

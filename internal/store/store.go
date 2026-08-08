@@ -3995,7 +3995,7 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	return out, nil
 }
@@ -4024,7 +4024,7 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	return out, nil
 }
@@ -4113,7 +4113,7 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 		if tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
 			return tasks[i].ID < tasks[j].ID
 		}
-		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
 	})
 	page := TaskOperationsPage{Total: len(tasks), Events: map[string][]core.Event{}, Plans: map[string]core.SpecVersion{}}
 	start := query.Offset

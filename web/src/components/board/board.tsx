@@ -48,11 +48,10 @@ export function Board() {
       byGroup.set(key, [...(byGroup.get(key) ?? []), item])
     }
     for (const items of byGroup.values()) {
-      items.sort(
-        (a, b) =>
-          new Date(b.last_event_at || b.task.created_at).getTime() -
-          new Date(a.last_event_at || a.task.created_at).getTime(),
-      )
+      items.sort((a, b) => {
+        const createdOrder = new Date(b.task.created_at).getTime() - new Date(a.task.created_at).getTime()
+        return createdOrder || a.task.id.localeCompare(b.task.id)
+      })
     }
     return byGroup
   }, [data])

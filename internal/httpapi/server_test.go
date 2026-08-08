@@ -2049,7 +2049,9 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Task.ID != "third" {
+	// The filtered page is newest-created first: third is offset zero, so the
+	// second-created task occupies offset one.
+	if len(items) != 1 || items[0].Task.ID != "second" {
 		t.Fatalf("paged rows = %+v", items)
 	}
 	if observed.listEventsCalls != 0 || observed.latestPlanCalls != 0 {
@@ -2077,7 +2079,7 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	if err := json.Unmarshal(compat.Body.Bytes(), &all); err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 3 || all[0].Task.ID != "first" || all[2].Task.ID != "third" {
+	if len(all) != 3 || all[0].Task.ID != "third" || all[2].Task.ID != "first" {
 		t.Fatalf("unpaginated rows = %+v", all)
 	}
 

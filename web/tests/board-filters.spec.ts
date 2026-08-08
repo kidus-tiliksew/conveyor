@@ -36,6 +36,36 @@ const activity = [
     last_event_at: '2025-01-02T11:00:00Z',
     needs_attention: false,
   },
+  {
+    task: {
+      id: 'task-recent-zeta',
+      workspace: 'demo',
+      source: 'operator',
+      title: 'Same-time conveyor change',
+      repo: 'conveyor',
+      branch: 'conveyor/task-recent-zeta',
+      state: 'running',
+      created_at: '2026-08-06T10:00:00Z',
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-08T11:00:00Z',
+    needs_attention: false,
+  },
+  {
+    task: {
+      id: 'task-older-busy',
+      workspace: 'demo',
+      source: 'operator',
+      title: 'Older busy conveyor change',
+      repo: 'conveyor',
+      branch: 'conveyor/task-older-busy',
+      state: 'running',
+      created_at: '2026-08-05T10:00:00Z',
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-09T11:00:00Z',
+    needs_attention: false,
+  },
 ]
 
 const requirementCorpus = [
@@ -106,6 +136,17 @@ async function openBoard(page: Page, seen: string[], workspace = 'demo') {
 function cards(page: Page) {
   return page.getByRole('region', { name: 'Task board' }).getByRole('link')
 }
+
+test('board orders each stage by creation time rather than latest activity', async ({ page }) => {
+  const seen: string[] = []
+  await openBoard(page, seen)
+
+  await expect(cards(page)).toContainText([
+    'Recent conveyor change',
+    'Same-time conveyor change',
+    'Older busy conveyor change',
+  ])
+})
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {
   const seen: string[] = []

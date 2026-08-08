@@ -58,7 +58,7 @@ SELECT sqlc.embed(t),
        ) AS has_children
 FROM tasks t
 WHERE t.workspace_id = $1
-ORDER BY t.created_at, t.id;
+ORDER BY t.created_at DESC, t.id;
 
 -- name: ListCheckpointContextCandidates :many
 SELECT t.id, t.title, t.state
@@ -147,7 +147,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
-ORDER BY t.created_at, t.id
+ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
 
@@ -438,7 +438,7 @@ SELECT
     ), t.created_at)::timestamptz AS last_event_at
 FROM tasks t
 WHERE t.workspace_id = $1
-ORDER BY t.created_at, t.id;
+ORDER BY t.created_at DESC, t.id;
 
 -- name: InsertIntervention :one
 INSERT INTO interventions (

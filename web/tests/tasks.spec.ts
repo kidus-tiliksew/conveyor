@@ -130,30 +130,37 @@ function matchOperations(url: string) {
   const needle = (params.get('q') ?? '').toLowerCase()
   const from = params.get('updated_from') ?? ''
   const to = params.get('updated_to') ?? ''
-  return operations.filter((item) => {
-    const updated = item.last_event_at || item.task.created_at
-    if (states.length && !states.includes(item.task.state)) return false
-    if (repositories.length && !repositories.includes(item.task.repo)) return false
-    if (
-      needle &&
-      ![item.task.title, item.task.id, item.task.source, item.task.branch]
-        .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(needle))
-    ) {
-      return false
-    }
-    if (from && updated < from) return false
-    // The upper bound is exclusive, exactly as the store evaluates it.
-    if (to && updated >= to) return false
-    if (
-      requirements.length &&
-      !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
-    ) {
-      return false
-    }
-    if (designs.length && !(item.task.context?.designs ?? []).some((entry) => designs.includes(entry.id))) return false
-    return true
-  })
+  return operations
+    .filter((item) => {
+      const updated = item.last_event_at || item.task.created_at
+      if (states.length && !states.includes(item.task.state)) return false
+      if (repositories.length && !repositories.includes(item.task.repo)) return false
+      if (
+        needle &&
+        ![item.task.title, item.task.id, item.task.source, item.task.branch]
+          .filter(Boolean)
+          .some((field) => field.toLowerCase().includes(needle))
+      ) {
+        return false
+      }
+      if (from && updated < from) return false
+      // The upper bound is exclusive, exactly as the store evaluates it.
+      if (to && updated >= to) return false
+      if (
+        requirements.length &&
+        !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
+      ) {
+        return false
+      }
+      if (designs.length && !(item.task.context?.designs ?? []).some((entry) => designs.includes(entry.id))) {
+        return false
+      }
+      return true
+    })
+    .sort((a, b) => {
+      const createdOrder = new Date(b.task.created_at).getTime() - new Date(a.task.created_at).getTime()
+      return createdOrder || a.task.id.localeCompare(b.task.id)
+    })
 }
 
 async function routeTasksSurface(page: Page) {
@@ -223,6 +230,17 @@ async function openTasks(page: Page) {
 function rows(page: Page) {
   return page.getByRole('list', { name: 'Tasks' }).getByRole('listitem')
 }
+
+test('tasks view preserves newest-created-first API order', async ({ page }) => {
+  await openTasks(page)
+  await expect(rows(page)).toContainText([
+    'Wire the Tasks view',
+    'Historical anchor',
+    'Shipped web change',
+    'Bounced web plan',
+    'Stuck conveyor change',
+  ])
+})
 
 // AC-1.1: the view is a filterable list, not stage columns, and filters by
 // state, repository, and free text. State and repository are multi-select:
