@@ -57,7 +57,8 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   }, [state.kind])
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
-    mutationFn: () => recoverWorkOrder(order.id, token, requestId.current, checkpointReleased ? direction.trim() : undefined),
+    mutationFn: () =>
+      recoverWorkOrder(order.id, token, requestId.current, checkpointReleased ? direction.trim() : undefined),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
@@ -98,7 +99,9 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
       </div>
       {checkpointReleased && (
         <div className="space-y-2 text-xs leading-5 text-muted">
-          <p>A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.</p>
+          <p>
+            A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.
+          </p>
           <label className="block space-y-1.5">
             <span className="font-medium text-foreground">Operator direction</span>
             <textarea
