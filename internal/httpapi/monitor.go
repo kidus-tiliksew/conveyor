@@ -107,16 +107,18 @@ func (s *Server) resolveMonitorDrift(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Outcome string `json:"outcome"`
+		Outcome       string `json:"outcome"`
+		RequirementID string `json:"requirement_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	drift, err := s.Monitor.Resolve(r.Context(), chi.URLParam(r, "id"), request.Outcome)
+	drift, err := s.Monitor.Resolve(r.Context(), chi.URLParam(r, "id"), request.Outcome, request.RequirementID)
 	if err != nil {
 		status := http.StatusConflict
-		if errors.Is(err, monitor.ErrRequirementIDMissing) {
+		if errors.Is(err, monitor.ErrRequirementIDMissing) || errors.Is(err, monitor.ErrUnknownRequirementID) ||
+			errors.Is(err, monitor.ErrRequirementIDInvalid) || errors.Is(err, monitor.ErrRequirementIDNotAllowed) {
 			status = http.StatusUnprocessableEntity
 		}
 		http.Error(w, err.Error(), status)

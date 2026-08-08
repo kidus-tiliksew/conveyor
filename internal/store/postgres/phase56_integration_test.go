@@ -72,7 +72,7 @@ func TestPhase56MonitorPersistenceAndWorkspaceIsolationIntegration(t *testing.T)
 	if otherStatus, otherErr := restarted.MonitorStatus(other, true, now); otherErr == nil && (otherStatus.DriftCount != 0 || len(otherStatus.Observations) != 0) {
 		t.Fatalf("cross-workspace status=%+v", otherStatus)
 	}
-	if _, err = restarted.ResolveDrift(ctx, drift.ID, "conflict_resolved"); err != nil {
+	if _, err = restarted.ResolveDrift(ctx, drift.ID, "conflict_resolved", ""); err != nil {
 		t.Fatal(err)
 	}
 	status, err = restarted.MonitorStatus(ctx, true, now.Add(2*time.Hour))
@@ -113,10 +113,10 @@ func TestDriftRequirementAmendmentIntegration(t *testing.T) {
 	if _, fresh, recordErr := st.RecordDrift(ctx, drift); recordErr != nil || !fresh {
 		t.Fatalf("fresh=%t err=%v", fresh, recordErr)
 	}
-	if _, err = st.ResolveDrift(ctx, drift.ID, "requirements_amended"); err != nil {
+	if _, err = st.ResolveDrift(ctx, drift.ID, "requirements_amended", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ResolveDrift(ctx, drift.ID, "requirements_amended"); err != nil {
+	if _, err = st.ResolveDrift(ctx, drift.ID, "requirements_amended", ""); err != nil {
 		t.Fatal(err)
 	}
 	versions, err := st.ListRequirementVersions(ctx, requirement.ID)

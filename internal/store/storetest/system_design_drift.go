@@ -167,7 +167,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		if _, _, err := st.(monitor.Store).RecordDrift(ctx, monitor.Drift{ID: plainID, WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.DirectPush, SourceURL: "https://example.test/commit/plain", TaskID: delivery.ID, DetectedAt: now}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := service.Resolve(ctx, plainID, "design_document_updated"); err == nil {
+		if _, err := service.Resolve(ctx, plainID, "design_document_updated", ""); err == nil {
 			t.Fatal("design-less drift resolved as design_document_updated")
 		}
 		if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "resolution-head"})}); err != nil {
@@ -187,7 +187,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		if driftID == "" {
 			t.Fatalf("design drift missing: %+v", status.Drift)
 		}
-		if _, err := service.Resolve(ctx, driftID, "design_document_updated"); err == nil {
+		if _, err := service.Resolve(ctx, driftID, "design_document_updated", ""); err == nil {
 			t.Fatal("design drift resolved without a replacement version")
 		}
 		content := "# Replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"
@@ -195,13 +195,13 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = service.Resolve(ctx, driftID, "design_document_updated"); err == nil {
+		if _, err = service.Resolve(ctx, driftID, "design_document_updated", ""); err == nil {
 			t.Fatal("design drift resolved against an unconfirmed replacement")
 		}
 		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = service.Resolve(ctx, driftID, "design_document_updated"); err != nil {
+		if _, err = service.Resolve(ctx, driftID, "design_document_updated", ""); err != nil {
 			t.Fatal(err)
 		}
 		events, err := st.ListSystemDesignEvents(ctx, document.ID)
