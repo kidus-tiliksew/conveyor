@@ -4,6 +4,25 @@ const createdAt = '2026-07-15T12:00:00Z'
 let emitLiveScrollEvent = () => {}
 const detailRequestCounts = new Map<string, number>()
 
+// The context a task carries. The proposal card is scoped by attachment as well
+// as origin (spec §21.62), so which documents these name is what decides whether
+// a task's own pending version reaches its detail at all.
+type AttachedDocument = { id: string; title: string; version: number }
+const attachedContext: Record<string, { requirements?: AttachedDocument[]; designs?: AttachedDocument[] }> = {
+  'attached-context': {
+    requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
+    designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
+  },
+  'design-proposal': {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  },
+  // Carries a different document than the one it proposed against, so its own
+  // pending version stays on the document's attention surface.
+  'unattached-proposal': {
+    designs: [{ id: 'design-delivery', title: 'Delivery tiers', version: 4 }],
+  },
+}
+
 function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
   const specContent =
     taskId === 'mermaid-valid'
@@ -1560,13 +1579,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             ]
           : undefined,
       created_at: createdAt,
-      context:
-        taskId === 'attached-context'
-          ? {
-              requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
-              designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
-            }
-          : undefined,
+      context: attachedContext[taskId],
     },
     jobs: reviewActivity.jobs,
     events:
@@ -3553,6 +3566,24 @@ test('task detail renders no proposal card for a pending version another task ra
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
 
   await page.goto('/tasks/design-proposal/full')
+  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
+
+// The read is the workspace-wide collection, so origin alone would carry a
+// proposal onto a task that does not hold the document. Attachment is the other
+// half of the §21.62 scope: 'unattached-proposal' raised this pending version,
+// but carries a different document, so the decision stays on the document's own
+// attention surface.
+test('task detail renders no proposal card for a document the task does not carry', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('unattached-proposal', false) }),
+  )
+
+  await page.goto('/tasks/unattached-proposal/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)

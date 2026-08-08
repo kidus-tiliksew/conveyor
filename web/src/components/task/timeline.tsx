@@ -83,7 +83,7 @@ export function Timeline({
   // operator, so it belongs in the live tail beside the other ones (spec
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
   // why this rides `executionActions` like the rest of the tail.
-  const designProposals = useSystemDesignProposals(item.task.id)
+  const designProposals = useSystemDesignProposals(item.task)
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
@@ -136,7 +136,7 @@ export function Timeline({
           designProposals.length > 0 && {
             key: 'design-proposal',
             dot: 'bg-attention-dot',
-            card: <SystemDesignProposalCard taskId={item.task.id} />,
+            card: <SystemDesignProposalCard task={item.task} />,
           },
         ]
       : []
