@@ -157,6 +157,18 @@ button, input, textarea, select { font: inherit; }
   margin: 0.75em 0;
 }
 .markdown pre code { background: none; border: none; padding: 0; font-size: 0.75rem; line-height: 1.6; }
+.markdown [data-mermaid] {
+  margin: 1rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  color: var(--color-foreground);
+}
+.markdown [data-mermaid] svg {
+  display: block;
+  height: auto;
+  min-width: min-content;
+  max-width: none;
+}
 .markdown blockquote {
   border-left: 2px solid var(--color-edge);
   margin: 0.75em 0;

@@ -15,7 +15,7 @@ const requirement = {
       requirement_id: 'req-retries',
       version: 1,
       content:
-        'Keep retries bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
+        'Keep retries bounded.\n\n```mermaid\nflowchart LR\n  Attempt --> Limit\n```\n\n```mermaid\nthis is deliberately malformed requirement mermaid\n```\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```',
       statements: [{ id: 'REQ-1', statement: 'Retries stop after a finite limit.' }],
       origin: 'chat',
       origin_session_id: 'session-requirement',
@@ -197,6 +197,10 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(tree.getByRole('button', { name: /Retry behavior/ })).toHaveAttribute('aria-current', 'true')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  await expect(canvas.locator('[data-mermaid] svg')).toBeVisible()
+  await expect(canvas.locator('code.language-mermaid')).toContainText(
+    'this is deliberately malformed requirement mermaid',
+  )
   await expect(page.getByText('Feature tree')).toHaveCount(0)
 
   // AC-1.1: staleness names its causal delivery and the pending version
