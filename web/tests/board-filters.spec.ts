@@ -240,8 +240,14 @@ test('board sends the shared filter family to the server rather than narrowing i
   await expect(page.getByRole('tab', { name: 'Assignee' })).toHaveCount(0)
 })
 
-test('board no longer offers task creation', async ({ page }) => {
+test('board opens task creation on the Tasks route', async ({ page }) => {
   const seen: string[] = []
   await openBoard(page, seen)
-  await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(0)
+  const newTask = page.getByRole('link', { name: 'New task' })
+  await expect(newTask).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
+  await newTask.click()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/tasks')
+  expect(new URL(page.url()).searchParams.get('create')).toBe('true')
 })

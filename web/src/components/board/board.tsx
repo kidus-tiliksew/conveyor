@@ -60,12 +60,19 @@ export function Board() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Task intake left this header for the Tasks view, which is where
-          operators manage delivery (AC-2.1). The board is the pipeline lens
-          over work that already exists. */}
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
         <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
+        {/* Keep intake on the Tasks surface while making it reachable from
+            either daily operating view. */}
+        <Link
+          to="/tasks"
+          search={{ create: true }}
+          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-4 [&_svg]:shrink-0"
+        >
+          <Plus />
+          New task
+        </Link>
       </header>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">
