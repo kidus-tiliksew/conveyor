@@ -142,9 +142,14 @@ export function RequirementsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="shrink-0 border-b border-border px-6 py-4">
-        <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
-        <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
+        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
+          <ListChecks className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
+          <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -154,6 +159,7 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={document.id}
                 label={document.name}
+                meta={`v${document.current_version}`}
                 selected={openOverview?.id === document.id}
                 onClick={() => setOpenOverview({ id: document.id })}
               />
@@ -189,6 +195,7 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
+                meta={item.current_version ? `v${item.current_version.version}` : 'Unconfirmed'}
                 selected={!openOverview && selectedId === item.requirement.id}
                 onClick={() => selectRequirement(item.requirement.id)}
               />
@@ -217,8 +224,11 @@ export function RequirementsPage() {
             ) : (
               <>
                 {requirements?.length === 0 && (
-                  <Card className="mt-2 border-dashed">
+                  <Card className="mt-2 rounded-xl border-dashed">
                     <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                      <span className="mb-3 flex size-10 items-center justify-center rounded-full bg-primary-soft text-primary">
+                        <ListChecks className="size-5" />
+                      </span>
                       <h2 className="text-base font-semibold">Nothing written down yet</h2>
                       <p className="mt-2 max-w-md text-sm leading-6 text-muted">
                         Requirements say what this product should do. Each one arrives as a proposed version for you to
@@ -286,13 +296,13 @@ function OverviewCanvas({
     : undefined
   return (
     <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
-      <header className="mb-6 flex items-start justify-between gap-4">
+      <header className="mb-8 flex items-start justify-between gap-4 border-b border-border pb-6">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
             <FileText className="size-3" /> Product overview
-          </p>
-          <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-balance">{document.name}</h2>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          </span>
+          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">{document.name}</h2>
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <Badge variant="mono">v{document.current_version}</Badge>
             <Badge variant="outline">Reference material</Badge>
           </div>
@@ -565,12 +575,16 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
           onClose={() => setAttachmentOffer(null)}
         />
       )}
-      <header className="mb-6 flex items-start gap-4">
+      <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
         <div className="min-w-0 flex-1">
-          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">{item.requirement.slug}</p>
-          <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-balance">{item.requirement.title}</h2>
+          <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+            {item.requirement.slug}
+          </span>
+          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
+            {item.requirement.title}
+          </h2>
           {displayed && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
               <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
                 {displayed.confirmed ? 'Confirmed' : 'Proposed'}
@@ -589,7 +603,7 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
 
       <AttentionSurface items={attention} />
 
-      <div className="mt-6">
+      <div className="mt-8">
         {displayed ? (
           <RequirementDocument version={displayed} />
         ) : (
@@ -613,36 +627,43 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
             <History className="size-3.5" /> Version history
           </h3>
           <div className="mt-3 flex flex-wrap gap-2">
-            {orderedVersions.map((version) => (
-              <button
-                key={version.version}
-                type="button"
-                aria-pressed={displayed?.version === version.version}
-                aria-current={displayed?.version === version.version ? 'true' : undefined}
-                onClick={() => setSelectedVersion(version.version)}
-                className={`rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors ${displayed?.version === version.version ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface'}`}
-              >
-                <span className="font-medium">v{version.version}</span>
-                <span className="ml-1.5 text-[11px] text-faint">
-                  {version.confirmed ? 'Confirmed' : 'Proposed'} · {originLabels[version.origin]}
-                </span>
-              </button>
-            ))}
+            {orderedVersions.map((version) => {
+              const active = displayed?.version === version.version
+              return (
+                <button
+                  key={version.version}
+                  type="button"
+                  aria-pressed={active}
+                  aria-current={active ? 'true' : undefined}
+                  onClick={() => setSelectedVersion(version.version)}
+                  className={`rounded-full border px-3 py-1.5 text-left text-xs transition-colors ${active ? 'border-primary bg-primary text-primary-foreground shadow-sm' : 'border-border hover:border-edge hover:bg-surface'}`}
+                >
+                  <span className="font-medium">v{version.version}</span>
+                  <span className={`ml-1.5 text-[11px] ${active ? 'text-primary-foreground/75' : 'text-faint'}`}>
+                    {version.confirmed ? 'Confirmed' : 'Proposed'} · {originLabels[version.origin]}
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </section>
       )}
 
       <div className="mt-10 space-y-4 border-t border-border pt-8">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
         {/*
           Delivery is task-centric: `serves` sits on the task itself (spec
           §21.58 change 6). Blueprints are retained below as the historical
           lens over records planned before the noun was retired, so they stay
           readable without being mislabelled as newly planned work.
         */}
-        <Card>
+        <Card className="rounded-lg">
           <CardHeader>
-            <CardTitle className="flex items-center gap-1.5">
-              <ListChecks className="size-3.5" /> Delivery
+            <CardTitle className="flex items-center gap-2">
+              <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                <ListChecks className="size-3" />
+              </span>
+              Delivery
             </CardTitle>
             <Badge variant="mono">{servingTasks.length}</Badge>
           </CardHeader>
@@ -670,10 +691,13 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
         </Card>
 
         {item.serving_blueprints.length > 0 && (
-          <Card>
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                <History className="size-3.5" /> Delivery before blueprints retired
+              <CardTitle className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
+                  <History className="size-3" />
+                </span>
+                Delivery before blueprints retired
               </CardTitle>
               <Badge variant="mono">{item.serving_blueprints.length}</Badge>
             </CardHeader>
@@ -704,10 +728,13 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
         )}
 
         {item.planning_sessions.length > 0 && (
-          <Card>
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                <Sparkles className="size-3.5" /> How this was written
+              <CardTitle className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                  <Sparkles className="size-3" />
+                </span>
+                How this was written
               </CardTitle>
               <Badge variant="mono">{item.planning_sessions.length}</Badge>
             </CardHeader>
@@ -745,10 +772,13 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
         )}
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <Card>
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                <Paperclip className="size-3.5" /> Attached files
+              <CardTitle className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                  <Paperclip className="size-3" />
+                </span>
+                Attached files
               </CardTitle>
               <Badge variant="mono">{item.artifacts.length}</Badge>
             </CardHeader>
@@ -785,10 +815,13 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
               )}
             </CardContent>
           </Card>
-          <Card>
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                <Clock className="size-3.5" /> Activity
+              <CardTitle className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
+                  <Clock className="size-3" />
+                </span>
+                Activity
               </CardTitle>
               <Badge variant="mono">{item.lineage.length}</Badge>
             </CardHeader>
@@ -952,56 +985,64 @@ function documentGlobalByID(id: string) {
 
 function RequirementDocument({ version }: { version: RequirementVersion }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
           <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
             <ListChecks className="size-3.5" /> What this requires
           </h3>
-          <ol className="mt-3 space-y-3">
+          {/* Clauses read as a connected spine of numbered circles, the way the
+              spec itself is written — each entry a clause, each criterion a
+              sub-clause hung off it. */}
+          <ol className="relative mt-4">
+            {version.statements.length > 1 && (
+              <div aria-hidden className="absolute top-4 bottom-4 left-4 w-px bg-border" />
+            )}
             {version.statements.map((statement, index) => (
-              <li
-                key={statement.id}
-                id={statement.id.toLowerCase()}
-                className="scroll-mt-6 overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-edge"
-              >
-                <div className="flex gap-3 p-4">
+              <li key={statement.id} id={statement.id.toLowerCase()} className="relative scroll-mt-6 pb-6 last:pb-0">
+                <div className="flex gap-4">
                   <a
                     href={`#${statement.id.toLowerCase()}`}
                     aria-label={`Link to ${statement.id}`}
-                    className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft font-mono text-[11px] font-semibold text-primary"
+                    className="relative z-10 mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary font-mono text-xs font-semibold text-primary-foreground ring-4 ring-card transition-transform hover:scale-105"
                     title={statement.id}
                   >
                     {index + 1}
                   </a>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm leading-6 text-balance">{statement.statement}</p>
-                    {statement.user_story && (
-                      <p className="mt-3 border-l-2 border-edge pl-3 text-xs leading-5 text-muted italic">
-                        As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
-                        {statement.user_story.so_that}.
-                      </p>
+                  <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-edge">
+                    <div className="p-4">
+                      <p className="text-sm leading-6 text-balance">{statement.statement}</p>
+                      {statement.user_story && (
+                        <p className="mt-3 border-l-2 border-primary/30 pl-3 text-xs leading-5 text-muted italic">
+                          As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
+                          {statement.user_story.so_that}.
+                        </p>
+                      )}
+                    </div>
+                    {(statement.acceptance_criteria?.length ?? 0) > 0 && (
+                      <ol className="space-y-2.5 border-t border-border bg-surface/50 px-4 py-3">
+                        {statement.acceptance_criteria?.map((criterion, criterionIndex) => (
+                          <li
+                            key={criterion.id}
+                            id={criterion.id.toLowerCase()}
+                            className="scroll-mt-6 flex gap-2.5 text-xs"
+                          >
+                            <a
+                              href={`#${criterion.id.toLowerCase()}`}
+                              aria-label={`Link to ${criterion.id}`}
+                              className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
+                              title={criterion.id}
+                            >
+                              {criterionIndex + 1}
+                            </a>
+                            <span className="leading-5">{criterion.statement}</span>
+                          </li>
+                        ))}
+                      </ol>
                     )}
                   </div>
                 </div>
-                {(statement.acceptance_criteria?.length ?? 0) > 0 && (
-                  <ol className="space-y-2.5 border-t border-border bg-surface/40 px-4 py-3">
-                    {statement.acceptance_criteria?.map((criterion, criterionIndex) => (
-                      <li key={criterion.id} id={criterion.id.toLowerCase()} className="scroll-mt-6 flex gap-3 text-xs">
-                        <a
-                          href={`#${criterion.id.toLowerCase()}`}
-                          aria-label={`Link to ${criterion.id}`}
-                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
-                          title={criterion.id}
-                        >
-                          {criterionIndex + 1}
-                        </a>
-                        <span className="leading-5">{criterion.statement}</span>
-                      </li>
-                    ))}
-                  </ol>
-                )}
               </li>
             ))}
           </ol>

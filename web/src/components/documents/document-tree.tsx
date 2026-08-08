@@ -44,15 +44,19 @@ export function DocumentTreeItem({
       type="button"
       aria-current={selected ? 'true' : undefined}
       onClick={onClick}
-      className={`flex w-full items-center gap-2.5 rounded-md py-2 px-2.5 text-left transition-colors ${
-        selected ? 'bg-primary-soft text-primary' : 'text-foreground hover:bg-surface'
+      className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
+        selected
+          ? 'bg-primary-soft text-primary before:bg-primary'
+          : 'text-foreground before:bg-transparent hover:bg-surface'
       }`}
     >
       <FileText className={`size-4 shrink-0 ${selected ? 'text-primary' : 'text-faint'}`} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{label}</span>
         {meta && (
-          <span className={`mt-0.5 block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
+          <span
+            className={`mt-0.5 block truncate font-mono text-[10px] tracking-wide ${selected ? 'text-primary/70' : 'text-faint'}`}
+          >
             {meta}
           </span>
         )}
