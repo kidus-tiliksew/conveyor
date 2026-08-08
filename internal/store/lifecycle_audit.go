@@ -9,8 +9,9 @@ import (
 )
 
 // LifecycleAuditViolation is an observed event edge absent from the canonical
-// §21.37 transition tables. Auditing is read-only: callers decide whether a
-// discrepancy is historical corruption or requires a spec amendment.
+// lifecycle transition tables (design-task-lifecycle). Auditing is read-only:
+// callers decide whether a discrepancy is historical corruption or requires a
+// governing-authority amendment.
 type LifecycleAuditViolation struct {
 	Space   core.LifecycleSpace `json:"space"`
 	Entity  string              `json:"entity"`

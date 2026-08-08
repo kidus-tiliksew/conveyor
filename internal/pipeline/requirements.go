@@ -9,7 +9,7 @@ import (
 )
 
 // RequirementStatement is the core statement type; requirement documents are
-// validated here so the block contract lives beside the §4.1 spec parser
+// validated here so the block contract lives beside the legacy spec parser
 // without sharing its rules.
 type RequirementStatement = core.RequirementStatement
 
@@ -61,7 +61,7 @@ func ParseRequirementDocument(output string) (RequirementDocument, error) {
 }
 
 // RenderRequirementDocument serializes prose plus the canonical machine block.
-// Conveyor owns the fence exactly as it does for §4.1 specs, so callers supply
+// Conveyor owns the fence exactly as it does for legacy specs, so callers supply
 // only prose and statements. The result is re-parsed as the final invariant.
 func RenderRequirementDocument(prose string, statements []RequirementStatement) (RequirementDocument, error) {
 	trimmed := strings.TrimSpace(prose)

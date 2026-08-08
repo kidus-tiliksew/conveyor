@@ -1,7 +1,6 @@
 // Package core defines the shared domain types for Conveyor: tasks, jobs,
-// pipeline stages, and their states. These mirror the data model in
-// conveyor-spec.md §16. Postgres is the Phase 2 source of truth; the memory
-// store remains an explicit test/development implementation.
+// pipeline stages, and their states. Postgres is the durable source of truth;
+// the in-memory store remains an explicit test/development implementation.
 package core
 
 import (
@@ -82,7 +81,7 @@ const (
 func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
 
 // LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
-// hold (the §21.31 successor of Manual), spec approval, merge approval.
+// hold (the successor of Manual), spec approval, merge approval.
 func LegacyPolicy(level EscalationLevel) (bool, bool, bool) {
 	switch level {
 	case L0:
@@ -370,8 +369,8 @@ func InterventionActions() []InterventionAction {
 	}
 }
 
-// Intervention is a structured human decision from the review queue (spec
-// §13.2). ReasonCode is intentionally data rather than an enum so workspaces
+// Intervention is a structured human decision from the review queue.
+// ReasonCode is intentionally data rather than an enum so workspaces
 // can add taxonomy without a deploy; the API validates the required baseline.
 type Intervention struct {
 	ID         int64              `json:"id"`
@@ -981,7 +980,7 @@ type Artifact struct {
 	FeatureID string `json:"feature_id,omitempty"`
 	// RequirementID is the attachment target that replaces FeatureID as the
 	// feature tree retires. It is how a finalized
-	// planning transcript attaches to the requirement it produced (§9), and
+	// planning transcript attaches to the requirement it produced, and
 	// where migration 046 re-homes feature-scoped attachments. Exactly one of
 	// TaskID, FeatureID, RequirementID, and PlanningSessionID may be set.
 	RequirementID string `json:"requirement_id,omitempty"`

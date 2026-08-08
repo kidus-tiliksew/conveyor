@@ -19,7 +19,7 @@ import (
 
 // PlanningFinalizeRequest finalizes a session against exactly one produced
 // artifact. A finalized session never carries approval authority: producing a
-// blueprint parent task leaves the §13.1 spec gate untouched.
+// blueprint parent task leaves the operator approval gate untouched.
 type PlanningFinalizeRequest struct {
 	SessionID string
 	// RequirementID and TaskID are mutually exclusive.

@@ -325,7 +325,7 @@ func TestConfirmableRequirementVersionDemandsProseAndStatements(t *testing.T) {
 		},
 		{
 			// A migration seed may carry zero statements, but confirmation is
-			// exactly where the statement block stops being optional (§21.46).
+			// exactly where the statement block stops being optional.
 			name:    "no statements",
 			version: RequirementVersion{Version: 1, Content: "Seeded verbatim from a retired feature node."},
 			want:    "no REQ-n statements to confirm",

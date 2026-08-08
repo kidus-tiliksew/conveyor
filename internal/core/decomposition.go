@@ -8,7 +8,7 @@ import (
 
 var blueprintDecompositionIDPattern = regexp.MustCompile(`^SUB-[1-9][0-9]*$`)
 
-// BlueprintDecompositionItem is the canonical §4.1 decomposition fence item.
+// BlueprintDecompositionItem is the canonical legacy decomposition fence item.
 // Store materialization and pipeline parsing deliberately share this type and
 // validator so their accepted graph shapes cannot drift.
 type BlueprintDecompositionItem struct {
@@ -20,10 +20,10 @@ type BlueprintDecompositionItem struct {
 
 // BlueprintAnchor reports whether a task is a blueprint anchor:
 // an intent artifact rather than work. Children are created only by blueprint
-// materialization, which requires an approved spec carrying a non-empty §4.1
+// materialization, which requires an approved legacy spec carrying a non-empty
 // decomposition, so the parent/child relation is that decomposition made
 // durable. Classifying from it keeps the anchor a derived predicate over
-// existing relations — no stored flag, no epic entity (§21.46 change 10).
+// existing relations — no stored flag and no epic entity.
 func BlueprintAnchor(task Task) bool { return len(task.Children) > 0 }
 
 // OrderDecompositionByDependency returns the decomposition in dependency

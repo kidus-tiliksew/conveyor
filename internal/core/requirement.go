@@ -12,7 +12,7 @@ import (
 // Requirements are living intent documents (design-document-corpus).
 // A requirement is versioned and confirmed, never gated: every revision — chat
 // edit or drift amendment — creates a version an operator confirms, and the
-// approval gate stays on blueprints (§13.1). The corpus is flat; there is no
+// approval gate stays on legacy blueprints. The corpus is flat; there is no
 // hierarchy to curate.
 
 var (
@@ -206,8 +206,8 @@ func (s PlanningSessionStatus) Valid() bool {
 		s == PlanningSessionAbandoned
 }
 
-// PlanningSessionGoal is the artifact a session declares it is working toward
-// . It is set at creation and never updated: it steers the
+// PlanningSessionGoal is the artifact a session declares it is working toward.
+// It is set at creation and never updated: it steers the
 // agent's finalize target so a requirement-drafting conversation does not skip
 // to a blueprint. `open` keeps the historical unconstrained behavior.
 type PlanningSessionGoal string
@@ -446,10 +446,10 @@ func ValidateRequirementRevision(highWaterMark int, issuedIDs []string, next []R
 }
 
 // ValidateRequirementOrigin enforces that a version names the act that
-// produced it. Provenance is what makes a pending version auditable (spec
-// §4.2 item 1): a chat revision carries its planning session and a
-// requirements_amended revision carries its drift record, so every proposal an
-// operator is asked to confirm traces back to something they can open. The two
+// produced it. Provenance is what makes a pending version auditable: a chat
+// revision carries its planning session and a requirements_amended revision
+// carries its drift record, so every proposal an operator is asked to confirm
+// traces back to something they can open. The two
 // identifiers are exclusive — a version has exactly one origin.
 func ValidateRequirementOrigin(version RequirementVersion) error {
 	if !version.Origin.Valid() {

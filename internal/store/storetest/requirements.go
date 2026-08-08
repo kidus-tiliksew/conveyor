@@ -1395,7 +1395,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 
 		// A session produces a requirement or a blueprint task, never both and
-		// never neither — a session that produced nothing is abandoned (§9).
+		// never neither — a session that produced nothing is abandoned.
 		session := createPlanningSession(t, ctx, st)
 		for name, request := range map[string]store.PlanningFinalizeRequest{
 			"both artifacts": {SessionID: session.ID, RequirementID: produced.ID, TaskID: blueprint.ID},

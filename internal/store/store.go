@@ -85,7 +85,7 @@ type Store interface {
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
-	// SetTaskHold toggles the §21.31 per-task reservation with an audit
+	// SetTaskHold toggles the per-task worker reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
@@ -201,7 +201,7 @@ type Store interface {
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 
 	// Feature methods remain only for migration and historical conformance.
-	// Live control-plane surfaces retired feature-tree mutation in §21.46.
+	// Live control-plane surfaces do not expose retired feature-tree mutation.
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
@@ -2957,7 +2957,8 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 }
 
 // InferWorkOrderUpdateCommand preserves the legacy whole-record update API
-// while routing every actual state change through a named §21.37 command.
+// while routing every actual state change through a named lifecycle command
+// (design-task-lifecycle).
 func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCommand, bool) {
 	switch {
 	case current.State == core.WorkOrderQueued && next.State == core.WorkOrderClaimed:
