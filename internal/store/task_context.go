@@ -29,6 +29,14 @@ type TaskContextChange struct {
 	Remove TaskContextInput `json:"remove"`
 }
 
+// CheckpointContextCandidate is the minimum read model needed to offer a
+// confirmed requirement to an open task paused at an operator checkpoint.
+type CheckpointContextCandidate struct {
+	ID    string         `json:"id"`
+	Title string         `json:"title"`
+	State core.TaskState `json:"state"`
+}
+
 type TaskContextReferenceError struct {
 	Kind   string
 	ID     string

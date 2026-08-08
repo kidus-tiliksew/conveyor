@@ -44,6 +44,11 @@ Working discipline:
   `operator checkpoint reached`. The existing `released` outcome is the
   successful agent handoff: do not report a child failure, stall, recovery
   request, or task completion, and do not enter an automatic recovery loop.
+- In a resumed session, before releasing again for the same checkpoint reason,
+  re-derive the blocking condition from the currently served requirements and
+  current operator direction. The new `report_progress` message must name every
+  served-authority `id vN` version checked; a prior attempt's progress is
+  historical context and does not satisfy this re-verification requirement.
 - Commit all work with clear, conventional messages. Never commit knowingly
   broken work: if you cannot complete the task, stop, leave the worktree in
   its best consistent state, and state plainly what is blocked and why — an

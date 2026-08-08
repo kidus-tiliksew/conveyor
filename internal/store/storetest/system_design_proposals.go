@@ -98,6 +98,17 @@ func RunSystemDesignProposalConformance(t *testing.T, st store.Store, ctx contex
 	if err != nil || len(taskEvents) != 2 {
 		t.Fatalf("task-scoped proposal events=%+v err=%v", taskEvents, err)
 	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, different.Version); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := st.ListSystemDesignProposalVersionsForTask(ctx, "proposal-task")
+	if err != nil || len(evidence) != 1 || evidence[0].Version != different.Version || !evidence[0].Confirmed {
+		t.Fatalf("task-scoped proposal evidence=%+v err=%v", evidence, err)
+	}
+	pendingAfterConfirm, err := st.ListPendingSystemDesignVersionsForTask(ctx, "proposal-task")
+	if err != nil || len(pendingAfterConfirm) != 0 {
+		t.Fatalf("task-scoped pending versions after confirmation=%+v err=%v", pendingAfterConfirm, err)
+	}
 }
 
 type proposalConformanceError struct {

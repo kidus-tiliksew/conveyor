@@ -177,16 +177,31 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		}
 		claim.Requirements = append([]core.ServedRequirementContext{}, servedAuthority.Requirements...)
 	}
-	if order.Stage == core.StageReview && order.GovernanceSnapshot == nil {
+	if order.Stage == core.StageReview {
 		task, getErr := s.Store.GetTask(ctx, order.TaskID)
 		if getErr != nil {
 			return core.WorkOrder{}, getErr
 		}
-		governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
-		if resolveErr != nil {
-			return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
+		if order.GovernanceSnapshot == nil {
+			governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
+			if resolveErr != nil {
+				return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
+			}
+			claim.Governance = &governance
+		} else {
+			// Keep authority pinned while refreshing only non-authoritative
+			// proposal evidence for this review claim.
+			governance := *order.GovernanceSnapshot
+			governance.Designs = append([]core.GovernanceDesignContext(nil), order.GovernanceSnapshot.Designs...)
+			governance.Decisions = append([]core.Decision(nil), order.GovernanceSnapshot.Decisions...)
+			proposals, notes, resolveErr := store.SystemDesignProposalEvidenceForTask(ctx, s.Store, task.ID)
+			if resolveErr != nil {
+				return core.WorkOrder{}, fmt.Errorf("refresh System Design proposal evidence for review claim: %w", resolveErr)
+			}
+			governance.PendingDesignProposals = proposals
+			governance.ResolutionNotes = notes
+			claim.Governance = &governance
 		}
-		claim.Governance = &governance
 	}
 	order, err = taskops.New(s.Store).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 	if err != nil {
@@ -214,9 +229,17 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	})
 }
 
-func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkOrder, error) {
+func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDirection ...string) (core.WorkOrder, error) {
 	if strings.TrimSpace(requestID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+	}
+	direction := ""
+	if len(suppliedDirection) > 0 {
+		direction = suppliedDirection[0]
+	}
+	direction, err := core.NormalizeWorkOrderOperatorDirection(direction)
+	if err != nil {
+		return core.WorkOrder{}, err
 	}
 	cfg, err := s.config(ctx)
 	if err != nil {
@@ -236,11 +259,11 @@ func (s *Service) Recover(ctx context.Context, id, requestID string) (core.WorkO
 	}
 	if change := recoveryRefreeze(cfg, task, order); change != nil {
 		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout, change)
+			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout, change)
 		})
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout)
+		return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout)
 	})
 }
 
@@ -563,6 +586,9 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageReview {
 		role = pack.MCPReviewRole(role)
 	}
+	if order.OperatorDirection != "" {
+		role += "\n\n# Operator direction\n\n" + order.OperatorDirection + "\n"
+	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
 		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
@@ -603,6 +629,8 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		servedRequirements = servedAuthority.Requirements
 	}
 	role = pack.WithRequirementCitationContract(role, order.Stage, servedRequirements)
+	events, _ := s.Store.ListEvents(ctx, task.ID)
+	role += historicalCheckpointProgressContract(order, events)
 	var governance *core.GovernanceSnapshot
 	if order.Stage == core.StageReview {
 		if order.GovernanceSnapshot == nil && order.State != core.WorkOrderQueued {
@@ -669,7 +697,6 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		planContent = result.ApprovedSpec.Content
 	}
 	result.RolePrompt += pack.DoneCriteriaContract(order.Stage, planContent, task.Body, len(servedRequirements) > 0)
-	events, _ := s.Store.ListEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
 			result.BounceHistory = append(result.BounceHistory, event.Payload)
@@ -716,6 +743,33 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 	}
 	return result, nil
+}
+
+func historicalCheckpointProgressContract(order core.WorkOrder, events []core.Event) string {
+	progress := strings.TrimSpace(order.Progress)
+	if order.Stage != core.StageImplement || progress == "" || order.LastAttemptID == "" || order.AttemptID == "" || order.AttemptID == order.LastAttemptID {
+		return ""
+	}
+	var releasedAt time.Time
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Kind != "work_order.released" || event.JobID != order.JobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+			Reason    string `json:"reason"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.AttemptID == order.LastAttemptID && payload.Reason == core.WorkOrderReleaseReasonOperatorCheckpointReached {
+			releasedAt = event.At
+			break
+		}
+	}
+	if releasedAt.IsZero() {
+		return ""
+	}
+	quotedProgress := "> " + strings.ReplaceAll(progress, "\n", "\n> ")
+	return fmt.Sprintf("\n\n# Historical prior-attempt checkpoint claims\n\nThe progress below records claims made by prior attempt `%s` as of its checkpoint release at %s. It is historical context, not authority. The currently served confirmed requirements and current operator direction are authoritative. Before relying on these claims or releasing again for the same checkpoint reason, re-derive the blocking condition from that current authority and compare every authority version cited below with the currently served `id vN` versions.\n\n%s\n", order.LastAttemptID, releasedAt.UTC().Format(time.RFC3339), quotedProgress)
 }
 
 func (s *Service) recordSystemDesignConsultedOnce(ctx context.Context, sessionID, workOrderID string, designs []core.GovernanceDesignContext) {

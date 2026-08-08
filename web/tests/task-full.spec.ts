@@ -4,6 +4,25 @@ const createdAt = '2026-07-15T12:00:00Z'
 let emitLiveScrollEvent = () => {}
 const detailRequestCounts = new Map<string, number>()
 
+// The context a task carries. The proposal card is scoped by attachment as well
+// as origin (spec §21.62), so which documents these name is what decides whether
+// a task's own pending version reaches its detail at all.
+type AttachedDocument = { id: string; title: string; version: number }
+const attachedContext: Record<string, { requirements?: AttachedDocument[]; designs?: AttachedDocument[] }> = {
+  'attached-context': {
+    requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
+    designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
+  },
+  'design-proposal': {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  },
+  // Carries a different document than the one it proposed against, so its own
+  // pending version stays on the document's attention surface.
+  'unattached-proposal': {
+    designs: [{ id: 'design-delivery', title: 'Delivery tiers', version: 4 }],
+  },
+}
+
 function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
   const specContent =
     taskId === 'mermaid-valid'
@@ -28,7 +47,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               ].join('\n\n')
             : '## Specification\n\nRegression marker at the bottom of the task content.'
   const reviewActivity =
-    taskId === 'attempt-recovery' || taskId === 'decision-blocker'
+    taskId === 'attempt-recovery' || taskId === 'decision-blocker' || taskId === 'operator-checkpoint'
       ? {
           jobs: [],
           events: [
@@ -101,7 +120,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                 reason:
                   taskId === 'decision-blocker'
                     ? 'DEC-2 is proposed but not confirmed.'
-                    : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                    : taskId === 'operator-checkpoint'
+                      ? 'operator checkpoint reached'
+                      : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
                 outcome: 'released',
                 retry_suppressed: true,
               },
@@ -121,7 +142,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               last_failure_message:
                 taskId === 'decision-blocker'
                   ? 'DEC-2 is proposed but not confirmed.'
-                  : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                  : taskId === 'operator-checkpoint'
+                    ? 'operator checkpoint reached'
+                    : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
               last_failure_at: '2026-07-15T12:04:00Z',
               automatic_retry_count: 1,
               retry_suppressed: true,
@@ -1556,13 +1579,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             ]
           : undefined,
       created_at: createdAt,
-      context:
-        taskId === 'attached-context'
-          ? {
-              requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
-              designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
-            }
-          : undefined,
+      context: attachedContext[taskId],
     },
     jobs: reviewActivity.jobs,
     events:
@@ -2277,6 +2294,38 @@ test('suppressed worker order exposes failure state and audited recovery action'
   await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  let recoveryRequest = ''
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recoveryRequest = route.request().postData() ?? ''
+    await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
+  await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
+  await expect(page.getByText('Attached context: None')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
+  const action = page.getByRole('button', { name: 'Recover work order' })
+  await expect(action).toBeDisabled()
+  await page.getByLabel('Operator direction').fill('Proceed with the accepted amendment.')
+  await expect(action).toBeEnabled()
+  await action.click()
+  await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
+})
+
+test('checkpoint recovery summarizes attached requirement and design context', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    requirements: [{ id: 'req-1', title: 'Confirmed requirement', version: 2 }],
+    designs: [{ id: 'design-1', title: 'Confirmed design', version: 3 }],
+  }
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByText(/Attached context: 1 requirement\(s\), 1 design document\(s\)/)).toBeVisible()
 })
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
@@ -3436,4 +3485,120 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   expect(unlinkBody?.request_id).toBeTruthy()
   await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toHaveCount(0)
   await expect(page.getByText('Dependency removed')).toBeVisible()
+})
+
+// The origin-task System Design proposal card (spec §21.62). The decision a
+// task raised is confirmable from that task, without leaving for the document.
+function designCollection(originTaskId: string, resolved: boolean) {
+  const confirmedVersion = {
+    document_id: 'design-lifecycle',
+    version: 1,
+    content: '# Lifecycle\n\nThe service owns lifecycle authority.',
+    governs: [{ repository: 'conveyor', paths: ['internal/workorder/**'] }],
+    origin: 'operator',
+    confirmed: true,
+    dismissed: false,
+    workspace: 'demo',
+    created_at: '2026-08-05T08:00:00Z',
+  }
+  const proposal = {
+    ...confirmedVersion,
+    version: 2,
+    content: '# Lifecycle\n\nThe service owns lifecycle authority and recovery direction.',
+    origin: 'implementation_deliberation',
+    origin_task_id: originTaskId,
+    confirmed: resolved,
+    dismissed: false,
+    created_at: '2026-08-05T09:00:00Z',
+  }
+  return [
+    {
+      document: {
+        id: 'design-lifecycle',
+        slug: 'lifecycle',
+        title: 'Work-order lifecycle',
+        category: 'Architecture',
+        current_version: resolved ? 2 : 1,
+        workspace: 'demo',
+        created_at: '2026-08-05T08:00:00Z',
+        updated_at: '2026-08-05T09:00:00Z',
+      },
+      current_version: resolved ? proposal : confirmedVersion,
+      // Confirmation is what empties this list; the card reads no other state.
+      pending_versions: resolved ? [] : [proposal],
+      versions: [confirmedVersion, proposal],
+      lineage: [],
+      drift: [],
+    },
+  ]
+}
+
+test("a task's own System Design proposal is confirmable from its detail and clears in place", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  let confirmed = false
+  let confirmHeaders: Record<string, string> = {}
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('design-proposal', confirmed) }),
+  )
+  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
+    confirmHeaders = route.request().headers()
+    confirmed = true
+    await route.fulfill({ json: {} })
+  })
+
+  await page.goto('/tasks/design-proposal/full')
+  const card = page.getByRole('region', { name: 'System Design proposals from this task' })
+  await expect(card).toContainText('System Design update proposed')
+  await expect(card).toContainText('Version 2 proposed by this task')
+  await expect(card.getByRole('link', { name: 'Work-order lifecycle' })).toHaveAttribute(
+    'href',
+    /system-design.*document=design-lifecycle/,
+  )
+
+  // A confirm that clears the card without a full-page reload keeps this marker.
+  await page.evaluate(() => ((window as unknown as { noReload?: boolean }).noReload = true))
+  await card.getByRole('button', { name: 'Confirm version 2' }).click()
+  await expect(card).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
+  expect(confirmHeaders.authorization).toBe('Bearer test-token')
+  expect(confirmHeaders['if-match']).toBe('"1"')
+
+  // The same composition carries it on the sheet route, not just the full page.
+  confirmed = false
+  await page.goto('/tasks/design-proposal')
+  await expect(
+    page.getByRole('region', { name: 'System Design proposals from this task' }).getByRole('button', {
+      name: 'Confirm version 2',
+    }),
+  ).toBeVisible()
+})
+
+test('task detail renders no proposal card for a pending version another task raised', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
+
+  await page.goto('/tasks/design-proposal/full')
+  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
+
+// The read is the workspace-wide collection, so origin alone would carry a
+// proposal onto a task that does not hold the document. Attachment is the other
+// half of the §21.62 scope: 'unattached-proposal' raised this pending version,
+// but carries a different document, so the decision stays on the document's own
+// attention surface.
+test('task detail renders no proposal card for a document the task does not carry', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('unattached-proposal', false) }),
+  )
+
+  await page.goto('/tasks/unattached-proposal/full')
+  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
 })

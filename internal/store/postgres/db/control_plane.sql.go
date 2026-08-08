@@ -11,6 +11,65 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listCheckpointContextCandidates = `-- name: ListCheckpointContextCandidates :many
+SELECT t.id, t.title, t.state
+FROM tasks t
+JOIN LATERAL (
+    SELECT w.state, w.last_attempt_outcome, w.last_failure_message
+    FROM work_orders w
+    WHERE w.workspace_id = t.workspace_id AND w.task_id = t.id
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT 1
+) latest ON true
+WHERE t.workspace_id = $1
+  AND t.state NOT IN ('merged', 'closed')
+  AND latest.state = 'queued'
+  AND latest.last_attempt_outcome = 'released'
+  AND latest.last_failure_message = 'operator checkpoint reached'
+  AND COALESCE((
+      SELECT e.kind
+      FROM events e
+      WHERE e.workspace_id = t.workspace_id
+        AND e.task_id = t.id
+        AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+        AND e.payload_json ->> 'id' = $2::text
+      ORDER BY e.id DESC
+      LIMIT 1
+  ), '') <> 'task.context_requirement_added'
+ORDER BY t.id
+`
+
+type ListCheckpointContextCandidatesParams struct {
+	WorkspaceID   string `json:"workspace_id"`
+	RequirementID string `json:"requirement_id"`
+}
+
+type ListCheckpointContextCandidatesRow struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+func (q *Queries) ListCheckpointContextCandidates(ctx context.Context, arg ListCheckpointContextCandidatesParams) ([]ListCheckpointContextCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listCheckpointContextCandidates, arg.WorkspaceID, arg.RequirementID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCheckpointContextCandidatesRow{}
+	for rows.Next() {
+		var i ListCheckpointContextCandidatesRow
+		if err := rows.Scan(&i.ID, &i.Title, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const approveLatestSpecVersion = `-- name: ApproveLatestSpecVersion :one
 UPDATE task_specs s
 SET approved = true, approved_at = now()

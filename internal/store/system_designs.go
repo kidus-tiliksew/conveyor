@@ -259,6 +259,30 @@ func (m *memory) ListPendingSystemDesignVersionsForTask(ctx context.Context, tas
 	return out, nil
 }
 
+func (m *memory) ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := make([]core.SystemDesignVersion, 0)
+	for key, versions := range m.systemDesignVersions {
+		if key.workspace != workspace {
+			continue
+		}
+		for _, version := range versions {
+			if version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == taskID && !version.Dismissed {
+				out = append(out, version)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DocumentID != out[j].DocumentID {
+			return out[i].DocumentID < out[j].DocumentID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out, nil
+}
+
 func (m *memory) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

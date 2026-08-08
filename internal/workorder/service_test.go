@@ -994,17 +994,20 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 }
 
-func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.T) {
+func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending", Title: "Pending", Category: "Architecture"}, core.SystemDesignVersion{
+	document, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending", Title: "Pending", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Initial\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, initial.Version); err != nil {
 		t.Fatal(err)
 	}
 	first, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
@@ -1062,18 +1065,41 @@ func TestPendingDesignProposalsAreLiveForImplementAndPinnedForReview(t *testing.
 	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
 		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
 	}
-	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
-		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
-		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
-	}); err != nil {
+	if len(claimed.GovernanceSnapshot.Designs) != 1 || claimed.GovernanceSnapshot.Designs[0].Version != initial.Version {
+		t.Fatalf("first claim authority=%+v", claimed.GovernanceSnapshot.Designs)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	reviewContext, err := service.Get(ctx, reviewJob.ID, "review-session-pending")
+	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
+		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reviewContext.GovernanceSnapshot.PendingDesignProposals) != 1 || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
-		t.Fatalf("review pending context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
+
+	reviewJob2 := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, reviewJob2); err != nil {
+		t.Fatal(err)
+	}
+	stale := *claimed.GovernanceSnapshot
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &stale}); err != nil {
+		t.Fatal(err)
+	}
+	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 1 || claimed2.GovernanceSnapshot.Designs[0].Version != initial.Version || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 2 || !claimed2.GovernanceSnapshot.PendingDesignProposals[0].Confirmed || claimed2.GovernanceSnapshot.PendingDesignProposals[1].Version != second.Version {
+		t.Fatalf("refreshed claim governance=%+v", claimed2.GovernanceSnapshot)
+	}
+	reviewContext, err := service.Get(ctx, reviewJob2.ID, "review-session-refreshed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reviewContext.RolePrompt, "confirmed after proposal") || !strings.Contains(reviewContext.RolePrompt, "matching pending or confirmed proposal") || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
+		t.Fatalf("review proposal context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
 	}
 }
 
@@ -1351,6 +1377,113 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	}
 	if !reclaimed.ExecutionDeadline.After(firstDeadline) || !reclaimed.ExecutionStartedAt.After(claimed.ExecutionStartedAt) {
 		t.Fatalf("fresh window first=%v/%v second=%v/%v", claimed.ExecutionStartedAt, firstDeadline, reclaimed.ExecutionStartedAt, reclaimed.ExecutionDeadline)
+	}
+}
+
+func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries(t *testing.T) {
+	ctx, st, service, order := newLifecycleService(t, "operator-direction")
+	ctx = store.WithWorkspace(ctx, "test")
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Pack = bundle
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-resume", Title: "Resume authority"}, core.RequirementVersion{
+		Content: "Initial", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority."}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "initial",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	humanCtx := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(humanCtx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, order.TaskID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmRequirementServes(humanCtx, order.TaskID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Amended", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The amendment permits the change."}}}}, Origin: core.RequirementOriginChat, OriginSessionID: "amendment"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(humanCtx, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	priorProgress := "Checkpoint still blocked; checked req-resume v1."
+	if _, err = service.Progress(ctx, order.ID, claimed.SessionID, priorProgress); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: claimed.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	direction := "Proceed with the accepted amendment."
+	recovered, err := service.Recover(ctx, order.ID, "recover-with-direction", "  "+direction+"  ")
+	if err != nil || recovered.OperatorDirection != direction {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	duplicate, err := service.Recover(ctx, order.ID, "recover-with-direction", "replacement must not win")
+	if err != nil || duplicate.OperatorDirection != direction || duplicate.RedispatchCount != recovered.RedispatchCount {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil || resumed.OperatorDirection != direction {
+		t.Fatalf("resumed=%+v err=%v", resumed, err)
+	}
+	context, err := service.Get(ctx, order.ID, resumed.SessionID)
+	lineageJSON, _ := json.Marshal(context.LineageContext.Items)
+	for _, required := range []string{"# Operator direction\n\n" + direction, "req-resume v2", "AC-1.1: The amendment permits the change.", "# Historical prior-attempt checkpoint claims", claimed.AttemptID, "historical context, not authority", "currently served `id vN` versions", priorProgress} {
+		if !strings.Contains(context.RolePrompt, required) {
+			t.Errorf("context role is missing %q: %s", required, context.RolePrompt)
+		}
+	}
+	if err != nil || strings.Contains(string(lineageJSON), direction) {
+		t.Fatalf("context role=%q lineage=%s err=%v", context.RolePrompt, lineageJSON, err)
+	}
+	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: resumed.SessionID, Reason: "done pausing", Outcome: core.WorkOrderOutcomeReleased})
+	if err != nil || released.OperatorDirection != "" {
+		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	recovered, err = service.Recover(ctx, order.ID, "recover-for-completion", direction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed.Stage = core.StageSpec
+	resumed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, resumed, core.WorkOrderCmdSubmitSpec); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || completed.OperatorDirection != "" {
+		t.Fatalf("completed=%+v err=%v", completed, err)
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Direction string `json:"direction"`
+	}
+	for _, event := range events {
+		if event.Kind == "work_order.redispatched" && json.Unmarshal(event.Payload, &payload) == nil && payload.Direction == direction {
+			break
+		}
+	}
+	if payload.Direction != direction {
+		t.Fatalf("redispatch direction payload=%q", payload.Direction)
+	}
+	if _, err = service.Recover(ctx, order.ID, "too-long", strings.Repeat("x", core.MaxWorkOrderOperatorDirectionRunes+1)); err == nil || !strings.Contains(err.Error(), "at most 4096 characters") {
+		t.Fatalf("over-limit error=%v", err)
 	}
 }
 

@@ -41,6 +41,7 @@ type Querier interface {
 	ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
+	ListCheckpointContextCandidates(ctx context.Context, arg ListCheckpointContextCandidatesParams) ([]ListCheckpointContextCandidatesRow, error)
 	ListLineageLinks(ctx context.Context, workspaceID string) ([]Link, error)
 	ListWorkspaceEvents(ctx context.Context, workspaceID string) ([]Event, error)
 	ListTasks(ctx context.Context, workspaceID string) ([]ListTasksRow, error)

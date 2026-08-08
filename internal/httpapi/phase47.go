@@ -35,12 +35,20 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	var request struct {
 		RequestID string `json:"request_id"`
+		Direction string `json:"direction"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&request)
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if request.RequestID == "" {
 		request.RequestID = r.Header.Get("X-Idempotency-Key")
 	}
-	order, err := s.WorkOrders.Recover(r.Context(), chi.URLParam(r, "id"), request.RequestID)
+	if _, err := core.NormalizeWorkOrderOperatorDirection(request.Direction); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	order, err := s.WorkOrders.Recover(r.Context(), chi.URLParam(r, "id"), request.RequestID, request.Direction)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

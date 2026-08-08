@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,16 +143,17 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobPending || !jobs[0].StartedAt.IsZero() {
 		t.Fatalf("released jobs=%+v err=%v", jobs, err)
 	}
-	recovered, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
-	if err != nil || !recovered.Claimable || recovered.RetrySuppressed {
+	direction := "Proceed with the accepted amendment."
+	recovered, err := storetest.For(st).RecoverWorkOrderWithDirection(ctx, job.ID, "integration-recovery", "  "+direction+"  ", time.Hour)
+	if err != nil || !recovered.Claimable || recovered.RetrySuppressed || recovered.OperatorDirection != direction {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	duplicate, err := storetest.For(st).RecoverWorkOrder(ctx, job.ID, "integration-recovery", time.Hour)
-	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
+	duplicate, err := storetest.For(st).RecoverWorkOrderWithDirection(ctx, job.ID, "integration-recovery", "replacement", time.Hour)
+	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount || duplicate.OperatorDirection != direction {
 		t.Fatalf("duplicate recovery=%+v err=%v", duplicate, err)
 	}
 	secondClaim, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-2", ClientToken: "token-2", ClaimantID: worker.ID, WorkerID: worker.ID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
-	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) {
+	if err != nil || !secondClaim.ExecutionStartedAt.After(claimed.ExecutionStartedAt) || !secondClaim.ExecutionDeadline.After(deadline) || secondClaim.OperatorDirection != direction {
 		t.Fatalf("second claim=%+v err=%v", secondClaim, err)
 	}
 	if _, staleErr := storetest.For(st).RenewWorkerClaim(ctx, job.ID, worker.ID, "session", time.Minute); staleErr == nil {
@@ -161,7 +164,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	}
 	exit := 1
 	failed, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session-2", Reason: "harness exited: status 1", Outcome: core.WorkOrderOutcomeChildFailure, ExitStatus: &exit, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second, AutomaticRetryLimit: 3})
-	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second {
+	if err != nil || failed.AutomaticRetryCount != 1 || failed.RetrySuppressed || failed.LastFailureExitStatus == nil || *failed.LastFailureExitStatus != 1 || failed.NextRetryAt.Sub(failed.LastFailureAt) != time.Second || failed.OperatorDirection != "" {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
 	var recoveries sync.WaitGroup
@@ -282,5 +285,97 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	}
 	if submitted, renewErr := storetest.For(st).RenewWorkerClaim(ctx, submittedJob.ID, worker.ID, "submitted-session", time.Minute); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
+	}
+}
+
+func TestTransientConnectivityBackoffPersistenceIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "transient-backoff-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", State: core.TaskRunning, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	workerID := "worker-" + core.NewTaskID()
+	release := func(attempt int, progress bool) core.WorkOrder {
+		t.Helper()
+		sessionID := fmt.Sprintf("transient-session-%d", attempt)
+		_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: sessionID, ClientToken: sessionID, WorkerID: workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if claimErr != nil {
+			t.Fatalf("claim %d: %v", attempt, claimErr)
+		}
+		if progress {
+			if appendErr := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.progress_reported", Payload: core.JSONPayload(map[string]any{"message": "forward progress"}), At: time.Now().UTC()}); appendErr != nil {
+				t.Fatalf("progress %d: %v", attempt, appendErr)
+			}
+		}
+		result, releaseErr := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, workerID, core.WorkOrderRelease{
+			SessionID: sessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "connection failed",
+			FailureCategory: core.WorkOrderFailureTransientConnectivity, FailureDetail: fmt.Sprintf("network-%d", attempt),
+			AutomaticRetryLimit: 5, InitialRetryDelay: time.Second, MaximumRetryDelay: 4 * time.Second,
+		})
+		if releaseErr != nil {
+			t.Fatalf("release %d: %v", attempt, releaseErr)
+		}
+		return result
+	}
+	advance := func(order core.WorkOrder) {
+		t.Helper()
+		order.NextRetryAt = time.Now().Add(-time.Millisecond)
+		if updateErr := storetest.For(st).UpdateWorkOrder(ctx, order); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+	}
+
+	first := release(1, false)
+	if got := first.NextRetryAt.Sub(first.LastFailureAt); got != 30*time.Second {
+		t.Fatalf("first delay=%s", got)
+	}
+	advance(first)
+	second := release(2, false)
+	if got := second.NextRetryAt.Sub(second.LastFailureAt); got != 2*time.Minute {
+		t.Fatalf("second delay=%s", got)
+	}
+	advance(second)
+	reset := release(3, true)
+	if got := reset.NextRetryAt.Sub(reset.LastFailureAt); got != 30*time.Second {
+		t.Fatalf("progress reset delay=%s", got)
+	}
+	if !strings.Contains(reset.LastFailureDetail, "consecutive_transient_failures=1") {
+		t.Fatalf("reset detail=%q", reset.LastFailureDetail)
+	}
+
+	reopened, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || !reopened.NextRetryAt.Equal(reset.NextRetryAt) || reopened.LastFailureDetail != reset.LastFailureDetail {
+		t.Fatalf("reopened=%+v err=%v", reopened, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Category    string    `json:"failure_category"`
+		Consecutive int       `json:"consecutive_transient_failures"`
+		NextRetryAt time.Time `json:"next_retry_at"`
+	}
+	if err = json.Unmarshal(events[len(events)-1].Payload, &payload); err != nil || payload.Category != core.WorkOrderFailureTransientConnectivity || payload.Consecutive != 1 || !payload.NextRetryAt.Equal(reset.NextRetryAt) {
+		t.Fatalf("failure payload=%+v err=%v", payload, err)
 	}
 }

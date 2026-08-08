@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
@@ -67,5 +68,80 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 	emptyReloaded, err := st.GetWorkOrder(ctx, emptyOrder.ID)
 	if err != nil || emptyReloaded.ServedRequirementSnapshot == nil || len(emptyReloaded.ServedRequirementSnapshot) != 0 {
 		t.Fatalf("reloaded empty snapshot=%+v err=%v", emptyReloaded.ServedRequirementSnapshot, err)
+	}
+}
+
+func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	ctx := context.Background()
+	st, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "review-proposal-refresh-" + core.NewTaskID()
+	ctx = store.WithWorkspace(ctx, workspace)
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "app", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	document, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-review-refresh", Title: "Review refresh", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Initial\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	createReview := func(id string, round int, governance *core.GovernanceSnapshot) {
+		t.Helper()
+		job := core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+		if createErr := st.CreateJob(ctx, job); createErr != nil {
+			t.Fatal(createErr)
+		}
+		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: governance}
+		if createErr := storetest.For(st).CreateWorkOrder(ctx, order); createErr != nil {
+			t.Fatal(createErr)
+		}
+	}
+
+	createReview(task.ID+"-review-1", 1, nil)
+	firstClaim, err := service.Claim(ctx, task.ID+"-review-1", core.WorkOrderClaim{SessionID: "review-refresh-1", ClientToken: "secret-1", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstClaim.GovernanceSnapshot == nil || len(firstClaim.GovernanceSnapshot.Designs) != 1 || firstClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(firstClaim.GovernanceSnapshot.PendingDesignProposals) != 0 {
+		t.Fatalf("first claim governance=%+v", firstClaim.GovernanceSnapshot)
+	}
+	proposal, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: "# Proposed\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := *firstClaim.GovernanceSnapshot
+	createReview(task.ID+"-review-2", 2, &stale)
+	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondClaim.GovernanceSnapshot == nil || len(secondClaim.GovernanceSnapshot.Designs) != 1 || secondClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(secondClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Version != proposal.Version || secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
+		t.Fatalf("pending proposal refresh=%+v", secondClaim.GovernanceSnapshot)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	stale = *firstClaim.GovernanceSnapshot
+	createReview(task.ID+"-review-3", 3, &stale)
+	thirdClaim, err := service.Claim(ctx, task.ID+"-review-3", core.WorkOrderClaim{SessionID: "review-refresh-3", ClientToken: "secret-3", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdClaim.GovernanceSnapshot == nil || len(thirdClaim.GovernanceSnapshot.Designs) != 1 || thirdClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(thirdClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || !thirdClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
+		t.Fatalf("confirmed proposal refresh=%+v", thirdClaim.GovernanceSnapshot)
 	}
 }

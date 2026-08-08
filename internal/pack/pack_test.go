@@ -177,7 +177,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	normalizedImplement := strings.Join(strings.Fields(implement), " ")
-	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop", "`wip(attempt-` checkpoint commit", "never validation evidence"} {
+	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop", "`wip(attempt-` checkpoint commit", "never validation evidence", "resumed session", "same checkpoint reason", "re-derive the blocking condition", "currently served requirements", "current operator direction", "served-authority `id vN` version checked", "historical context"} {
 		if !strings.Contains(normalizedImplement, required) {
 			t.Errorf("implement role is missing %q", required)
 		}
@@ -218,13 +218,13 @@ func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 	snapshot := core.GovernanceSnapshot{
 		Designs:                []core.GovernanceDesignContext{design},
 		Decisions:              []core.Decision{{ID: "DEC-2", Status: core.DecisionConfirmed, Statement: "Use pinned authority."}},
-		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}, {DocumentID: "DESIGN-runtime", Version: 5, ProposalEventID: 43, OriginTaskID: "task-design", Confirmed: true}},
 	}
 	contract := RenderGovernanceContract(core.StageReview, snapshot)
 	if len(contract) > MaxGovernanceContractBytes {
 		t.Fatalf("contract bytes=%d cap=%d", len(contract), MaxGovernanceContractBytes)
 	}
-	for _, required := range []string{"Pinned System Design authority", "System Design DESIGN-runtime v3", "Governance authority omitted by prompt budget", "Pinned decision authority", "DEC-2 [confirmed]", "Pending design proposals from this task", "DESIGN-runtime v4", "confer no authority", "Operator confirmation is not a bounce condition", "design_applicable", "decision_citable"} {
+	for _, required := range []string{"Pinned System Design authority", "System Design DESIGN-runtime v3", "Governance authority omitted by prompt budget", "Pinned decision authority", "DEC-2 [confirmed]", "System Design proposal evidence from this task", "DESIGN-runtime v4 (pending", "DESIGN-runtime v5 (confirmed after proposal", "matching pending or confirmed proposal", "confer no authority", "Operator confirmation is not a bounce condition", "design_applicable", "decision_citable"} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("contract missing %q: %s", required, contract)
 		}
@@ -236,6 +236,16 @@ func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 	implement := WithRequirementCitationContract("implement", core.StageImplement, nil)
 	if !strings.Contains(implement, "DEC-n") {
 		t.Fatalf("implement guidance=%s", implement)
+	}
+}
+
+func TestImplementGovernanceContractMakesProposalsFireAndForget(t *testing.T) {
+	t.Parallel()
+	contract := RenderGovernanceContract(core.StageImplement, core.GovernanceSnapshot{})
+	for _, required := range []string{"fire-and-forget", "report the proposal identifier in progress and the implementation handoff", "proceed immediately to `submit_for_review`", "Never wait for, request, or condition progress on operator confirmation"} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("implement governance contract missing %q: %s", required, contract)
+		}
 	}
 }
 

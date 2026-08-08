@@ -229,16 +229,23 @@ func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot
 		out.WriteString("\n# Pinned decision authority\n\nNo confirmed or superseded decisions existed when this review authority was pinned.\n")
 	}
 	if stage == core.StageReview {
-		out.WriteString("\n# Pending design proposals from this task\n\nThese proposals confer no authority and are never valid governance citations. A criterion requiring the task to propose a System Design revision is satisfied when the matching proposal below exists or its identifier is present in the implementation handoff. Operator confirmation is not a bounce condition and must never be requested as implementation feedback.\n")
+		out.WriteString("\n# System Design proposal evidence from this task\n\nPending and subsequently confirmed proposals confer no authority and are never valid governance citations. A criterion requiring the task to propose a System Design revision is satisfied when the matching pending or confirmed proposal below exists or its identifier is present in the implementation handoff. Operator confirmation is not a bounce condition and must never be requested as implementation feedback.\n")
 		if len(pending) == 0 {
-			out.WriteString("\nNo pending implementation-originated System Design proposals from this task were present when this review was claimed.\n")
+			out.WriteString("\nNo implementation-originated System Design proposal evidence from this task was present when this review was claimed.\n")
 		}
-	} else if stage == core.StageImplement && len(pending) > 0 {
-		out.WriteString("\n# Pending design proposals from this task\n\nA resumed implementation session must report an existing identical proposal identifier instead of proposing it again. These proposals confer no authority.\n")
+	} else if stage == core.StageImplement {
+		out.WriteString("\n# System Design proposals from this task\n\nProposals are fire-and-forget: report the proposal identifier in progress and the implementation handoff, then proceed immediately to `submit_for_review`. Never wait for, request, or condition progress on operator confirmation.\n")
+		if len(pending) > 0 {
+			out.WriteString("A resumed implementation session must report an existing identical proposal identifier instead of proposing it again. These proposals confer no authority.\n")
+		}
 	}
 	if stage == core.StageReview || stage == core.StageImplement {
 		for _, proposal := range pending {
-			chunk := fmt.Sprintf("\n- %s v%d (proposal event %d, origin task %s)\n", proposal.DocumentID, proposal.Version, proposal.ProposalEventID, proposal.OriginTaskID)
+			status := "pending"
+			if proposal.Confirmed {
+				status = "confirmed after proposal"
+			}
+			chunk := fmt.Sprintf("\n- %s v%d (%s; proposal event %d, origin task %s)\n", proposal.DocumentID, proposal.Version, status, proposal.ProposalEventID, proposal.OriginTaskID)
 			if out.Len()+len(chunk) > detailBudget {
 				omitted = append(omitted, fmt.Sprintf("pending proposal %s v%d", proposal.DocumentID, proposal.Version))
 				continue

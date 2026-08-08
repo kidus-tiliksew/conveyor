@@ -242,6 +242,43 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page).toHaveURL(/\/requirements/)
 })
 
+test('requirement confirmation offers explicit attachment to eligible checkpoint-paused tasks', async ({ page }) => {
+  await initShell(page)
+  let contextWrites = 0
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: [requirement] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (path === '/v1/requirements/req-retries/versions/1/confirm')
+      return route.fulfill({
+        json: { requirement: requirement.requirement, version: requirement.pending_versions[0] },
+      })
+    if (path === '/v1/requirements/req-retries/checkpoint-context-candidates')
+      return route.fulfill({ json: [{ id: 'paused-task', title: 'Paused delivery', state: 'running' }] })
+    if (path === '/v1/tasks/paused-task/context') {
+      contextWrites++
+      return route.fulfill({ json: { requirements: [{ id: 'req-retries', title: 'Retry behavior', version: 1 }] } })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  await page.getByRole('button', { name: 'Confirm version 1' }).click()
+  const offer = page.getByRole('dialog', { name: 'Attach confirmed requirement' })
+  await expect(offer).toContainText('Paused delivery')
+  await offer.getByRole('button', { name: 'Dismiss' }).click()
+  await expect.poll(() => contextWrites).toBe(0)
+
+  await page.getByRole('button', { name: 'Confirm version 1' }).click()
+  await offer.getByRole('checkbox').check()
+  await offer.getByRole('button', { name: 'Attach to 1 task' }).click()
+  await expect.poll(() => contextWrites).toBe(1)
+  await expect(offer).toHaveCount(0)
+})
+
 test('planning starts with an allowlisted model and sends that choice', async ({ page }) => {
   await initShell(page)
   let createdWith: Record<string, unknown> = {}

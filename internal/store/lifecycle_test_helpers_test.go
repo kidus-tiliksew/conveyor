@@ -56,7 +56,7 @@ func (a testLifecycleAdapter) RecoverWorkOrder(ctx context.Context, id, requestI
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, a.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return a.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout, refreeze...)
+		return a.RecoverWorkOrderCommand(ctx, lease, id, requestID, "", timeout, refreeze...)
 	})
 }
 func (a testLifecycleAdapter) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
