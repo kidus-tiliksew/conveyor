@@ -352,6 +352,7 @@ type WorkOrder struct {
 	ExecutionStartedAt        pgtype.Timestamptz `json:"execution_started_at"`
 	ExecutionDeadline         pgtype.Timestamptz `json:"execution_deadline"`
 	RedispatchCount           int32              `json:"redispatch_count"`
+	OperatorDirection         string             `json:"operator_direction"`
 	WorkerID                  string             `json:"worker_id"`
 	ReviewRound               int32              `json:"review_round"`
 	ReviewSeat                int32              `json:"review_seat"`

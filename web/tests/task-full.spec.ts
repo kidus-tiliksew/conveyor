@@ -28,7 +28,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               ].join('\n\n')
             : '## Specification\n\nRegression marker at the bottom of the task content.'
   const reviewActivity =
-    taskId === 'attempt-recovery' || taskId === 'decision-blocker'
+    taskId === 'attempt-recovery' || taskId === 'decision-blocker' || taskId === 'operator-checkpoint'
       ? {
           jobs: [],
           events: [
@@ -101,7 +101,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                 reason:
                   taskId === 'decision-blocker'
                     ? 'DEC-2 is proposed but not confirmed.'
-                    : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                    : taskId === 'operator-checkpoint'
+                      ? 'operator checkpoint reached'
+                      : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
                 outcome: 'released',
                 retry_suppressed: true,
               },
@@ -121,7 +123,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               last_failure_message:
                 taskId === 'decision-blocker'
                   ? 'DEC-2 is proposed but not confirmed.'
-                  : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
+                  : taskId === 'operator-checkpoint'
+                    ? 'operator checkpoint reached'
+                    : 'checkout_blocked_dirty_primary: primary checkout has 77 pre-existing generated-dashboard changes',
               last_failure_at: '2026-07-15T12:04:00Z',
               automatic_retry_count: 1,
               retry_suppressed: true,
@@ -2277,6 +2281,24 @@ test('suppressed worker order exposes failure state and audited recovery action'
   await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryRequest).toContain('request_id')
+})
+
+test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  let recoveryRequest = ''
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recoveryRequest = route.request().postData() ?? ''
+    await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
+  await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
+  const action = page.getByRole('button', { name: 'Recover work order' })
+  await expect(action).toBeDisabled()
+  await page.getByLabel('Operator direction').fill('Proceed with the accepted amendment.')
+  await expect(action).toBeEnabled()
+  await action.click()
+  await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
 })
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {

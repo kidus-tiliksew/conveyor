@@ -48,14 +48,17 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const [checkoutResolved, setCheckoutResolved] = useState(false)
+  const [direction, setDirection] = useState('')
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (state.kind !== 'retry_pending') return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [state.kind])
+  const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
-    mutationFn: () => recoverWorkOrder(order.id, token, requestId.current),
+    mutationFn: () =>
+      recoverWorkOrder(order.id, token, requestId.current, checkpointReleased ? direction.trim() : undefined),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
@@ -80,7 +83,11 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   const checkoutBlocked = state.kind === 'checkout_blocked'
   const actionLabel =
     state.action === 'retry_implementation' || checkoutBlocked ? 'Retry implementation' : 'Recover work order'
-  const canRecover = Boolean(token) && !mutation.isPending && (!checkoutBlocked || checkoutResolved)
+  const canRecover =
+    Boolean(token) &&
+    !mutation.isPending &&
+    (!checkoutBlocked || checkoutResolved) &&
+    (!checkpointReleased || direction.trim().length > 0)
   return (
     <div className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3">
       <div className="flex items-start gap-2">
@@ -90,6 +97,25 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
           <p>{state.nextAction}</p>
         </div>
       </div>
+      {checkpointReleased && (
+        <div className="space-y-2 text-xs leading-5 text-muted">
+          <p>
+            A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.
+          </p>
+          <label className="block space-y-1.5">
+            <span className="font-medium text-foreground">Operator direction</span>
+            <textarea
+              aria-label="Operator direction"
+              maxLength={4096}
+              rows={4}
+              value={direction}
+              onChange={(event) => setDirection(event.target.value)}
+              placeholder="State the decision or instruction the agent should follow."
+              className="w-full resize-y rounded-md border border-attention/30 bg-surface px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-primary"
+            />
+          </label>
+        </div>
+      )}
       {order.last_failure_detail && (
         <details className="text-xs text-muted">
           <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">

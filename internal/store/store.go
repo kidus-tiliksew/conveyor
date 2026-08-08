@@ -179,7 +179,7 @@ type Store interface {
 	ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 	RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, request WorkOrderPreemptRequest) (WorkOrderPreemptResult, error)
-	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
+	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, command ...core.WorkOrderCommand) error
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
@@ -1231,6 +1231,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	attemptID := order.AttemptID
 	order.LastAttemptID = attemptID
 	clearActiveAttempt(&order)
+	order.OperatorDirection = ""
 	order.State = next
 	previousOutcome := order.LastAttemptOutcome
 	order.LastAttemptOutcome = release.Outcome
@@ -2634,9 +2635,14 @@ func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
 	return false
 }
 
-func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var err error
+	direction, err = core.NormalizeWorkOrderOperatorDirection(direction)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
 	if strings.TrimSpace(requestID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
 	}
@@ -2700,6 +2706,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	order.NextRetryAt = time.Time{}
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.RedispatchCount++
+	order.OperatorDirection = direction
 	order.UpdatedAt = now
 	order.Claimable = true
 	if len(refreeze) != 0 && refreeze[0] != nil {
@@ -2722,7 +2729,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		m.jobs[job.TaskID][index] = job
 	}
 	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery"}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction}), At: now})
 	return order, nil
 }
 
@@ -2837,6 +2844,9 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		if to != order.State {
 			return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: string(current.State), Command: string(commands[0]), Allowed: core.WorkOrderTransitionAlternatives(current.State)}
 		}
+	}
+	if order.State == core.WorkOrderCompleted {
+		order.OperatorDirection = ""
 	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order

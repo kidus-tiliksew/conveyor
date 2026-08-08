@@ -1354,6 +1354,79 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	}
 }
 
+func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries(t *testing.T) {
+	ctx, st, service, order := newLifecycleService(t, "operator-direction")
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Pack = bundle
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: claimed.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	direction := "Proceed with the accepted amendment."
+	recovered, err := service.Recover(ctx, order.ID, "recover-with-direction", "  "+direction+"  ")
+	if err != nil || recovered.OperatorDirection != direction {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	duplicate, err := service.Recover(ctx, order.ID, "recover-with-direction", "replacement must not win")
+	if err != nil || duplicate.OperatorDirection != direction || duplicate.RedispatchCount != recovered.RedispatchCount {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil || resumed.OperatorDirection != direction {
+		t.Fatalf("resumed=%+v err=%v", resumed, err)
+	}
+	context, err := service.Get(ctx, order.ID, resumed.SessionID)
+	lineageJSON, _ := json.Marshal(context.LineageContext.Items)
+	if err != nil || !strings.Contains(context.RolePrompt, "# Operator direction\n\n"+direction) || strings.Contains(string(lineageJSON), direction) {
+		t.Fatalf("context role=%q lineage=%s err=%v", context.RolePrompt, lineageJSON, err)
+	}
+	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, order.ID, "worker", core.WorkOrderRelease{SessionID: resumed.SessionID, Reason: "done pausing", Outcome: core.WorkOrderOutcomeReleased})
+	if err != nil || released.OperatorDirection != "" {
+		t.Fatalf("released=%+v err=%v", released, err)
+	}
+	recovered, err = service.Recover(ctx, order.ID, "recover-for-completion", direction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed.Stage = core.StageSpec
+	resumed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, resumed, core.WorkOrderCmdSubmitSpec); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || completed.OperatorDirection != "" {
+		t.Fatalf("completed=%+v err=%v", completed, err)
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Direction string `json:"direction"`
+	}
+	for _, event := range events {
+		if event.Kind == "work_order.redispatched" && json.Unmarshal(event.Payload, &payload) == nil && payload.Direction == direction {
+			break
+		}
+	}
+	if payload.Direction != direction {
+		t.Fatalf("redispatch direction payload=%q", payload.Direction)
+	}
+	if _, err = service.Recover(ctx, order.ID, "too-long", strings.Repeat("x", core.MaxWorkOrderOperatorDirectionRunes+1)); err == nil || !strings.Contains(err.Error(), "at most 4096 characters") {
+		t.Fatalf("over-limit error=%v", err)
+	}
+}
+
 func TestOperatorRecoveryRefreezesNamedSetupAndRepinsOrder(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
 	st := store.NewMemory()

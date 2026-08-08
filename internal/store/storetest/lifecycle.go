@@ -39,6 +39,9 @@ func (a Adapter) RedispatchWorkOrder(ctx context.Context, id string, timeout tim
 func (a Adapter) RecoverWorkOrder(ctx context.Context, id, requestID string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
 	return RecoverWorkOrder(ctx, a.Store, id, requestID, timeout, refreeze...)
 }
+func (a Adapter) RecoverWorkOrderWithDirection(ctx context.Context, id, requestID, direction string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	return RecoverWorkOrderWithDirection(ctx, a.Store, id, requestID, direction, timeout, refreeze...)
+}
 func (a Adapter) UpdateWorkOrder(ctx context.Context, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	return UpdateWorkOrder(ctx, a.Store, order, commands...)
 }
@@ -106,12 +109,16 @@ func RedispatchWorkOrder(ctx context.Context, st store.Store, id string, timeout
 }
 
 func RecoverWorkOrder(ctx context.Context, st store.Store, id, requestID string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	return RecoverWorkOrderWithDirection(ctx, st, id, requestID, "", timeout, refreeze...)
+}
+
+func RecoverWorkOrderWithDirection(ctx context.Context, st store.Store, id, requestID, direction string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
 	order, err := st.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return st.RecoverWorkOrderCommand(ctx, lease, id, requestID, timeout, refreeze...)
+		return st.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout, refreeze...)
 	})
 }
 
